@@ -11,6 +11,7 @@
 import { Transport } from '../clock';
 import { Limiter } from '../dsp/effects';
 import { OnePole, DCBlocker } from '../dsp/filter';
+import { MasterChain } from '../dsp/masterChain';
 import { Rng } from '../rng';
 
 export type SectionType = 'intro' | 'build' | 'breakdown' | 'drop' | 'outro' | 'loop';
@@ -71,11 +72,7 @@ export class LiveDevice {
   arrangement: ArrangementSection[] = [];
   master: MasterChainParams;
   private sr: number;
-  private comp: MasterComp;
-  private limiter: Limiter;
-  private dc: DCBlocker;
-  private lowShelf: OnePole;
-  private highShelf: OnePole;
+  private masterChain: MasterChain;  // new professional master chain
   private rng: Rng;
   /** Recorded master output (full render). */
   recorded: { l: Float32Array; r: Float32Array } | null = null;
@@ -87,16 +84,7 @@ export class LiveDevice {
     this.transport = transport;
     this.sr = transport.sampleRate;
     this.master = { ...MASTER_DEFAULTS, ...master };
-    this.comp = new MasterComp(this.sr);
-    this.comp.threshold = this.master.compThreshold;
-    this.comp.ratio = this.master.compRatio;
-    this.limiter = new Limiter(this.sr);
-    this.limiter.ceiling = this.master.limiterCeiling;
-    this.dc = new DCBlocker();
-    this.lowShelf = new OnePole(this.sr, 'lp');
-    this.lowShelf.setCutoff(120);
-    this.highShelf = new OnePole(this.sr, 'hp');
-    this.highShelf.setCutoff(6000);
+    this.masterChain = new MasterChain(this.sr);
     this.rng = new Rng(2024);
   }
 
@@ -121,23 +109,10 @@ export class LiveDevice {
     const outL = new Float32Array(n);
     const outR = new Float32Array(n);
     for (let i = 0; i < n; i++) {
-      // EQ shelves
-      const lowL = this.lowShelf.process(inL[i]) * this.master.eqLow;
-      const highL = this.highShelf.process(inL[i]) * this.master.eqHigh;
-      const lowR = this.lowShelf.process(inR[i]) * this.master.eqLow;
-      const highR = this.highShelf.process(inR[i]) * this.master.eqHigh;
-      let l = inL[i] + lowL * 0.5 + highL * 0.3;
-      let r = inR[i] + lowR * 0.5 + highR * 0.3;
-      // compressor (linked stereo)
-      const mid = (l + r) * 0.5;
-      const c = this.comp.process(mid);
-      const compGain = mid > 0.0001 ? c / mid : 1;
-      l *= compGain; r *= compGain;
-      // DC + limiter
-      l = this.dc.process(l);
-      r = this.dc.process(r);
-      const [lo, ro] = this.limiter.processStereo(l, r);
-      outL[i] = lo; outR[i] = ro;
+      // New professional master chain: HP → glue comp → saturation → true-peak limiter
+      const [l, r] = this.masterChain.processStereo(inL[i], inR[i]);
+      outL[i] = l;
+      outR[i] = r;
     }
     return { l: outL, r: outR };
   }
@@ -164,8 +139,7 @@ export class LiveDevice {
   }
 
   reset() {
-    this.comp.reset(); this.limiter.reset(); this.dc.reset();
-    this.lowShelf.reset(); this.highShelf.reset();
+    this.masterChain.reset();
     this.recorded = null; this.log = [];
   }
 }

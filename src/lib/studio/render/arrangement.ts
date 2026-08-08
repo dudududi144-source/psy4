@@ -22,6 +22,7 @@ import { SCALES, scaleNote, mtof } from '../dsp/wavetable';
 import { EvolvingSequence, makePsyConfig, PsyConfig, densityAt, tensionAt } from '../sequencing/psyGenerator';
 import { ArrangementSection } from '../devices/ableton-live';
 import { DrumVoice } from '../devices/analog-rytm';
+import { createGrooveState, getVelocity, GrooveState } from '../engine/grooveEngine';
 
 export interface ArrangementRecipe {
   name: string;
@@ -130,48 +131,55 @@ function scheduleSection(
   const progress = (barOffset + section.bars / 2) / totalBars;
   const density = densityAt(progress, section.density, 'arc');
   const tension = tensionAt(progress, 'arc');
+  // Create groove state for this section
+  const groove = createGrooveState(recipe.bpm, 0.08, section.density, 0.5, rng);
 
   for (let b = 0; b < section.bars; b++) {
     const bar = barOffset + b;
     const localProgress = (barOffset + b) / totalBars;
     const localDensity = densityAt(localProgress, section.density, 'arc');
 
-    // KICK — 4 on the floor (only in drop/build/loop)
+    // KICK — 4 on the floor (only in drop/build/loop) — rock-solid timing (anchor)
     if (active.has('rytm') && (section.type === 'drop' || section.type === 'build' || section.type === 'loop')) {
       for (let beat = 0; beat < 4; beat++) {
-        studio.scheduleKick(bar, beat * 4, 0.95);
+        const vel = getVelocity(groove, beat * 4, 0.95);
+        studio.scheduleKick(bar, beat * 4, vel);
       }
-      // percussion: off-beat hats + snares on 2 & 4
+      // percussion: off-beat hats + snares on 2 & 4 with groove velocity
       if (localDensity > 0.4) {
         for (let s = 0; s < 16; s++) {
-          if (s % 4 === 2 && rng.chance(0.7 * localDensity)) studio.scheduleDrum('snare', bar, s, 0.5 + rng.next() * 0.2);
-          if (s % 2 === 1 && rng.chance(0.5 * localDensity)) studio.scheduleDrum('hat', bar, s, 0.3 + rng.next() * 0.2);
+          if (s % 4 === 2 && rng.chance(0.7 * localDensity)) {
+            studio.scheduleDrum('snare', bar, s, getVelocity(groove, s, 0.55));
+          }
+          if (s % 2 === 1 && rng.chance(0.5 * localDensity)) {
+            studio.scheduleDrum('hat', bar, s, getVelocity(groove, s, 0.35));
+          }
         }
       }
       // clap on off-beats in drop
-      if (section.type === 'drop' && rng.chance(0.4)) studio.scheduleDrum('clap', bar, 4, 0.6);
+      if (section.type === 'drop' && rng.chance(0.4)) studio.scheduleDrum('clap', bar, 4, getVelocity(groove, 4, 0.6));
     }
 
-    // BASS — off-beat 16ths (psytrance signature)
+    // BASS — off-beat 16ths (psytrance signature) — locks with kick
     if (active.has('sub37') && (section.type === 'drop' || section.type === 'build' || section.type === 'loop')) {
       const root = recipe.root - 12;
       for (let s = 0; s < 16; s++) {
         if (s % 2 === 1 && rng.chance(localDensity)) {
-          // bass walks between root, octave, fifth
           const degree = rng.pick([0, 0, 0, 4, 0, 2, 0, 4]);
           const note = scaleNote(root, SCALES[recipe.scale] || SCALES.minor, degree);
-          studio.scheduleBass(bar, s, note, 0.85, 0.1);
+          const vel = getVelocity(groove, s, 0.85);
+          studio.scheduleBass(bar, s, note, vel, 0.1);
         }
       }
     }
 
-    // LEAD — evolving sequence (Muse)
+    // LEAD — evolving sequence (Muse) with groove velocity
     if (active.has('muse') && localDensity > 0.4) {
       for (let s = 0; s < 16; s++) {
         if (rng.chance(localDensity * 0.6)) {
           const note = leadSeq.next();
-          // octave up for lead
-          studio.scheduleLead(bar, s, note + 12, 0.5 + tension * 0.3, 0.15);
+          const vel = getVelocity(groove, s, 0.5 + tension * 0.3);
+          studio.scheduleLead(bar, s, note + 12, vel, 0.15);
         }
       }
     }

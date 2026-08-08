@@ -57,7 +57,7 @@ export class ApolloDevice {
       { name: 'Muse', gain: -7, pan: -0.15, fxSend: 0.25, mute: false, solo: false, peak: 0 },
       { name: 'Sub37', gain: -3, pan: 0, fxSend: 0.05, mute: false, solo: false, peak: 0 },
       { name: 'Prophet6', gain: -10, pan: 0.1, fxSend: 0.35, mute: false, solo: false, peak: 0 },
-      { name: 'Iridium', gain: -14, pan: -0.1, fxSend: 0.4, mute: false, solo: false, peak: 0 },
+      { name: 'Iridium', gain: -18, pan: -0.1, fxSend: 0.4, mute: false, solo: false, peak: 0 },
       { name: 'Rytm', gain: -2, pan: 0, fxSend: 0.08, mute: false, solo: false, peak: 0 },
       { name: 'Digitakt', gain: -8, pan: 0.08, fxSend: 0.25, mute: false, solo: false, peak: 0 },
       { name: 'FXReturn', gain: -4, pan: 0, fxSend: 0, mute: false, solo: false, peak: 0 },
