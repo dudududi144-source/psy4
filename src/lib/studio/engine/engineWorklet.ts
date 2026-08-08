@@ -29,6 +29,7 @@ export interface EngineStats {
   eventCount: number;
   currentFrame: number;
   cpuLoad: number;
+  sampleUsage?: Record<string, number>; // which samples actually played (name → hit count)
 }
 
 export interface WorldParams {

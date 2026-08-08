@@ -1870,6 +1870,11 @@ export class Psy4LiveEngine {
   /** Get engine worklet stats (active voices, event count, CPU load). */
   getEngineStats(): EngineStats | null { return this.engineStats; }
 
+  /** Get sample usage report — which samples actually played (name → hit count). */
+  getSampleUsage(): Record<string, number> {
+    return this.engineStats?.sampleUsage || {};
+  }
+
   /** Check if the engine worklet is active (vs legacy Web Audio mode). */
   isWorkletEngineActive(): boolean { return this.useWorkletEngine; }
 

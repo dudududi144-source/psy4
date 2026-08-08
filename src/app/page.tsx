@@ -31,6 +31,7 @@ export default function LivePage() {
   const [, setStatsTick] = useState(0); // forces re-render for voice count display
   const [engineMode, setEngineMode] = useState('Web Audio');
   const [activeVoices, setActiveVoices] = useState(0);
+  const [sampleUsage, setSampleUsage] = useState<Record<string, number>>({});
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animRef = useRef<number | null>(null);
 
@@ -51,6 +52,7 @@ export default function LivePage() {
       setPhrase(e.currentPhrase);
       setEngineMode(e.isWorkletEngineActive() ? 'Worklet' : 'Web Audio');
       setActiveVoices(e.getEngineStats()?.activeVoices ?? 0);
+      setSampleUsage(e.getSampleUsage());
       setStatsTick(t => t + 1); // force re-render for voice count
       // audio level from analyser
       const analyser = e.getAnalyser();
@@ -215,6 +217,24 @@ export default function LivePage() {
           {playing && (
             <div className="mt-4">
               <canvas ref={canvasRef} width={800} height={80} className="w-full h-20 rounded-lg bg-black/40" />
+            </div>
+          )}
+          {playing && Object.keys(sampleUsage).length > 0 && (
+            <div className="mt-3 p-3 rounded-lg bg-black/40 border border-border/40 max-h-48 overflow-y-auto">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">Sample Usage Report (what's actually playing)</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1 text-xs">
+                {Object.entries(sampleUsage).sort((a, b) => b[1] - a[1]).map(([name, hits]) => {
+                  const isReal = name.startsWith('nord') || name.startsWith('909') || name.startsWith('real');
+                  return (
+                    <div key={name} className="flex items-center justify-between gap-2">
+                      <span className={`font-mono truncate ${isReal ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {isReal ? '★ ' : ''}{name}
+                      </span>
+                      <span className="text-muted-foreground tabular-nums">{hits} hits</span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </Card>

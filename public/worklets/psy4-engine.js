@@ -1083,6 +1083,8 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 
     // Round robin counters (for variation — avoid machine-gun effect)
     this.rrCounters = { kick: 0, hat: 0, clap: 0 };
+    this.logCounter = 0; // for sample usage logging
+    this.sampleUsage = {}; // tracks which samples actually played (name → hit count)
 
     // ── FX SENDS: Reverb + Delay (the key to "produced" sound) ──
     // A dry mix sounds flat/amateur. These are SEND effects — voices
@@ -1236,23 +1238,28 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 
     switch (voiceId) {
       case V_KICK: {
-        // Use REAL kick sample when available — prefer generated multisample variants
-        // for variety, fall back to PSY3 kick.wav
+        // Use REAL kick samples — search by CATEGORY, not filename prefix
+        // CRITICAL FIX: Previous code used n.startsWith('kick') which missed
+        // real samples named "nord_kick_*" and "909_BD_*". Now we filter by category.
         if (this.samplesReady) {
-          // Find all kick samples (kick.wav + kick_* generated variants)
-          const kickNames = Object.keys(this.samples).filter(n => n.startsWith('kick'));
-          const kickName = kickNames.length > 0
-            ? kickNames[this.rrCounters.kick % kickNames.length]
-            : null;
-          if (kickName) {
+          // Find all kick-category samples (includes real + procedural)
+          const kickNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'kick');
+          // PREFER real samples (nord/909) over procedural (kick_*) for commercial quality
+          const realKickNames = kickNames.filter(n => n.startsWith('nord') || n.startsWith('909') || n.startsWith('real'));
+          const selectedNames = realKickNames.length > 0 ? realKickNames : kickNames;
+
+          if (selectedNames.length > 0) {
+            const kickName = selectedNames[this.rrCounters.kick % selectedNames.length];
             const v = this.getFreeVoice(this.kickSamplePool);
             if (v) {
               const samp = this.samples[kickName];
               // Round robin: micro pitch variation (±0.45%) — preserve sub phase
-              this.rrCounters.kick = (this.rrCounters.kick + 1) % Math.max(4, kickNames.length);
+              this.rrCounters.kick = (this.rrCounters.kick + 1) % Math.max(4, selectedNames.length);
               const pitchVar = 1.0 + (this.rrCounters.kick % 4 - 1.5) * 0.003;
               const gainVar = 1.0 + (this.rrCounters.kick % 4 - 1.5) * 0.04;
               v.trigger(samp.data, samp.sampleRate, pitchVar, velocity * gainVar, wp.kickDecay, 0);
+              // TRACK: which sample actually played
+              this.sampleUsage[kickName] = (this.sampleUsage[kickName] || 0) + 1;
             }
           } else {
             const v = this.getFreeVoice(this.kickPool);
@@ -1350,10 +1357,12 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_CLAP: {
-        // Use REAL clap sample — cycle through variants for variety
+        // Use REAL clap/snare samples — search by CATEGORY (includes nord snare)
         if (this.samplesReady) {
-          const clapNames = Object.keys(this.samples).filter(n => n.startsWith('clap'));
-          const names = clapNames.length > 0 ? clapNames : [];
+          const clapNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'clap');
+          // Prefer real samples (nord snare) over procedural
+          const realClapNames = clapNames.filter(n => n.startsWith('nord') || n.startsWith('909') || n.startsWith('real'));
+          const names = realClapNames.length > 0 ? realClapNames : clapNames;
           if (names.length > 0) {
             const clapName = names[this.rrCounters.clap % names.length];
             const v = this.getFreeVoice(this.clapSamplePool);
@@ -1363,6 +1372,8 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
               const pitchVar = 1.0 + (this.rrCounters.clap % 4 - 1.5) * 0.004;
               const gainVar = 1.0 + (this.rrCounters.clap % 4 - 1.5) * 0.03;
               v.trigger(samp.data, samp.sampleRate, pitchVar, velocity * gainVar, 0.15, 0);
+              // TRACK: which sample actually played
+              this.sampleUsage[clapName] = (this.sampleUsage[clapName] || 0) + 1;
             }
           } else {
             const v = this.getFreeVoice(this.clapPool);
@@ -1375,8 +1386,29 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_PERC: {
-        const v = this.getFreeVoice(this.percPool);
-        if (v) v.trigger(t, note || 400, velocity, sr);
+        // Use REAL percussion samples when available (Nord Drum)
+        if (this.samplesReady) {
+          const percNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'perc');
+          const realPercNames = percNames.filter(n => n.startsWith('nord') || n.startsWith('909') || n.startsWith('real'));
+          const names = realPercNames.length > 0 ? realPercNames : percNames;
+          if (names.length > 0) {
+            const percName = names[this.rrCounters.clap % names.length]; // reuse clap counter for perc RR
+            const v = this.getFreeVoice(this.kickSamplePool); // reuse sample voice pool for perc
+            if (v) {
+              const samp = this.samples[percName];
+              this.rrCounters.clap = (this.rrCounters.clap + 1) % Math.max(4, names.length);
+              v.trigger(samp.data, samp.sampleRate, 1.0, velocity, 0.1, 0.3);
+              // TRACK: which sample actually played
+              this.sampleUsage[percName] = (this.sampleUsage[percName] || 0) + 1;
+            }
+          } else {
+            const v = this.getFreeVoice(this.percPool);
+            if (v) v.trigger(t, note || 400, velocity, sr);
+          }
+        } else {
+          const v = this.getFreeVoice(this.percPool);
+          if (v) v.trigger(t, note || 400, velocity, sr);
+        }
         break;
       }
       case V_SHAKER: {
@@ -1626,6 +1658,8 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         eventCount: this.eventCount,
         currentFrame: currentFrame,
         cpuLoad: this.activeVoiceCount / 64, // rough estimate
+        // SAMPLE USAGE REPORT: which samples actually played
+        sampleUsage: this.sampleUsage || {},
       });
     }
 
