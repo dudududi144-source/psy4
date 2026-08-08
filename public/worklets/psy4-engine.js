@@ -294,12 +294,14 @@ class BassVoice {
     this.amp = 0.5;
     this.dur = 0.2;
     this.acid = false;
-    this.saw = new BLSaw();
+    this.square = new BLSquare();  // SQUARE wave (Astrix style — punchier than saw)
+    this.saw = new BLSaw();         // kept for acid mode
     this.filter = new MoogLadder();
     this.phase = 0; // for sub sine
-    this.cutoffStart = 1200;
-    this.cutoffEnd = 150;
-    this.res = 0.15;
+    this.cutoffStart = 800;
+    this.cutoffEnd = 200;
+    this.res = 0.1;
+    this.bassDecay = 0.12;  // SHORT decay — commercial psytrance bass is 80-150ms
   }
 
   trigger(time, freq, dur, amp, acid, sr, params) {
@@ -310,6 +312,8 @@ class BassVoice {
     this.amp = amp;
     this.acid = acid;
     this.phase = 0;
+    this.square.reset();
+    this.square.setFreq(freq);
     this.saw.reset();
     this.saw.setFreq(freq);
     this.filter.reset();
@@ -317,10 +321,13 @@ class BassVoice {
       this.cutoffStart = 2500;
       this.cutoffEnd = 100;
       this.res = 0.85;
+      this.bassDecay = 0.15;
     } else {
-      this.cutoffStart = params?.cutoffStart ?? 1200;
-      this.cutoffEnd = params?.cutoffEnd ?? 150;
-      this.res = Math.min(1, (params?.resonance ?? 3) / 20);
+      // Commercial psytrance bass: SHORT envelope, controlled filter
+      this.cutoffStart = params?.cutoffStart ?? 800;   // lower start (less bright)
+      this.cutoffEnd = params?.cutoffEnd ?? 200;        // higher end (more body)
+      this.res = Math.min(0.3, (params?.resonance ?? 3) / 20);  // low resonance
+      this.bassDecay = 0.12;  // 120ms — tight, groovy, not sustained
     }
   }
 
@@ -328,23 +335,28 @@ class BassVoice {
     if (!this.active) return [0, true];
     const dt = 1 / sr;
     this.t += dt;
-    if (this.t > this.dur) { this.active = false; return [0, true]; }
+    // SHORT decay — bass note ends at bassDecay (120ms), not full duration
+    if (this.t > this.bassDecay) { this.active = false; return [0, true]; }
 
     const inc = this.freq / sr;
-    const saw = this.saw.process(inc);
+    // Use SQUARE wave for non-acid (Astrix style), SAW for acid
+    const osc = this.acid ? this.saw.process(inc) : this.square.process(inc);
 
-    // Filter cutoff envelope: exponential decay from cutoffStart to cutoffEnd
-    const cutoffEnv = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / 0.08) + this.cutoffEnd;
-    const drive = this.acid ? 2 : 1 + 0.3 * 2;
-    const filtered = this.filter.process(saw, cutoffEnv, this.res, drive, sr);
+    // Filter cutoff envelope: quick drop from cutoffStart to cutoffEnd
+    const cutoffEnv = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / 0.04) + this.cutoffEnd;
+    const drive = this.acid ? 2.5 : 1.3;  // moderate drive for warmth
+    const filtered = this.filter.process(osc, cutoffEnv, this.res, drive, sr);
 
-    // Sub sine at freq/2
+    // Sub sine at freq/2 (clean low end, mono)
     this.phase += 2 * Math.PI * (this.freq / 2) / sr;
-    const sub = Math.sin(this.phase) * 0.5;
+    const sub = Math.sin(this.phase) * 0.4;
 
-    // Amp envelope
-    const ampEnv = Math.min(1, this.t / 0.003) * Math.exp(-this.t / this.dur);
-    const sample = (filtered * 0.7 + sub * 0.5) * ampEnv * this.amp;
+    // Amp envelope: FAST attack (1ms), SHORT decay (bassDecay)
+    // This creates the tight, percussive bass that locks with the kick
+    const attackEnv = Math.min(1, this.t / 0.001);  // 1ms attack
+    const decayEnv = Math.exp(-this.t / (this.bassDecay * 0.5));  // exponential decay
+    const ampEnv = attackEnv * decayEnv;
+    const sample = (filtered * 0.6 + sub * 0.4) * ampEnv * this.amp;
     return [sample, false];
   }
 }
