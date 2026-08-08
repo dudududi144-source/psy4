@@ -410,14 +410,15 @@ export class Psy4LiveEngine {
     g.gain.exponentialRampToValueAtTime(0.001, t + this.world.kickDecay);
     o.connect(g); g.connect(this.sum!);
     o.start(t); o.stop(t + this.world.kickDecay + 0.02);
-    // click
-    const cn = c.createBufferSource(); cn.buffer = this.pink;
-    const chp = c.createBiquadFilter(); chp.type = 'highpass'; chp.frequency.value = 2000;
+    // click — square wave (punchier than noise, from PSY3)
+    const cn = c.createOscillator(); cn.type = 'square';
+    cn.frequency.setValueAtTime(900, t);
+    cn.frequency.exponentialRampToValueAtTime(200, t + 0.012);
     const cg = c.createGain();
     cg.gain.setValueAtTime(0.2 * amp, t);
-    cg.gain.exponentialRampToValueAtTime(0.001, t + 0.008);
-    cn.connect(chp); chp.connect(cg); cg.connect(this.sum!);
-    cn.start(t); cn.stop(t + 0.012);
+    cg.gain.exponentialRampToValueAtTime(0.001, t + 0.015);
+    cn.connect(cg); cg.connect(this.sum!);
+    cn.start(t); cn.stop(t + 0.02);
     // sidechain
     if (this.duck) {
       const d = this.duck.gain;
@@ -460,12 +461,13 @@ export class Psy4LiveEngine {
     g.gain.linearRampToValueAtTime(0.14 * amp / 0.2, t + 0.006);
     g.gain.linearRampToValueAtTime(0, t + dur);
     const wave = this.getWave(this.world.leadType);
-    for (let i = 0; i < 3; i++) {
+    // 5 detuned oscillators (richer supersaw, from PSY3)
+    for (let i = 0; i < 5; i++) {
       const o = c.createOscillator();
       if (wave) o.setPeriodicWave(wave);
       o.frequency.value = f;
-      o.detune.value = (i - 1) * this.world.leadDetune * (0.5 + this.macros.psychedelia);
-      const pp = c.createStereoPanner(); pp.pan.value = (i - 1) * 0.35;
+      o.detune.value = (i - 2) * this.world.leadDetune * (0.5 + this.macros.psychedelia);
+      const pp = c.createStereoPanner(); pp.pan.value = (i - 2) * 0.2;
       o.connect(pp); pp.connect(fl); o.start(t); o.stop(t + dur + 0.05);
     }
     fl.connect(g); g.connect(this.sum!);
@@ -665,6 +667,54 @@ export class Psy4LiveEngine {
     s.connect(lp); lp.connect(g); g.connect(this.sum!);
     if (this.rSend) g.connect(this.rSend);
     s.start(t); s.stop(t + dur + 0.2);
+  }
+
+  // ─── Ear Candy Voices (from PSY3) ────────────────────────────
+
+  /** FM zap — carrier + modulator with exponential index decay. Ear candy. */
+  zap(t: number, amp = 0.15) {
+    const c = this.ctx!;
+    const car = c.createOscillator(); car.type = 'sine';
+    car.frequency.value = 880;
+    const mod = c.createOscillator(); mod.type = 'sine';
+    mod.frequency.value = 1760; // 2:1 ratio
+    const modGain = c.createGain();
+    modGain.gain.setValueAtTime(3000, t);
+    modGain.gain.exponentialRampToValueAtTime(1, t + 0.03);
+    mod.connect(modGain); modGain.connect(car.frequency);
+    const g = c.createGain();
+    g.gain.setValueAtTime(amp, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
+    car.connect(g); g.connect(this.sum!);
+    if (this.dSend) g.connect(this.dSend);
+    car.start(t); mod.start(t);
+    car.stop(t + 0.06); mod.stop(t + 0.06);
+  }
+
+  /** Pure sine blip — ear candy / accent. */
+  blip(t: number, freq = 1200, amp = 0.1) {
+    const c = this.ctx!, o = c.createOscillator(); o.type = 'sine';
+    o.frequency.value = freq;
+    const g = c.createGain();
+    g.gain.setValueAtTime(amp, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.02);
+    o.connect(g); g.connect(this.sum!);
+    if (this.dSend) g.connect(this.dSend);
+    o.start(t); o.stop(t + 0.03);
+  }
+
+  /** Downlifter — descending pitch sweep for transitions. */
+  downlifter(t: number, amp = 0.2) {
+    const c = this.ctx!, o = c.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(800, t);
+    o.frequency.exponentialRampToValueAtTime(100, t + 0.4);
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2000;
+    const g = c.createGain();
+    g.gain.setValueAtTime(amp, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+    o.connect(lp); lp.connect(g); g.connect(this.sum!);
+    if (this.rSend) g.connect(this.rSend);
+    o.start(t); o.stop(t + 0.45);
   }
 
   // ─── Scheduler ────────────────────────────────────────────────
@@ -874,12 +924,16 @@ export class Psy4LiveEngine {
     // ─── LEAD (motif-based, AABA structure) ─────────────────
     if (S.density > 0.3 && S.type !== 'break') {
       const motifNote = S.motif.next();
-      if (motifNote.step === sb && S.rng.chance(S.density * (0.5 + psy * 0.5))) {
-        const leadNote = scaleNote(w.root + 12, w.scale, motifNote.degree);
-        const leadDur = this.s16() * (1.5 + psy * 0.5);
-        const leadVel = 0.15 * (0.5 + e * 0.5);
-        const leadPan = Math.sin(s * 0.03) * 0.2;
-        this.lead(t, leadNote, leadDur, leadVel, leadPan);
+      // Play lead more frequently — PSY3 plays on every sb%4===0 without chance gate
+      if (motifNote.step === sb) {
+        const playChance = S.type === 'drop' ? 0.8 : 0.5 * (0.5 + this.macros.psychedelia * 0.5);
+        if (S.rng.chance(playChance)) {
+          const leadNote = scaleNote(w.root + 12, w.scale, motifNote.degree);
+          const leadDur = this.s16() * (1.5 + psy * 0.5);
+          const leadVel = 0.15 * (0.5 + e * 0.5);
+          const leadPan = Math.sin(s * 0.03) * 0.2;
+          this.lead(t, leadNote, leadDur, leadVel, leadPan);
+        }
       }
       // Mutate motif every 4 bars
       if (sb === 0 && bar % 4 === 0 && bar > 0) {
@@ -887,10 +941,23 @@ export class Psy4LiveEngine {
       }
     }
 
-    // ─── SURPRISE EVENTS (ear candy) ────────────────────────
-    if (S.rng.chance(0.005 * this.macros.surprise) && S.type === 'drop') {
-      // Random reverse-ish perc or zap
-      this.perc(t, 0.08, S.rng.gauss(0, 0.4));
+    // ─── EAR CANDY (from PSY3: zap, blip, downlifter) ──────
+    // Random FM zap — adds psychedelic sparkle
+    if (S.rng.chance(0.03 * this.macros.surprise) && S.type === 'drop') {
+      this.zap(t, 0.08 + this.macros.psychedelia * 0.07);
+    }
+    // Random blip — ear candy accent
+    if (S.rng.chance(0.04 * this.macros.surprise) && S.type !== 'break') {
+      const blipFreq = 800 + S.rng.int(0, 6) * 200;
+      this.blip(t, blipFreq, 0.06 + this.macros.brightness * 0.04);
+    }
+    // Downlifter at 8-bar boundaries in builds/drops
+    if (bar % 8 === 7 && sb === 0 && (S.type === 'drop' || S.type === 'climax')) {
+      this.downlifter(t, 0.12 + this.macros.energy * 0.08);
+    }
+    // Random percussion hit with varying pan (spatial interest)
+    if (S.rng.chance(0.02 * this.macros.surprise) && S.type !== 'break') {
+      this.perc(t, 0.06, S.rng.gauss(0, 0.5));
     }
   }
 
