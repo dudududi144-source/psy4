@@ -460,22 +460,47 @@ export class Psy4LiveEngine {
 
   kick(t: number, amp = 1) {
     const c = this.ctx!;
+    const kickInput = this.getChannelInput('kick');
     const fund = this.world.kickFundamental;
+    const spec = this.voiceSpecs?.kick;
 
-    // ── SUB BODY: sine with pitch drop + exponential decay ──
-    // PSY3: sub = sin(2π·cumsum(f)/SR) * exp(-t/0.18), amp ~0.8
-    // PSY4 was: amp=1 but exp ramp to 0.001 = too quiet too fast
-    const sub = c.createOscillator(); sub.type = 'sine';
-    sub.frequency.setValueAtTime(fund * 2.4, t);
-    sub.frequency.exponentialRampToValueAtTime(fund, t + 0.008);
-    sub.frequency.exponentialRampToValueAtTime(fund * 0.85, t + 0.09);
-    const subG = c.createGain();
-    subG.gain.setValueAtTime(0, t);
-    subG.gain.linearRampToValueAtTime(0.9 * amp, t + 0.001); // fast attack
-    subG.gain.exponentialRampToValueAtTime(0.001, t + this.world.kickDecay);
+    // ── HYBRID KICK: PSY3 sample + synthetic mid + click ──
+    // Sample provides 93.6% sub body. Synth adds definition.
 
-    // ── MID PUNCH: triangle at 2x fund, tanh saturation, short decay ──
-    // PSY3: tri = 2*abs(2*(t*f0-floor(t*f0+0.5)))-1, mid = tanh(tri*1.5)*exp(-t/0.05)*0.5
+    // 1. SAMPLE LAYER
+    if (spec?.useSample && this.soundBank.has(spec.sampleName || '')) {
+      const sampleBuf = this.soundBank.get(spec.sampleName!);
+      if (sampleBuf) {
+        const src = c.createBufferSource();
+        src.buffer = sampleBuf;
+        src.playbackRate.value = fund / 50; // pitch-shift to match world fundamental
+        const sG = c.createGain();
+        sG.gain.setValueAtTime(spec.subLevel * amp, t);
+        sG.gain.exponentialRampToValueAtTime(0.001, t + spec.decay);
+        // Saturation on sample for character
+        const sat = c.createWaveShaper();
+        const satCurve = new Float32Array(256);
+        const drive = 1 + spec.saturation * 1.5;
+        for (let i = 0; i < 256; i++) { const x = (i / 128) - 1; satCurve[i] = Math.tanh(x * drive); }
+        sat.curve = satCurve;
+        src.connect(sat); sat.connect(sG); sG.connect(kickInput);
+        src.start(t); src.stop(t + spec.decay + 0.05);
+      }
+    } else {
+      // Fallback: synthetic sub
+      const sub = c.createOscillator(); sub.type = 'sine';
+      sub.frequency.setValueAtTime(fund * 2.4, t);
+      sub.frequency.exponentialRampToValueAtTime(fund, t + 0.008);
+      sub.frequency.exponentialRampToValueAtTime(fund * 0.85, t + 0.09);
+      const subG = c.createGain();
+      subG.gain.setValueAtTime(0, t);
+      subG.gain.linearRampToValueAtTime(0.9 * amp, t + 0.001);
+      subG.gain.exponentialRampToValueAtTime(0.001, t + this.world.kickDecay);
+      sub.connect(subG); subG.connect(kickInput);
+      sub.start(t); sub.stop(t + this.world.kickDecay + 0.02);
+    }
+
+    // 2. SYNTHETIC MID PUNCH (always — adds definition on top of sample)
     const mid = c.createOscillator(); mid.type = 'triangle';
     mid.frequency.setValueAtTime(fund * 2, t);
     mid.frequency.exponentialRampToValueAtTime(fund * 1.5, t + 0.02);
@@ -484,38 +509,19 @@ export class Psy4LiveEngine {
     for (let i = 0; i < 256; i++) { const x = (i / 128) - 1; midCurve[i] = Math.tanh(x * 1.5); }
     midSat.curve = midCurve;
     const midG = c.createGain();
-    midG.gain.setValueAtTime(0.4 * amp, t);
+    midG.gain.setValueAtTime((spec?.midLevel || 0.4) * amp, t);
     midG.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+    mid.connect(midSat); midSat.connect(midG); midG.connect(kickInput);
+    mid.start(t); mid.stop(t + 0.06);
 
-    // ── CLICK: very short, low amplitude, high-passed ──
-    // PSY3: click = diff(noise) * exp(-t/0.002) * 0.35 — very short, small
-    // PSY4 was: square 900→200Hz at 0.15 amp — too loud, too tonal
+    // 3. CLICK: noise, very short
     const clickSrc = c.createBufferSource(); clickSrc.buffer = this.pink;
     const clickHP = c.createBiquadFilter(); clickHP.type = 'highpass'; clickHP.frequency.value = 3000;
     const clickG = c.createGain();
-    clickG.gain.setValueAtTime(0.08 * amp, t);
+    clickG.gain.setValueAtTime((spec?.clickLevel || 0.08) * amp, t);
     clickG.gain.exponentialRampToValueAtTime(0.001, t + 0.003);
-
-    // ── SATURATION on sub+mid (controlled harmonic generation) ──
-    const sat = c.createWaveShaper();
-    const satCurve = new Float32Array(256);
-    const driveAmt = 1 + this.world.drive * 1.5;
-    for (let i = 0; i < 256; i++) { const x = (i / 128) - 1; satCurve[i] = Math.tanh(x * driveAmt); }
-    sat.curve = satCurve;
-    const satG = c.createGain(); satG.gain.value = 0.8;
-
-    // Route: sub → sat → satG → sum
-    //        mid → midSat → midG → sat → satG → sum
-    //        click → clickHP → clickG → sum (no sat, clean transient)
-    sub.connect(sat);
-    mid.connect(midSat); midSat.connect(midG); midG.connect(sat);
-    sat.connect(satG); satG.connect(this.getChannelInput('kick'));
-    clickSrc.connect(clickHP); clickHP.connect(clickG); clickG.connect(this.getChannelInput('kick'));
-
-    sub.start(t); mid.start(t); clickSrc.start(t);
-    sub.stop(t + this.world.kickDecay + 0.02);
-    mid.stop(t + 0.06);
-    clickSrc.stop(t + 0.01);
+    clickSrc.connect(clickHP); clickHP.connect(clickG); clickG.connect(kickInput);
+    clickSrc.start(t); clickSrc.stop(t + 0.01);
 
     // sidechain
     if (this.duck) {
@@ -635,34 +641,49 @@ export class Psy4LiveEngine {
 
   hat(t: number, open = false, amp = 0.1, pan = 0.3) {
     const c = this.ctx!;
-    // Metallic oscillator bank (4 inharmonic squares) + noise blend
-    // Replaces noise-only hat with richer, more realistic timbre
-    const ratios = [1, 1.577, 2.135, 3.422];
-    const baseFreq = open ? 265 : 340;
-    const g = c.createGain();
-    g.gain.setValueAtTime(amp, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + (open ? 0.25 : 0.04));
-    const p = c.createStereoPanner(); p.pan.value = pan;
-    // Metallic layer
-    const metalMix = c.createGain(); metalMix.gain.value = 0.6;
-    for (const r of ratios) {
-      const o = c.createOscillator(); o.type = 'square';
-      o.frequency.value = baseFreq * r;
-      o.connect(metalMix);
-      o.start(t); o.stop(t + 0.1);
+    const hatInput = this.getChannelInput('hat');
+    const spec = this.voiceSpecs?.hat;
+    const sampleName = open ? 'hat_open.wav' : spec?.sampleName;
+
+    // HYBRID: PSY3 sample + metallic synth layer
+    if (spec?.useSample && sampleName && this.soundBank.has(sampleName)) {
+      const sampleBuf = this.soundBank.get(sampleName);
+      if (sampleBuf) {
+        const src = c.createBufferSource();
+        src.buffer = sampleBuf;
+        const g = c.createGain();
+        g.gain.setValueAtTime(amp * 0.7, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + (open ? 0.3 : 0.06));
+        const p = c.createStereoPanner(); p.pan.value = pan;
+        src.connect(g); g.connect(p); p.connect(hatInput);
+        src.start(t); src.stop(t + (open ? 0.35 : 0.08));
+      }
+    } else {
+      // Fallback: metallic oscillator bank + noise
+      const ratios = [1, 1.577, 2.135, 3.422];
+      const baseFreq = open ? 265 : 340;
+      const g = c.createGain();
+      g.gain.setValueAtTime(amp, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + (open ? 0.25 : 0.04));
+      const p = c.createStereoPanner(); p.pan.value = pan;
+      const metalMix = c.createGain(); metalMix.gain.value = 0.6;
+      for (const r of ratios) {
+        const o = c.createOscillator(); o.type = 'square';
+        o.frequency.value = baseFreq * r;
+        o.connect(metalMix);
+        o.start(t); o.stop(t + 0.1);
+      }
+      const s = c.createBufferSource(); s.buffer = this.pink;
+      const hp = c.createBiquadFilter(); hp.type = 'highpass';
+      hp.frequency.value = open ? 7000 : 8500;
+      const noiseG = c.createGain(); noiseG.gain.value = 0.4;
+      s.connect(hp); hp.connect(noiseG);
+      const outFilter = c.createBiquadFilter(); outFilter.type = 'highpass';
+      outFilter.frequency.value = open ? 6000 : 7500;
+      metalMix.connect(outFilter); noiseG.connect(outFilter);
+      outFilter.connect(g); g.connect(p); p.connect(hatInput);
+      s.start(t); s.stop(t + 0.3);
     }
-    // Noise layer (for texture)
-    const s = c.createBufferSource(); s.buffer = this.pink;
-    const hp = c.createBiquadFilter(); hp.type = 'highpass';
-    hp.frequency.value = open ? 7000 : 8500;
-    const noiseG = c.createGain(); noiseG.gain.value = 0.4;
-    s.connect(hp); hp.connect(noiseG);
-    // Mix → filter → gain → panner → sum
-    const outFilter = c.createBiquadFilter(); outFilter.type = 'highpass';
-    outFilter.frequency.value = open ? 6000 : 7500;
-    metalMix.connect(outFilter); noiseG.connect(outFilter);
-    outFilter.connect(g); g.connect(p); p.connect(this.getChannelInput('hat'));
-    s.start(t); s.stop(t + 0.3);
   }
 
   shaker(t: number, amp = 0.06, pan = -0.2) {
@@ -678,22 +699,40 @@ export class Psy4LiveEngine {
   }
 
   clap(t: number, amp = 0.3) {
-    // Multi-burst clap: 3 staggered noise bursts + 1 tail (like real claps)
     const c = this.ctx!;
-    const burstTimes = [0, 0.01, 0.02, 0.035]; // 0ms, 10ms, 20ms, 35ms
-    const burstAmps = [0.4, 0.4, 0.4, 0.6]; // tail is louder
-    const burstDecays = [0.015, 0.015, 0.015, 0.12]; // tail is longer
-    for (let i = 0; i < 4; i++) {
-      const s = c.createBufferSource(); s.buffer = this.pink;
-      const bp = c.createBiquadFilter(); bp.type = 'bandpass';
-      bp.frequency.value = 1800; bp.Q.value = 1.2;
-      const g = c.createGain();
-      g.gain.setValueAtTime(amp * burstAmps[i], t + burstTimes[i]);
-      g.gain.exponentialRampToValueAtTime(0.001, t + burstTimes[i] + burstDecays[i]);
-      const p = c.createStereoPanner(); p.pan.value = (i % 2 === 0) ? -0.15 : 0.15;
-      s.connect(bp); bp.connect(g); g.connect(p); p.connect(this.getChannelInput('clap'));
-      if (i === 3 && this.rSend) g.connect(this.rSend); // only tail gets reverb
-      s.start(t + burstTimes[i]); s.stop(t + burstTimes[i] + burstDecays[i] + 0.05);
+    const clapInput = this.getChannelInput('clap');
+    const spec = this.voiceSpecs?.clap;
+
+    // HYBRID: PSY3 sample + multi-burst synth layer
+    if (spec?.useSample && spec.sampleName && this.soundBank.has(spec.sampleName)) {
+      const sampleBuf = this.soundBank.get(spec.sampleName);
+      if (sampleBuf) {
+        const src = c.createBufferSource();
+        src.buffer = sampleBuf;
+        const g = c.createGain();
+        g.gain.setValueAtTime(amp, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+        src.connect(g); g.connect(clapInput);
+        if (this.rSend) g.connect(this.rSend);
+        src.start(t); src.stop(t + 0.3);
+      }
+    } else {
+      // Fallback: multi-burst noise
+      const burstTimes = [0, 0.01, 0.02, 0.035];
+      const burstAmps = [0.4, 0.4, 0.4, 0.6];
+      const burstDecays = [0.015, 0.015, 0.015, 0.12];
+      for (let i = 0; i < 4; i++) {
+        const s = c.createBufferSource(); s.buffer = this.pink;
+        const bp = c.createBiquadFilter(); bp.type = 'bandpass';
+        bp.frequency.value = 1800; bp.Q.value = 1.2;
+        const g = c.createGain();
+        g.gain.setValueAtTime(amp * burstAmps[i], t + burstTimes[i]);
+        g.gain.exponentialRampToValueAtTime(0.001, t + burstTimes[i] + burstDecays[i]);
+        const p = c.createStereoPanner(); p.pan.value = (i % 2 === 0) ? -0.15 : 0.15;
+        s.connect(bp); bp.connect(g); g.connect(p); p.connect(clapInput);
+        if (i === 3 && this.rSend) g.connect(this.rSend);
+        s.start(t + burstTimes[i]); s.stop(t + burstTimes[i] + burstDecays[i] + 0.05);
+      }
     }
   }
 
@@ -915,6 +954,20 @@ export class Psy4LiveEngine {
   setWorld(worldId: string) {
     if (WORLDS[worldId]) {
       this.world = WORLDS[worldId];
+      this.voiceSpecs = getVoiceSpecs(worldId);
+      // Update channel strip gains for new world
+      if (this.voiceSpecs && this.ctx) {
+        for (const [name, strip] of Object.entries(this.voiceSpecs.channels)) {
+          const cs = this.channelStrips.get(name);
+          if (cs) {
+            cs.gain.gain.setTargetAtTime(Math.pow(10, strip.gainDb / 20), this.ctx.currentTime, 0.1);
+            cs.hp.frequency.setTargetAtTime(strip.hpFreq, this.ctx.currentTime, 0.1);
+            cs.panner.pan.setTargetAtTime(strip.pan, this.ctx.currentTime, 0.1);
+            cs.reverbSend.gain.setTargetAtTime(strip.reverbSend, this.ctx.currentTime, 0.1);
+            cs.delaySend.gain.setTargetAtTime(strip.delaySend, this.ctx.currentTime, 0.1);
+          }
+        }
+      }
       if (this.dOut) this.dOut.gain.value = 0.15 + this.world.space * 0.3;
       if (this.rSend) this.rSend.gain.value = 0.15 + this.world.space * 0.3;
     }
