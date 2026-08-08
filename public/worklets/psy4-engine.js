@@ -1236,17 +1236,27 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 
     switch (voiceId) {
       case V_KICK: {
-        // Use REAL PSY3 kick sample when available (hybrid: sample + synth sub)
-        if (this.samplesReady && this.samples['kick.wav']) {
-          const v = this.getFreeVoice(this.kickSamplePool);
-          if (v) {
-            const samp = this.samples['kick.wav'];
-            // Round robin: micro pitch variation (±1%) for organic feel
-            // Never pitch the sub kick — keep fundamental stable for phase coherence
-            this.rrCounters.kick = (this.rrCounters.kick + 1) % 4;
-            const pitchVar = 1.0 + (this.rrCounters.kick - 1.5) * 0.003; // ±0.45%
-            const gainVar = 1.0 + (this.rrCounters.kick - 1.5) * 0.04;   // ±6%
-            v.trigger(samp.data, samp.sampleRate, pitchVar, velocity * gainVar, wp.kickDecay, 0);
+        // Use REAL kick sample when available — prefer generated multisample variants
+        // for variety, fall back to PSY3 kick.wav
+        if (this.samplesReady) {
+          // Find all kick samples (kick.wav + kick_* generated variants)
+          const kickNames = Object.keys(this.samples).filter(n => n.startsWith('kick'));
+          const kickName = kickNames.length > 0
+            ? kickNames[this.rrCounters.kick % kickNames.length]
+            : null;
+          if (kickName) {
+            const v = this.getFreeVoice(this.kickSamplePool);
+            if (v) {
+              const samp = this.samples[kickName];
+              // Round robin: micro pitch variation (±0.45%) — preserve sub phase
+              this.rrCounters.kick = (this.rrCounters.kick + 1) % Math.max(4, kickNames.length);
+              const pitchVar = 1.0 + (this.rrCounters.kick % 4 - 1.5) * 0.003;
+              const gainVar = 1.0 + (this.rrCounters.kick % 4 - 1.5) * 0.04;
+              v.trigger(samp.data, samp.sampleRate, pitchVar, velocity * gainVar, wp.kickDecay, 0);
+            }
+          } else {
+            const v = this.getFreeVoice(this.kickPool);
+            if (v) v.trigger(t, velocity, wp.kickFundamental, wp.kickDecay, sr);
           }
         } else {
           // Fallback: synth kick
@@ -1288,16 +1298,25 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_HAT: {
-        // Use REAL PSY3 hat_closed sample when available
-        if (this.samplesReady && this.samples['hat_closed.wav']) {
-          const v = this.getFreeVoice(this.hatSamplePool);
-          if (v) {
-            const samp = this.samples['hat_closed.wav'];
-            // Round robin: micro pitch (±2%) and pan variation for organic hats
-            this.rrCounters.hat = (this.rrCounters.hat + 1) % 8;
-            const pitchVar = 1.0 + (this.rrCounters.hat - 3.5) * 0.005; // ±1.75%
-            const panVar = (this.rrCounters.hat - 3.5) * 0.04;          // ±0.14 pan
-            v.trigger(samp.data, samp.sampleRate, pitchVar, velocity, 0.04, panVar);
+        // Use REAL hat sample — cycle through closed hat variants for variety
+        if (this.samplesReady) {
+          const hatNames = Object.keys(this.samples).filter(n => n.startsWith('hat_closed') || (n.startsWith('hat_') && !n.startsWith('hat_open') && n !== 'hat_closed.wav'));
+          const openNames = Object.keys(this.samples).filter(n => n.startsWith('hat_open'));
+          const names = hatNames.length > 0 ? hatNames : (openNames.length > 0 ? [] : ['hat_closed.wav']);
+          if (this.samples['hat_closed.wav'] && names.length === 0) names.push('hat_closed.wav');
+          if (names.length > 0) {
+            const hatName = names[this.rrCounters.hat % names.length];
+            const v = this.getFreeVoice(this.hatSamplePool);
+            if (v) {
+              const samp = this.samples[hatName];
+              this.rrCounters.hat = (this.rrCounters.hat + 1) % Math.max(8, names.length);
+              const pitchVar = 1.0 + (this.rrCounters.hat % 8 - 3.5) * 0.005;
+              const panVar = (this.rrCounters.hat % 8 - 3.5) * 0.04;
+              v.trigger(samp.data, samp.sampleRate, pitchVar, velocity, 0.04, panVar);
+            }
+          } else {
+            const v = this.getFreeVoice(this.hatPool);
+            if (v) v.trigger(t, false, velocity, sr);
           }
         } else {
           const v = this.getFreeVoice(this.hatPool);
@@ -1306,15 +1325,23 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_HAT_OPEN: {
-        // Use REAL PSY3 hat_open sample when available
-        if (this.samplesReady && this.samples['hat_open.wav']) {
-          const v = this.getFreeVoice(this.hatSamplePool);
-          if (v) {
-            const samp = this.samples['hat_open.wav'];
-            this.rrCounters.hat = (this.rrCounters.hat + 1) % 8;
-            const pitchVar = 1.0 + (this.rrCounters.hat - 3.5) * 0.005;
-            const panVar = (this.rrCounters.hat - 3.5) * 0.04;
-            v.trigger(samp.data, samp.sampleRate, pitchVar, velocity, 0.2, panVar);
+        // Use REAL open hat sample — cycle through variants
+        if (this.samplesReady) {
+          const openNames = Object.keys(this.samples).filter(n => n.startsWith('hat_open'));
+          const names = openNames.length > 0 ? openNames : ['hat_open.wav'];
+          if (this.samples[names[0]]) {
+            const hatName = names[this.rrCounters.hat % names.length];
+            const v = this.getFreeVoice(this.hatSamplePool);
+            if (v) {
+              const samp = this.samples[hatName];
+              this.rrCounters.hat = (this.rrCounters.hat + 1) % Math.max(8, names.length);
+              const pitchVar = 1.0 + (this.rrCounters.hat % 8 - 3.5) * 0.005;
+              const panVar = (this.rrCounters.hat % 8 - 3.5) * 0.04;
+              v.trigger(samp.data, samp.sampleRate, pitchVar, velocity, 0.2, panVar);
+            }
+          } else {
+            const v = this.getFreeVoice(this.hatPool);
+            if (v) v.trigger(t, true, velocity, sr);
           }
         } else {
           const v = this.getFreeVoice(this.hatPool);
@@ -1323,16 +1350,23 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_CLAP: {
-        // Use REAL PSY3 clap sample when available
-        if (this.samplesReady && this.samples['clap.wav']) {
-          const v = this.getFreeVoice(this.clapSamplePool);
-          if (v) {
-            const samp = this.samples['clap.wav'];
-            // Round robin: micro pitch (±1.5%) and gain variation
-            this.rrCounters.clap = (this.rrCounters.clap + 1) % 4;
-            const pitchVar = 1.0 + (this.rrCounters.clap - 1.5) * 0.004; // ±0.6%
-            const gainVar = 1.0 + (this.rrCounters.clap - 1.5) * 0.03;   // ±4.5%
-            v.trigger(samp.data, samp.sampleRate, pitchVar, velocity * gainVar, 0.15, 0);
+        // Use REAL clap sample — cycle through variants for variety
+        if (this.samplesReady) {
+          const clapNames = Object.keys(this.samples).filter(n => n.startsWith('clap'));
+          const names = clapNames.length > 0 ? clapNames : [];
+          if (names.length > 0) {
+            const clapName = names[this.rrCounters.clap % names.length];
+            const v = this.getFreeVoice(this.clapSamplePool);
+            if (v) {
+              const samp = this.samples[clapName];
+              this.rrCounters.clap = (this.rrCounters.clap + 1) % Math.max(4, names.length);
+              const pitchVar = 1.0 + (this.rrCounters.clap % 4 - 1.5) * 0.004;
+              const gainVar = 1.0 + (this.rrCounters.clap % 4 - 1.5) * 0.03;
+              v.trigger(samp.data, samp.sampleRate, pitchVar, velocity * gainVar, 0.15, 0);
+            }
+          } else {
+            const v = this.getFreeVoice(this.clapPool);
+            if (v) v.trigger(t, velocity, sr);
           }
         } else {
           const v = this.getFreeVoice(this.clapPool);

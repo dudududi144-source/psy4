@@ -41,6 +41,7 @@ import {
   scaleNote as grammarScaleNote, tensionAt, densityAt,
   type TensionShape,
 } from './musicalGrammar';
+import { CallResponseEngine, DensityController } from './callResponseEngine';
 
 // ─── Music Theory ───────────────────────────────────────────────
 
@@ -360,6 +361,8 @@ export class Psy4LiveEngine {
   private engineStats: EngineStats | null = null;
   private sampleBank: SampleBank | null = null;
   samplesLoaded = false;
+  private sampleSelector: import('./sampleSelector').SampleSelector | null = null;
+  private callResponse: import('./callResponseEngine').CallResponseEngine | null = null;
 
   init() {
     if (this.ctx) return;
@@ -452,8 +455,24 @@ export class Psy4LiveEngine {
           const payload = this.sampleBank.toWorkletPayload();
           this.engineNode!.loadSamples(payload);
           this.samplesLoaded = true;
-          console.log('[PSY4] Samples loaded into worklet — real PSY3 drum samples active');
+          console.log('[PSY4] PSY3 samples loaded into worklet');
         }
+
+        // ── GENERATE MULTISAMPLE BANK (procedural variety) ──
+        // Generate 40+ kick/bass/lead/hat/clap variants with different characters
+        // (deep, punchy, dark, bright, aggressive, warm). All procedurally
+        // generated — no copyright issues. Gives SampleSelector real choices.
+        const { generateMultisampleBank } = await import('./multisampleGenerator');
+        const { SampleSelector } = await import('./sampleSelector');
+        const multisamples = generateMultisampleBank();
+        this.sampleSelector = new SampleSelector(multisamples);
+        // Transfer multisamples to worklet too
+        const multiPayload = multisamples.map(s => ({
+          name: s.name, category: s.category, subcategory: s.subcategory,
+          sampleRate: s.sampleRate, data: s.data,
+        }));
+        this.engineNode!.loadSamples(multiPayload);
+        console.log(`[PSY4] Multisample bank generated: ${multisamples.length} samples (${this.sampleSelector.getStats().byCategory.kick || 0} kicks, ${this.sampleSelector.getStats().byCategory.bass || 0} bass, ${this.sampleSelector.getStats().byCategory.lead || 0} leads, ${this.sampleSelector.getStats().byCategory.hat || 0} hats, ${this.sampleSelector.getStats().byCategory.clap || 0} claps)`);
 
         console.log('[PSY4] Engine worklet active — synthesis in audio thread');
       }
@@ -1533,6 +1552,11 @@ export class Psy4LiveEngine {
     // Tension shape per section type
     const tensionShape: TensionShape = typ === 'build' ? 'rise' : typ === 'break' ? 'fall' : 'arc';
 
+    // ── CALL/RESPONSE ENGINE (prevents MIDI soup) ──
+    // Primary lead and counter-lead alternate, never play simultaneously.
+    // Creates musical conversation instead of everything-at-once.
+    this.callResponse = new CallResponseEngine(this.world.root, this.world.scale, grammarRng);
+
     this.sec = { type: typ, bars, density, rng, motif, energy, chordIndex: 0,
                  leadMotif, acidPattern, bassPatternIdx, tensionShape };
     this.currentSection = typ;
@@ -1768,18 +1792,33 @@ export class Psy4LiveEngine {
       if (sb === 15) this.hat(t, true, 0.08, 0.3);
     }
 
-    // ─── LEAD (AABA motif with controlled mutation — PSY3 style) ──
-    if (S.density > 0.3 && S.type !== 'break' && S.leadMotif) {
-      // Use LeadMotif (AABA structure with evolving sequence)
-      const leadResult = S.leadMotif.nextNote(sb, bar, e * (0.5 + psy * 0.5), S.rng);
-      if (leadResult) {
-        const leadDur = this.s16() * (1.5 + psy * 0.5);
-        const leadPan = Math.sin(s * 0.03) * 0.2;
-        this.lead(t, leadResult.note, leadDur, leadResult.velocity * 0.2, leadPan);
-      }
-      // Mutate motif every 4 bars
-      if (sb === 0 && bar % 4 === 0 && bar > 0) {
-        S.leadMotif.evolve();
+    // ─── LEAD with CALL/RESPONSE (prevents MIDI soup) ────────
+    // Primary lead and counter-lead alternate bars — never play simultaneously.
+    // Creates musical conversation instead of everything-at-once.
+    if (S.density > 0.3 && S.type !== 'break' && this.callResponse) {
+      // Determine which voice plays this bar (call/response)
+      const phraseBar = bar % 8;
+      const isPrimaryTurn = phraseBar < 2 || (phraseBar >= 4 && phraseBar < 6);
+      const isCounterTurn = (phraseBar >= 2 && phraseBar < 4) || phraseBar >= 6;
+
+      if (isPrimaryTurn && S.leadMotif) {
+        // Primary lead
+        const leadResult = S.leadMotif.nextNote(sb, bar, e * (0.5 + psy * 0.5), S.rng);
+        if (leadResult) {
+          const leadDur = this.s16() * (1.5 + psy * 0.5);
+          const leadPan = Math.sin(s * 0.03) * 0.2;
+          this.lead(t, leadResult.note, leadDur, leadResult.velocity * 0.2, leadPan);
+        }
+        if (sb === 0 && bar % 4 === 0 && bar > 0) S.leadMotif.evolve();
+      } else if (isCounterTurn) {
+        // Counter lead (response) — different register, slightly different character
+        const counterNote = this.callResponse.nextNote('counter-lead');
+        if (counterNote > 0 && S.rng.chance(0.5 * e)) {
+          const counterDur = this.s16() * (1.2 + psy * 0.4);
+          const counterPan = Math.sin(s * 0.04 + 1.5) * 0.25; // different pan position
+          // Counter lead plays at different octave (already +12 from CallResponseEngine)
+          this.lead(t, counterNote, counterDur, 0.12 * e, counterPan);
+        }
       }
     }
 

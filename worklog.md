@@ -267,3 +267,84 @@ Stage Summary:
   - M/S stereo processing not yet implemented (basic pan only).
   - Counter-melody engine not yet built (P1).
   - PHYSICAL LISTENING UNVERIFIED — verification is via console logs, level meter (section-aware dynamics visible), and code audit.
+
+---
+Task ID: 5
+Agent: Z.ai Code (main)
+Task: PSY4 Master Production & Sound Library Rebuild — build procedural multisample bank (46 samples), context-aware SampleSelector with scoring, call/response engine to prevent MIDI soup.
+
+Work Log:
+- Identified biggest remaining gap: only 6 real samples = no variety for intelligent selection. User wants 200+ samples but downloading copyrighted material is prohibited.
+- Solution: PROCEDURAL MULTISAMPLE GENERATION — generate 46 sample variants with different characters (deep, punchy, dark, bright, aggressive, warm) using DSP at load time. All legally clean (PSY4's own sound design), no copyright issues.
+
+- Built `src/lib/studio/engine/multisampleGenerator.ts`:
+  - generateKick(): PSY3 engine.py kick algorithm with parameter variation (fundamental, pitchDecay, decay, sub/mid/click levels, saturation)
+  - generateBass(): BL saw + one-pole filter + sub sine with parameter variation
+  - generateLead(): Multi-osc supersaw + filter + saturation with variation
+  - generateHat(): Differentiated pink noise with brightness/decay variation
+  - generateClap(): Multi-burst noise with brightness/decay variation
+  - analyzeSample(): Computes peak, RMS, centroid, energy bands, fundamental
+  - generateMultisampleBank(): Creates 46 samples total:
+    - 12 kick variants (deep, dark, balanced, warm, aggressive, long, punchy, forest, bright, standard, hard, balanced)
+    - 10 bass variants (rolling, dark, goa, forest, balanced, acidic, warm, standard, aggressive, bright)
+    - 10 lead variants (supersaw, resonant, bright, dark, acidic, wide, morning, forest, standard, high)
+    - 8 hat variants (4 closed, 4 open with different brightness/decay)
+    - 6 clap variants (standard, sharp, warm, balanced, body, crisp)
+  - Each sample has character tags, genreFit, bpmRange for selection
+
+- Built `src/lib/studio/engine/sampleSelector.ts`:
+  - SampleSelector class with context-aware scoring algorithm
+  - select(ctx): Scores candidates by genreFit (25%) + bpmFit (15%) + sectionFit (15%) + energyFit (10%) + brightnessFit (10%) + aggressionFit (10%) + variationScore (15%)
+  - Chooses from top 3 with weighted randomness (favor #1)
+  - Tracks selection history to avoid repetition (variationScore penalizes recently-used samples)
+  - Seeded deterministic selection for reproducible variation
+  - getStats(): Returns bank statistics
+
+- Built `src/lib/studio/engine/callResponseEngine.ts`:
+  - CallResponseEngine: Primary lead and counter-lead alternate bars (never simultaneous)
+    - Bars 0-1: primary lead (statement)
+    - Bars 2-3: counter lead (response, different register)
+    - Bars 4-5: primary lead variation
+    - Bars 6-7: counter + texture (answer)
+  - Uses two EvolvingSequence instances (primary + counter at different octaves)
+  - DensityController: Per-voice density budgets per section
+    - intro: low density
+    - build: gradually increasing
+    - drop: maximum groove (kick 1.0, bass 0.9, hats 0.8)
+    - break: remove kick/bass, allow atmosphere (kick 0.0, bass 0.0, texture 0.5)
+    - climax: everything max
+
+- Modified `psy4LiveEngine.ts`:
+  - Added sampleSelector and callResponse fields
+  - Engine init now: loads PSY3 samples → generates 46 multisample variants → transfers all 52 samples to worklet
+  - nextSection() creates CallResponseEngine per section
+  - Rewrote lead section in step(): uses call/response — primary lead plays bars 0-1,4-5; counter lead plays bars 2-3,6-7 (different octave, different pan)
+  - Counter lead uses different EvolvingSequence at +12 semitones for contrast
+
+- Modified `public/worklets/psy4-engine.js`:
+  - V_KICK trigger: cycles through ALL kick samples (kick.wav + 12 generated variants) via round robin
+  - V_HAT/V_HAT_OPEN trigger: cycles through all closed/open hat variants
+  - V_CLAP trigger: cycles through all clap variants
+  - Round robin counter now spans all available variants (not just 4/8)
+
+- Verified with Agent Browser:
+  - `[PSY4] Multisample bank generated: 46 samples (12 kicks, 10 bass, 10 leads, 8 hats, 6 claps)` confirmed
+  - `[PSY4] Transferred 46 samples to worklet` confirmed (52 total with PSY3)
+  - Engine plays with 0 errors
+  - Section progression: intro (36%) → drop (54%) — dynamics working
+  - 8 active voices during drop (call/response alternating, not everything at once)
+  - 40+ seconds stable, 0 errors
+- Lint passes cleanly (0 errors, 0 warnings)
+
+Stage Summary:
+- **46-sample multisample bank**: Procedurally generated kick/bass/lead/hat/clap variants with different characters. All legally clean (no copyright). Gives SampleSelector real material to choose from. The worklet now cycles through 12 kick variants, 8 hat variants, 6 clap variants instead of playing the same sample every hit.
+- **SampleSelector with scoring**: Context-aware selection algorithm that scores candidates by genre fit, BPM, section, energy, brightness, aggression, and variation. Not random — intentional.
+- **Call/Response Engine**: Primary lead and counter-lead alternate bars (never simultaneous). Creates musical conversation instead of "MIDI soup." Counter lead plays at +12 semitones with different pan for contrast.
+- **Density Controller**: Per-voice density budgets per section. Break removes kick/bass. Drop maximizes groove. This creates arrangement contrast.
+- **Artifacts**: multisampleGenerator.ts (350 lines), sampleSelector.ts (200 lines), callResponseEngine.ts (150 lines).
+- **REMAINING GAP (honest)**:
+  - SampleSelector is built but not yet wired into worklet sample selection (worklet uses round-robin cycling, not context-aware scoring). Full integration would require passing sample names in events.
+  - Layering system (kick = sub+body+click as separate layers) not yet in worklet — currently single sample per hit.
+  - Mix-aware feedback (analyzing current mix and adjusting selection) not yet implemented.
+  - Reference analyzer (port of PSY3 style_clone.py) not yet built.
+  - PHYSICAL LISTENING UNVERIFIED — verification via console logs (46 samples generated, 0 errors), level meter (section dynamics), voice count (8 = call/response working).
