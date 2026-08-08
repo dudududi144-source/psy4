@@ -410,12 +410,21 @@ export class Psy4LiveEngine {
     g.gain.exponentialRampToValueAtTime(0.001, t + this.world.kickDecay);
     o.connect(g); g.connect(this.sum!);
     o.start(t); o.stop(t + this.world.kickDecay + 0.02);
+    // MID PUNCH: triangle at 2x fundamental, short decay (the "chest" impact)
+    const mid = c.createOscillator(); mid.type = 'triangle';
+    mid.frequency.setValueAtTime(fund * 2, t);
+    mid.frequency.exponentialRampToValueAtTime(fund * 1.5, t + 0.02);
+    const midG = c.createGain();
+    midG.gain.setValueAtTime(0.3 * amp, t);
+    midG.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
+    mid.connect(midG); midG.connect(this.sum!);
+    mid.start(t); mid.stop(t + 0.05);
     // click — square wave (punchier than noise, from PSY3)
     const cn = c.createOscillator(); cn.type = 'square';
     cn.frequency.setValueAtTime(900, t);
     cn.frequency.exponentialRampToValueAtTime(200, t + 0.012);
     const cg = c.createGain();
-    cg.gain.setValueAtTime(0.2 * amp, t);
+    cg.gain.setValueAtTime(0.15 * amp, t);
     cg.gain.exponentialRampToValueAtTime(0.001, t + 0.015);
     cn.connect(cg); cg.connect(this.sum!);
     cn.start(t); cn.stop(t + 0.02);
@@ -430,21 +439,30 @@ export class Psy4LiveEngine {
 
   bass(t: number, midi: number, dur: number, amp = 0.5, acid = false) {
     const c = this.ctx!, f = mtof(midi);
+    // SUB layer: clean sine at fundamental
+    const sub = c.createOscillator(); sub.type = 'sine'; sub.frequency.value = f / 2;
+    const sg = c.createGain(); sg.gain.value = 0.4;
+    // HARMONIC layer: saw through resonant filter (character for small speakers)
     const o = c.createOscillator();
     const wave = acid ? this.sqWave : this.sawWave;
     if (wave) o.setPeriodicWave(wave);
     o.frequency.value = f;
-    const sub = c.createOscillator(); sub.type = 'sine'; sub.frequency.value = f / 2;
-    const sg = c.createGain(); sg.gain.value = 0.4;
     const fl = c.createBiquadFilter(); fl.type = 'lowpass';
-    fl.Q.value = acid ? this.world.bassResonance : 3;
+    fl.Q.value = acid ? this.world.bassResonance : 3 + this.macros.psychedelia * 2;
     fl.frequency.setValueAtTime(acid ? 2500 : this.world.bassCutoff * 2, t);
     fl.frequency.exponentialRampToValueAtTime(this.world.bassCutoff, t + Math.min(dur, 0.1));
+    // Saturation for harmonic richness
+    const dist = c.createWaveShaper();
+    const curve = new Float32Array(256);
+    const driveAmt = 1 + this.world.drive * 2 + this.macros.aggression;
+    for (let i = 0; i < 256; i++) { const x = (i / 128) - 1; curve[i] = Math.tanh(x * driveAmt); }
+    dist.curve = curve;
     const g = c.createGain();
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(0.38 * amp, t + 0.003);
     g.gain.linearRampToValueAtTime(0, t + dur);
-    o.connect(fl); fl.connect(g); sub.connect(sg); sg.connect(g);
+    o.connect(fl); fl.connect(dist); dist.connect(g);
+    sub.connect(sg); sg.connect(g);
     g.connect(this.sum!);
     o.start(t); sub.start(t); o.stop(t + dur + 0.03); sub.stop(t + dur + 0.03);
   }
@@ -452,10 +470,19 @@ export class Psy4LiveEngine {
   lead(t: number, midi: number, dur: number, amp = 0.2, pan = 0) {
     const c = this.ctx!, f = mtof(midi);
     const fl = c.createBiquadFilter(); fl.type = 'lowpass';
-    const cutoff = this.world.leadCutoff * (0.5 + this.macros.brightness * 1);
-    fl.frequency.setValueAtTime(cutoff * 2, t);
-    fl.frequency.exponentialRampToValueAtTime(cutoff, t + dur);
-    fl.Q.value = 1 + this.macros.psychedelia * 3;
+    const baseCut = this.world.leadCutoff * (0.5 + this.macros.brightness * 1);
+    fl.frequency.setValueAtTime(baseCut * 2, t);
+    fl.frequency.exponentialRampToValueAtTime(baseCut, t + dur);
+    fl.Q.value = 1 + this.macros.psychedelia * 4;
+    // LFO modulation on filter cutoff (psychedelic movement)
+    if (this.macros.psychedelia > 0.3) {
+      const lfo = c.createOscillator(); lfo.type = 'sine';
+      lfo.frequency.value = 0.5 + this.macros.psychedelia * 3;
+      const lfoGain = c.createGain();
+      lfoGain.gain.value = baseCut * 0.3 * this.macros.psychedelia;
+      lfo.connect(lfoGain); lfoGain.connect(fl.frequency);
+      lfo.start(t); lfo.stop(t + dur + 0.1);
+    }
     const g = c.createGain();
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(0.14 * amp / 0.2, t + 0.006);
@@ -827,6 +854,23 @@ export class Psy4LiveEngine {
       this.sweep(t, this.s16() * 4);
     }
 
+    // ─── SECTION-AWARE REVERB/DELAY AUTOMATION ─────────────
+    if (sb === 0 && bar === 0) {
+      // At section start, adjust reverb and delay sends
+      if (this.rSend && this.ctx) {
+        const reverbTarget = S.type === 'break' ? 0.4 + this.macros.space * 0.3
+                           : S.type === 'drop' ? 0.15 + this.macros.space * 0.2
+                           : 0.2 + this.macros.space * 0.25;
+        this.rSend.gain.setTargetAtTime(reverbTarget, t, 0.5);
+      }
+      if (this.dSend && this.ctx) {
+        const delayTarget = S.type === 'break' ? 0.3 + this.macros.space * 0.2
+                          : S.type === 'build' ? 0.25 + this.macros.psychedelia * 0.15
+                          : 0.15 + this.macros.psychedelia * 0.1;
+        this.dSend.gain.setTargetAtTime(delayTarget, t, 0.5);
+      }
+    }
+
     // ─── PAD (chord progression, every 2 bars) ──────────────
     if (sb === 0 && bar % 2 === 0) {
       const progs = PROGRESSIONS[w.scale] || PROGRESSIONS.minor;
@@ -835,9 +879,13 @@ export class Psy4LiveEngine {
       this.pad(t, w.root - 12, chord, this.s16() * 32, padAmp);
     }
 
-    // ─── TEXTURE (every 4 bars) ─────────────────────────────
+    // ─── TEXTURE (every 4 bars + continuous bed in drops) ───
     if (sb === 0 && bar % 4 === 0 && S.type !== 'intro') {
       this.texture(t, this.s16() * 64, w.textureLevel * (0.5 + psy * 0.5));
+    }
+    // Continuous texture bed in drops (every bar, lower volume)
+    if (sb === 0 && bar % 2 === 1 && (S.type === 'drop' || S.type === 'climax')) {
+      this.texture(t, this.s16() * 32, w.textureLevel * 0.4 * psy);
     }
 
     // ─── KICK (4 on floor, with velocity groove) ────────────
@@ -866,15 +914,24 @@ export class Psy4LiveEngine {
     if (S.type === 'break') bassOn = false;
 
     if (bassOn) {
-      // Bass note: mostly root, occasional fifth/octave on phrase boundaries
-      let bassDegree = 0;
-      if (bar % 4 === 3 && sb === 15) bassDegree = 4;  // fifth before phrase end
-      if (bar % 8 === 7 && sb === 15) bassDegree = 7;  // octave at 8-bar boundary
+      // Bass grammar: walking pattern with passing tones, not just root
+      // Pattern: root root fifth root octave root fifth root (8-step cycle)
+      const bassCycle = [0, 0, 4, 0, 7, 0, 4, 0];
+      const cycleIdx = (bar * 8 + Math.floor(sb / 2)) % 8;
+      let bassDegree = bassCycle[cycleIdx];
+      // Occasional passing tone (scale degree 2 or 5) on step 15 of bars 2,4,6
+      if (bar % 2 === 1 && sb === 15 && S.rng.chance(0.4)) {
+        bassDegree = S.rng.pick([2, 5]);
+      }
+      // Ghost bass: very quiet, shorter on step 0 of odd bars (lift)
+      const isGhost = (bar % 2 === 1 && sb === 0 && S.rng.chance(0.3));
       const bassNote = scaleNote(w.root, w.scale, bassDegree);
-      // Velocity groove: stronger on beat 1&3, lighter on 2&4
+      // Velocity groove: stronger on beat 1&3, lighter on 2&4, ghost very soft
       const beatPos = Math.floor(sb / 4);
-      const bassVel = (beatPos === 0 ? 0.45 : beatPos === 2 ? 0.42 : 0.35) + e * 0.15;
-      this.bass(bt, bassNote, this.s16() * 0.9, bassVel, w.acid);
+      let bassVel = (beatPos === 0 ? 0.45 : beatPos === 2 ? 0.42 : 0.35) + e * 0.15;
+      let bassDur = this.s16() * 0.9;
+      if (isGhost) { bassVel = 0.2; bassDur = this.s16() * 0.4; }
+      this.bass(bt, bassNote, bassDur, bassVel, w.acid);
     }
 
     // ─── ACID LINE (in acid worlds + drops) ─────────────────
