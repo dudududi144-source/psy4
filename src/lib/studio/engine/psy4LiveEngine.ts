@@ -33,6 +33,7 @@ import {
   ensureWorkletsLoaded, createMoogFilter, createBLSaw, createBLSquare,
   type MoogFilterNode, type BLSawNode,
 } from './workletDsp';
+import { Psy4EngineNode, VOICE, type VoiceId, type EngineStats } from './engineWorklet';
 
 // ─── Music Theory ───────────────────────────────────────────────
 
@@ -338,6 +339,14 @@ export class Psy4LiveEngine {
   workletsReady = false;
   private workletLoadPromise: Promise<boolean> | null = null;
 
+  // ─── ENGINE WORKLET (full synth engine) ────────────────────────
+  // When active, ALL voice synthesis happens in the AudioWorklet.
+  // The main thread only generates musical events (no per-hit node creation).
+  // This eliminates the setInterval(25ms) jitter and GC pressure.
+  private engineNode: Psy4EngineNode | null = null;
+  useWorkletEngine = false;
+  private engineStats: EngineStats | null = null;
+
   init() {
     if (this.ctx) return;
     const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -401,6 +410,26 @@ export class Psy4LiveEngine {
     // Voices check this.workletsReady and fall back to BiquadFilter until loaded.
     this.workletLoadPromise = ensureWorkletsLoaded(c);
     this.workletLoadPromise.then((ok) => { this.workletsReady = ok; });
+
+    // ── LOAD ENGINE WORKLET (full synth engine) ──────────────
+    // When ready, ALL synthesis happens in the audio thread.
+    // Zero per-hit node creation, sample-accurate timing.
+    this.engineNode = new Psy4EngineNode(c);
+    this.engineNode.init().then((ok) => {
+      this.useWorkletEngine = ok;
+      if (ok) {
+        this.engineNode!.onStats((stats) => { this.engineStats = stats; });
+        // Connect engine output to analyser (for visualizer) in addition to destination
+        const engOut = this.engineNode!.outputNode;
+        if (engOut && this.analyser) {
+          engOut.connect(this.analyser);
+        }
+        // Send initial world params
+        this.sendWorldParamsToEngine();
+        this.sendMacrosToEngine();
+        console.log('[PSY4] Engine worklet active — synthesis in audio thread');
+      }
+    });
 
     // ── BUILD BUS ARCHITECTURE ────────────────────────────────
     // Each bus: input → lowShelf EQ → highShelf EQ → comp → saturation → out → sum
@@ -680,6 +709,11 @@ export class Psy4LiveEngine {
   }
 
   kick(t: number, amp = 1) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.KICK, 0, amp, this.world.kickDecay, 0);
+      return;
+    }
     const c = this.ctx!;
     const kickInput = this.getChannelInput('kick');
     const fund = this.world.kickFundamental;
@@ -754,6 +788,11 @@ export class Psy4LiveEngine {
   }
 
   bass(t: number, midi: number, dur: number, amp = 0.5, acid = false) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.BASS, mtof(midi), amp, dur, acid ? 1 : 0);
+      return;
+    }
     const c = this.ctx!, f = mtof(midi);
     const spec = this.voiceSpecs?.bass;
     const bassInput = this.getChannelInput('bass');
@@ -817,6 +856,11 @@ export class Psy4LiveEngine {
   }
 
   lead(t: number, midi: number, dur: number, amp = 0.2, pan = 0) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.LEAD, mtof(midi), amp, dur, pan);
+      return;
+    }
     const c = this.ctx!, f = mtof(midi);
     const spec = this.voiceSpecs?.lead;
     const leadInput = this.getChannelInput('lead');
@@ -879,6 +923,11 @@ export class Psy4LiveEngine {
   }
 
   acid(t: number, midi: number, dur: number, amp = 0.25) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.ACID, mtof(midi), amp, dur, 0);
+      return;
+    }
     const c = this.ctx!, f = mtof(midi);
     const acidInput = this.getChannelInput('lead'); // acid shares lead channel/music bus
 
@@ -927,6 +976,11 @@ export class Psy4LiveEngine {
   }
 
   hat(t: number, open = false, amp = 0.1, pan = 0.3) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, open ? VOICE.HAT_OPEN : VOICE.HAT, 0, amp, 0, pan);
+      return;
+    }
     const c = this.ctx!;
     const hatInput = this.getChannelInput('hat');
     const spec = this.voiceSpecs?.hat;
@@ -974,6 +1028,11 @@ export class Psy4LiveEngine {
   }
 
   shaker(t: number, amp = 0.06, pan = -0.2) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.SHAKER, 0, amp, 0, pan);
+      return;
+    }
     const c = this.ctx!, s = c.createBufferSource(); s.buffer = this.pink;
     const hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 6000;
     const g = c.createGain();
@@ -986,6 +1045,11 @@ export class Psy4LiveEngine {
   }
 
   clap(t: number, amp = 0.3) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.CLAP, 0, amp, 0, 0);
+      return;
+    }
     const c = this.ctx!;
     const clapInput = this.getChannelInput('clap');
     const spec = this.voiceSpecs?.clap;
@@ -1024,6 +1088,11 @@ export class Psy4LiveEngine {
   }
 
   perc(t: number, amp = 0.15, pan = 0.4) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.PERC, 400, amp, 0.08, pan);
+      return;
+    }
     const c = this.ctx!, o = c.createOscillator(); o.type = 'triangle';
     o.frequency.setValueAtTime(400, t);
     o.frequency.exponentialRampToValueAtTime(150, t + 0.05);
@@ -1036,6 +1105,14 @@ export class Psy4LiveEngine {
   }
 
   pad(t: number, root: number, chord: number[], dur: number, amp = 0.08) {
+    // ── WORKLET ENGINE: push one event per chord note ──
+    if (this.useWorkletEngine) {
+      for (const iv of chord) {
+        const f = mtof(root + 12 + iv);
+        this.scheduleEngineEvent(t, VOICE.PAD, f, amp / chord.length, dur, 0);
+      }
+      return;
+    }
     // ── PAD REBUILD: detuned BL saws → Moog filter → evolving detune LFO ──
     // Pads need width, movement, and warmth. The Moog filter's smooth cutoff
     // + tanh saturation gives the lush, analog pad character. Each chord
@@ -1091,6 +1168,12 @@ export class Psy4LiveEngine {
   }
 
   texture(t: number, dur: number, amp = 0.08) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      const typeParam = this.world.textureType === 'noise' ? 1 : 0;
+      this.scheduleEngineEvent(t, VOICE.TEXTURE, 0, amp, dur, typeParam);
+      return;
+    }
     const c = this.ctx!;
     if (this.world.textureType === 'noise') {
       // filtered noise texture
@@ -1151,6 +1234,11 @@ export class Psy4LiveEngine {
   }
 
   riser(t: number, dur: number) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.RISER, 0, 0.25, dur, 0);
+      return;
+    }
     const c = this.ctx!, s = c.createBufferSource(); s.buffer = this.pink;
     const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 2;
     bp.frequency.setValueAtTime(300, t);
@@ -1165,6 +1253,11 @@ export class Psy4LiveEngine {
   }
 
   impact(t: number) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.IMPACT, 0, 0.7, 0.5, 0);
+      return;
+    }
     const c = this.ctx!, o = c.createOscillator(); o.type = 'sine';
     o.frequency.setValueAtTime(120, t);
     o.frequency.exponentialRampToValueAtTime(35, t + 0.4);
@@ -1176,6 +1269,11 @@ export class Psy4LiveEngine {
   }
 
   sweep(t: number, dur: number) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.SWEEP, 0, 0.15, dur, 0);
+      return;
+    }
     // filter sweep for transitions
     const c = this.ctx!, s = c.createBufferSource(); s.buffer = this.pink;
     const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 5;
@@ -1195,6 +1293,11 @@ export class Psy4LiveEngine {
 
   /** FM zap — carrier + modulator with exponential index decay. Ear candy. */
   zap(t: number, amp = 0.15) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.ZAP, 0, amp, 0.04, 0);
+      return;
+    }
     const c = this.ctx!;
     const car = c.createOscillator(); car.type = 'sine';
     car.frequency.value = 880;
@@ -1215,6 +1318,11 @@ export class Psy4LiveEngine {
 
   /** Pure sine blip — ear candy / accent. */
   blip(t: number, freq = 1200, amp = 0.1) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.BLIP, freq, amp, 0.02, 0);
+      return;
+    }
     const c = this.ctx!, o = c.createOscillator(); o.type = 'sine';
     o.frequency.value = freq;
     const g = c.createGain();
@@ -1227,6 +1335,11 @@ export class Psy4LiveEngine {
 
   /** Downlifter — descending pitch sweep for transitions. */
   downlifter(t: number, amp = 0.2) {
+    // ── WORKLET ENGINE: push event, no node creation ──
+    if (this.useWorkletEngine) {
+      this.scheduleEngineEvent(t, VOICE.DOWNLIFTER, 0, amp, 0.4, 0);
+      return;
+    }
     const c = this.ctx!, o = c.createOscillator(); o.type = 'sawtooth';
     o.frequency.setValueAtTime(800, t);
     o.frequency.exponentialRampToValueAtTime(100, t + 0.4);
@@ -1244,28 +1357,90 @@ export class Psy4LiveEngine {
   start(worldId?: string, seed?: number, macros?: Partial<Macros>) {
     this.init();
     this.ctx!.resume();
-    if (worldId && WORLDS[worldId]) this.world = WORLDS[worldId];
+    if (worldId && WORLDS[worldId]) {
+      this.world = WORLDS[worldId];
+      this.voiceSpecs = getVoiceSpecs(worldId);
+    }
     if (seed) this.seed = seed;
     if (macros) this.macros = { ...this.macros, ...macros };
-    if (this.playing) return;
-    this.playing = true;
-    this.sectionIdx = 0;
-    this.nextSection();
-    this.si = 0;
-    this.next = this.ctx!.currentTime + 0.1;
-    this.timer = setInterval(() => this.tick(), 25);
+
+    // Send current world params + macros to engine worklet
+    this.sendWorldParamsToEngine();
+    this.sendMacrosToEngine();
+
+    if (this.useWorkletEngine && this.engineNode) {
+      // ── WORKLET ENGINE MODE ──
+      // All synthesis happens in the audio thread.
+      // The main thread only generates musical events (no node creation).
+      this.engineNode.play();
+      this.playing = true;
+      this.sectionIdx = 0;
+      this.nextSection();
+      this.si = 0;
+      // Larger lookahead (0.3s) since event generation is cheap
+      // and the worklet handles precise sample-accurate timing.
+      this.next = this.ctx!.currentTime + 0.15;
+      // Slower timer (50ms) is fine — we batch events, not create nodes.
+      // The worklet's process() loop runs at audio rate (128 samples = ~3ms).
+      this.timer = setInterval(() => this.tick(), 50);
+    } else {
+      // ── LEGACY MODE (fallback) ──
+      // Web Audio node creation per hit (original behavior)
+      if (this.playing) return;
+      this.playing = true;
+      this.sectionIdx = 0;
+      this.nextSection();
+      this.si = 0;
+      this.next = this.ctx!.currentTime + 0.1;
+      this.timer = setInterval(() => this.tick(), 25);
+    }
   }
 
   stop() {
     this.playing = false;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (this.useWorkletEngine && this.engineNode) {
+      this.engineNode.stop();
+    }
+  }
+
+  /** Send world parameters to the engine worklet. */
+  private sendWorldParamsToEngine() {
+    if (!this.engineNode || !this.useWorkletEngine) return;
+    const w = this.world;
+    this.engineNode.setWorld({
+      kickFundamental: w.kickFundamental,
+      kickDecay: w.kickDecay,
+      bassCutoff: w.bassCutoff,
+      bassResonance: w.bassResonance,
+      leadCutoff: w.leadCutoff,
+      leadDetune: w.leadDetune,
+      padCutoff: w.padCutoff,
+      padAttack: 0.5,
+      padDetune: 7,
+      padEvolveRate: 0.1,
+      duck: w.duck,
+    });
+  }
+
+  /** Send current macros to the engine worklet. */
+  private sendMacrosToEngine() {
+    if (!this.engineNode || !this.useWorkletEngine) return;
+    this.engineNode.setMacros(this.macros);
+  }
+
+  /** Schedule an event in the engine worklet (worklet mode only). */
+  private scheduleEngineEvent(time: number, voice: VoiceId, note: number, velocity: number, duration: number, param: number = 0) {
+    if (this.engineNode) {
+      this.engineNode.scheduleEvent(time, voice, note, velocity, duration, param);
+    }
   }
 
   setWorld(worldId: string) {
     if (WORLDS[worldId]) {
       this.world = WORLDS[worldId];
       this.voiceSpecs = getVoiceSpecs(worldId);
-      // Update channel strip gains for new world
+      // Update channel strip gains for new world (legacy mode)
       if (this.voiceSpecs && this.ctx) {
         for (const [name, strip] of Object.entries(this.voiceSpecs.channels)) {
           const cs = this.channelStrips.get(name);
@@ -1280,10 +1455,15 @@ export class Psy4LiveEngine {
       }
       if (this.dOut) this.dOut.gain.value = 0.15 + this.world.space * 0.3;
       if (this.rSend) this.rSend.gain.value = 0.15 + this.world.space * 0.3;
+      // Update engine worklet with new world params
+      this.sendWorldParamsToEngine();
     }
   }
 
-  setMacros(macros: Partial<Macros>) { this.macros = { ...this.macros, ...macros }; }
+  setMacros(macros: Partial<Macros>) {
+    this.macros = { ...this.macros, ...macros };
+    this.sendMacrosToEngine();
+  }
 
   triggerAction(action: string) {
     switch (action) {
@@ -1298,6 +1478,7 @@ export class Psy4LiveEngine {
       case 'more-space': this.macros.space = Math.min(1, this.macros.space + 0.25); break;
       case 'reset': this.macros = { ...DEFAULT_MACROS }; break;
     }
+    this.sendMacrosToEngine();
   }
 
   private nextSection() {
@@ -1317,7 +1498,10 @@ export class Psy4LiveEngine {
 
   private tick() {
     if (!this.playing || !this.ctx || !this.sec) return;
-    while (this.next < this.ctx.currentTime + 0.15) {
+    // In worklet mode, use a larger lookahead (0.3s) since events are cheap
+    // and the worklet handles precise timing. In legacy mode, use 0.15s.
+    const lookahead = this.useWorkletEngine ? 0.3 : 0.15;
+    while (this.next < this.ctx.currentTime + lookahead) {
       this.step(this.si, this.next);
       this.si++;
       this.next += this.s16();
@@ -1327,6 +1511,10 @@ export class Psy4LiveEngine {
         this.currentPhrase++;
         this.phrasesPlayed++;
       }
+    }
+    // Flush batched events to the engine worklet
+    if (this.useWorkletEngine && this.engineNode) {
+      this.engineNode.flushEvents();
     }
   }
 
@@ -1536,6 +1724,12 @@ export class Psy4LiveEngine {
   }
 
   getAnalyser(): AnalyserNode | null { return this.analyser; }
+
+  /** Get engine worklet stats (active voices, event count, CPU load). */
+  getEngineStats(): EngineStats | null { return this.engineStats; }
+
+  /** Check if the engine worklet is active (vs legacy Web Audio mode). */
+  isWorkletEngineActive(): boolean { return this.useWorkletEngine; }
 
   getWorlds(): { id: string; name: string }[] {
     return Object.values(WORLDS).map(w => ({ id: w.id, name: w.name }));

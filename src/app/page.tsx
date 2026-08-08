@@ -28,6 +28,9 @@ export default function LivePage() {
     aggression: 0.4, brightness: 0.55,
   });
   const [audioLevel, setAudioLevel] = useState(0);
+  const [, setStatsTick] = useState(0); // forces re-render for voice count display
+  const [engineMode, setEngineMode] = useState('Web Audio');
+  const [activeVoices, setActiveVoices] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animRef = useRef<number | null>(null);
 
@@ -46,6 +49,9 @@ export default function LivePage() {
       setSection(e.currentSection);
       setBar(e.currentBar);
       setPhrase(e.currentPhrase);
+      setEngineMode(e.isWorkletEngineActive() ? 'Worklet' : 'Web Audio');
+      setActiveVoices(e.getEngineStats()?.activeVoices ?? 0);
+      setStatsTick(t => t + 1); // force re-render for voice count
       // audio level from analyser
       const analyser = e.getAnalyser();
       if (analyser) {
@@ -199,7 +205,11 @@ export default function LivePage() {
             </div>
             <div className="text-center px-4 py-2 rounded-lg bg-card/40 border border-border/40">
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Engine</div>
-              <div className="text-sm font-bold text-cyan-400">Web Audio</div>
+              <div className="text-sm font-bold text-cyan-400">{engineMode}</div>
+            </div>
+            <div className="text-center px-4 py-2 rounded-lg bg-card/40 border border-border/40">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Voices</div>
+              <div className="text-sm font-bold text-fuchsia-400">{activeVoices}</div>
             </div>
           </div>
           {playing && (
@@ -265,8 +275,9 @@ export default function LivePage() {
             <span>Browser-native realtime synthesis</span>
           </div>
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" /> Native Web Audio</span>
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" /> 25ms scheduler</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" /> AudioWorklet Engine</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" /> Sample-accurate</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-fuchsia-400 animate-pulse" /> Zero-alloc voices</span>
           </div>
         </div>
       </footer>
