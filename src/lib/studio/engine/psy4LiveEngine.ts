@@ -34,6 +34,13 @@ import {
   type MoogFilterNode, type BLSawNode,
 } from './workletDsp';
 import { Psy4EngineNode, VOICE, type VoiceId, type EngineStats } from './engineWorklet';
+import { SampleBank } from './sampleBank';
+import {
+  SCALES as GRAMMAR_SCALES, PROGRESSIONS as GRAMMAR_PROGRESSIONS, SeededRng,
+  EvolvingSequence, LeadMotif, AcidPattern, BASS_PATTERNS,
+  scaleNote as grammarScaleNote, tensionAt, densityAt,
+  type TensionShape,
+} from './musicalGrammar';
 
 // ─── Music Theory ───────────────────────────────────────────────
 
@@ -271,6 +278,11 @@ interface Section {
   type: SectionType; bars: number; density: number;
   rng: Rng; motif: Motif; energy: number;
   chordIndex: number;
+  // Musical grammar (PSY3-style controlled mutation)
+  leadMotif: LeadMotif | null;
+  acidPattern: AcidPattern | null;
+  bassPatternIdx: number;
+  tensionShape: TensionShape;
 }
 
 // ─── Live Engine v2 ─────────────────────────────────────────────
@@ -346,6 +358,8 @@ export class Psy4LiveEngine {
   private engineNode: Psy4EngineNode | null = null;
   useWorkletEngine = false;
   private engineStats: EngineStats | null = null;
+  private sampleBank: SampleBank | null = null;
+  samplesLoaded = false;
 
   init() {
     if (this.ctx) return;
@@ -415,7 +429,7 @@ export class Psy4LiveEngine {
     // When ready, ALL synthesis happens in the audio thread.
     // Zero per-hit node creation, sample-accurate timing.
     this.engineNode = new Psy4EngineNode(c);
-    this.engineNode.init().then((ok) => {
+    this.engineNode.init().then(async (ok) => {
       this.useWorkletEngine = ok;
       if (ok) {
         this.engineNode!.onStats((stats) => { this.engineStats = stats; });
@@ -427,6 +441,20 @@ export class Psy4LiveEngine {
         // Send initial world params
         this.sendWorldParamsToEngine();
         this.sendMacrosToEngine();
+
+        // ── LOAD PSY3 SAMPLES into the worklet ──
+        // This is the key sound quality upgrade: the worklet plays the REAL
+        // kick.wav, hat_closed.wav, hat_open.wav, clap.wav samples instead of
+        // pure synth DSP. Samples are transferred as Float32Array (zero-copy).
+        this.sampleBank = new SampleBank(c);
+        const loaded = await this.sampleBank.loadAll();
+        if (loaded) {
+          const payload = this.sampleBank.toWorkletPayload();
+          this.engineNode!.loadSamples(payload);
+          this.samplesLoaded = true;
+          console.log('[PSY4] Samples loaded into worklet — real PSY3 drum samples active');
+        }
+
         console.log('[PSY4] Engine worklet active — synthesis in audio thread');
       }
     });
@@ -1489,7 +1517,24 @@ export class Psy4LiveEngine {
     const rng = new Rng(this.seed * 1000 + this.sectionIdx);
     const motif = new Motif(this.world.root, this.world.scale, rng);
     const energy = { intro: 0.3, build: 0.6, drop: 0.95, break: 0.2, climax: 1 }[typ] || 0.5;
-    this.sec = { type: typ, bars, density, rng, motif, energy, chordIndex: 0 };
+
+    // ── PSY3-STYLE MUSICAL GRAMMAR ──
+    // Create grammar objects with seeded RNG for deterministic variation
+    const grammarRng = new SeededRng(this.seed * 1000 + this.sectionIdx + 999);
+    const leadMotif = (typ !== 'intro' && typ !== 'break')
+      ? new LeadMotif(this.world.root, this.world.scale, grammarRng)
+      : null;
+    const acidPattern = this.world.acid
+      ? new AcidPattern(this.world.root, this.world.scale, grammarRng)
+      : null;
+    // Choose bass pattern based on world type
+    const bassPatterns = BASS_PATTERNS[this.world.bass] || BASS_PATTERNS.off;
+    const bassPatternIdx = grammarRng.int(0, bassPatterns.length - 1);
+    // Tension shape per section type
+    const tensionShape: TensionShape = typ === 'build' ? 'rise' : typ === 'break' ? 'fall' : 'arc';
+
+    this.sec = { type: typ, bars, density, rng, motif, energy, chordIndex: 0,
+                 leadMotif, acidPattern, bassPatternIdx, tensionShape };
     this.currentSection = typ;
     this.sectionIdx++;
   }
@@ -1604,14 +1649,21 @@ export class Psy4LiveEngine {
       this.kick(t, 0.3);
     }
 
-    // ─── BASS (psytrance grammar) ───────────────────────────
+    // ─── BASS (psytrance grammar — explicit patterns, not random) ──
     const isOff = sb % 2 === 1;
     const bt = isOff ? t + sw * this.s16() : t;
-    // Different bass patterns per world
-    let bassOn = false;
-    if (w.bass === 'roll') bassOn = isOff;                    // rolling 16ths
-    else if (w.bass === 'off') bassOn = sb % 4 === 2;          // offbeat
-    else if (w.bass === 'acid') bassOn = isOff || sb === 0;    // acid (denser)
+    // Use explicit bass patterns from BASS_PATTERNS (controlled, not random)
+    const bassPatterns = BASS_PATTERNS[w.bass] || BASS_PATTERNS.off;
+    const bassPattern = bassPatterns[S.bassPatternIdx % bassPatterns.length];
+    const patternStep = Math.floor(sb / 2) % bassPattern.steps.length;
+    const bassDegree = bassPattern.steps[patternStep];
+    const bassAccent = bassPattern.accents[patternStep];
+
+    // Determine if bass plays based on world type and pattern
+    let bassOn = bassDegree >= 0 && bassAccent > 0;
+    if (w.bass === 'roll') bassOn = bassOn && (isOff || sb % 4 === 0);
+    else if (w.bass === 'off') bassOn = bassOn && sb % 4 === 2;
+    else if (w.bass === 'acid') bassOn = bassOn && (isOff || sb === 0);
 
     // Rest before drop (last 2 bars of build — creates tension/contrast)
     if (isPreDrop) bassOn = false;
@@ -1619,31 +1671,25 @@ export class Psy4LiveEngine {
     if (S.type === 'break') bassOn = false;
 
     if (bassOn) {
-      // Bass grammar: walking pattern with passing tones, not just root
-      // Pattern: root root fifth root octave root fifth root (8-step cycle)
-      const bassCycle = [0, 0, 4, 0, 7, 0, 4, 0];
-      const cycleIdx = (bar * 8 + Math.floor(sb / 2)) % 8;
-      let bassDegree = bassCycle[cycleIdx];
-      // Occasional passing tone (scale degree 2 or 5) on step 15 of bars 2,4,6
-      if (bar % 2 === 1 && sb === 15 && S.rng.chance(0.4)) {
-        bassDegree = S.rng.pick([2, 5]);
-      }
-      // Ghost bass: very quiet, shorter on step 0 of odd bars (lift)
-      const isGhost = (bar % 2 === 1 && sb === 0 && S.rng.chance(0.3));
-      const bassNote = scaleNote(w.root, w.scale, bassDegree);
-      // Velocity groove: stronger on beat 1&3, lighter on 2&4, ghost very soft
-      const beatPos = Math.floor(sb / 4);
-      let bassVel = (beatPos === 0 ? 0.45 : beatPos === 2 ? 0.42 : 0.35) + e * 0.15;
+      const bassNote = grammarScaleNote(w.root, w.scale, bassDegree);
+      // Velocity from pattern accent + energy
+      let bassVel = bassAccent * (0.4 + e * 0.2);
       let bassDur = this.s16() * 0.9;
+      // Ghost bass: very quiet on step 0 of odd bars (lift)
+      const isGhost = (bar % 2 === 1 && sb === 0 && S.rng.chance(0.3));
       if (isGhost) { bassVel = 0.2; bassDur = this.s16() * 0.4; }
       this.bass(bt, bassNote, bassDur, bassVel, w.acid);
     }
 
-    // ─── ACID LINE (in acid worlds + drops) ─────────────────
-    if (w.acid && S.type === 'drop' && sb % 2 === 0 && S.rng.chance(0.4 * psy)) {
-      const acidDegree = S.rng.pick([0, 0, 2, 4, 7, 0, -1]);
-      const acidNote = scaleNote(w.root + 12, w.scale, acidDegree);
-      this.acid(t, acidNote, this.s16() * 1.5, 0.15 + psy * 0.1);
+    // ─── ACID LINE (stored pattern with controlled mutation) ──
+    if (w.acid && S.type === 'drop' && sb % 2 === 0 && S.rng.chance(0.5 * psy)) {
+      // Use AcidPattern (stored pattern, not random pick)
+      if (S.acidPattern) {
+        const acidNote = S.acidPattern.next();
+        if (acidNote !== null) {
+          this.acid(t, acidNote, this.s16() * 1.5, 0.15 + psy * 0.1);
+        }
+      }
     }
 
     // ─── HATS (with groove + velocity variation) ────────────
@@ -1683,23 +1729,18 @@ export class Psy4LiveEngine {
       if (sb === 15) this.hat(t, true, 0.08, 0.3);
     }
 
-    // ─── LEAD (motif-based, AABA structure) ─────────────────
-    if (S.density > 0.3 && S.type !== 'break') {
-      const motifNote = S.motif.next();
-      // Play lead more frequently — PSY3 plays on every sb%4===0 without chance gate
-      if (motifNote.step === sb) {
-        const playChance = S.type === 'drop' ? 0.8 : 0.5 * (0.5 + this.macros.psychedelia * 0.5);
-        if (S.rng.chance(playChance)) {
-          const leadNote = scaleNote(w.root + 12, w.scale, motifNote.degree);
-          const leadDur = this.s16() * (1.5 + psy * 0.5);
-          const leadVel = 0.15 * (0.5 + e * 0.5);
-          const leadPan = Math.sin(s * 0.03) * 0.2;
-          this.lead(t, leadNote, leadDur, leadVel, leadPan);
-        }
+    // ─── LEAD (AABA motif with controlled mutation — PSY3 style) ──
+    if (S.density > 0.3 && S.type !== 'break' && S.leadMotif) {
+      // Use LeadMotif (AABA structure with evolving sequence)
+      const leadResult = S.leadMotif.nextNote(sb, bar, e * (0.5 + psy * 0.5), S.rng);
+      if (leadResult) {
+        const leadDur = this.s16() * (1.5 + psy * 0.5);
+        const leadPan = Math.sin(s * 0.03) * 0.2;
+        this.lead(t, leadResult.note, leadDur, leadResult.velocity * 0.2, leadPan);
       }
       // Mutate motif every 4 bars
       if (sb === 0 && bar % 4 === 0 && bar > 0) {
-        S.motif.mutate(S.rng);
+        S.leadMotif.evolve();
       }
     }
 

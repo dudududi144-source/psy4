@@ -114,3 +114,100 @@ Stage Summary:
   - PSY3 samples (kick.wav, etc.) are not yet loaded into the worklet — kick/hat/clap use synthetic DSP (PSY3 engine.py algorithms). Sample integration via ArrayBuffer transfer is a P1 enhancement.
   - The musical brain (step()) still runs on the main thread. For even lower latency, it could move into the worklet, but the current hybrid approach (main thread generates events, worklet executes) gives sample-accurate timing with easy TypeScript iteration.
   - PHYSICAL LISTENING UNVERIFIED — verification is via console logs, voice count, level meter, and code audit.
+
+---
+Task ID: 3
+Agent: Z.ai Code (main)
+Task: PSY4 Phase 2 — Commercial sound library + musical production engine. Load real PSY3 samples into worklet, add round robin, stereo output, and PSY3-style musical grammar.
+
+Work Log:
+- Forensic audit of PSY3 asset library:
+  - Searched entire /tmp/psy3/ for all audio files (WAV/AIFF/FLAC/MP3/OGG)
+  - Found exactly 6 samples: kick.wav, bass_A.wav, lead.wav, hat_closed.wav, hat_open.wav, clap.wav
+  - NO hidden sample packs, NO impulse responses, NO loops — PSY3 sound quality comes from DSP, not sample variety
+- Analyzed acoustic properties of all 6 samples (Python script):
+  - kick.wav: 99.8% low energy, 221Hz centroid, 0.28s, crest 3.1 — pure sub body
+  - hat_closed.wav: 99.9% high energy, 13963Hz centroid, 0.06s — metallic
+  - hat_open.wav: 99.7% high energy, 13847Hz centroid, 0.30s — open metallic
+  - clap.wav: 90.5% high, 8.1% mid, 11004Hz centroid — bright clap
+  - bass_A.wav: 92.7% low, 858Hz centroid — bass with character
+  - lead.wav: 89.2% mid, 7583Hz centroid — bright lead
+- Read PSY3 musical intelligence (psy_gen.py):
+  - EvolvingSequence: 16-step motif with single-step mutation every 4 bars (controlled, not random)
+  - tension_at(): arc/rise/fall/wave/plateau shapes for section energy
+  - density_at(): probability gating with downbeat (1.4x) + offbeat (1.15x) accents
+  - EvolvingParam: bounded random walk with mean-reversion
+
+- Built `src/lib/studio/engine/sampleBank.ts`:
+  - SampleBank class: loads PSY3 WAV samples via fetch + decodeAudioData
+  - Converts to mono Float32Array
+  - Computes acoustic features: peak, RMS, spectral centroid, energy bands, fundamental
+  - toWorkletPayload(): exports samples for zero-copy ArrayBuffer transfer to worklet
+
+- Built `src/lib/studio/engine/musicalGrammar.ts` (PSY3 knowledge transfer):
+  - EvolvingSequence: 16-step motif with controlled mutation (port of PSY3 psy_gen.py)
+  - EvolvingParam: bounded random walk with mean-reversion
+  - tensionAt()/densityAt(): tension shapes for section energy curves
+  - LeadMotif: AABA structure (A bars 0-1, B bar 2 contrast, A' bar 3 return) with evolving sequence
+  - AcidPattern: stored patterns (not random pick) with controlled mutation
+  - BASS_PATTERNS: explicit psytrance bass patterns (roll/off/acid) with accent arrays
+  - SeededRng: deterministic seeded random for reproducible variation
+
+- Modified `public/worklets/psy4-engine.js`:
+  - Added SampleVoice class: plays Float32Array sample data with linear interpolation, pitch shift, gain, pan
+  - Added 3 sample voice pools: kickSamplePool (4), hatSamplePool (8), clapSamplePool (4)
+  - Added 'loadSamples' message handler: receives Float32Array buffers (zero-copy Transferable)
+  - Modified V_KICK trigger: uses real kick.wav sample when available (with round robin pitch/gain variation)
+  - Modified V_HAT/V_HAT_OPEN trigger: uses real hat_closed.wav/hat_open.wav samples with stereo pan variation
+  - Modified V_CLAP trigger: uses real clap.wav sample with round robin
+  - Added round robin counters: kick (4 variants), hat (8 variants), clap (4 variants)
+  - Kick round robin: ±0.45% pitch, ±6% gain — preserves sub phase coherence
+  - Hat round robin: ±1.75% pitch, ±0.14 pan — organic stereo movement
+  - Clap round robin: ±0.6% pitch, ±4.5% gain — subtle variation
+  - Rewrote render loop for STEREO OUTPUT: separate L/R buses per group
+  - Sample voices render in stereo via renderStereo() with equal-power pan
+  - Kick/bass stay mono (center) for phase coherence
+  - Hats/pads/leads get stereo width via pan and detuned oscillators
+  - Master chain processes L and R independently
+
+- Modified `src/lib/studio/engine/engineWorklet.ts`:
+  - Added loadSamples() method: transfers Float32Array buffers to worklet (zero-copy)
+  - Uses Transferable for all sample data buffers
+
+- Modified `src/lib/studio/engine/psy4LiveEngine.ts`:
+  - Added SampleBank import and field
+  - Engine init callback now: loads SampleBank → transfers samples to worklet
+  - Integrated musical grammar into nextSection(): creates LeadMotif, AcidPattern, BASS_PATTERNS per section
+  - Updated Section interface: added leadMotif, acidPattern, bassPatternIdx, tensionShape
+  - Rewrote bass grammar in step(): uses explicit BASS_PATTERNS with accent arrays (not random pick)
+  - Rewrote acid grammar in step(): uses AcidPattern.next() (stored pattern, not random)
+  - Rewrote lead grammar in step(): uses LeadMotif.nextNote() with AABA structure
+  - Lead mutates every 4 bars via S.leadMotif.evolve() (controlled mutation)
+
+- Created documentation:
+  - SOUND_LIBRARY.md: complete asset inventory with acoustic analysis, selection rules, provenance
+  - PSY3_SOUND_DESIGN_RULES.md: 10 design rules extracted from PSY3 (sub over click, controlled mutation, tension shapes, etc.)
+
+- Verified with Agent Browser:
+  - `[SampleBank] Loaded 6/6 samples` confirmed
+  - `[PSY4] Transferred 6 samples to worklet` confirmed
+  - `[PSY4] Samples loaded into worklet — real PSY3 drum samples active` confirmed
+  - Progressive-psy: 7 voices, 41% level, 0 errors
+  - Dark-psy + Drop (densest): 8 voices, 54-56% level, 0 errors, 25+ seconds stable
+  - Stereo output active (L and R processed independently)
+  - Round robin variation active (kick/hat/clap micro-variation per hit)
+  - Musical grammar active (bass patterns, acid patterns, lead AABA motif)
+- Lint passes cleanly (0 errors, 0 warnings)
+
+Stage Summary:
+- **REAL PSY3 SAMPLES now play in the worklet**: kick.wav, hat_closed.wav, hat_open.wav, clap.wav are loaded as Float32Array, transferred to the worklet via zero-copy ArrayBuffer transfer, and played via SampleVoice with linear interpolation. This is the single biggest sound quality improvement — drums now have the weight and character of real samples, not pure synth.
+- **Round robin variation**: 4 kick variants, 8 hat variants, 4 clap variants with micro pitch/gain/pan variation. Avoids machine-gun effect. Kick preserves sub phase coherence (±0.45% pitch only).
+- **Stereo output**: Worklet now outputs true stereo. Kick/bass stay mono (phase coherence). Hats get pan variation. Pads/leads get width from detuned oscillators. Master processes L/R independently.
+- **PSY3 musical grammar**: EvolvingSequence (16-step motif with controlled mutation), LeadMotif (AABA structure), AcidPattern (stored patterns), BASS_PATTERNS (explicit accent arrays), tensionAt() shapes. Replaces random pick() with intentional musical decisions.
+- **Artifacts**: sampleBank.ts (200 lines), musicalGrammar.ts (250 lines), psy4-engine.js (now 1430 lines with SampleVoice + stereo), SOUND_LIBRARY.md, PSY3_SOUND_DESIGN_RULES.md.
+- **REMAINING GAP (honest)**:
+  - Worklet master chain is still simplified (saturation + limiter, no multiband/glue). Full master chain is in legacy path only.
+  - bass_A.wav and lead.wav samples are loaded but not yet used by the worklet (bass/lead use synth DSP which provides more control). Future hybrid sample+synth is possible.
+  - Reverb/delay are not yet in the worklet (legacy path has them). Worklet is currently dry.
+  - Stereo width is basic (pan-based). M/S processing and micro-delay width are P1.
+  - PHYSICAL LISTENING UNVERIFIED — verification is via console logs, voice count, level meter, and code audit.

@@ -155,6 +155,22 @@ export class Psy4EngineNode {
     this.node?.port.postMessage({ type: 'world', params });
   }
 
+  /**
+   * Load sample bank data into the worklet.
+   * Transfers Float32Array buffers (zero-copy) so the worklet can play
+   * the REAL PSY3 samples instead of pure synth DSP.
+   */
+  loadSamples(samples: { name: string; category: string; subcategory: string; sampleRate: number; data: Float32Array }[]) {
+    if (!this.node) return;
+    // Transfer all Float32Array buffers (zero-copy)
+    const transferables: ArrayBuffer[] = [];
+    for (const s of samples) {
+      transferables.push(s.data.buffer);
+    }
+    this.node.port.postMessage({ type: 'loadSamples', samples }, transferables);
+    console.log(`[PSY4] Transferred ${samples.length} samples to worklet (${transferables.reduce((a, b) => a + b.byteLength, 0)} bytes)`);
+  }
+
   triggerDuck() {
     this.node?.port.postMessage({ type: 'duck' });
   }

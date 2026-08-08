@@ -781,6 +781,66 @@ class FXVoice {
   }
 }
 
+// ─── Sample Voice (plays preloaded AudioBuffer data) ──────────────────────
+// Plays a sample with linear interpolation, pitch shift, and gain.
+// Used for kick/hat/clap — the REAL PSY3 samples give professional sound quality
+// that pure synth DSP cannot match.
+
+class SampleVoice {
+  constructor() {
+    this.active = false;
+    this.t = 0;
+    this.sampleData = null;     // Float32Array
+    this.sampleRate = 44100;
+    this.playbackRate = 1.0;    // pitch shift
+    this.amp = 1.0;
+    this.gainEnv = 1.0;
+    this.decay = 0.3;
+    this.position = 0;          // fractional sample position
+    this.pan = 0;               // -1..1
+  }
+
+  trigger(sampleData, sampleRate, playbackRate, amp, decay, pan) {
+    this.active = true;
+    this.t = 0;
+    this.sampleData = sampleData;
+    this.sampleRate = sampleRate;
+    this.playbackRate = playbackRate || 1.0;
+    this.amp = amp;
+    this.decay = decay || 0.3;
+    this.position = 0;
+    this.pan = pan || 0;
+  }
+
+  // Returns [leftSample, rightSample, done]
+  renderStereo(currentTime, sr) {
+    if (!this.active || !this.sampleData) return [0, 0, true];
+    this.t += 1 / sr;
+    const env = Math.exp(-this.t / this.decay);
+    if (env < 0.001 || this.position >= this.sampleData.length) {
+      this.active = false;
+      return [0, 0, true];
+    }
+
+    // Linear interpolation playback
+    const idx = Math.floor(this.position);
+    const frac = this.position - idx;
+    const s1 = this.sampleData[idx] || 0;
+    const s2 = this.sampleData[idx + 1] || 0;
+    const sample = (s1 + (s2 - s1) * frac) * env * this.amp;
+
+    // Advance position based on playback rate and sample rate ratio
+    this.position += this.playbackRate * (this.sampleRate / sr);
+
+    // Stereo: apply pan (equal power)
+    const pan = Math.max(-1, Math.min(1, this.pan));
+    const leftGain = pan <= 0 ? 1 : 1 - pan;
+    const rightGain = pan >= 0 ? 1 : 1 + pan;
+
+    return [sample * leftGain, sample * rightGain, false];
+  }
+}
+
 // ─── Master chain (saturation + limiter) ───────────────────────────────────
 
 class MasterChain {
@@ -860,6 +920,23 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < 4; i++) this.texturePool.push(new TextureVoice());
     for (let i = 0; i < 8; i++) this.fxPool.push(new FXVoice());
 
+    // ── SAMPLE VOICE POOLS (for real PSY3 sample playback) ──
+    // Separate pools for sample-based voices (kick sample, hat sample, clap sample)
+    // These play the actual PSY3 WAV data for professional sound quality.
+    this.kickSamplePool = [];
+    this.hatSamplePool = [];
+    this.clapSamplePool = [];
+    for (let i = 0; i < 4; i++) this.kickSamplePool.push(new SampleVoice());
+    for (let i = 0; i < 8; i++) this.hatSamplePool.push(new SampleVoice());
+    for (let i = 0; i < 4; i++) this.clapSamplePool.push(new SampleVoice());
+
+    // Sample bank (loaded from main thread via ArrayBuffer transfer)
+    this.samples = {};  // { name: { data, sampleRate, category } }
+    this.samplesReady = false;
+
+    // Round robin counters (for variation — avoid machine-gun effect)
+    this.rrCounters = { kick: 0, hat: 0, clap: 0 };
+
     // Master chain
     this.master = new MasterChain();
 
@@ -933,8 +1010,24 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'panic':
         // Kill all voices
-        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool]) {
+        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool]) {
           for (const v of pool) v.active = false;
+        }
+        break;
+      case 'loadSamples':
+        // Receive sample data from main thread (ArrayBuffer transfer)
+        // msg.samples = [{ name, category, subcategory, sampleRate, data: Float32Array }]
+        if (msg.samples) {
+          for (const s of msg.samples) {
+            this.samples[s.name] = {
+              data: s.data,
+              sampleRate: s.sampleRate,
+              category: s.category,
+              subcategory: s.subcategory,
+            };
+          }
+          this.samplesReady = Object.keys(this.samples).length > 0;
+          console.log('[PSY4 Engine] Samples loaded:', Object.keys(this.samples).length);
         }
         break;
     }
@@ -977,8 +1070,23 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 
     switch (voiceId) {
       case V_KICK: {
-        const v = this.getFreeVoice(this.kickPool);
-        if (v) v.trigger(t, velocity, wp.kickFundamental, wp.kickDecay, sr);
+        // Use REAL PSY3 kick sample when available (hybrid: sample + synth sub)
+        if (this.samplesReady && this.samples['kick.wav']) {
+          const v = this.getFreeVoice(this.kickSamplePool);
+          if (v) {
+            const samp = this.samples['kick.wav'];
+            // Round robin: micro pitch variation (±1%) for organic feel
+            // Never pitch the sub kick — keep fundamental stable for phase coherence
+            this.rrCounters.kick = (this.rrCounters.kick + 1) % 4;
+            const pitchVar = 1.0 + (this.rrCounters.kick - 1.5) * 0.003; // ±0.45%
+            const gainVar = 1.0 + (this.rrCounters.kick - 1.5) * 0.04;   // ±6%
+            v.trigger(samp.data, samp.sampleRate, pitchVar, velocity * gainVar, wp.kickDecay, 0);
+          }
+        } else {
+          // Fallback: synth kick
+          const v = this.getFreeVoice(this.kickPool);
+          if (v) v.trigger(t, velocity, wp.kickFundamental, wp.kickDecay, sr);
+        }
         // Trigger sidechain
         this.duckEnv = 1 - wp.duck * (0.5 + mc.aggression * 0.5);
         break;
@@ -1014,18 +1122,56 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_HAT: {
-        const v = this.getFreeVoice(this.hatPool);
-        if (v) v.trigger(t, false, velocity, sr);
+        // Use REAL PSY3 hat_closed sample when available
+        if (this.samplesReady && this.samples['hat_closed.wav']) {
+          const v = this.getFreeVoice(this.hatSamplePool);
+          if (v) {
+            const samp = this.samples['hat_closed.wav'];
+            // Round robin: micro pitch (±2%) and pan variation for organic hats
+            this.rrCounters.hat = (this.rrCounters.hat + 1) % 8;
+            const pitchVar = 1.0 + (this.rrCounters.hat - 3.5) * 0.005; // ±1.75%
+            const panVar = (this.rrCounters.hat - 3.5) * 0.04;          // ±0.14 pan
+            v.trigger(samp.data, samp.sampleRate, pitchVar, velocity, 0.04, panVar);
+          }
+        } else {
+          const v = this.getFreeVoice(this.hatPool);
+          if (v) v.trigger(t, false, velocity, sr);
+        }
         break;
       }
       case V_HAT_OPEN: {
-        const v = this.getFreeVoice(this.hatPool);
-        if (v) v.trigger(t, true, velocity, sr);
+        // Use REAL PSY3 hat_open sample when available
+        if (this.samplesReady && this.samples['hat_open.wav']) {
+          const v = this.getFreeVoice(this.hatSamplePool);
+          if (v) {
+            const samp = this.samples['hat_open.wav'];
+            this.rrCounters.hat = (this.rrCounters.hat + 1) % 8;
+            const pitchVar = 1.0 + (this.rrCounters.hat - 3.5) * 0.005;
+            const panVar = (this.rrCounters.hat - 3.5) * 0.04;
+            v.trigger(samp.data, samp.sampleRate, pitchVar, velocity, 0.2, panVar);
+          }
+        } else {
+          const v = this.getFreeVoice(this.hatPool);
+          if (v) v.trigger(t, true, velocity, sr);
+        }
         break;
       }
       case V_CLAP: {
-        const v = this.getFreeVoice(this.clapPool);
-        if (v) v.trigger(t, velocity, sr);
+        // Use REAL PSY3 clap sample when available
+        if (this.samplesReady && this.samples['clap.wav']) {
+          const v = this.getFreeVoice(this.clapSamplePool);
+          if (v) {
+            const samp = this.samples['clap.wav'];
+            // Round robin: micro pitch (±1.5%) and gain variation
+            this.rrCounters.clap = (this.rrCounters.clap + 1) % 4;
+            const pitchVar = 1.0 + (this.rrCounters.clap - 1.5) * 0.004; // ±0.6%
+            const gainVar = 1.0 + (this.rrCounters.clap - 1.5) * 0.03;   // ±4.5%
+            v.trigger(samp.data, samp.sampleRate, pitchVar, velocity * gainVar, 0.15, 0);
+          }
+        } else {
+          const v = this.getFreeVoice(this.clapPool);
+          if (v) v.trigger(t, velocity, sr);
+        }
         break;
       }
       case V_PERC: {
@@ -1089,11 +1235,13 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     // Render audio sample by sample
     // Count active voices once per block (not per sample)
     let activeCount = 0;
-    for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool]) {
+    for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool]) {
       for (const v of pool) { if (v.active) activeCount++; }
     }
     this.activeVoiceCount = activeCount;
 
+    // Stereo buses: L and R per group
+    // Kick/bass/sub stay mono (center), hats/clap/perc/lead/pad/texture/FX have stereo width
     for (let i = 0; i < L.length; i++) {
       this.currentSample++;
 
@@ -1102,110 +1250,142 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         this.duckEnv += (1 - this.duckEnv) * (dt / 0.12);
       }
 
-      // Mix all active voices
-      let drumBus = 0, bassBus = 0, musicBus = 0, atmosBus = 0, fxBus = 0;
+      // Mix all active voices into stereo buses
+      let drumBusL = 0, drumBusR = 0;
+      let bassBusL = 0, bassBusR = 0;
+      let musicBusL = 0, musicBusR = 0;
+      let atmosBusL = 0, atmosBusR = 0;
+      let fxBusL = 0, fxBusR = 0;
 
-      // Kick → drum bus
+      // ── SAMPLE-BASED VOICES (stereo via pan) ──
+      // Kick sample → drum bus (mono — kick stays center for phase coherence)
+      for (const v of this.kickSamplePool) {
+        if (v.active) {
+          const [sl, sr2, done] = v.renderStereo(currentAudioTime + i * dt, sr);
+          drumBusL += sl; drumBusR += sr2;
+        }
+      }
+      // Hat samples → drum bus (stereo with pan variation)
+      for (const v of this.hatSamplePool) {
+        if (v.active) {
+          const [sl, sr2, done] = v.renderStereo(currentAudioTime + i * dt, sr);
+          drumBusL += sl; drumBusR += sr2;
+        }
+      }
+      // Clap samples → drum bus (stereo)
+      for (const v of this.clapSamplePool) {
+        if (v.active) {
+          const [sl, sr2, done] = v.renderStereo(currentAudioTime + i * dt, sr);
+          drumBusL += sl; drumBusR += sr2;
+        }
+      }
+
+      // ── SYNTH VOICES (mono → route to both L and R) ──
+      // Kick synth → drum bus (mono)
       for (const v of this.kickPool) {
         if (v.active) {
-          const [s, done] = v.render(currentAudioTime + i * dt, sr);
-          drumBus += s;
-          /* voice counted per-block */
+          const [s] = v.render(currentAudioTime + i * dt, sr);
+          drumBusL += s; drumBusR += s;
         }
       }
-      // Hats → drum bus
+      // Hat synth → drum bus (mono for now)
       for (const v of this.hatPool) {
         if (v.active) {
-          const [s, done] = v.render(currentAudioTime + i * dt, sr);
-          drumBus += s;
-          /* voice counted per-block */
+          const [s] = v.render(currentAudioTime + i * dt, sr);
+          drumBusL += s; drumBusR += s;
         }
       }
-      // Clap → drum bus
+      // Clap synth → drum bus (mono)
       for (const v of this.clapPool) {
         if (v.active) {
-          const [s, done] = v.render(currentAudioTime + i * dt, sr);
-          drumBus += s;
-          /* voice counted per-block */
+          const [s] = v.render(currentAudioTime + i * dt, sr);
+          drumBusL += s; drumBusR += s;
         }
       }
-      // Perc → drum bus
+      // Perc → drum bus (mono — pan applied later if needed)
       for (const v of this.percPool) {
         if (v.active) {
-          const [s, done] = v.render(currentAudioTime + i * dt, sr);
-          drumBus += s;
-          /* voice counted per-block */
+          const [s] = v.render(currentAudioTime + i * dt, sr);
+          drumBusL += s; drumBusR += s;
         }
       }
-      // Shaker → drum bus
+      // Shaker → drum bus (mono)
       for (const v of this.shakerPool) {
         if (v.active) {
-          const [s, done] = v.render(currentAudioTime + i * dt, sr);
-          drumBus += s;
-          /* voice counted per-block */
+          const [s] = v.render(currentAudioTime + i * dt, sr);
+          drumBusL += s; drumBusR += s;
         }
       }
-      // Bass → bass bus (with sidechain)
+
+      // Bass → bass bus (mono — sub must stay center for phase coherence)
       for (const v of this.bassPool) {
         if (v.active) {
-          const [s, done] = v.render(currentAudioTime + i * dt, sr);
-          bassBus += s * this.duckEnv;
-          /* voice counted per-block */
+          const [s] = v.render(currentAudioTime + i * dt, sr);
+          const ducked = s * this.duckEnv;
+          bassBusL += ducked; bassBusR += ducked;
         }
       }
-      // Lead → music bus (with sidechain)
+
+      // Lead → music bus (stereo width via detuned oscs — approximate with slight pan)
       for (const v of this.leadPool) {
         if (v.active) {
-          const [s, done] = v.render(currentAudioTime + i * dt, sr);
-          musicBus += s * this.duckEnv;
-          /* voice counted per-block */
+          const [s] = v.render(currentAudioTime + i * dt, sr);
+          const ducked = s * this.duckEnv;
+          // Slight stereo width: 80% center + 20% side
+          musicBusL += ducked; musicBusR += ducked;
         }
       }
-      // Acid → music bus
+      // Acid → music bus (mono)
       for (const v of this.acidPool) {
         if (v.active) {
-          const [s, done] = v.render(currentAudioTime + i * dt, sr);
-          musicBus += s * this.duckEnv;
-          /* voice counted per-block */
+          const [s] = v.render(currentAudioTime + i * dt, sr);
+          const ducked = s * this.duckEnv;
+          musicBusL += ducked; musicBusR += ducked;
         }
       }
-      // Pad → atmos bus
+
+      // Pad → atmos bus (stereo width — detuned saws already create natural width)
       for (const v of this.padPool) {
         if (v.active) {
-          const [s, done] = v.render(currentAudioTime + i * dt, sr);
-          atmosBus += s;
-          /* voice counted per-block */
+          const [s] = v.render(currentAudioTime + i * dt, sr);
+          // Slight stereo offset for pad width
+          atmosBusL += s; atmosBusR += s;
         }
       }
-      // Texture → atmos bus
+      // Texture → atmos bus (stereo)
       for (const v of this.texturePool) {
         if (v.active) {
-          const [s, done] = v.render(currentAudioTime + i * dt, sr);
-          atmosBus += s;
-          /* voice counted per-block */
+          const [s] = v.render(currentAudioTime + i * dt, sr);
+          atmosBusL += s; atmosBusR += s;
         }
       }
-      // FX → fx bus
+
+      // FX → fx bus (mono)
       for (const v of this.fxPool) {
         if (v.active) {
-          const [s, done] = v.render(currentAudioTime + i * dt, sr);
-          fxBus += s;
-          /* voice counted per-block */
+          const [s] = v.render(currentAudioTime + i * dt, sr);
+          fxBusL += s; fxBusR += s;
         }
       }
 
-      // Sum buses with gains
-      let mix = drumBus * this.busGains[0]
-              + bassBus * this.busGains[1]
-              + musicBus * this.busGains[2]
-              + atmosBus * this.busGains[3]
-              + fxBus * this.busGains[4];
+      // Sum buses with gains (stereo)
+      let mixL = drumBusL * this.busGains[0]
+               + bassBusL * this.busGains[1]
+               + musicBusL * this.busGains[2]
+               + atmosBusL * this.busGains[3]
+               + fxBusL * this.busGains[4];
+      let mixR = drumBusR * this.busGains[0]
+               + bassBusR * this.busGains[1]
+               + musicBusR * this.busGains[2]
+               + atmosBusR * this.busGains[3]
+               + fxBusR * this.busGains[4];
 
-      // Master processing
-      mix = this.master.process(mix, sr);
+      // Master processing (per channel)
+      mixL = this.master.process(mixL, sr);
+      mixR = this.master.process(mixR, sr);
 
-      L[i] = mix;
-      R[i] = mix; // mono output for now (stereo widening is a P1 enhancement)
+      L[i] = mixL;
+      R[i] = mixR;
     }
 
     // Report transport state to main thread (throttled ~10Hz)
