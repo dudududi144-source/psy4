@@ -26,6 +26,9 @@
  * REAL IMPLEMENTATION — browser-native Web Audio.
  */
 
+import { getVoiceSpecs, VoiceSpecSet, ChannelStripSpec } from './voiceSpecs';
+import { getSoundBank } from './soundBank';
+
 // ─── Music Theory ───────────────────────────────────────────────
 
 const SCALES: Record<string, number[]> = {
@@ -304,10 +307,23 @@ export class Psy4LiveEngine {
   currentPhrase = 0;
   phrasesPlayed = 0;
 
+  // channel strips — per-voice gain/HP/pan/send
+  private channelStrips: Map<string, { input: GainNode; hp: BiquadFilterNode; gain: GainNode; reverbSend: GainNode; delaySend: GainNode; panner: StereoPannerNode }> = new Map();
+  private voiceSpecs: VoiceSpecSet | null = null;
+  private soundBank = getSoundBank();
+
   init() {
     if (this.ctx) return;
     const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     const c = this.ctx = new Ctx({ latencyHint: 'interactive' });
+
+    // Load voice specs for current world
+    this.voiceSpecs = getVoiceSpecs(this.world.id);
+
+    // Load sound bank samples
+    this.soundBank.init(c).then(() => {
+      console.log('SoundBank loaded:', this.soundBank.listLoaded());
+    }).catch(e => console.warn('SoundBank load failed:', e));
 
     this.sum = c.createGain();
     this.duck = c.createGain();
@@ -331,6 +347,35 @@ export class Psy4LiveEngine {
     this.analyser = c.createAnalyser(); this.analyser.fftSize = 2048;
     this.master.connect(this.analyser);
 
+    // ── BUILD CHANNEL STRIPS ─────────────────────────────────
+    // Each voice gets: input → HP filter → gain → pan → sum
+    //                                → reverbSend → reverb
+    //                                → delaySend → delay
+    if (this.voiceSpecs) {
+      for (const [name, strip] of Object.entries(this.voiceSpecs.channels)) {
+        const input = c.createGain();
+        const hp = c.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = strip.hpFreq;
+        const gain = c.createGain();
+        gain.gain.value = Math.pow(10, strip.gainDb / 20);
+        const panner = c.createStereoPanner();
+        panner.pan.value = strip.pan;
+        const reverbSend = c.createGain();
+        reverbSend.gain.value = strip.reverbSend;
+        const delaySend = c.createGain();
+        delaySend.gain.value = strip.delaySend;
+
+        // Chain: input → hp → gain → panner → sum
+        input.connect(hp); hp.connect(gain); gain.connect(panner);
+        panner.connect(this.sum);
+        // Sends (post-fader)
+        gain.connect(reverbSend); gain.connect(delaySend);
+
+        this.channelStrips.set(name, { input, hp, gain, reverbSend, delaySend, panner });
+      }
+    }
+
     // stereo delay (ping-pong)
     this.dSend = c.createGain();
     const dL = c.createDelay(2), dR = c.createDelay(2);
@@ -349,11 +394,25 @@ export class Psy4LiveEngine {
     this.conv = c.createConvolver(); this.conv.buffer = this.makeImpulse(2.2, 2.5);
     this.rSend.connect(this.conv); this.conv.connect(this.sum);
 
+    // Connect channel strip sends to FX returns
+    for (const [, strip] of this.channelStrips) {
+      strip.reverbSend.connect(this.rSend);
+      strip.delaySend.connect(this.dSend!);
+    }
+
     // pre-generate buffers + waves
     this.pink = this.makePink();
     this.sawWave = this.makeWave('saw', 48);
     this.sqWave = this.makeWave('square', 48);
     this.triWave = this.makeWave('triangle', 48);
+  }
+
+  /** Get the channel input node for a voice — voices connect here instead of directly to sum. */
+  private getChannelInput(name: string): GainNode {
+    const strip = this.channelStrips.get(name);
+    if (strip) return strip.input;
+    // Fallback: connect directly to sum if no channel strip defined
+    return this.sum!;
   }
 
   private makeWave(type: string, nH: number): PeriodicWave {
@@ -450,8 +509,8 @@ export class Psy4LiveEngine {
     //        click → clickHP → clickG → sum (no sat, clean transient)
     sub.connect(sat);
     mid.connect(midSat); midSat.connect(midG); midG.connect(sat);
-    sat.connect(satG); satG.connect(this.sum!);
-    clickSrc.connect(clickHP); clickHP.connect(clickG); clickG.connect(this.sum!);
+    sat.connect(satG); satG.connect(this.getChannelInput('kick'));
+    clickSrc.connect(clickHP); clickHP.connect(clickG); clickG.connect(this.getChannelInput('kick'));
 
     sub.start(t); mid.start(t); clickSrc.start(t);
     sub.stop(t + this.world.kickDecay + 0.02);
@@ -508,7 +567,7 @@ export class Psy4LiveEngine {
     //        sub → subG → gain (sub bypasses filter for clean low end)
     o.connect(fl); fl.connect(dist); dist.connect(g);
     sub.connect(subG); subG.connect(g);
-    g.connect(this.sum!);
+    g.connect(this.getChannelInput('bass'));
     o.start(t); sub.start(t);
     o.stop(t + dur + 0.03); sub.stop(t + dur + 0.03);
   }
@@ -546,7 +605,7 @@ export class Psy4LiveEngine {
       const pp = c.createStereoPanner(); pp.pan.value = (i - 2) * 0.2;
       o.connect(pp); pp.connect(fl); o.start(t); o.stop(t + dur + 0.05);
     }
-    fl.connect(g); g.connect(this.sum!);
+    fl.connect(g); g.connect(this.getChannelInput('lead'));
     if (this.dSend) g.connect(this.dSend);
     if (this.rSend) g.connect(this.rSend);
   }
@@ -569,7 +628,7 @@ export class Psy4LiveEngine {
     const curve = new Float32Array(256);
     for (let i = 0; i < 256; i++) { const x = (i / 128) - 1; curve[i] = Math.tanh(x * 3); }
     dist.curve = curve;
-    o.connect(fl); fl.connect(dist); dist.connect(g); g.connect(this.sum!);
+    o.connect(fl); fl.connect(dist); dist.connect(g); g.connect(this.getChannelInput('lead'));
     if (this.dSend) g.connect(this.dSend);
     o.start(t); o.stop(t + dur + 0.05);
   }
@@ -602,7 +661,7 @@ export class Psy4LiveEngine {
     const outFilter = c.createBiquadFilter(); outFilter.type = 'highpass';
     outFilter.frequency.value = open ? 6000 : 7500;
     metalMix.connect(outFilter); noiseG.connect(outFilter);
-    outFilter.connect(g); g.connect(p); p.connect(this.sum!);
+    outFilter.connect(g); g.connect(p); p.connect(this.getChannelInput('hat'));
     s.start(t); s.stop(t + 0.3);
   }
 
@@ -614,7 +673,7 @@ export class Psy4LiveEngine {
     g.gain.linearRampToValueAtTime(amp, t + 0.003);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
     const p = c.createStereoPanner(); p.pan.value = pan;
-    s.connect(hp); hp.connect(g); g.connect(p); p.connect(this.sum!);
+    s.connect(hp); hp.connect(g); g.connect(p); p.connect(this.getChannelInput('shaker'));
     s.start(t); s.stop(t + 0.08);
   }
 
@@ -632,7 +691,7 @@ export class Psy4LiveEngine {
       g.gain.setValueAtTime(amp * burstAmps[i], t + burstTimes[i]);
       g.gain.exponentialRampToValueAtTime(0.001, t + burstTimes[i] + burstDecays[i]);
       const p = c.createStereoPanner(); p.pan.value = (i % 2 === 0) ? -0.15 : 0.15;
-      s.connect(bp); bp.connect(g); g.connect(p); p.connect(this.sum!);
+      s.connect(bp); bp.connect(g); g.connect(p); p.connect(this.getChannelInput('clap'));
       if (i === 3 && this.rSend) g.connect(this.rSend); // only tail gets reverb
       s.start(t + burstTimes[i]); s.stop(t + burstTimes[i] + burstDecays[i] + 0.05);
     }
@@ -646,7 +705,7 @@ export class Psy4LiveEngine {
     g.gain.setValueAtTime(amp, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
     const p = c.createStereoPanner(); p.pan.value = pan;
-    o.connect(g); g.connect(p); p.connect(this.sum!);
+    o.connect(g); g.connect(p); p.connect(this.getChannelInput('perc'));
     o.start(t); o.stop(t + 0.1);
   }
 
@@ -677,7 +736,7 @@ export class Psy4LiveEngine {
         const pp = c.createStereoPanner(); pp.pan.value = i ? 0.4 : -0.4;
         o.connect(pp); pp.connect(lp); o.start(t); o.stop(t + dur + 0.1);
       }
-      lp.connect(g); g.connect(this.sum!);
+      lp.connect(g); g.connect(this.getChannelInput('pad'));
       if (this.rSend) g.connect(this.rSend);
     });
   }
@@ -698,8 +757,8 @@ export class Psy4LiveEngine {
       const pl = c.createStereoPanner(); pl.pan.value = -0.3;
       const pr = c.createStereoPanner(); pr.pan.value = 0.3;
       s.connect(bp); bp.connect(g);
-      g.connect(pl); pl.connect(this.sum!);
-      g.connect(pr); pr.connect(this.sum!);
+      g.connect(pl); pl.connect(this.getChannelInput('texture'));
+      g.connect(pr); pr.connect(this.getChannelInput('texture'));
       if (this.rSend) g.connect(this.rSend);
       s.start(t); s.stop(t + dur + 0.1);
     } else if (this.world.textureType === 'fm') {
@@ -715,7 +774,7 @@ export class Psy4LiveEngine {
       g.gain.linearRampToValueAtTime(amp * 0.6, t + 0.5);
       g.gain.linearRampToValueAtTime(0, t + dur);
       const pp = c.createStereoPanner(); pp.pan.value = 0.2;
-      carrier.connect(g); g.connect(pp); pp.connect(this.sum!);
+      carrier.connect(g); g.connect(pp); pp.connect(this.getChannelInput('texture'));
       if (this.rSend) g.connect(this.rSend);
       carrier.start(t); mod.start(t);
       carrier.stop(t + dur + 0.1); mod.stop(t + dur + 0.1);
@@ -736,7 +795,7 @@ export class Psy4LiveEngine {
       o1.connect(fl); o2.connect(fl); fl.connect(g);
       const pl = c.createStereoPanner(); pl.pan.value = -0.25;
       const pr = c.createStereoPanner(); pr.pan.value = 0.25;
-      g.connect(pl); pl.connect(this.sum!); g.connect(pr); pr.connect(this.sum!);
+      g.connect(pl); pl.connect(this.getChannelInput('texture')); g.connect(pr); pr.connect(this.getChannelInput('texture'));
       if (this.rSend) g.connect(this.rSend);
       o1.start(t); o2.start(t); o1.stop(t + dur + 0.1); o2.stop(t + dur + 0.1);
     }
@@ -751,7 +810,7 @@ export class Psy4LiveEngine {
     g.gain.setValueAtTime(0.001, t);
     g.gain.exponentialRampToValueAtTime(0.25, t + dur);
     g.gain.exponentialRampToValueAtTime(0.001, t + dur + 0.05);
-    s.connect(bp); bp.connect(g); g.connect(this.sum!);
+    s.connect(bp); bp.connect(g); g.connect(this.getChannelInput('fx'));
     if (this.rSend) g.connect(this.rSend);
     s.start(t); s.stop(t + dur + 0.1);
   }
@@ -763,7 +822,7 @@ export class Psy4LiveEngine {
     const g = c.createGain();
     g.gain.setValueAtTime(0.7, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
-    o.connect(g); g.connect(this.sum!);
+    o.connect(g); g.connect(this.getChannelInput('fx'));
     o.start(t); o.stop(t + 0.55);
   }
 
@@ -778,7 +837,7 @@ export class Psy4LiveEngine {
     g.gain.setValueAtTime(0.001, t);
     g.gain.linearRampToValueAtTime(0.15, t + dur * 0.5);
     g.gain.linearRampToValueAtTime(0.001, t + dur);
-    s.connect(lp); lp.connect(g); g.connect(this.sum!);
+    s.connect(lp); lp.connect(g); g.connect(this.getChannelInput('fx'));
     if (this.rSend) g.connect(this.rSend);
     s.start(t); s.stop(t + dur + 0.2);
   }
@@ -799,7 +858,7 @@ export class Psy4LiveEngine {
     const g = c.createGain();
     g.gain.setValueAtTime(amp, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
-    car.connect(g); g.connect(this.sum!);
+    car.connect(g); g.connect(this.getChannelInput('fx'));
     if (this.dSend) g.connect(this.dSend);
     car.start(t); mod.start(t);
     car.stop(t + 0.06); mod.stop(t + 0.06);
@@ -812,7 +871,7 @@ export class Psy4LiveEngine {
     const g = c.createGain();
     g.gain.setValueAtTime(amp, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.02);
-    o.connect(g); g.connect(this.sum!);
+    o.connect(g); g.connect(this.getChannelInput('fx'));
     if (this.dSend) g.connect(this.dSend);
     o.start(t); o.stop(t + 0.03);
   }
@@ -826,7 +885,7 @@ export class Psy4LiveEngine {
     const g = c.createGain();
     g.gain.setValueAtTime(amp, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
-    o.connect(lp); lp.connect(g); g.connect(this.sum!);
+    o.connect(lp); lp.connect(g); g.connect(this.getChannelInput('fx'));
     if (this.rSend) g.connect(this.rSend);
     o.start(t); o.stop(t + 0.45);
   }
