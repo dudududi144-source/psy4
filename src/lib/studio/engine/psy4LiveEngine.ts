@@ -272,13 +272,49 @@ const DEFAULT_MACROS: Macros = {
 
 // ─── Section ────────────────────────────────────────────────────
 
-const SECTION_CYCLE = ['intro', 'build', 'drop', 'break', 'drop', 'climax'] as const;
-type SectionType = typeof SECTION_CYCLE[number];
+// ─── ARRANGEMENT ENGINE ──────────────────────────────────────────────────
+// Real arrangement with 10 sections, variation between drops, and
+// per-section musical parameters. NOT a simple 8-bar loop.
+
+interface ArrangementSection {
+  type: 'intro' | 'groove' | 'build' | 'dropA' | 'variation' | 'break' | 'build2' | 'dropB' | 'breakdown' | 'finalDrop' | 'outro';
+  bars: number;
+  density: number;
+  energy: number;
+  bassOn: boolean;
+  leadOn: boolean;
+  acidOn: boolean;
+  hatDensity: number;    // 0..1
+  percDensity: number;   // 0..1
+  fxDensity: number;     // 0..1
+  variation: number;     // 0..1 — how much to vary from previous section
+  label: string;
+}
+
+const ARRANGEMENT: ArrangementSection[] = [
+  { type: 'intro',      bars: 16, density: 0.2, energy: 0.3, bassOn: false, leadOn: false, acidOn: false, hatDensity: 0.2, percDensity: 0.1, fxDensity: 0.1, variation: 0, label: 'INTRO' },
+  { type: 'groove',     bars: 16, density: 0.5, energy: 0.5, bassOn: true,  leadOn: false, acidOn: false, hatDensity: 0.5, percDensity: 0.3, fxDensity: 0.15, variation: 0.3, label: 'GROOVE' },
+  { type: 'build',      bars: 8,  density: 0.6, energy: 0.7, bassOn: true,  leadOn: false, acidOn: false, hatDensity: 0.6, percDensity: 0.4, fxDensity: 0.4, variation: 0.5, label: 'BUILD' },
+  { type: 'dropA',      bars: 32, density: 0.9, energy: 0.95, bassOn: true, leadOn: true,  acidOn: true,  hatDensity: 0.8, percDensity: 0.5, fxDensity: 0.2, variation: 0, label: 'DROP A' },
+  { type: 'variation',  bars: 16, density: 0.85, energy: 0.9, bassOn: true, leadOn: true,  acidOn: true,  hatDensity: 0.7, percDensity: 0.6, fxDensity: 0.25, variation: 0.6, label: 'VARIATION' },
+  { type: 'break',      bars: 16, density: 0.25, energy: 0.3, bassOn: false, leadOn: false, acidOn: false, hatDensity: 0.2, percDensity: 0.15, fxDensity: 0.3, variation: 0.7, label: 'BREAK' },
+  { type: 'build2',     bars: 8,  density: 0.65, energy: 0.75, bassOn: true, leadOn: false, acidOn: false, hatDensity: 0.65, percDensity: 0.45, fxDensity: 0.45, variation: 0.4, label: 'BUILD 2' },
+  { type: 'dropB',      bars: 32, density: 0.95, energy: 1.0, bassOn: true, leadOn: true,  acidOn: true,  hatDensity: 0.85, percDensity: 0.55, fxDensity: 0.25, variation: 0.5, label: 'DROP B' },
+  { type: 'breakdown',  bars: 8,  density: 0.3, energy: 0.4, bassOn: false, leadOn: true,  acidOn: false, hatDensity: 0.3, percDensity: 0.2, fxDensity: 0.35, variation: 0.6, label: 'BREAKDOWN' },
+  { type: 'finalDrop',  bars: 32, density: 1.0, energy: 1.0, bassOn: true, leadOn: true,  acidOn: true,  hatDensity: 0.9, percDensity: 0.6, fxDensity: 0.3, variation: 0.4, label: 'FINAL DROP' },
+  { type: 'outro',      bars: 16, density: 0.3, energy: 0.4, bassOn: true,  leadOn: false, acidOn: false, hatDensity: 0.3, percDensity: 0.2, fxDensity: 0.2, variation: 0.3, label: 'OUTRO' },
+];
+
+type SectionType = 'intro' | 'groove' | 'build' | 'dropA' | 'variation' | 'break' | 'build2' | 'dropB' | 'breakdown' | 'finalDrop' | 'outro';
 
 interface Section {
   type: SectionType; bars: number; density: number;
   rng: Rng; motif: Motif; energy: number;
   chordIndex: number;
+  // Arrangement parameters
+  bassOn: boolean; leadOn: boolean; acidOn: boolean;
+  hatDensity: number; percDensity: number; fxDensity: number;
+  variation: number; label: string;
   // Musical grammar (PSY3-style controlled mutation)
   leadMotif: LeadMotif | null;
   acidPattern: AcidPattern | null;
@@ -1519,7 +1555,7 @@ export class Psy4LiveEngine {
     switch (action) {
       case 'drop':
         this.macros.energy = 1;
-        this.sectionIdx = 2; this.nextSection(); this.si = 0;
+        this.sectionIdx = 3; this.nextSection(); this.si = 0; // DROP A is index 3 in arrangement
         // IMMEDIATE: reset event timing to NOW + small buffer for instant response
         if (this.useWorkletEngine && this.ctx) {
           this.next = this.ctx.currentTime + 0.03; // 30ms = fast response
@@ -1531,7 +1567,7 @@ export class Psy4LiveEngine {
         break;
       case 'breakdown':
         this.macros.energy = 0.2; this.macros.space = Math.min(1, this.macros.space + 0.3);
-        this.sectionIdx = 3; this.nextSection(); this.si = 0;
+        this.sectionIdx = 5; this.nextSection(); this.si = 0; // BREAK is index 5
         if (this.useWorkletEngine && this.ctx) {
           this.next = this.ctx.currentTime + 0.03;
         }
@@ -1549,37 +1585,38 @@ export class Psy4LiveEngine {
   }
 
   private nextSection() {
-    const typ = SECTION_CYCLE[this.sectionIdx % SECTION_CYCLE.length];
-    const bars = { intro: 8, build: 8, drop: 16, break: 8, climax: 16 }[typ] || 8;
-    const baseDensity = { intro: 0.3, build: 0.6, drop: 0.9, break: 0.25, climax: 1 }[typ] || 0.5;
-    const density = Math.max(0.15, Math.min(1, baseDensity * (0.5 + 0.7 * this.macros.energy)));
+    // Use the arrangement array — cycles through INTRO→GROOVE→BUILD→DROP A→VARIATION→BREAK→BUILD 2→DROP B→BREAKDOWN→FINAL DROP→OUTRO
+    const arrSection = ARRANGEMENT[this.sectionIdx % ARRANGEMENT.length];
+    const typ = arrSection.type;
+    const bars = arrSection.bars;
+    const density = Math.max(0.15, Math.min(1, arrSection.density * (0.5 + 0.7 * this.macros.energy)));
     const rng = new Rng(this.seed * 1000 + this.sectionIdx);
     const motif = new Motif(this.world.root, this.world.scale, rng);
-    const energy = { intro: 0.3, build: 0.6, drop: 0.95, break: 0.2, climax: 1 }[typ] || 0.5;
+    const energy = arrSection.energy;
 
     // ── PSY3-STYLE MUSICAL GRAMMAR ──
-    // Create grammar objects with seeded RNG for deterministic variation
     const grammarRng = new SeededRng(this.seed * 1000 + this.sectionIdx + 999);
-    const leadMotif = (typ !== 'intro' && typ !== 'break')
+    const leadMotif = arrSection.leadOn
       ? new LeadMotif(this.world.root, this.world.scale, grammarRng)
       : null;
-    const acidPattern = this.world.acid
+    const acidPattern = (arrSection.acidOn && this.world.acid)
       ? new AcidPattern(this.world.root, this.world.scale, grammarRng)
       : null;
-    // Choose bass pattern based on world type
     const bassPatterns = BASS_PATTERNS[this.world.bass] || BASS_PATTERNS.off;
     const bassPatternIdx = grammarRng.int(0, bassPatterns.length - 1);
-    // Tension shape per section type
-    const tensionShape: TensionShape = typ === 'build' ? 'rise' : typ === 'break' ? 'fall' : 'arc';
+    const tensionShape: TensionShape = typ === 'build' || typ === 'build2' ? 'rise' : typ === 'break' || typ === 'breakdown' ? 'fall' : 'arc';
 
-    // ── CALL/RESPONSE ENGINE (prevents MIDI soup) ──
-    // Primary lead and counter-lead alternate, never play simultaneously.
-    // Creates musical conversation instead of everything-at-once.
+    // ── CALL/RESPONSE ENGINE ──
     this.callResponse = new CallResponseEngine(this.world.root, this.world.scale, grammarRng);
 
-    this.sec = { type: typ, bars, density, rng, motif, energy, chordIndex: 0,
-                 leadMotif, acidPattern, bassPatternIdx, tensionShape };
-    this.currentSection = typ;
+    this.sec = {
+      type: typ, bars, density, rng, motif, energy, chordIndex: 0,
+      leadMotif, acidPattern, bassPatternIdx, tensionShape,
+      bassOn: arrSection.bassOn, leadOn: arrSection.leadOn, acidOn: arrSection.acidOn,
+      hatDensity: arrSection.hatDensity, percDensity: arrSection.percDensity,
+      fxDensity: arrSection.fxDensity, variation: arrSection.variation, label: arrSection.label,
+    };
+    this.currentSection = arrSection.label;
     this.sectionIdx++;
   }
 
@@ -1632,8 +1669,8 @@ export class Psy4LiveEngine {
 
     // ─── SECTION AUTOMATION ──────────────────────────────────
     // DROP CONTRAST: last 2 bars of build — remove bass, narrow filter, create tension
-    const isPreDrop = S.type === 'build' && bar >= S.bars - 2;
-    const isDropStart = S.type === 'drop' && bar === 0;
+    const isPreDrop = S.label.includes('BUILD') && bar >= S.bars - 2;
+    const isDropStart = S.bassOn && S.leadOn && bar === 0;
 
     // Riser before drop (last 2 bars of build)
     if (isPreDrop && sb === 0) {
@@ -1644,11 +1681,11 @@ export class Psy4LiveEngine {
       this.impact(t);
     }
     // Filter sweep in breakdown
-    if (S.type === 'break' && bar === 0 && sb === 0) {
+    if (!S.bassOn && bar === 0 && sb === 0) {
       this.sweep(t, this.s16() * 32);
     }
     // Sweep at section transitions (last bar)
-    if (bar === S.bars - 1 && sb === 12 && S.type !== 'break') {
+    if (bar === S.bars - 1 && sb === 12 && S.bassOn) {
       this.sweep(t, this.s16() * 4);
     }
     // Downlifter at drop start (descending sweep after impact = contrast)
@@ -1660,14 +1697,14 @@ export class Psy4LiveEngine {
     if (sb === 0 && bar === 0) {
       // Legacy path: adjust Web Audio reverb/delay sends
       if (this.rSend && this.ctx) {
-        const reverbTarget = S.type === 'break' ? 0.4 + this.macros.space * 0.3
-                           : S.type === 'drop' ? 0.15 + this.macros.space * 0.2
+        const reverbTarget = !S.bassOn ? 0.4 + this.macros.space * 0.3
+                           : S.bassOn && S.leadOn ? 0.15 + this.macros.space * 0.2
                            : 0.2 + this.macros.space * 0.25;
         this.rSend.gain.setTargetAtTime(reverbTarget, t, 0.5);
       }
       if (this.dSend && this.ctx) {
-        const delayTarget = S.type === 'break' ? 0.3 + this.macros.space * 0.2
-                          : S.type === 'build' ? 0.25 + this.macros.psychedelia * 0.15
+        const delayTarget = !S.bassOn ? 0.3 + this.macros.space * 0.2
+                          : S.label.includes('BUILD') ? 0.25 + this.macros.psychedelia * 0.15
                           : 0.15 + this.macros.psychedelia * 0.1;
         this.dSend.gain.setTargetAtTime(delayTarget, t, 0.5);
       }
@@ -1681,17 +1718,17 @@ export class Psy4LiveEngine {
         const space = this.macros.space;
         const psy = this.macros.psychedelia;
         let revSends: number[], delSends: number[], revWet: number, delWet: number, delFb: number;
-        if (S.type === 'break') {
+        if (!S.bassOn) {
           // Break: max space, atmospheric
           revSends = [0.12, 0.03, 0.40, 0.60, 0.45];
           delSends = [0.08, 0.0, 0.30, 0.20, 0.25];
           revWet = 0.45; delWet = 0.35; delFb = 0.45;
-        } else if (S.type === 'build') {
+        } else if (S.label.includes('BUILD')) {
           // Build: rising tension, more delay
           revSends = [0.10, 0.02, 0.30, 0.45, 0.35];
           delSends = [0.06, 0.0, 0.25, 0.15, 0.20];
           revWet = 0.35; delWet = 0.30; delFb = 0.40;
-        } else if (S.type === 'drop' || S.type === 'climax') {
+        } else if (S.bassOn && S.leadOn || S.bassOn && S.leadOn) {
           // Drop: dry punch, less reverb on drums/bass, moderate on music
           revSends = [0.05, 0.01, 0.20, 0.35, 0.25];
           delSends = [0.04, 0.0, 0.15, 0.08, 0.12];
@@ -1716,16 +1753,16 @@ export class Psy4LiveEngine {
     if (sb === 0 && bar % 2 === 0) {
       const progs = PROGRESSIONS[w.scale] || PROGRESSIONS.minor;
       const chord = progs[(bar / 2) % progs.length];
-      const padAmp = 0.03 * (0.5 + e * 0.5) * (S.type === 'break' ? 1.5 : 0.8);
+      const padAmp = 0.03 * (0.5 + e * 0.5) * (!S.bassOn ? 1.5 : 0.8);
       this.pad(t, w.root - 12, chord, this.s16() * 32, padAmp);
     }
 
     // ─── TEXTURE (every 4 bars + continuous bed in drops) ───
-    if (sb === 0 && bar % 4 === 0 && S.type !== 'intro') {
+    if (sb === 0 && bar % 4 === 0 && S.bassOn || S.leadOn) {
       this.texture(t, this.s16() * 64, w.textureLevel * (0.5 + psy * 0.5));
     }
     // Continuous texture bed in drops (every bar, lower volume)
-    if (sb === 0 && bar % 2 === 1 && (S.type === 'drop' || S.type === 'climax')) {
+    if (sb === 0 && bar % 2 === 1 && (S.bassOn && S.leadOn || S.bassOn && S.leadOn)) {
       this.texture(t, this.s16() * 32, w.textureLevel * 0.4 * psy);
     }
 
@@ -1736,7 +1773,7 @@ export class Psy4LiveEngine {
       this.kick(t, kickVel);
     }
     // Ghost kick on syncopated step in drop
-    if (S.type === 'drop' && sb === 14 && S.rng.chance(0.3 * dens)) {
+    if (S.bassOn && S.leadOn && sb === 14 && S.rng.chance(0.3 * dens)) {
       this.kick(t, 0.3);
     }
 
@@ -1759,7 +1796,7 @@ export class Psy4LiveEngine {
     // Rest before drop (last 2 bars of build — creates tension/contrast)
     if (isPreDrop) bassOn = false;
     // No bass in breakdown
-    if (S.type === 'break') bassOn = false;
+    if (!S.bassOn) bassOn = false;
 
     if (bassOn) {
       const bassNote = grammarScaleNote(w.root, w.scale, bassDegree);
@@ -1773,7 +1810,7 @@ export class Psy4LiveEngine {
     }
 
     // ─── ACID LINE (stored pattern with controlled mutation) ──
-    if (w.acid && S.type === 'drop' && sb % 2 === 0 && S.rng.chance(0.5 * psy)) {
+    if (w.acid && S.bassOn && S.leadOn && sb % 2 === 0 && S.rng.chance(0.5 * psy)) {
       // Use AcidPattern (stored pattern, not random pick)
       if (S.acidPattern) {
         const acidNote = S.acidPattern.next();
@@ -1790,30 +1827,30 @@ export class Psy4LiveEngine {
       this.hat(t + (sb % 4 === 2 ? sw * this.s16() : 0), false, hatVel, hatPan);
     }
     // Open hat on step 4
-    if (sb === 4 && S.type !== 'break') {
+    if (sb === 4 && S.bassOn) {
       this.hat(t, true, 0.06 + dens * 0.04, -0.25);
     }
     // Shaker on offbeats in groove/drop
-    if ((S.type === 'drop' || S.type === 'climax') && sb % 2 === 1 && S.rng.chance(0.6 * dens)) {
+    if ((S.bassOn && S.leadOn || S.bassOn && S.leadOn) && sb % 2 === 1 && S.rng.chance(0.6 * dens)) {
       this.shaker(t, 0.04 + dens * 0.03, -0.15 + Math.sin(s * 0.07) * 0.1);
     }
 
     // ─── CLAP / SNARE (on 2 & 4) ────────────────────────────
-    if (sb === 4 && S.type !== 'intro' && S.type !== 'break') {
+    if (sb === 4 && S.bassOn || S.leadOn && S.bassOn) {
       this.clap(t, 0.25 * (0.5 + e * 0.5));
     }
-    if (sb === 12 && S.type === 'drop') {
+    if (sb === 12 && S.bassOn && S.leadOn) {
       this.clap(t, 0.2 * (0.5 + e * 0.5));
     }
 
     // ─── PERCUSSION (world-specific pattern) ────────────────
-    if (w.percPattern[sb] === 'x' && S.type !== 'break' && S.rng.chance(0.7 * dens)) {
+    if (w.percPattern[sb] === 'x' && S.bassOn && S.rng.chance(0.7 * dens)) {
       const percPan = 0.3 + Math.sin(s * 0.05) * 0.2;
       this.perc(t, 0.1 + dens * 0.05, percPan);
     }
 
     // ─── DRUM FILL (last bar of phrase, steps 12-15) ────────
-    if (bar % 4 === 3 && sb >= 12 && S.type !== 'break') {
+    if (bar % 4 === 3 && sb >= 12 && S.bassOn) {
       if (sb === 12) this.perc(t, 0.12, 0.4);
       if (sb === 13) this.hat(t, false, 0.1, -0.3);
       if (sb === 14) this.perc(t, 0.1, -0.3);
@@ -1823,7 +1860,7 @@ export class Psy4LiveEngine {
     // ─── LEAD with CALL/RESPONSE (prevents MIDI soup) ────────
     // Primary lead and counter-lead alternate bars — never play simultaneously.
     // Creates musical conversation instead of everything-at-once.
-    if (S.density > 0.3 && S.type !== 'break' && this.callResponse) {
+    if (S.density > 0.3 && S.bassOn && this.callResponse) {
       // Determine which voice plays this bar (call/response)
       const phraseBar = bar % 8;
       const isPrimaryTurn = phraseBar < 2 || (phraseBar >= 4 && phraseBar < 6);
@@ -1852,20 +1889,20 @@ export class Psy4LiveEngine {
 
     // ─── EAR CANDY (from PSY3: zap, blip, downlifter) ──────
     // Random FM zap — adds psychedelic sparkle
-    if (S.rng.chance(0.03 * this.macros.surprise) && S.type === 'drop') {
+    if (S.rng.chance(0.03 * this.macros.surprise) && S.bassOn && S.leadOn) {
       this.zap(t, 0.08 + this.macros.psychedelia * 0.07);
     }
     // Random blip — ear candy accent
-    if (S.rng.chance(0.04 * this.macros.surprise) && S.type !== 'break') {
+    if (S.rng.chance(0.04 * this.macros.surprise) && S.bassOn) {
       const blipFreq = 800 + S.rng.int(0, 6) * 200;
       this.blip(t, blipFreq, 0.06 + this.macros.brightness * 0.04);
     }
     // Downlifter at 8-bar boundaries in builds/drops
-    if (bar % 8 === 7 && sb === 0 && (S.type === 'drop' || S.type === 'climax')) {
+    if (bar % 8 === 7 && sb === 0 && (S.bassOn && S.leadOn || S.bassOn && S.leadOn)) {
       this.downlifter(t, 0.12 + this.macros.energy * 0.08);
     }
     // Random percussion hit with varying pan (spatial interest)
-    if (S.rng.chance(0.02 * this.macros.surprise) && S.type !== 'break') {
+    if (S.rng.chance(0.02 * this.macros.surprise) && S.bassOn) {
       this.perc(t, 0.06, S.rng.gauss(0, 0.5));
     }
   }

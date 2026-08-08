@@ -220,20 +220,49 @@ export default function LivePage() {
             </div>
           )}
           {playing && Object.keys(sampleUsage).length > 0 && (
-            <div className="mt-3 p-3 rounded-lg bg-black/40 border border-border/40 max-h-48 overflow-y-auto">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">Sample Usage Report (what's actually playing)</div>
+            <div className="mt-3 p-3 rounded-lg bg-black/40 border border-border/40">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">NOW PLAYING</div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1 text-xs">
-                {Object.entries(sampleUsage).sort((a, b) => b[1] - a[1]).map(([name, hits]) => {
-                  const isReal = name.startsWith('nord') || name.startsWith('909') || name.startsWith('real');
-                  return (
-                    <div key={name} className="flex items-center justify-between gap-2">
-                      <span className={`font-mono truncate ${isReal ? 'text-emerald-400' : 'text-amber-400'}`}>
-                        {isReal ? '★ ' : ''}{name}
-                      </span>
-                      <span className="text-muted-foreground tabular-nums">{hits} hits</span>
-                    </div>
-                  );
-                })}
+                {/* Find the top sample per voice category */}
+                {(() => {
+                  const categories: Record<string, { name: string; hits: number }> = {};
+                  Object.entries(sampleUsage).forEach(([name, hits]) => {
+                    let cat = 'FX';
+                    if (name.includes('kick') || name.includes('BD')) cat = 'KICK';
+                    else if (name.includes('bass')) cat = 'BASS';
+                    else if (name.includes('hat')) cat = 'HAT';
+                    else if (name.includes('clap') || name.includes('snare')) cat = 'CLAP';
+                    else if (name.includes('perc') || name.includes('tom')) cat = 'PERC';
+                    else if (name.includes('stab')) cat = 'LEAD';
+                    if (!categories[cat] || hits > categories[cat].hits) {
+                      categories[cat] = { name, hits };
+                    }
+                  });
+                  const labels: Record<string, string> = {
+                    KICK: 'KICK', BASS: 'BASS', HAT: 'HAT', CLAP: 'CLAP',
+                    PERC: 'PERC', LEAD: 'LEAD', FX: 'FX',
+                  };
+                  return Object.entries(categories)
+                    .sort((a, b) => a[0].localeCompare(b[0]))
+                    .map(([cat, { name, hits }]) => {
+                      const isReal = name.startsWith('nord') || name.startsWith('909') || name.startsWith('real') || name.startsWith('md_');
+                      const shortName = name.replace('real/', '').replace('.wav', '').substring(0, 25);
+                      return (
+                        <div key={cat} className="flex items-center gap-2">
+                          <span className="text-muted-foreground font-bold w-10">{labels[cat] || cat}</span>
+                          <span className={`font-mono truncate flex-1 ${isReal ? 'text-emerald-400' : 'text-amber-400'}`}>
+                            {shortName}
+                          </span>
+                          <span className="text-muted-foreground tabular-nums">{hits}</span>
+                        </div>
+                      );
+                    });
+                })()}
+              </div>
+              <div className="mt-2 flex items-center gap-4 text-[10px] text-muted-foreground">
+                <span>Phrase: {phrase}</span>
+                <span>Section: {section}</span>
+                <span>Voices: {activeVoices}</span>
               </div>
             </div>
           )}
