@@ -1182,6 +1182,14 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           for (const v of pool) v.active = false;
         }
         break;
+      case 'newPhrase':
+        // Rotate phrase-locked samples at phrase boundaries
+        // This gives sonic consistency (same kick for 8 bars) then variation
+        this.phraseKickIdx = (this.phraseKickIdx || 0) + 1;
+        this.phraseHatIdx = (this.phraseHatIdx || 0) + 1;
+        this.phraseClapIdx = (this.phraseClapIdx || 0) + 1;
+        this.phrasePercIdx = (this.phrasePercIdx || 0) + 1;
+        break;
       case 'loadSamples':
         // Receive sample data from main thread (ArrayBuffer transfer)
         // msg.samples = [{ name, category, subcategory, sampleRate, data: Float32Array }]
@@ -1238,25 +1246,29 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 
     switch (voiceId) {
       case V_KICK: {
-        // Use REAL kick samples — search by CATEGORY, not filename prefix
-        // CRITICAL FIX: Previous code used n.startsWith('kick') which missed
-        // real samples named "nord_kick_*" and "909_BD_*". Now we filter by category.
+        // PHRASE-LOCKED KICK: Keep the same kick for 8 bars (sonic consistency)
+        // Commercial tracks don't change kick every hit — they keep it for phrases.
+        // The main thread sends 'newPhrase' messages at phrase boundaries to rotate.
         if (this.samplesReady) {
-          // Find all kick-category samples (includes real + procedural)
           const kickNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'kick');
-          // PREFER real samples (nord/909) over procedural (kick_*) for commercial quality
           const realKickNames = kickNames.filter(n => n.startsWith('nord') || n.startsWith('909') || n.startsWith('real'));
           const selectedNames = realKickNames.length > 0 ? realKickNames : kickNames;
 
           if (selectedNames.length > 0) {
-            const kickName = selectedNames[this.rrCounters.kick % selectedNames.length];
+            // PHRASE LOCK: Use the same kick sample for the entire phrase
+            // Only rotate when this.phraseKickIdx changes (set by 'newPhrase' message)
+            if (this.phraseKickIdx === undefined || this.phraseKickIdx >= selectedNames.length) {
+              this.phraseKickIdx = 0;
+            }
+            const kickName = selectedNames[this.phraseKickIdx];
             const v = this.getFreeVoice(this.kickSamplePool);
             if (v) {
               const samp = this.samples[kickName];
-              // Round robin: micro pitch variation (±0.45%) — preserve sub phase
-              this.rrCounters.kick = (this.rrCounters.kick + 1) % Math.max(4, selectedNames.length);
-              const pitchVar = 1.0 + (this.rrCounters.kick % 4 - 1.5) * 0.003;
-              const gainVar = 1.0 + (this.rrCounters.kick % 4 - 1.5) * 0.04;
+              // Micro variation: ±0.3% pitch, ±3% gain (imperceptible but organic)
+              const microVar = (this.rrCounters.kick % 4 - 1.5);
+              const pitchVar = 1.0 + microVar * 0.002;
+              const gainVar = 1.0 + microVar * 0.03;
+              this.rrCounters.kick = (this.rrCounters.kick + 1) % 4;
               v.trigger(samp.data, samp.sampleRate, pitchVar, velocity * gainVar, wp.kickDecay, 0);
               // TRACK: which sample actually played
               this.sampleUsage[kickName] = (this.sampleUsage[kickName] || 0) + 1;
@@ -1266,7 +1278,6 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
             if (v) v.trigger(t, velocity, wp.kickFundamental, wp.kickDecay, sr);
           }
         } else {
-          // Fallback: synth kick
           const v = this.getFreeVoice(this.kickPool);
           if (v) v.trigger(t, velocity, wp.kickFundamental, wp.kickDecay, sr);
         }
@@ -1305,22 +1316,23 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_HAT: {
-        // Use REAL hat samples — search by CATEGORY (includes MachineDrum hats)
+        // PHRASE-LOCKED HAT: Same hat sample for entire phrase (sonic consistency)
         if (this.samplesReady) {
           const hatNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'hat');
-          // Prefer real samples (md_hat, nord, 909, real) over PSY3/procedural
           const realHatNames = hatNames.filter(n => n.startsWith('md_') || n.startsWith('nord') || n.startsWith('909') || n.startsWith('real/'));
           const names = realHatNames.length > 0 ? realHatNames : hatNames;
           if (names.length > 0) {
-            const hatName = names[this.rrCounters.hat % names.length];
+            if (this.phraseHatIdx === undefined || this.phraseHatIdx >= names.length) this.phraseHatIdx = 0;
+            const hatName = names[this.phraseHatIdx];
             const v = this.getFreeVoice(this.hatSamplePool);
             if (v) {
               const samp = this.samples[hatName];
-              this.rrCounters.hat = (this.rrCounters.hat + 1) % Math.max(8, names.length);
-              const pitchVar = 1.0 + (this.rrCounters.hat % 8 - 3.5) * 0.005;
-              const panVar = (this.rrCounters.hat % 8 - 3.5) * 0.04;
+              // Micro variation (not sample rotation)
+              const microVar = (this.rrCounters.hat % 4 - 1.5);
+              const pitchVar = 1.0 + microVar * 0.003;
+              const panVar = microVar * 0.03;
+              this.rrCounters.hat = (this.rrCounters.hat + 1) % 4;
               v.trigger(samp.data, samp.sampleRate, pitchVar, velocity, 0.04, panVar);
-              // TRACK: which sample actually played
               this.sampleUsage[hatName] = (this.sampleUsage[hatName] || 0) + 1;
             }
           } else {
@@ -1359,22 +1371,22 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_CLAP: {
-        // Use REAL clap/snare samples — search by CATEGORY (includes nord snare)
+        // PHRASE-LOCKED CLAP: Same clap/snare for entire phrase
         if (this.samplesReady) {
           const clapNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'clap');
-          // Prefer real samples (nord snare) over procedural
-          const realClapNames = clapNames.filter(n => n.startsWith('nord') || n.startsWith('909') || n.startsWith('real'));
+          const realClapNames = clapNames.filter(n => n.startsWith('nord') || n.startsWith('909') || n.startsWith('real') || n.startsWith('md_'));
           const names = realClapNames.length > 0 ? realClapNames : clapNames;
           if (names.length > 0) {
-            const clapName = names[this.rrCounters.clap % names.length];
+            if (this.phraseClapIdx === undefined || this.phraseClapIdx >= names.length) this.phraseClapIdx = 0;
+            const clapName = names[this.phraseClapIdx];
             const v = this.getFreeVoice(this.clapSamplePool);
             if (v) {
               const samp = this.samples[clapName];
-              this.rrCounters.clap = (this.rrCounters.clap + 1) % Math.max(4, names.length);
-              const pitchVar = 1.0 + (this.rrCounters.clap % 4 - 1.5) * 0.004;
-              const gainVar = 1.0 + (this.rrCounters.clap % 4 - 1.5) * 0.03;
+              const microVar = (this.rrCounters.clap % 4 - 1.5);
+              const pitchVar = 1.0 + microVar * 0.002;
+              const gainVar = 1.0 + microVar * 0.02;
+              this.rrCounters.clap = (this.rrCounters.clap + 1) % 4;
               v.trigger(samp.data, samp.sampleRate, pitchVar, velocity * gainVar, 0.15, 0);
-              // TRACK: which sample actually played
               this.sampleUsage[clapName] = (this.sampleUsage[clapName] || 0) + 1;
             }
           } else {

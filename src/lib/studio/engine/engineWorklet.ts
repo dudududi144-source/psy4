@@ -191,6 +191,11 @@ export class Psy4EngineNode {
     this.node?.port.postMessage({ type: 'duck' });
   }
 
+  /** Notify worklet of a new phrase boundary — rotates phrase-locked samples. */
+  notifyNewPhrase() {
+    this.node?.port.postMessage({ type: 'newPhrase' });
+  }
+
   panic() {
     this.node?.port.postMessage({ type: 'panic' });
   }

@@ -1602,6 +1602,11 @@ export class Psy4LiveEngine {
         this.si = 0;
         this.currentPhrase++;
         this.phrasesPlayed++;
+        // Send 'newPhrase' to worklet — rotates phrase-locked samples
+        // This gives sonic consistency (same kick for 8 bars) then variation
+        if (this.useWorkletEngine && this.engineNode) {
+          this.engineNode.notifyNewPhrase();
+        }
       }
     }
     // Flush batched events to the engine worklet
