@@ -113,31 +113,49 @@ export const test02Bass: TestFn = () => {
 /** TEST 03 — MODULATION STABILITY: simultaneous modulation stays bounded. */
 export const test03Modulation: TestFn = () => {
   const t0 = Date.now();
-  const studio = new Studio({ bars: 4, sampleRate: 22050, blockSize: 256, seed: 3 });
-  // apply 3 simultaneous LFOs to filter + pitch + amplitude via params
-  const lfo1 = new LFO('sine', 22050, 1); lfo1.setFreqHz(0.5);
-  const lfo2 = new LFO('sine', 22050, 2); lfo2.setFreqHz(1.3);
-  const lfo3 = new LFO('sine', 22050, 3); lfo3.setFreqHz(2.7);
-  // schedule a sustained lead
-  for (let bar = 0; bar < 4; bar++) studio.scheduleLead(bar, 0, 69, 0.7, 4 * (60 / 138));
-  // mutate muse filter each block via setParams is not per-sample; instead verify output bounds
+  // Use the Iridium's internal modulation (morphLFO + FM + granular) + Muse's LFO
+  // which are ACTUALLY CONNECTED to the signal path (unlike the previous version
+  // which instantiated dead LFOs). This test verifies that heavy modulation
+  // produces bounded, non-NaN output.
+  const studio = new Studio({
+    bars: 4, sampleRate: 22050, blockSize: 256, seed: 3,
+    muse: { lfoDepth: 0.8, lfoRate: 3.7, resonance: 0.9, drive: 2 },
+    iridium: { fmAmount: 0.7, granular: 0.6, morphRate: 1.3, resonance: 0.8 },
+    h90: { algorithm1: 'psyphase', algorithm2: 'modfilter', mix: 0.6, modRate: 2.1, feedback: 0.7 },
+  });
+  // schedule sustained lead + texture so modulation is exercised
+  for (let bar = 0; bar < 4; bar++) {
+    studio.scheduleLead(bar, 0, 69, 0.7, 4 * (60 / 138));
+    studio.scheduleTexture(bar, 76, 0.5, 4 * (60 / 138));
+    studio.scheduleKick(bar, 0, 0.5);
+  }
   const { left } = studio.render(4);
   let assertions = 0; let ok = true; let msg = '';
   const p = peak(left);
   assertions++;
   if (p > 1.0) { ok = false; msg = `modulation caused clipping: peak=${p}`; }
   assertions++;
-  if (p < 0.001) { ok = false; msg = `modulation produced silence: peak=${p}`; }
-  // bounded: no NaN/Inf
+  if (p < 0.05) { ok = false; msg = `modulation produced near-silence: peak=${p}`; }
+  // bounded: no NaN/Inf anywhere
   assertions++;
   let hasNaN = false;
-  for (let i = 0; i < left.length; i += 1000) if (!isFinite(left[i])) { hasNaN = true; break; }
+  for (let i = 0; i < left.length; i += 500) if (!isFinite(left[i])) { hasNaN = true; break; }
   if (hasNaN) { ok = false; msg = 'output contains non-finite values'; }
+  // verify modulation actually CHANGED the signal (not constant)
+  // compare first half vs second half RMS — they should differ if modulation is active
+  assertions++;
+  const half = Math.floor(left.length / 2);
+  let rms1 = 0, rms2 = 0;
+  for (let i = 0; i < half; i++) rms1 += left[i] * left[i];
+  for (let i = half; i < left.length; i++) rms2 += left[i] * left[i];
+  rms1 = Math.sqrt(rms1 / half); rms2 = Math.sqrt(rms2 / (left.length - half));
+  const rmsDiff = Math.abs(rms1 - rms2) / Math.max(rms1, rms2, 0.001);
+  if (rmsDiff < 0.01) { ok = false; msg = `modulation had no effect: rms1=${rms1.toFixed(4)} rms2=${rms2.toFixed(4)} diff=${rmsDiff.toFixed(4)}`; }
   return {
     id: 'TEST-03', name: 'Modulation Stability',
     status: ok ? 'PASS' : 'FAIL', durationMs: Date.now() - t0, assertions,
-    message: ok ? `Output bounded: peak=${p.toFixed(3)}, no NaN/Inf` : msg,
-    metrics: { peak: p, lfoCount: 3 },
+    message: ok ? `Modulation bounded + active: peak=${p.toFixed(3)}, rmsChange=${rmsDiff.toFixed(3)}, no NaN` : msg,
+    metrics: { peak: p, rmsChange: rmsDiff, lfoCount: 3 },
   };
 };
 

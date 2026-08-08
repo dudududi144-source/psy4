@@ -45,10 +45,10 @@ export const IRIDIUM_DEFAULTS: IridiumParams = {
   decay: 2.0,
   sustain: 0.8,
   release: 3.0,
-  reverb: 0.5,
-  delay: 0.3,
+  reverb: 0.35,
+  delay: 0.2,
   delayFb: 0.4,
-  level: 0.35,
+  level: 0.18,
   granular: 0.4,
 };
 

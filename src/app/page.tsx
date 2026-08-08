@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -13,7 +13,7 @@ import { toast } from 'sonner';
 import {
   Activity, Radio, Cpu, AudioLines, Play, Square, Zap, GitBranch,
   CheckCircle2, XCircle, AlertCircle, FlaskConical, AudioWaveform,
-  Network, Gauge, Sparkles, Terminal, Download, RefreshCw,
+  Network, Gauge, Sparkles, Terminal, Download, RefreshCw, ShieldCheck,
 } from 'lucide-react';
 
 interface DeviceSpec {
@@ -226,11 +226,12 @@ export default function Page() {
       {/* MAIN TABS */}
       <main className="relative z-10 max-w-7xl mx-auto w-full px-4 sm:px-6 pb-16 flex-1">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-5 h-auto p-1 bg-card/40 psy-border">
+          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-6 h-auto p-1 bg-card/40 psy-border">
             <TabsTrigger value="rig" className="data-[state=active]:bg-fuchsia-500/15 data-[state=active]:text-fuchsia-200"><Radio className="w-3.5 h-3.5 mr-1.5" />Rig</TabsTrigger>
             <TabsTrigger value="graph" className="data-[state=active]:bg-cyan-500/15 data-[state=active]:text-cyan-200"><Network className="w-3.5 h-3.5 mr-1.5" />Graph</TabsTrigger>
             <TabsTrigger value="tests" className="data-[state=active]:bg-amber-500/15 data-[state=active]:text-amber-200"><FlaskConical className="w-3.5 h-3.5 mr-1.5" />Tests</TabsTrigger>
             <TabsTrigger value="artifacts" className="data-[state=active]:bg-lime-500/15 data-[state=active]:text-lime-200"><AudioLines className="w-3.5 h-3.5 mr-1.5" />Artifacts</TabsTrigger>
+            <TabsTrigger value="audit" className="data-[state=active]:bg-red-500/15 data-[state=active]:text-red-200"><ShieldCheck className="w-3.5 h-3.5 mr-1.5" />Audit</TabsTrigger>
             <TabsTrigger value="proof" className="data-[state=active]:bg-fuchsia-500/15 data-[state=active]:text-fuchsia-200"><Terminal className="w-3.5 h-3.5 mr-1.5" />Proof Log</TabsTrigger>
           </TabsList>
 
@@ -291,6 +292,11 @@ export default function Page() {
                 return <ArtifactCard key={id} id={id} artifact={a} generating={genArtifactId === id} onGenerate={() => generateArtifact(id)} onPlay={() => a && playArtifact(a.url)} />;
               })}
             </div>
+          </TabsContent>
+
+          {/* AUDIT TAB */}
+          <TabsContent value="audit" className="mt-6 space-y-5">
+            <AuditTab />
           </TabsContent>
 
           {/* PROOF LOG TAB */}
@@ -670,4 +676,153 @@ function ValidationView({ report }: { report: ValidationReport }) {
       </div>
     </Card>
   );
+}
+
+function AuditTab() {
+  const [report, setReport] = useState<AuditReportData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/studio/audit')
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { setReport(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
+  if (loading) return <Card className="psy-card p-10 text-center text-muted-foreground"><RefreshCw className="w-8 h-8 mx-auto mb-3 animate-spin text-red-400" />Loading independent audit report...</Card>;
+  if (!report) return (
+    <Card className="psy-card p-10 text-center">
+      <ShieldCheck className="w-10 h-10 mx-auto mb-3 opacity-40 text-red-400" />
+      <p className="text-muted-foreground mb-3">No audit report found.</p>
+      <p className="text-xs text-muted-foreground font-mono">Run: <code className="text-fuchsia-300">bun run scripts/independent-proof.ts</code></p>
+    </Card>
+  );
+
+  const v = report.finalVerdict;
+  const overallColor = v.overall === 'PASS' ? 'text-emerald-400' : v.overall === 'PARTIAL' ? 'text-amber-400' : 'text-red-400';
+  const overallIcon = v.overall === 'PASS' ? CheckCircle2 : v.overall === 'PARTIAL' ? AlertCircle : XCircle;
+
+  return (
+    <div className="space-y-5">
+      <Card className="psy-card p-5">
+        <div className="flex items-center gap-3 mb-4">
+          <ShieldCheck className="w-6 h-6 text-red-400" />
+          <div>
+            <h3 className="font-bold text-lg">Independent Adversarial Audit</h3>
+            <p className="text-sm text-muted-foreground">Phase 3 proof. The system was attacked by its own creator. {report.sections.filter((s) => s.status === 'PASS').length}/{report.sections.length} sections passed.</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          {[
+            { label: 'PROVEN', value: v.proven, color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' },
+            { label: 'PARTIAL', value: v.partiallyProven, color: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
+            { label: 'SIMULATED', value: v.simulated, color: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/30' },
+            { label: 'UNPROVEN', value: v.unproven, color: 'text-muted-foreground bg-muted/20 border-border' },
+            { label: 'FAILED', value: v.failed, color: 'text-red-400 bg-red-500/10 border-red-500/30' },
+          ].map((s) => (
+            <div key={s.label} className={`p-3 rounded-lg border ${s.color} text-center`}>
+              <div className="text-2xl font-black">{s.value}</div>
+              <div className="text-[10px] uppercase tracking-wider">{s.label}</div>
+            </div>
+          ))}
+        </div>
+        <div className={`mt-4 flex items-center gap-2 text-lg font-bold ${overallColor}`}>
+          {React.createElement(overallIcon, { className: 'w-5 h-5' })}
+          OVERALL: {v.overall}
+          <span className="text-sm font-normal text-muted-foreground ml-2">({v.proven}/{v.total} capabilities proven, {v.unproven} honestly unproven without hardware)</span>
+        </div>
+      </Card>
+
+      <Card className="psy-card p-5">
+        <h4 className="font-semibold mb-3">Section Results</h4>
+        <div className="space-y-1.5">
+          {report.sections.map((s) => {
+            const icon = s.status === 'PASS' ? CheckCircle2 : s.status === 'FAIL' ? XCircle : s.status === 'PARTIAL' ? AlertCircle : Activity;
+            const color = s.status === 'PASS' ? 'text-emerald-400' : s.status === 'FAIL' ? 'text-red-400' : s.status === 'PARTIAL' ? 'text-amber-400' : 'text-cyan-400';
+            return (
+              <div key={s.name} className="flex items-start gap-3 text-sm py-1.5 px-2 rounded hover:bg-fuchsia-500/5">
+                {React.createElement(icon, { className: `w-4 h-4 flex-shrink-0 mt-0.5 ${color}` })}
+                <div className="flex-1 min-w-0">
+                  <span className="font-semibold">{s.name}</span>
+                  <span className={`ml-2 text-xs font-mono ${color}`}>{s.status}</span>
+                  <p className="text-xs text-muted-foreground mt-0.5">{s.evidence}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      <Card className="psy-card p-5">
+        <h4 className="font-semibold mb-3">Capability Matrix</h4>
+        <div className="overflow-x-auto psy-scroll">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-border/40 text-muted-foreground">
+                <th className="text-left p-2">#</th>
+                <th className="text-left p-2">Capability</th>
+                <th className="text-left p-2">Classification</th>
+                <th className="text-left p-2">Evidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.capabilityMatrix.map((c, i) => {
+                const colors: Record<string, string> = {
+                  PROVEN: 'text-emerald-400 bg-emerald-500/10',
+                  PARTIALLY_PROVEN: 'text-amber-400 bg-amber-500/10',
+                  SIMULATED: 'text-cyan-400 bg-cyan-500/10',
+                  UNPROVEN: 'text-muted-foreground bg-muted/20',
+                  FALSE: 'text-red-400 bg-red-500/10',
+                };
+                return (
+                  <tr key={i} className="border-b border-border/20 hover:bg-fuchsia-500/5">
+                    <td className="p-2 text-muted-foreground">{i + 1}</td>
+                    <td className="p-2 font-medium">{c.capability}</td>
+                    <td className="p-2"><span className={`px-2 py-0.5 rounded text-[10px] font-mono ${colors[c.classification] || ''}`}>{c.classification}</span></td>
+                    <td className="p-2 text-muted-foreground">{c.evidence}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card className="psy-card p-5">
+        <h4 className="font-semibold mb-3">Hardware Reality Matrix</h4>
+        <p className="text-sm text-muted-foreground mb-3">{(report.machineReadable as { hardwareBoundary?: { honestStatement: string } }).hardwareBoundary?.honestStatement || 'See full report.'}</p>
+        <div className="overflow-x-auto psy-scroll max-h-96">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-border/40 text-muted-foreground">
+                <th className="text-left p-2">Device</th>
+                <th className="text-left p-2">Class</th>
+                <th className="text-right p-2">Confidence</th>
+                <th className="text-left p-2">Unproven Hardware Behavior</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(report.machineReadable as { hardwareBoundary?: { matrix: { device: string; classification: string; confidence: number; unprovenHardwareBehavior: string }[] } }).hardwareBoundary?.matrix?.map((h, i) => (
+                <tr key={i} className="border-b border-border/20">
+                  <td className="p-2 font-medium">{h.device}</td>
+                  <td className="p-2"><span className="text-[10px] font-mono text-cyan-300">{h.classification}</span></td>
+                  <td className="p-2 text-right font-mono text-fuchsia-300">{(h.confidence * 100).toFixed(0)}%</td>
+                  <td className="p-2 text-muted-foreground">{h.unprovenHardwareBehavior}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+interface AuditReportData {
+  timestamp: string;
+  engineVersion: string;
+  sections: { name: string; status: 'PASS' | 'FAIL' | 'PARTIAL' | 'INFO'; evidence: string }[];
+  capabilityMatrix: { capability: string; classification: string; evidence: string }[];
+  finalVerdict: { proven: number; partiallyProven: number; simulated: number; unproven: number; failed: number; total: number; overall: string };
+  machineReadable: Record<string, unknown>;
 }

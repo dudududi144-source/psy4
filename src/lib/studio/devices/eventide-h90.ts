@@ -27,11 +27,11 @@ export interface H90Params {
 export const H90_DEFAULTS: H90Params = {
   algorithm1: 'shimmer',
   algorithm2: 'modfilter',
-  mix: 0.45,
+  mix: 0.3,
   feedback: 0.45,
   modRate: 0.3,
   crush: 0.2,
-  level: 0.9,
+  level: 0.8,
 };
 
 export class H90Device extends Device {

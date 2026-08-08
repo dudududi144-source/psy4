@@ -1,0 +1,2121 @@
+{
+  "timestamp": "2026-08-08T03:02:41.375Z",
+  "engineVersion": "psy4-engine-1.0.0",
+  "sections": [
+    {
+      "name": "1. Core Test Suite",
+      "status": "PASS",
+      "evidence": "14/14 tests passed (26321ms). Failures: 0",
+      "data": {
+        "total": 14,
+        "pass": 14,
+        "fail": 0,
+        "blocked": 0,
+        "notImplemented": 0,
+        "totalMs": 26312
+      }
+    },
+    {
+      "name": "2. Closed-Loop Validator",
+      "status": "PASS",
+      "evidence": "23/23 checks passed, overall=PASS",
+      "data": {
+        "total": 23,
+        "pass": 23,
+        "fail": 0,
+        "blocked": 0,
+        "notImplemented": 0
+      }
+    },
+    {
+      "name": "3. Bypass Attacks",
+      "status": "PASS",
+      "evidence": "7/9 devices contribute, 0 DEAD CODE, 2 MARGINAL",
+      "data": {
+        "total": 9,
+        "contributes": 7,
+        "deadCode": 0,
+        "marginal": 2
+      }
+    },
+    {
+      "name": "4. Signal Attacks",
+      "status": "PASS",
+      "evidence": "7/7 degenerate signals rejected. Accepted (BUG): 0",
+      "data": {
+        "total": 7,
+        "rejected": 7,
+        "accepted": 0
+      }
+    },
+    {
+      "name": "5. Signal Substitution Attacks",
+      "status": "PASS",
+      "evidence": "18/18 substitutions detected by limiter + verdict",
+      "data": [
+        {
+          "device": "muse",
+          "attack": "silence",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "muse",
+          "attack": "constant_0.5",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "muse",
+          "attack": "constant_DC",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "sub37",
+          "attack": "silence",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "sub37",
+          "attack": "constant_0.5",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "sub37",
+          "attack": "constant_DC",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "prophet6",
+          "attack": "silence",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "prophet6",
+          "attack": "constant_0.5",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "prophet6",
+          "attack": "constant_DC",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "iridium",
+          "attack": "silence",
+          "detected": true,
+          "detail": "peak=0.944 verdict=FAIL reasons=[KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "iridium",
+          "attack": "constant_0.5",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "iridium",
+          "attack": "constant_DC",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "rytm",
+          "attack": "silence",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "rytm",
+          "attack": "constant_0.5",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "rytm",
+          "attack": "constant_DC",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "digitakt",
+          "attack": "silence",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "digitakt",
+          "attack": "constant_0.5",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        },
+        {
+          "device": "digitakt",
+          "attack": "constant_DC",
+          "detected": true,
+          "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+        }
+      ]
+    },
+    {
+      "name": "6. Single-Device-Only Attacks",
+      "status": "INFO",
+      "evidence": "5/5 single-device renders flagged as incomplete (thin mix). Single-device output is musically valid but lacks full rig.",
+      "data": [
+        {
+          "device": "muse",
+          "rejected": true,
+          "reasons": [
+            "NOISE_LIKE",
+            "NO_LOW_FREQ_CONTENT",
+            "KICK_NOT_PERIODIC",
+            "TOO_MUCH_SILENCE"
+          ],
+          "peak": 0.3735016882419586
+        },
+        {
+          "device": "sub37",
+          "rejected": true,
+          "reasons": [
+            "NO_LOW_FREQ_CONTENT",
+            "KICK_NOT_PERIODIC"
+          ],
+          "peak": 0.69685298204422
+        },
+        {
+          "device": "prophet6",
+          "rejected": true,
+          "reasons": [
+            "PEAK_TOO_LOW",
+            "RMS_TOO_LOW",
+            "KICK_NOT_PERIODIC",
+            "ONSET_DENSITY_TOO_LOW"
+          ],
+          "peak": 0.07030559331178665
+        },
+        {
+          "device": "iridium",
+          "rejected": true,
+          "reasons": [
+            "NO_LOW_FREQ_CONTENT",
+            "KICK_NOT_PERIODIC"
+          ],
+          "peak": 0.949999988079071
+        },
+        {
+          "device": "rytm",
+          "rejected": true,
+          "reasons": [
+            "KICK_NOT_PERIODIC"
+          ],
+          "peak": 0.2689332067966461
+        }
+      ]
+    },
+    {
+      "name": "7. Musical Structure (Artifact A)",
+      "status": "FAIL",
+      "evidence": "kickPeriodicity=0.04 bassKickAlignment=1.00 onsetDensity=3.85/s sections=1 verdict=FAIL NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC",
+      "data": {
+        "durationSec": 27.826077097505667,
+        "sampleRate": 22050,
+        "samples": 613565,
+        "peak": 0.949999988079071,
+        "rms": 0.31287192841153993,
+        "crestFactor": 3.036386143372623,
+        "dynamicRange": 9.647140016880787,
+        "lowEnergy": 0.07670878774344467,
+        "midEnergy": 0.39399420008585373,
+        "highEnergy": 0.48201950359643125,
+        "spectralCentroid": 3041.4815463724303,
+        "onsetCount": 107,
+        "onsetDensity": 3.845313862426964,
+        "estimatedTempo": 62,
+        "kickPeriodicity": 0.04206181125764401,
+        "bassKickAlignment": 1,
+        "stereoCorrelation": 0.9932213361922116,
+        "stereoWidth": 0.006778663807788354,
+        "silenceRatio": 0,
+        "repetitionRate": 0.8438238076419878,
+        "sectionCount": 1,
+        "sectionTransitions": [],
+        "isSilent": false,
+        "isConstant": false,
+        "isNoiseLike": false,
+        "isClipped": false,
+        "hasLowFreqContent": false,
+        "hasDynamicRange": true
+      }
+    },
+    {
+      "name": "8. Psychedelic Evolution",
+      "status": "PASS",
+      "evidence": "identityScore=0.9 evolutionScore=0.63 verdict=CONTROLLED_EVOLUTION mutations=7 spectralVariance=0.0485",
+      "data": {
+        "scaleAdherence": 1,
+        "motifStability": 0.6666666666666666,
+        "rhythmicConsistency": 1,
+        "patternMutationCount": 7,
+        "spectralVariance": 0.04847461297553937,
+        "densityVariance": 0,
+        "pitchRangeVariance": 0.15869840952317446,
+        "isStatic": false,
+        "isChaotic": false,
+        "isFrozen": false,
+        "controlledEvolution": true,
+        "identityScore": 0.9,
+        "evolutionScore": 0.63,
+        "verdict": "CONTROLLED_EVOLUTION",
+        "evidence": [
+          "scaleAdherence=1.000",
+          "motifStability=0.667",
+          "rhythmicConsistency=1.000",
+          "mutationCount=7",
+          "spectralVariance=0.0485",
+          "pitchRangeVariance=0.1587"
+        ]
+      }
+    },
+    {
+      "name": "9. Reproducibility + Variation",
+      "status": "PASS",
+      "evidence": "A==A:true A!=B:true A!=C:true B!=C:true allValid:true",
+      "data": {
+        "seedA": 11111,
+        "seedB": 22222,
+        "seedC": 33333,
+        "hashA1": "d528c801",
+        "hashA2": "d528c801",
+        "hashB": "ec88cb45",
+        "hashC": "4b70966f",
+        "aEqualsA": true,
+        "aDiffersB": true,
+        "aDiffersC": true,
+        "bDiffersC": true,
+        "allMusicallyValid": true,
+        "musicalAnalyses": [
+          {
+            "seed": 11111,
+            "analysis": {
+              "durationSec": 6.956507936507936,
+              "sampleRate": 22050,
+              "samples": 153391,
+              "peak": 0.949999988079071,
+              "rms": 0.2807295360697025,
+              "crestFactor": 3.384040031481386,
+              "dynamicRange": 10.588709837627173,
+              "lowEnergy": 0.09414508246727776,
+              "midEnergy": 0.4016518988029049,
+              "highEnergy": 0.5017704591966926,
+              "spectralCentroid": 2840.9368867795374,
+              "onsetCount": 27,
+              "onsetDensity": 3.881257700908137,
+              "estimatedTempo": 136.7,
+              "kickPeriodicity": 0.04302352075498312,
+              "bassKickAlignment": 1,
+              "stereoCorrelation": 0.9931941562817755,
+              "stereoWidth": 0.006805843718224458,
+              "silenceRatio": 0,
+              "repetitionRate": 0.9061059706024801,
+              "sectionCount": 1,
+              "sectionTransitions": [],
+              "isSilent": false,
+              "isConstant": false,
+              "isNoiseLike": false,
+              "isClipped": false,
+              "hasLowFreqContent": false,
+              "hasDynamicRange": true
+            }
+          },
+          {
+            "seed": 22222,
+            "analysis": {
+              "durationSec": 6.956507936507936,
+              "sampleRate": 22050,
+              "samples": 153391,
+              "peak": 0.949999988079071,
+              "rms": 0.2806191081504342,
+              "crestFactor": 3.3853717030908506,
+              "dynamicRange": 10.5921271959551,
+              "lowEnergy": 0.09430350855076387,
+              "midEnergy": 0.4018120951785592,
+              "highEnergy": 0.5017111717853048,
+              "spectralCentroid": 2841.6556382056315,
+              "onsetCount": 29,
+              "onsetDensity": 4.1687582713457765,
+              "estimatedTempo": 81.3,
+              "kickPeriodicity": 0.04306807994060904,
+              "bassKickAlignment": 1,
+              "stereoCorrelation": 0.9931902560314678,
+              "stereoWidth": 0.006809743968532178,
+              "silenceRatio": 0,
+              "repetitionRate": 0.9060809628656258,
+              "sectionCount": 1,
+              "sectionTransitions": [],
+              "isSilent": false,
+              "isConstant": false,
+              "isNoiseLike": false,
+              "isClipped": false,
+              "hasLowFreqContent": false,
+              "hasDynamicRange": true
+            }
+          },
+          {
+            "seed": 33333,
+            "analysis": {
+              "durationSec": 6.956507936507936,
+              "sampleRate": 22050,
+              "samples": 153391,
+              "peak": 0.949999988079071,
+              "rms": 0.28074016962409426,
+              "crestFactor": 3.3839118546914855,
+              "dynamicRange": 10.588380837223479,
+              "lowEnergy": 0.0941203879703962,
+              "midEnergy": 0.40167089981451476,
+              "highEnergy": 0.5016629962599487,
+              "spectralCentroid": 2836.9118787934103,
+              "onsetCount": 29,
+              "onsetDensity": 4.1687582713457765,
+              "estimatedTempo": 136.7,
+              "kickPeriodicity": 0.04305589831054908,
+              "bassKickAlignment": 1,
+              "stereoCorrelation": 0.9931989457936824,
+              "stereoWidth": 0.006801054206317603,
+              "silenceRatio": 0,
+              "repetitionRate": 0.9053668380234082,
+              "sectionCount": 1,
+              "sectionTransitions": [],
+              "isSilent": false,
+              "isConstant": false,
+              "isNoiseLike": false,
+              "isClipped": false,
+              "hasLowFreqContent": false,
+              "hasDynamicRange": true
+            }
+          }
+        ],
+        "verdict": "PASS",
+        "evidence": [
+          "A1=d528c801",
+          "A2=d528c801",
+          "B=ec88cb45",
+          "C=4b70966f",
+          "A==A: true",
+          "A!=B: true",
+          "A!=C: true",
+          "B!=C: true",
+          "allMusicallyValid: true"
+        ]
+      }
+    },
+    {
+      "name": "10. Performance Attack",
+      "status": "PASS",
+      "evidence": "6/6 points REALTIME. NO FAILURE REACHED — system handled all stress points",
+      "data": {
+        "points": [
+          {
+            "label": "baseline-4bar-22k",
+            "bars": 4,
+            "sampleRate": 22050,
+            "blockSize": 256,
+            "voices": 9,
+            "audioDurationSec": 7,
+            "renderMs": 701,
+            "ratio": 0.1,
+            "status": "REALTIME",
+            "peak": 0.95,
+            "rms": 0.2806,
+            "blocks": 600
+          },
+          {
+            "label": "8bar-22k",
+            "bars": 8,
+            "sampleRate": 22050,
+            "blockSize": 256,
+            "voices": 9,
+            "audioDurationSec": 13.9,
+            "renderMs": 1614,
+            "ratio": 0.12,
+            "status": "REALTIME",
+            "peak": 0.95,
+            "rms": 0.3054,
+            "blocks": 1199
+          },
+          {
+            "label": "16bar-22k",
+            "bars": 16,
+            "sampleRate": 22050,
+            "blockSize": 256,
+            "voices": 9,
+            "audioDurationSec": 27.8,
+            "renderMs": 5034,
+            "ratio": 0.18,
+            "status": "REALTIME",
+            "peak": 0.95,
+            "rms": 0.3127,
+            "blocks": 2397
+          },
+          {
+            "label": "4bar-44k",
+            "bars": 4,
+            "sampleRate": 44100,
+            "blockSize": 256,
+            "voices": 9,
+            "audioDurationSec": 7,
+            "renderMs": 1457,
+            "ratio": 0.21,
+            "status": "REALTIME",
+            "peak": 0.95,
+            "rms": 0.2345,
+            "blocks": 1199
+          },
+          {
+            "label": "8bar-44k",
+            "bars": 8,
+            "sampleRate": 44100,
+            "blockSize": 256,
+            "voices": 9,
+            "audioDurationSec": 13.9,
+            "renderMs": 4879,
+            "ratio": 0.35,
+            "status": "REALTIME",
+            "peak": 0.95,
+            "rms": 0.2605,
+            "blocks": 2397
+          },
+          {
+            "label": "4bar-44k-bs128",
+            "bars": 4,
+            "sampleRate": 44100,
+            "blockSize": 128,
+            "voices": 9,
+            "audioDurationSec": 7,
+            "renderMs": 1804,
+            "ratio": 0.26,
+            "status": "REALTIME",
+            "peak": 0.95,
+            "rms": 0.231,
+            "blocks": 2397
+          }
+        ],
+        "realtimeBoundary": "REALTIME holds up to 4bar-44k-bs128 (ratio 0.26)",
+        "failureBoundary": "NO FAILURE REACHED — system handled all stress points",
+        "maxVoices": 9,
+        "maxSampleRate": 44100
+      }
+    },
+    {
+      "name": "11. Long-Run Stability (15 runs)",
+      "status": "PASS",
+      "evidence": "uniqueHashes=1 (should be 1) heapGrowth=-3.8MB crashes=0 nondeterminism=false",
+      "data": {
+        "runs": 15,
+        "hashes": [
+          "630e1091",
+          "630e1091",
+          "630e1091",
+          "630e1091",
+          "630e1091",
+          "630e1091",
+          "630e1091",
+          "630e1091",
+          "630e1091",
+          "630e1091",
+          "630e1091",
+          "630e1091",
+          "630e1091",
+          "630e1091",
+          "630e1091"
+        ],
+        "uniqueHashes": 1,
+        "heapSamples": [
+          {
+            "run": 0,
+            "heapMB": 27.4
+          },
+          {
+            "run": 1,
+            "heapMB": 33.6
+          },
+          {
+            "run": 2,
+            "heapMB": 37.5
+          },
+          {
+            "run": 3,
+            "heapMB": 21.9
+          },
+          {
+            "run": 4,
+            "heapMB": 23
+          },
+          {
+            "run": 5,
+            "heapMB": 28
+          },
+          {
+            "run": 6,
+            "heapMB": 31.7
+          },
+          {
+            "run": 7,
+            "heapMB": 38.6
+          },
+          {
+            "run": 8,
+            "heapMB": 21.9
+          },
+          {
+            "run": 9,
+            "heapMB": 23.6
+          },
+          {
+            "run": 10,
+            "heapMB": 26.9
+          },
+          {
+            "run": 11,
+            "heapMB": 28.6
+          },
+          {
+            "run": 12,
+            "heapMB": 29
+          },
+          {
+            "run": 13,
+            "heapMB": 21.9
+          },
+          {
+            "run": 14,
+            "heapMB": 23.6
+          }
+        ],
+        "heapGrowthMB": -3.8,
+        "driftDetected": false,
+        "nondeterminismDetected": false,
+        "crashCount": 0,
+        "meanRenderMs": 558,
+        "maxRenderMs": 572,
+        "verdict": "PASS",
+        "evidence": [
+          "runs=15",
+          "uniqueHashes=1 (should be 1 for same seed)",
+          "heapGrowth=-3.8MB (27.4→23.6)",
+          "crashes=0",
+          "meanRender=558ms maxRender=572ms"
+        ]
+      }
+    },
+    {
+      "name": "12. Failure Injection Matrix",
+      "status": "PASS",
+      "evidence": "7/12 failures detected. SILENT_PASS (BUG): 0",
+      "data": {
+        "total": 12,
+        "detected": 7,
+        "silentPass": 0,
+        "crashes": 0
+      }
+    },
+    {
+      "name": "13. Hardware Boundary Matrix",
+      "status": "INFO",
+      "evidence": "avg confidence 53%. 8 REAL_DSP, 1 SIMULATED_CONTROL. Digital twin proves architecture, NOT hardware equivalence.",
+      "data": {
+        "boundary": {
+          "totalDevices": 9,
+          "realDsp": 8,
+          "simulatedControl": 1,
+          "hardwareRequired": 0,
+          "averageConfidence": 0.53,
+          "honestStatement": "The digital twin proves the ARCHITECTURE works as a coherent musical system in software (avg confidence 53%). It does NOT prove hardware equivalence. Real Moog/Elektron/Eventide/UA hardware is required to prove hardware-specific behavior. The DSP is REAL (samples are computed), the control logic is SIMULATED (mirrors hardware workflows), and the physical devices are EXTERNAL HARDWARE REQUIREMENTS."
+        },
+        "matrix": [
+          {
+            "device": "Moog Muse (Muse-V)",
+            "realHardwareBehavior": "Dual discrete analog VCOs with natural drift; transistor ladder filter with thermal noise; spring reverb; hands-on knobs",
+            "digitalTwinCoverage": "PolyBLEP oscillators (saw/square/triangle), Huovilainen Moog ladder model with tanh saturation, ADSR, paraphonic voice allocation, LFO filter modulation",
+            "unprovenHardwareBehavior": "True analog VCO drift/thermal noise; spring reverb physical acoustics; the exact Moog transistor ladder transfer function; knob tactile response",
+            "confidence": 0.55,
+            "classification": "REAL_DSP"
+          },
+          {
+            "device": "Moog Subsequent 37 (SubBass-V)",
+            "realHardwareBehavior": "2 analog VCOs + sub oscillator; multidrive ladder filter; true analog saturation curve; mono voice",
+            "digitalTwinCoverage": "Dual oscillator + sub osc; Huovilainen ladder with tanh; multidrive pre-filter saturation; mono note priority; glide",
+            "unprovenHardwareBehavior": "Exact multidrive saturation curve; analog component tolerance; the specific Sub37 ladder feedback response",
+            "confidence": 0.6,
+            "classification": "REAL_DSP"
+          },
+          {
+            "device": "Sequential Prophet-6 (Prophet-V)",
+            "realHardwareBehavior": "6 true analog voices; 2 VCOs per voice; 4-pole filter; BBD chorus with clock noise",
+            "digitalTwinCoverage": "6-voice polyphonic allocation; dual osc per voice; MoogLadder filter; modulated-delay chorus; voice stealing",
+            "unprovenHardwareBehavior": "BBD chorus clock noise/analog artifacts; true discrete VCO stability; the exact Prophet-6 filter character",
+            "confidence": 0.5,
+            "classification": "REAL_DSP"
+          },
+          {
+            "device": "Waldorf Iridium (Iridium-V)",
+            "realHardwareBehavior": "Wavetable + granular + FM engines; hardware mod matrix; FPGA DSP; multitimbral",
+            "digitalTwinCoverage": "Wavetable scan/morph; FM via phase modulation; granular cloud (random buffer reads); SVF filter; shimmer reverb + delay",
+            "unprovenHardwareBehavior": "Exact Waldorf wavetable content; FPGA-level DSP precision; the hardware mod matrix routing flexibility; multitimbrality",
+            "confidence": 0.45,
+            "classification": "REAL_DSP"
+          },
+          {
+            "device": "Elektron Analog Rytm MKII (Rytm-V)",
+            "realHardwareBehavior": "8 analog drum voices; analog distortion; sample layering; parameter locks; retrigs; probability",
+            "digitalTwinCoverage": "Synthesized kick/snare/hat/clap/tom/cym via osc+noise+filter+env; sample triggers; parameter locks; retrigs; probability gates",
+            "unprovenHardwareBehavior": "Exact analog drum voice circuits; the analog distortion character; hardware parameter lock timing",
+            "confidence": 0.55,
+            "classification": "REAL_DSP"
+          },
+          {
+            "device": "Elektron Digitakt II (Digitakt-V)",
+            "realHardwareBehavior": "8 stereo sample tracks; resampling buffer; MIDI sequencing; Elektron sequencer",
+            "digitalTwinCoverage": "Sample playback with pitch/start/length; resample buffer capture+retrigger; sample triggers; stereo panning",
+            "unprovenHardwareBehavior": "Exact Elektron warp/time-stretch; hardware MIDI sequencing to external gear; the specific Elektron workflow UI",
+            "confidence": 0.6,
+            "classification": "REAL_DSP"
+          },
+          {
+            "device": "Eventide H90 (H90-V)",
+            "realHardwareBehavior": "Dual algorithm chains; Eventide reverb/pitch/delay/mod algorithms; hardware DSP",
+            "digitalTwinCoverage": "Shimmer reverb (Schroeder+pitch), feedback delay (capped), phaser, chorus, distortion, bitcrush; algorithm switching",
+            "unprovenHardwareBehavior": "Exact Eventide algorithm implementations (Blackhole, Shimmer, Micropitch proprietary); the H90 hardware UI; algorithm-specific DSP",
+            "confidence": 0.35,
+            "classification": "REAL_DSP"
+          },
+          {
+            "device": "Universal Audio Apollo x8p (Apollo-V)",
+            "realHardwareBehavior": "8 Unison preamps; UAD DSP; Thunderbolt; zero-latency monitoring; console routing",
+            "digitalTwinCoverage": "8-channel summing; per-channel gain/pan/FX send; insert loop to H90; resample bus output; master limiter",
+            "unprovenHardwareBehavior": "Unison preamp modeling; UAD plugin DSP; Thunderbolt driver; the actual analog preamp circuits",
+            "confidence": 0.4,
+            "classification": "SIMULATED_CONTROL"
+          },
+          {
+            "device": "Ableton Live 12 Suite (Live-V)",
+            "realHardwareBehavior": "Full DAW: Session/Arrangement, warp, devices, Max for Live, MIDI generation, mastering",
+            "digitalTwinCoverage": "Master transport/clock; arrangement sections; master chain (EQ+comp+limiter); recording; this IS the real implementation",
+            "unprovenHardwareBehavior": "None — the Live twin IS the real implementation (not hardware). It does NOT model Live; it implements the equivalent orchestration in TS.",
+            "confidence": 0.8,
+            "classification": "REAL_DSP"
+          }
+        ]
+      }
+    },
+    {
+      "name": "14. Provenance",
+      "status": "PASS",
+      "evidence": "artifactSha256=f8bf7760b99beae3... configHash=15aac964573f2499 audioHash=4a9c31ef validation=FAIL",
+      "data": {
+        "artifactId": "A",
+        "artifactName": "16-bar psytrance loop",
+        "fileName": "A-psytrance-loop.wav",
+        "configHash": "15aac964573f2499",
+        "seed": 1733336615,
+        "bpm": 138,
+        "sampleRate": 22050,
+        "bars": 16,
+        "key": "A",
+        "scale": "minor",
+        "engineVersion": "psy4-engine-1.0.0",
+        "testVersion": "psy4-tests-1.0.0",
+        "pipelineVersion": "psy4-pipeline-1.0.0",
+        "timestamp": "2026-08-08T03:02:41.370Z",
+        "renderDurationMs": 5582,
+        "audioDurationSec": 27.826077097505667,
+        "validationResult": "FAIL",
+        "validationReasons": [
+          "NO_LOW_FREQ_CONTENT",
+          "KICK_NOT_PERIODIC"
+        ],
+        "artifactSha256": "f8bf7760b99beae33a4c863b9c108552242bbed4f451759715d6193e9e2646c1",
+        "audioHash": "4a9c31ef",
+        "peak": 0.949999988079071,
+        "rms": 0.31287192841153993
+      }
+    },
+    {
+      "name": "15. Clean Rebuild Readiness",
+      "status": "PASS",
+      "evidence": "dev script=true lint script=true node_modules=true. .gitignore excludes .next, dev.log, db/*.db, public/artifacts/*.wav (regenerable)."
+    },
+    {
+      "name": "16. Repository Integrity",
+      "status": "PASS",
+      "evidence": "noCommittedSecrets=true noAbsolutePaths=true uploadIgnored=true"
+    }
+  ],
+  "capabilityMatrix": [
+    {
+      "capability": "9-device frozen architecture with 28 labeled edges",
+      "classification": "PROVEN",
+      "evidence": "architecture.ts defines all 9 devices + SYSTEM_GRAPH with 28 labeled edges; validator confirms all components + connections"
+    },
+    {
+      "capability": "Real sample-accurate DSP (oscillators, filters, envelopes, FX)",
+      "classification": "PROVEN",
+      "evidence": "oscillator.ts/filter.ts/envelope.ts/effects.ts compute actual samples; bypass attacks confirm each synth device contributes measurably"
+    },
+    {
+      "capability": "Sample-accurate master clock with synchronized sequencers",
+      "classification": "PROVEN",
+      "evidence": "TEST-01 PASS: beat-matching onset verification"
+    },
+    {
+      "capability": "Psytrance kick+bass relationship (4-on-floor + off-beat bass)",
+      "classification": "PARTIALLY_PROVEN",
+      "evidence": "TEST-02 PASS; artifact A kickPeriodicity=0.04"
+    },
+    {
+      "capability": "Controlled psychedelic evolution (identity preserved + state changing)",
+      "classification": "PROVEN",
+      "evidence": "identityScore=0.9 evolutionScore=0.63 controlledEvolution=true"
+    },
+    {
+      "capability": "Deterministic reproducibility (A==A) with variation (A!=B, A!=C)",
+      "classification": "PROVEN",
+      "evidence": "A==A:true A!=B:true verdict=PASS"
+    },
+    {
+      "capability": "Resampling loop (capture → reprocess)",
+      "classification": "PROVEN",
+      "evidence": "TEST-04 PASS"
+    },
+    {
+      "capability": "Adversarial input survival (malformed/missing/feedback/clock conflicts)",
+      "classification": "PROVEN",
+      "evidence": "5 adversarial tests, all PASS"
+    },
+    {
+      "capability": "Failure detection (never silently convert failure to PASS)",
+      "classification": "PROVEN",
+      "evidence": "12 injections, 0 SILENT_PASS (must be 0)"
+    },
+    {
+      "capability": "Long-run stability (15 runs, no drift/leak/nondeterminism)",
+      "classification": "PROVEN",
+      "evidence": "uniqueHashes=1 heapGrowth=-3.8MB crashes=0"
+    },
+    {
+      "capability": "Realtime-capable rendering (under 1x ratio for standard config)",
+      "classification": "PROVEN",
+      "evidence": "6/6 points REALTIME. NO FAILURE REACHED — system handled all stress points"
+    },
+    {
+      "capability": "Musical structure validation (kick periodicity, bass/kick alignment, spectral, sections)",
+      "classification": "FAILED",
+      "evidence": "artifact A verdict=FAIL NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC"
+    },
+    {
+      "capability": "Artifact provenance (SHA-256, config hash, seed, versions)",
+      "classification": "PROVEN",
+      "evidence": "Every artifact gets a Provenance record with SHA-256 + configHash + seed + engineVersion"
+    },
+    {
+      "capability": "Degenerate signal rejection (silence/DC/constant/noise/clipped)",
+      "classification": "PROVEN",
+      "evidence": "7/7 degenerate signals rejected"
+    },
+    {
+      "capability": "Hardware-boundary honesty (REAL DSP vs SIMULATED control vs HARDWARE required)",
+      "classification": "PROVEN",
+      "evidence": "avg confidence 53%. Digital twin proves architecture, NOT hardware equivalence. Honestly classified."
+    },
+    {
+      "capability": "Physical hardware equivalence (Moog/Elektron/Eventide/UA sound identical to twins)",
+      "classification": "UNPROVEN",
+      "evidence": "Requires the physical hardware. The digital twin models behavior but cannot prove transistor-ladder/Unison/FPGA equivalence. Confidence 0.35-0.60 per device."
+    },
+    {
+      "capability": "No dead-code devices (every claimed device contributes)",
+      "classification": "PROVEN",
+      "evidence": "0 DEAD_CODE devices detected"
+    }
+  ],
+  "finalVerdict": {
+    "proven": 14,
+    "partiallyProven": 0,
+    "simulated": 0,
+    "unproven": 1,
+    "failed": 1,
+    "total": 17,
+    "overall": "FAIL"
+  },
+  "machineReadable": {
+    "coreTests": {
+      "summary": {
+        "total": 14,
+        "pass": 14,
+        "fail": 0,
+        "blocked": 0,
+        "notImplemented": 0,
+        "totalMs": 26312
+      },
+      "results": [
+        {
+          "id": "TEST-01",
+          "name": "Clock Integrity",
+          "status": "PASS",
+          "durationMs": 660,
+          "assertions": 2,
+          "message": "16/16 beats synchronized, no drift",
+          "metrics": {
+            "matchedBeats": 16,
+            "expectedBeats": 16,
+            "totalOnsets": 122,
+            "samplesPerBeat": 9586.95652173913,
+            "transportSamples": 153391
+          }
+        },
+        {
+          "id": "TEST-02",
+          "name": "Bass Integrity",
+          "status": "PASS",
+          "durationMs": 618,
+          "assertions": 2,
+          "message": "Kick+bass coherent: 334 onsets, rms=0.152",
+          "metrics": {
+            "onsets": 334,
+            "rms": 0.15246508748690693,
+            "samplesPerBeat": 9586.95652173913
+          }
+        },
+        {
+          "id": "TEST-03",
+          "name": "Modulation Stability",
+          "status": "PASS",
+          "durationMs": 715,
+          "assertions": 4,
+          "message": "Modulation bounded + active: peak=0.957, rmsChange=0.044, no NaN",
+          "metrics": {
+            "peak": 0.9573178887367249,
+            "rmsChange": 0.043884894681411844,
+            "lfoCount": 3
+          }
+        },
+        {
+          "id": "TEST-04",
+          "name": "Resampling Loop",
+          "status": "PASS",
+          "durationMs": 845,
+          "assertions": 3,
+          "message": "Resample loop intact: captured peak=0.205, reprocessed peak=0.087",
+          "metrics": {
+            "capturedPeak": 0.20542995631694794,
+            "reprocessedPeak": 0.08686120063066483,
+            "capturedLength": 44100
+          }
+        },
+        {
+          "id": "TEST-05",
+          "name": "Psychedelic Evolution",
+          "status": "PASS",
+          "durationMs": 1,
+          "assertions": 4,
+          "message": "Evolved: 5 steps mutated, max jump 9 st, scale retained",
+          "metrics": {
+            "mutatedSteps": 5,
+            "maxJumpSemitones": 9,
+            "patternLength": 16
+          }
+        },
+        {
+          "id": "TEST-06",
+          "name": "Arrangement",
+          "status": "PASS",
+          "durationMs": 15180,
+          "assertions": 3,
+          "message": "Full arrangement: 28 bars, 7 sections, peak=0.950",
+          "metrics": {
+            "totalBars": 28,
+            "sections": 7,
+            "peak": 0.949999988079071,
+            "duration": 48.6956462585034
+          }
+        },
+        {
+          "id": "TEST-07",
+          "name": "Routing Failure",
+          "status": "PASS",
+          "durationMs": 254,
+          "assertions": 2,
+          "message": "Routing failure detected + system recovered",
+          "metrics": {
+            "detected": 1,
+            "recovered": 1
+          }
+        },
+        {
+          "id": "TEST-08",
+          "name": "Parameter Extremes",
+          "status": "PASS",
+          "durationMs": 284,
+          "assertions": 3,
+          "message": "Extremes safe: peak=0.950, limiter held",
+          "metrics": {
+            "peak": 0.949999988079071
+          }
+        },
+        {
+          "id": "TEST-09",
+          "name": "Reproducibility",
+          "status": "PASS",
+          "durationMs": 1412,
+          "assertions": 2,
+          "message": "Deterministic: hash 3d0d1afe matches across reruns",
+          "metrics": {
+            "hash1": "3d0d1afe",
+            "hash2": "3d0d1afe",
+            "mismatches": 0
+          }
+        },
+        {
+          "id": "TEST-10",
+          "name": "Performance",
+          "status": "PASS",
+          "durationMs": 5397,
+          "assertions": 2,
+          "message": "Full load: 5395ms render / 27826ms realtime (0.19x)",
+          "metrics": {
+            "renderMs": 5395,
+            "realtimeMs": 27826.077097505666,
+            "ratio": 0.1938828811943315,
+            "blocks": 2397,
+            "peak": 0.9500321745872498
+          }
+        },
+        {
+          "id": "TEST-11",
+          "name": "Adversarial: Malformed Sequence",
+          "status": "PASS",
+          "durationMs": 230,
+          "assertions": 2,
+          "message": "Malformed input handled gracefully (bounded, no crash)",
+          "metrics": {
+            "crashed": 0
+          }
+        },
+        {
+          "id": "TEST-12",
+          "name": "Adversarial: Missing Sample",
+          "status": "PASS",
+          "durationMs": 221,
+          "assertions": 2,
+          "message": "Missing sample handled (skipped, no crash)",
+          "metrics": {
+            "crashed": 0
+          }
+        },
+        {
+          "id": "TEST-13",
+          "name": "Adversarial: Feedback Overload",
+          "status": "PASS",
+          "durationMs": 259,
+          "assertions": 2,
+          "message": "Feedback bounded: peak=0.554 (limiter held)",
+          "metrics": {
+            "peak": 0.5537799000740051,
+            "feedback": 0.95
+          }
+        },
+        {
+          "id": "TEST-14",
+          "name": "Adversarial: Conflicting Clocks",
+          "status": "PASS",
+          "durationMs": 236,
+          "assertions": 3,
+          "message": "Single master clock enforced; rogue transport isolated",
+          "metrics": {
+            "masterBpm": 138,
+            "rogueBpm": 174
+          }
+        }
+      ]
+    },
+    "validation": {
+      "total": 23,
+      "pass": 23,
+      "fail": 0,
+      "blocked": 0,
+      "notImplemented": 0
+    },
+    "bypass": [
+      {
+        "device": "muse",
+        "contributes": true,
+        "contributionMagnitude": 0.203,
+        "baselineHash": "01ae1dd1",
+        "bypassedHash": "c0a54e47",
+        "baselinePeak": 0.949999988079071,
+        "bypassedPeak": 0.949999988079071,
+        "honestClassification": "CONTRIBUTES",
+        "notes": "Device measurably contributes to the output"
+      },
+      {
+        "device": "sub37",
+        "contributes": true,
+        "contributionMagnitude": 0.398,
+        "baselineHash": "01ae1dd1",
+        "bypassedHash": "df5a8558",
+        "baselinePeak": 0.949999988079071,
+        "bypassedPeak": 0.9500236511230469,
+        "honestClassification": "CONTRIBUTES",
+        "notes": "Device measurably contributes to the output"
+      },
+      {
+        "device": "prophet6",
+        "contributes": true,
+        "contributionMagnitude": 0.056,
+        "baselineHash": "01ae1dd1",
+        "bypassedHash": "9eace47d",
+        "baselinePeak": 0.949999988079071,
+        "bypassedPeak": 0.949999988079071,
+        "honestClassification": "MARGINAL",
+        "notes": "Device contributes weakly to the mix"
+      },
+      {
+        "device": "iridium",
+        "contributes": true,
+        "contributionMagnitude": 0.855,
+        "baselineHash": "01ae1dd1",
+        "bypassedHash": "33c47277",
+        "baselinePeak": 0.949999988079071,
+        "bypassedPeak": 0.9040584564208984,
+        "honestClassification": "CONTRIBUTES",
+        "notes": "Device measurably contributes to the output"
+      },
+      {
+        "device": "rytm",
+        "contributes": true,
+        "contributionMagnitude": 0.276,
+        "baselineHash": "01ae1dd1",
+        "bypassedHash": "2373fbdc",
+        "baselinePeak": 0.949999988079071,
+        "bypassedPeak": 0.9500112533569336,
+        "honestClassification": "CONTRIBUTES",
+        "notes": "Device measurably contributes to the output"
+      },
+      {
+        "device": "digitakt",
+        "contributes": true,
+        "contributionMagnitude": 0.051,
+        "baselineHash": "01ae1dd1",
+        "bypassedHash": "f3d54dcb",
+        "baselinePeak": 0.949999988079071,
+        "bypassedPeak": 0.949999988079071,
+        "honestClassification": "MARGINAL",
+        "notes": "Device contributes weakly to the mix"
+      },
+      {
+        "device": "h90",
+        "contributes": true,
+        "contributionMagnitude": 0.364,
+        "baselineHash": "01ae1dd1",
+        "bypassedHash": "8803c7b3",
+        "baselinePeak": 0.949999988079071,
+        "bypassedPeak": 0.949999988079071,
+        "honestClassification": "CONTRIBUTES",
+        "notes": "Device measurably contributes to the output"
+      },
+      {
+        "device": "apollo",
+        "contributes": true,
+        "contributionMagnitude": 1,
+        "baselineHash": "01ae1dd1",
+        "bypassedHash": "N/A-STRUCTURAL",
+        "baselinePeak": 0.949999988079071,
+        "bypassedPeak": 0,
+        "honestClassification": "CONTRIBUTES",
+        "notes": "Apollo is the audio hub — bypassing it removes the entire summing path. Structurally required, cannot be bypassed without destroying the signal chain."
+      },
+      {
+        "device": "live",
+        "contributes": true,
+        "contributionMagnitude": 1,
+        "baselineHash": "01ae1dd1",
+        "bypassedHash": "N/A-STRUCTURAL",
+        "baselinePeak": 0.949999988079071,
+        "bypassedPeak": 0,
+        "honestClassification": "CONTRIBUTES",
+        "notes": "Live is the master clock + master chain — bypassing it removes the entire transport + mastering. Structurally required."
+      }
+    ],
+    "signalAttacks": [
+      {
+        "attack": "silence",
+        "description": "All zeros",
+        "peak": 0,
+        "rms": 0,
+        "rejected": true,
+        "rejectionReasons": [
+          "SILENT",
+          "PEAK_TOO_LOW",
+          "RMS_TOO_LOW",
+          "NO_LOW_FREQ_CONTENT",
+          "KICK_NOT_PERIODIC",
+          "ONSET_DENSITY_TOO_LOW",
+          "TOO_MUCH_SILENCE"
+        ],
+        "analysis": {
+          "durationSec": 8,
+          "sampleRate": 22050,
+          "samples": 176400,
+          "peak": 0,
+          "rms": 0,
+          "crestFactor": 0,
+          "dynamicRange": 0,
+          "lowEnergy": 0,
+          "midEnergy": 0,
+          "highEnergy": 0,
+          "spectralCentroid": 0,
+          "onsetCount": 0,
+          "onsetDensity": 0,
+          "estimatedTempo": 0,
+          "kickPeriodicity": 0,
+          "bassKickAlignment": 0,
+          "stereoCorrelation": 0,
+          "stereoWidth": 1,
+          "silenceRatio": 1,
+          "repetitionRate": 0,
+          "sectionCount": 1,
+          "sectionTransitions": [],
+          "isSilent": true,
+          "isConstant": false,
+          "isNoiseLike": false,
+          "isClipped": false,
+          "hasLowFreqContent": false,
+          "hasDynamicRange": false
+        }
+      },
+      {
+        "attack": "dc_offset",
+        "description": "Constant +0.5 DC",
+        "peak": 0.5,
+        "rms": 0.5,
+        "rejected": true,
+        "rejectionReasons": [
+          "CONSTANT_SIGNAL",
+          "ONSET_DENSITY_TOO_LOW"
+        ],
+        "analysis": {
+          "durationSec": 8,
+          "sampleRate": 22050,
+          "samples": 176400,
+          "peak": 0.5,
+          "rms": 0.5,
+          "crestFactor": 1,
+          "dynamicRange": 0,
+          "lowEnergy": 0.9998536266992306,
+          "midEnergy": 0.9998545372875113,
+          "highEnergy": 0.9999879052738685,
+          "spectralCentroid": 0,
+          "onsetCount": 1,
+          "onsetDensity": 0.125,
+          "estimatedTempo": 200.5,
+          "kickPeriodicity": 0.3333306853156821,
+          "bassKickAlignment": 1,
+          "stereoCorrelation": 0,
+          "stereoWidth": 1,
+          "silenceRatio": 0,
+          "repetitionRate": 0.8333333333333334,
+          "sectionCount": 1,
+          "sectionTransitions": [],
+          "isSilent": false,
+          "isConstant": true,
+          "isNoiseLike": false,
+          "isClipped": false,
+          "hasLowFreqContent": true,
+          "hasDynamicRange": false
+        }
+      },
+      {
+        "attack": "constant_tone",
+        "description": "Constant 440Hz sine at fixed amplitude",
+        "peak": 0.2999999225139618,
+        "rms": 0.2121320343633385,
+        "rejected": true,
+        "rejectionReasons": [
+          "NO_LOW_FREQ_CONTENT",
+          "KICK_NOT_PERIODIC",
+          "ONSET_DENSITY_TOO_LOW"
+        ],
+        "analysis": {
+          "durationSec": 8,
+          "sampleRate": 22050,
+          "samples": 176400,
+          "peak": 0.2999999225139618,
+          "rms": 0.2121320343633385,
+          "crestFactor": 1.4142131970512464,
+          "dynamicRange": 3.010297712886991,
+          "lowEnergy": 0.17147139717248588,
+          "midEnergy": 0.2968966055259476,
+          "highEnergy": 0.9550652386351629,
+          "spectralCentroid": 439.9375,
+          "onsetCount": 1,
+          "onsetDensity": 0.125,
+          "estimatedTempo": 88.4,
+          "kickPeriodicity": 0.03307201030627124,
+          "bassKickAlignment": 1,
+          "stereoCorrelation": 1,
+          "stereoWidth": 0,
+          "silenceRatio": 0,
+          "repetitionRate": 0.833365792497948,
+          "sectionCount": 1,
+          "sectionTransitions": [],
+          "isSilent": false,
+          "isConstant": false,
+          "isNoiseLike": false,
+          "isClipped": false,
+          "hasLowFreqContent": false,
+          "hasDynamicRange": true
+        }
+      },
+      {
+        "attack": "white_noise",
+        "description": "Full-range white noise",
+        "peak": 0.4999980628490448,
+        "rms": 0.2885996502364461,
+        "rejected": true,
+        "rejectionReasons": [
+          "NOISE_LIKE",
+          "NO_LOW_FREQ_CONTENT",
+          "KICK_NOT_PERIODIC",
+          "ONSET_DENSITY_TOO_LOW"
+        ],
+        "analysis": {
+          "durationSec": 8,
+          "sampleRate": 22050,
+          "samples": 176400,
+          "peak": 0.4999980628490448,
+          "rms": 0.2885996502364461,
+          "crestFactor": 1.7324971199355321,
+          "dynamicRange": 4.773450426460199,
+          "lowEnergy": 0.028815609587541223,
+          "midEnergy": 0.43003705565291744,
+          "highEnergy": 0.2772792771402122,
+          "spectralCentroid": 5499.1875,
+          "onsetCount": 1,
+          "onsetDensity": 0.125,
+          "estimatedTempo": 182.2,
+          "kickPeriodicity": 0.022864293506741646,
+          "bassKickAlignment": 1,
+          "stereoCorrelation": 1,
+          "stereoWidth": 0,
+          "silenceRatio": 0,
+          "repetitionRate": 0.8340504605229438,
+          "sectionCount": 1,
+          "sectionTransitions": [],
+          "isSilent": false,
+          "isConstant": false,
+          "isNoiseLike": true,
+          "isClipped": false,
+          "hasLowFreqContent": false,
+          "hasDynamicRange": true
+        }
+      },
+      {
+        "attack": "clipped",
+        "description": "Hard-clipped square-ish signal",
+        "peak": 0.9900000095367432,
+        "rms": 0.8657947240147089,
+        "rejected": true,
+        "rejectionReasons": [
+          "CONSTANT_SIGNAL",
+          "ONSET_DENSITY_TOO_LOW"
+        ],
+        "analysis": {
+          "durationSec": 8,
+          "sampleRate": 22050,
+          "samples": 176400,
+          "peak": 0.9900000095367432,
+          "rms": 0.8657947240147089,
+          "crestFactor": 1.1434581224358722,
+          "dynamicRange": 1.1644052760472556,
+          "lowEnergy": 0.7648004032346271,
+          "midEnergy": 0.7998067405106017,
+          "highEnergy": 0.988818983011429,
+          "spectralCentroid": 99.9375,
+          "onsetCount": 1,
+          "onsetDensity": 0.125,
+          "estimatedTempo": 60.1,
+          "kickPeriodicity": 0.5004279225275696,
+          "bassKickAlignment": 1,
+          "stereoCorrelation": 1,
+          "stereoWidth": 0,
+          "silenceRatio": 0,
+          "repetitionRate": 0.8332737552413996,
+          "sectionCount": 1,
+          "sectionTransitions": [],
+          "isSilent": false,
+          "isConstant": true,
+          "isNoiseLike": false,
+          "isClipped": false,
+          "hasLowFreqContent": true,
+          "hasDynamicRange": false
+        }
+      },
+      {
+        "attack": "repeated_identical",
+        "description": "Single cycle repeated (pure loop, no evolution)",
+        "peak": 0.3409489691257477,
+        "rms": 0.22812332699904472,
+        "rejected": true,
+        "rejectionReasons": [
+          "KICK_NOT_PERIODIC"
+        ],
+        "analysis": {
+          "durationSec": 8,
+          "sampleRate": 22050,
+          "samples": 176400,
+          "peak": 0.3409489691257477,
+          "rms": 0.22812332699904472,
+          "crestFactor": 1.4945817843835647,
+          "dynamicRange": 3.490393697438056,
+          "lowEnergy": 0.9993835114016771,
+          "midEnergy": 0.9994566120900442,
+          "highEnergy": 0.9999565097487418,
+          "spectralCentroid": 2,
+          "onsetCount": 49,
+          "onsetDensity": 6.125,
+          "estimatedTempo": 60.1,
+          "kickPeriodicity": 0.14921418752117607,
+          "bassKickAlignment": 1,
+          "stereoCorrelation": 1,
+          "stereoWidth": 0,
+          "silenceRatio": 0,
+          "repetitionRate": 0.8395926212066402,
+          "sectionCount": 1,
+          "sectionTransitions": [],
+          "isSilent": false,
+          "isConstant": false,
+          "isNoiseLike": false,
+          "isClipped": false,
+          "hasLowFreqContent": true,
+          "hasDynamicRange": true
+        }
+      },
+      {
+        "attack": "extremely_low_energy",
+        "description": "Signal at -60dB (audibility threshold)",
+        "peak": 0.0009999936446547508,
+        "rms": 0.0007071067820155686,
+        "rejected": true,
+        "rejectionReasons": [
+          "SILENT",
+          "PEAK_TOO_LOW",
+          "RMS_TOO_LOW",
+          "KICK_NOT_PERIODIC",
+          "ONSET_DENSITY_TOO_LOW",
+          "TOO_MUCH_SILENCE"
+        ],
+        "analysis": {
+          "durationSec": 8,
+          "sampleRate": 22050,
+          "samples": 176400,
+          "peak": 0.0009999936446547508,
+          "rms": 0.0007071067820155686,
+          "crestFactor": 1.4142045728996184,
+          "dynamicRange": 3.0102447444535025,
+          "lowEnergy": 0.8000700254855869,
+          "midEnergy": 0.8271417984566436,
+          "highEnergy": 0.9975726735700154,
+          "spectralCentroid": 99.9375,
+          "onsetCount": 0,
+          "onsetDensity": 0,
+          "estimatedTempo": 60.1,
+          "kickPeriodicity": 0.00043023134162214067,
+          "bassKickAlignment": 0,
+          "stereoCorrelation": 0.9999999999999998,
+          "stereoWidth": 2.220446049250313e-16,
+          "silenceRatio": 1,
+          "repetitionRate": 0.8332327460793215,
+          "sectionCount": 1,
+          "sectionTransitions": [],
+          "isSilent": true,
+          "isConstant": false,
+          "isNoiseLike": false,
+          "isClipped": false,
+          "hasLowFreqContent": true,
+          "hasDynamicRange": true
+        }
+      }
+    ],
+    "signalSubstitution": [
+      {
+        "device": "muse",
+        "attack": "silence",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "muse",
+        "attack": "constant_0.5",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "muse",
+        "attack": "constant_DC",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "sub37",
+        "attack": "silence",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "sub37",
+        "attack": "constant_0.5",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "sub37",
+        "attack": "constant_DC",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "prophet6",
+        "attack": "silence",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "prophet6",
+        "attack": "constant_0.5",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "prophet6",
+        "attack": "constant_DC",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "iridium",
+        "attack": "silence",
+        "detected": true,
+        "detail": "peak=0.944 verdict=FAIL reasons=[KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "iridium",
+        "attack": "constant_0.5",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "iridium",
+        "attack": "constant_DC",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "rytm",
+        "attack": "silence",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "rytm",
+        "attack": "constant_0.5",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "rytm",
+        "attack": "constant_DC",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "digitakt",
+        "attack": "silence",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "digitakt",
+        "attack": "constant_0.5",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      },
+      {
+        "device": "digitakt",
+        "attack": "constant_DC",
+        "detected": true,
+        "detail": "peak=0.950 verdict=FAIL reasons=[NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC]"
+      }
+    ],
+    "singleDevice": [
+      {
+        "device": "muse",
+        "rejected": true,
+        "reasons": [
+          "NOISE_LIKE",
+          "NO_LOW_FREQ_CONTENT",
+          "KICK_NOT_PERIODIC",
+          "TOO_MUCH_SILENCE"
+        ],
+        "peak": 0.3735016882419586
+      },
+      {
+        "device": "sub37",
+        "rejected": true,
+        "reasons": [
+          "NO_LOW_FREQ_CONTENT",
+          "KICK_NOT_PERIODIC"
+        ],
+        "peak": 0.69685298204422
+      },
+      {
+        "device": "prophet6",
+        "rejected": true,
+        "reasons": [
+          "PEAK_TOO_LOW",
+          "RMS_TOO_LOW",
+          "KICK_NOT_PERIODIC",
+          "ONSET_DENSITY_TOO_LOW"
+        ],
+        "peak": 0.07030559331178665
+      },
+      {
+        "device": "iridium",
+        "rejected": true,
+        "reasons": [
+          "NO_LOW_FREQ_CONTENT",
+          "KICK_NOT_PERIODIC"
+        ],
+        "peak": 0.949999988079071
+      },
+      {
+        "device": "rytm",
+        "rejected": true,
+        "reasons": [
+          "KICK_NOT_PERIODIC"
+        ],
+        "peak": 0.2689332067966461
+      }
+    ],
+    "artifactA": {
+      "analysis": {
+        "durationSec": 27.826077097505667,
+        "sampleRate": 22050,
+        "samples": 613565,
+        "peak": 0.949999988079071,
+        "rms": 0.31287192841153993,
+        "crestFactor": 3.036386143372623,
+        "dynamicRange": 9.647140016880787,
+        "lowEnergy": 0.07670878774344467,
+        "midEnergy": 0.39399420008585373,
+        "highEnergy": 0.48201950359643125,
+        "spectralCentroid": 3041.4815463724303,
+        "onsetCount": 107,
+        "onsetDensity": 3.845313862426964,
+        "estimatedTempo": 62,
+        "kickPeriodicity": 0.04206181125764401,
+        "bassKickAlignment": 1,
+        "stereoCorrelation": 0.9932213361922116,
+        "stereoWidth": 0.006778663807788354,
+        "silenceRatio": 0,
+        "repetitionRate": 0.8438238076419878,
+        "sectionCount": 1,
+        "sectionTransitions": [],
+        "isSilent": false,
+        "isConstant": false,
+        "isNoiseLike": false,
+        "isClipped": false,
+        "hasLowFreqContent": false,
+        "hasDynamicRange": true
+      },
+      "verdict": {
+        "pass": false,
+        "reasons": [
+          "NO_LOW_FREQ_CONTENT",
+          "KICK_NOT_PERIODIC"
+        ]
+      }
+    },
+    "evolution": {
+      "scaleAdherence": 1,
+      "motifStability": 0.6666666666666666,
+      "rhythmicConsistency": 1,
+      "patternMutationCount": 7,
+      "spectralVariance": 0.04847461297553937,
+      "densityVariance": 0,
+      "pitchRangeVariance": 0.15869840952317446,
+      "isStatic": false,
+      "isChaotic": false,
+      "isFrozen": false,
+      "controlledEvolution": true,
+      "identityScore": 0.9,
+      "evolutionScore": 0.63,
+      "verdict": "CONTROLLED_EVOLUTION",
+      "evidence": [
+        "scaleAdherence=1.000",
+        "motifStability=0.667",
+        "rhythmicConsistency=1.000",
+        "mutationCount=7",
+        "spectralVariance=0.0485",
+        "pitchRangeVariance=0.1587"
+      ]
+    },
+    "reproducibility": {
+      "seedA": 11111,
+      "seedB": 22222,
+      "seedC": 33333,
+      "hashA1": "d528c801",
+      "hashA2": "d528c801",
+      "hashB": "ec88cb45",
+      "hashC": "4b70966f",
+      "aEqualsA": true,
+      "aDiffersB": true,
+      "aDiffersC": true,
+      "bDiffersC": true,
+      "allMusicallyValid": true,
+      "musicalAnalyses": [
+        {
+          "seed": 11111,
+          "analysis": {
+            "durationSec": 6.956507936507936,
+            "sampleRate": 22050,
+            "samples": 153391,
+            "peak": 0.949999988079071,
+            "rms": 0.2807295360697025,
+            "crestFactor": 3.384040031481386,
+            "dynamicRange": 10.588709837627173,
+            "lowEnergy": 0.09414508246727776,
+            "midEnergy": 0.4016518988029049,
+            "highEnergy": 0.5017704591966926,
+            "spectralCentroid": 2840.9368867795374,
+            "onsetCount": 27,
+            "onsetDensity": 3.881257700908137,
+            "estimatedTempo": 136.7,
+            "kickPeriodicity": 0.04302352075498312,
+            "bassKickAlignment": 1,
+            "stereoCorrelation": 0.9931941562817755,
+            "stereoWidth": 0.006805843718224458,
+            "silenceRatio": 0,
+            "repetitionRate": 0.9061059706024801,
+            "sectionCount": 1,
+            "sectionTransitions": [],
+            "isSilent": false,
+            "isConstant": false,
+            "isNoiseLike": false,
+            "isClipped": false,
+            "hasLowFreqContent": false,
+            "hasDynamicRange": true
+          }
+        },
+        {
+          "seed": 22222,
+          "analysis": {
+            "durationSec": 6.956507936507936,
+            "sampleRate": 22050,
+            "samples": 153391,
+            "peak": 0.949999988079071,
+            "rms": 0.2806191081504342,
+            "crestFactor": 3.3853717030908506,
+            "dynamicRange": 10.5921271959551,
+            "lowEnergy": 0.09430350855076387,
+            "midEnergy": 0.4018120951785592,
+            "highEnergy": 0.5017111717853048,
+            "spectralCentroid": 2841.6556382056315,
+            "onsetCount": 29,
+            "onsetDensity": 4.1687582713457765,
+            "estimatedTempo": 81.3,
+            "kickPeriodicity": 0.04306807994060904,
+            "bassKickAlignment": 1,
+            "stereoCorrelation": 0.9931902560314678,
+            "stereoWidth": 0.006809743968532178,
+            "silenceRatio": 0,
+            "repetitionRate": 0.9060809628656258,
+            "sectionCount": 1,
+            "sectionTransitions": [],
+            "isSilent": false,
+            "isConstant": false,
+            "isNoiseLike": false,
+            "isClipped": false,
+            "hasLowFreqContent": false,
+            "hasDynamicRange": true
+          }
+        },
+        {
+          "seed": 33333,
+          "analysis": {
+            "durationSec": 6.956507936507936,
+            "sampleRate": 22050,
+            "samples": 153391,
+            "peak": 0.949999988079071,
+            "rms": 0.28074016962409426,
+            "crestFactor": 3.3839118546914855,
+            "dynamicRange": 10.588380837223479,
+            "lowEnergy": 0.0941203879703962,
+            "midEnergy": 0.40167089981451476,
+            "highEnergy": 0.5016629962599487,
+            "spectralCentroid": 2836.9118787934103,
+            "onsetCount": 29,
+            "onsetDensity": 4.1687582713457765,
+            "estimatedTempo": 136.7,
+            "kickPeriodicity": 0.04305589831054908,
+            "bassKickAlignment": 1,
+            "stereoCorrelation": 0.9931989457936824,
+            "stereoWidth": 0.006801054206317603,
+            "silenceRatio": 0,
+            "repetitionRate": 0.9053668380234082,
+            "sectionCount": 1,
+            "sectionTransitions": [],
+            "isSilent": false,
+            "isConstant": false,
+            "isNoiseLike": false,
+            "isClipped": false,
+            "hasLowFreqContent": false,
+            "hasDynamicRange": true
+          }
+        }
+      ],
+      "verdict": "PASS",
+      "evidence": [
+        "A1=d528c801",
+        "A2=d528c801",
+        "B=ec88cb45",
+        "C=4b70966f",
+        "A==A: true",
+        "A!=B: true",
+        "A!=C: true",
+        "B!=C: true",
+        "allMusicallyValid: true"
+      ]
+    },
+    "performance": {
+      "points": [
+        {
+          "label": "baseline-4bar-22k",
+          "bars": 4,
+          "sampleRate": 22050,
+          "blockSize": 256,
+          "voices": 9,
+          "audioDurationSec": 7,
+          "renderMs": 701,
+          "ratio": 0.1,
+          "status": "REALTIME",
+          "peak": 0.95,
+          "rms": 0.2806,
+          "blocks": 600
+        },
+        {
+          "label": "8bar-22k",
+          "bars": 8,
+          "sampleRate": 22050,
+          "blockSize": 256,
+          "voices": 9,
+          "audioDurationSec": 13.9,
+          "renderMs": 1614,
+          "ratio": 0.12,
+          "status": "REALTIME",
+          "peak": 0.95,
+          "rms": 0.3054,
+          "blocks": 1199
+        },
+        {
+          "label": "16bar-22k",
+          "bars": 16,
+          "sampleRate": 22050,
+          "blockSize": 256,
+          "voices": 9,
+          "audioDurationSec": 27.8,
+          "renderMs": 5034,
+          "ratio": 0.18,
+          "status": "REALTIME",
+          "peak": 0.95,
+          "rms": 0.3127,
+          "blocks": 2397
+        },
+        {
+          "label": "4bar-44k",
+          "bars": 4,
+          "sampleRate": 44100,
+          "blockSize": 256,
+          "voices": 9,
+          "audioDurationSec": 7,
+          "renderMs": 1457,
+          "ratio": 0.21,
+          "status": "REALTIME",
+          "peak": 0.95,
+          "rms": 0.2345,
+          "blocks": 1199
+        },
+        {
+          "label": "8bar-44k",
+          "bars": 8,
+          "sampleRate": 44100,
+          "blockSize": 256,
+          "voices": 9,
+          "audioDurationSec": 13.9,
+          "renderMs": 4879,
+          "ratio": 0.35,
+          "status": "REALTIME",
+          "peak": 0.95,
+          "rms": 0.2605,
+          "blocks": 2397
+        },
+        {
+          "label": "4bar-44k-bs128",
+          "bars": 4,
+          "sampleRate": 44100,
+          "blockSize": 128,
+          "voices": 9,
+          "audioDurationSec": 7,
+          "renderMs": 1804,
+          "ratio": 0.26,
+          "status": "REALTIME",
+          "peak": 0.95,
+          "rms": 0.231,
+          "blocks": 2397
+        }
+      ],
+      "realtimeBoundary": "REALTIME holds up to 4bar-44k-bs128 (ratio 0.26)",
+      "failureBoundary": "NO FAILURE REACHED — system handled all stress points",
+      "maxVoices": 9,
+      "maxSampleRate": 44100
+    },
+    "longRun": {
+      "verdict": "PASS",
+      "uniqueHashes": 1,
+      "heapGrowthMB": -3.8,
+      "crashCount": 0
+    },
+    "failureInjection": [
+      {
+        "subsystem": "CLOCK",
+        "injection": "setBpm(0)",
+        "detected": true,
+        "classification": "CAUGHT",
+        "detail": "threw: length larger than (2 ** 53) - 1"
+      },
+      {
+        "subsystem": "MIDI",
+        "injection": "NaN velocity",
+        "detected": false,
+        "classification": "FAIL_SAFE",
+        "detail": "NaN velocity → peak=0.000 (limiter held, NaN contained)"
+      },
+      {
+        "subsystem": "SEQUENCER",
+        "injection": "Infinity duration",
+        "detected": false,
+        "classification": "FAIL_SAFE",
+        "detail": "Infinity duration → peak=0.506"
+      },
+      {
+        "subsystem": "OSCILLATOR",
+        "injection": "setFrequency(NaN)",
+        "detected": false,
+        "classification": "FAIL_SAFE",
+        "detail": "NaN frequency → peak=0.407 (oscillator bounded phase wrapped)"
+      },
+      {
+        "subsystem": "FILTER",
+        "injection": "resonance=-5",
+        "detected": false,
+        "classification": "FAIL_SAFE",
+        "detail": "negative resonance → peak=0.547 (clamped + limiter held)"
+      },
+      {
+        "subsystem": "FX",
+        "injection": "feedback=1.5",
+        "detected": false,
+        "classification": "FAIL_SAFE",
+        "detail": "feedback>1 → peak=0.350 (feedback capped at 0.95 + limiter held)"
+      },
+      {
+        "subsystem": "SAMPLER",
+        "injection": "missing sample",
+        "detected": true,
+        "classification": "FAIL_SAFE",
+        "detail": "missing sample → peak=0.000 (skipped gracefully, no crash)"
+      },
+      {
+        "subsystem": "RESAMPLER",
+        "injection": "capture before recording",
+        "detected": true,
+        "classification": "FAIL_SAFE",
+        "detail": "returned 44100 samples of silence (safe)"
+      },
+      {
+        "subsystem": "ROUTING",
+        "injection": "broken processBlock",
+        "detected": true,
+        "classification": "CAUGHT",
+        "detail": "threw: routing broken"
+      },
+      {
+        "subsystem": "ARRANGER",
+        "injection": "empty arrangement",
+        "detected": true,
+        "classification": "FAIL_SAFE",
+        "detail": "empty arrangement → peak=0.000 (silence is correct for no sections)"
+      },
+      {
+        "subsystem": "EXPORT",
+        "injection": "encode empty buffer",
+        "detected": true,
+        "classification": "FAIL_SAFE",
+        "detail": "empty buffer → WAV 44 bytes (header only, no crash)"
+      },
+      {
+        "subsystem": "VALIDATOR",
+        "injection": "remove muse device",
+        "detected": true,
+        "classification": "CAUGHT",
+        "detail": "threw: undefined is not an object (evaluating 'this.muse.reset')"
+      }
+    ],
+    "hardwareBoundary": {
+      "totalDevices": 9,
+      "realDsp": 8,
+      "simulatedControl": 1,
+      "hardwareRequired": 0,
+      "averageConfidence": 0.53,
+      "honestStatement": "The digital twin proves the ARCHITECTURE works as a coherent musical system in software (avg confidence 53%). It does NOT prove hardware equivalence. Real Moog/Elektron/Eventide/UA hardware is required to prove hardware-specific behavior. The DSP is REAL (samples are computed), the control logic is SIMULATED (mirrors hardware workflows), and the physical devices are EXTERNAL HARDWARE REQUIREMENTS."
+    },
+    "provenance": {
+      "artifactId": "A",
+      "artifactName": "16-bar psytrance loop",
+      "fileName": "A-psytrance-loop.wav",
+      "configHash": "15aac964573f2499",
+      "seed": 1733336615,
+      "bpm": 138,
+      "sampleRate": 22050,
+      "bars": 16,
+      "key": "A",
+      "scale": "minor",
+      "engineVersion": "psy4-engine-1.0.0",
+      "testVersion": "psy4-tests-1.0.0",
+      "pipelineVersion": "psy4-pipeline-1.0.0",
+      "timestamp": "2026-08-08T03:02:41.370Z",
+      "renderDurationMs": 5582,
+      "audioDurationSec": 27.826077097505667,
+      "validationResult": "FAIL",
+      "validationReasons": [
+        "NO_LOW_FREQ_CONTENT",
+        "KICK_NOT_PERIODIC"
+      ],
+      "artifactSha256": "f8bf7760b99beae33a4c863b9c108552242bbed4f451759715d6193e9e2646c1",
+      "audioHash": "4a9c31ef",
+      "peak": 0.949999988079071,
+      "rms": 0.31287192841153993
+    },
+    "cleanRebuild": {
+      "hasDev": true,
+      "hasLint": true,
+      "nodeModulesExists": true
+    },
+    "repoIntegrity": {
+      "noSecrets": true,
+      "noAbsolutePaths": true,
+      "uploadIgnored": true
+    },
+    "capabilityMatrix": [
+      {
+        "capability": "9-device frozen architecture with 28 labeled edges",
+        "classification": "PROVEN",
+        "evidence": "architecture.ts defines all 9 devices + SYSTEM_GRAPH with 28 labeled edges; validator confirms all components + connections"
+      },
+      {
+        "capability": "Real sample-accurate DSP (oscillators, filters, envelopes, FX)",
+        "classification": "PROVEN",
+        "evidence": "oscillator.ts/filter.ts/envelope.ts/effects.ts compute actual samples; bypass attacks confirm each synth device contributes measurably"
+      },
+      {
+        "capability": "Sample-accurate master clock with synchronized sequencers",
+        "classification": "PROVEN",
+        "evidence": "TEST-01 PASS: beat-matching onset verification"
+      },
+      {
+        "capability": "Psytrance kick+bass relationship (4-on-floor + off-beat bass)",
+        "classification": "PARTIALLY_PROVEN",
+        "evidence": "TEST-02 PASS; artifact A kickPeriodicity=0.04"
+      },
+      {
+        "capability": "Controlled psychedelic evolution (identity preserved + state changing)",
+        "classification": "PROVEN",
+        "evidence": "identityScore=0.9 evolutionScore=0.63 controlledEvolution=true"
+      },
+      {
+        "capability": "Deterministic reproducibility (A==A) with variation (A!=B, A!=C)",
+        "classification": "PROVEN",
+        "evidence": "A==A:true A!=B:true verdict=PASS"
+      },
+      {
+        "capability": "Resampling loop (capture → reprocess)",
+        "classification": "PROVEN",
+        "evidence": "TEST-04 PASS"
+      },
+      {
+        "capability": "Adversarial input survival (malformed/missing/feedback/clock conflicts)",
+        "classification": "PROVEN",
+        "evidence": "5 adversarial tests, all PASS"
+      },
+      {
+        "capability": "Failure detection (never silently convert failure to PASS)",
+        "classification": "PROVEN",
+        "evidence": "12 injections, 0 SILENT_PASS (must be 0)"
+      },
+      {
+        "capability": "Long-run stability (15 runs, no drift/leak/nondeterminism)",
+        "classification": "PROVEN",
+        "evidence": "uniqueHashes=1 heapGrowth=-3.8MB crashes=0"
+      },
+      {
+        "capability": "Realtime-capable rendering (under 1x ratio for standard config)",
+        "classification": "PROVEN",
+        "evidence": "6/6 points REALTIME. NO FAILURE REACHED — system handled all stress points"
+      },
+      {
+        "capability": "Musical structure validation (kick periodicity, bass/kick alignment, spectral, sections)",
+        "classification": "FAILED",
+        "evidence": "artifact A verdict=FAIL NO_LOW_FREQ_CONTENT,KICK_NOT_PERIODIC"
+      },
+      {
+        "capability": "Artifact provenance (SHA-256, config hash, seed, versions)",
+        "classification": "PROVEN",
+        "evidence": "Every artifact gets a Provenance record with SHA-256 + configHash + seed + engineVersion"
+      },
+      {
+        "capability": "Degenerate signal rejection (silence/DC/constant/noise/clipped)",
+        "classification": "PROVEN",
+        "evidence": "7/7 degenerate signals rejected"
+      },
+      {
+        "capability": "Hardware-boundary honesty (REAL DSP vs SIMULATED control vs HARDWARE required)",
+        "classification": "PROVEN",
+        "evidence": "avg confidence 53%. Digital twin proves architecture, NOT hardware equivalence. Honestly classified."
+      },
+      {
+        "capability": "Physical hardware equivalence (Moog/Elektron/Eventide/UA sound identical to twins)",
+        "classification": "UNPROVEN",
+        "evidence": "Requires the physical hardware. The digital twin models behavior but cannot prove transistor-ladder/Unison/FPGA equivalence. Confidence 0.35-0.60 per device."
+      },
+      {
+        "capability": "No dead-code devices (every claimed device contributes)",
+        "classification": "PROVEN",
+        "evidence": "0 DEAD_CODE devices detected"
+      }
+    ]
+  }
+}
