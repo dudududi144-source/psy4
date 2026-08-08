@@ -1300,79 +1300,27 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_BASS: {
-        // HYBRID BASS: Real bass_A.wav sample (body/character) + synth sub (low end)
-        // This replaces the pure synth bass with a real sample layer.
-        // The sample provides the harmonic character; the synth sub provides
-        // the clean low end that doesn't mask the kick.
-        if (this.samplesReady && this.samples['bass_A.wav']) {
-          const v = this.getFreeVoice(this.kickSamplePool); // reuse sample voice pool
-          if (v) {
-            const samp = this.samples['bass_A.wav'];
-            // Pitch the sample to the note frequency
-            // bass_A.wav is at ~110Hz (A2). Note freq = mtof(midi).
-            // playbackRate = noteFreq / 110
-            const playbackRate = Math.max(0.5, Math.min(2.0, note / 110));
-            // Short decay for psytrance bass (tight, not muddy)
-            const bassDecay = Math.min(duration, 0.15);
-            v.trigger(samp.data, samp.sampleRate, playbackRate, velocity * 0.6, bassDecay, 0);
-            // Also trigger synth sub for clean low end (an octave below)
-            const subV = this.getFreeVoice(this.bassPool);
-            if (subV) {
-              subV.trigger(t, note / 2, duration, velocity * 0.4, false, sr, {
-                cutoffStart: 400, cutoffEnd: 80, resonance: 1,
-              });
-            }
-            this.sampleUsage['bass_A.wav'] = (this.sampleUsage['bass_A.wav'] || 0) + 1;
-          }
-        } else {
-          // Fallback: synth bass only
-          const v = this.getFreeVoice(this.bassPool);
-          if (v) v.trigger(t, note, duration, velocity, false, sr, {
-            cutoffStart: 1200, cutoffEnd: wp.bassCutoff, resonance: wp.bassResonance,
-          });
-        }
+        // PURE SYNTH BASS — square wave (Astrix style) with short 120ms decay
+        // Removed bass_A.wav (PSY3 sample — not a sound quality reference)
+        // The square wave + Moog filter + short envelope IS the commercial bass sound
+        const v = this.getFreeVoice(this.bassPool);
+        if (v) v.trigger(t, note, duration, velocity, false, sr, {
+          cutoffStart: 800, cutoffEnd: 200, resonance: 2,
+        });
         break;
       }
       case V_LEAD: {
-        // HYBRID LEAD: Real MachineDrum stab sample + synth layer for richness
-        // The stab provides instant character/identity; the synth adds sustain.
-        const stabNames = Object.keys(this.samples).filter(n =>
-          this.samples[n].category === 'lead' && (n.startsWith('md_stab') || n.startsWith('real/md_stab'))
-        );
-        if (this.samplesReady && stabNames.length > 0) {
-          // Phrase-lock the lead stab (same stab for entire phrase)
-          if (this.phraseLeadIdx === undefined || this.phraseLeadIdx >= stabNames.length) this.phraseLeadIdx = 0;
-          const stabName = stabNames[this.phraseLeadIdx];
-          const samp = this.samples[stabName];
-          const v = this.getFreeVoice(this.kickSamplePool); // reuse sample voice pool
-          if (v) {
-            // Pitch the stab to the note frequency (stabs are typically ~440Hz)
-            const playbackRate = Math.max(0.5, Math.min(2.0, note / 440));
-            v.trigger(samp.data, samp.sampleRate, playbackRate, velocity * 0.5, duration, 0);
-            this.sampleUsage[stabName] = (this.sampleUsage[stabName] || 0) + 1;
-          }
-          // Also trigger synth lead for sustain/body (lower level)
-          const synthV = this.getFreeVoice(this.leadPool);
-          if (synthV) {
-            synthV.trigger(t, note, duration, velocity * 0.3, sr, {
-              cutoff: wp.leadCutoff * (0.7 + mc.brightness * 0.6),
-              detune: wp.leadDetune * (0.5 + mc.psychedelia),
-              resonance: 2 + mc.psychedelia * 3,
-              lfoRate: 0.5 + mc.psychedelia * 3,
-              lfoDepth: mc.psychedelia * 0.3,
-            });
-          }
-        } else {
-          // Fallback: synth lead only
-          const v = this.getFreeVoice(this.leadPool);
-          if (v) v.trigger(t, note, duration, velocity, sr, {
-            cutoff: wp.leadCutoff * (0.7 + mc.brightness * 0.6),
-            detune: wp.leadDetune * (0.5 + mc.psychedelia),
-            resonance: 2 + mc.psychedelia * 3,
-            lfoRate: 0.5 + mc.psychedelia * 3,
-            lfoDepth: mc.psychedelia * 0.3,
-          });
-        }
+        // PURE SYNTH LEAD — supersaw through Moog filter with LFO modulation
+        // Removed MachineDrum stabs (drum stabs are NOT leads — they're percussion)
+        // The supersaw + filter + modulation IS the lead sound
+        const v = this.getFreeVoice(this.leadPool);
+        if (v) v.trigger(t, note, duration, velocity, sr, {
+          cutoff: wp.leadCutoff * (0.7 + mc.brightness * 0.6),
+          detune: wp.leadDetune * (0.5 + mc.psychedelia),
+          resonance: 2 + mc.psychedelia * 3,
+          lfoRate: 0.5 + mc.psychedelia * 3,
+          lfoDepth: mc.psychedelia * 0.3,
+        });
         break;
       }
       case V_ACID: {

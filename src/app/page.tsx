@@ -28,10 +28,8 @@ export default function LivePage() {
     aggression: 0.4, brightness: 0.55,
   });
   const [audioLevel, setAudioLevel] = useState(0);
-  const [, setStatsTick] = useState(0); // forces re-render for voice count display
   const [engineMode, setEngineMode] = useState('Web Audio');
   const [activeVoices, setActiveVoices] = useState(0);
-  const [sampleUsage, setSampleUsage] = useState<Record<string, number>>({});
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animRef = useRef<number | null>(null);
 
@@ -41,7 +39,8 @@ export default function LivePage() {
     return () => { engineRef.current?.stop(); };
   }, []);
 
-  // update UI state from engine
+  // update UI state from engine — THROTTLED to 2/sec (was 10/sec)
+  // This was the #1 cause of latency: 80 React re-renders/sec was starving the audio scheduler
   useEffect(() => {
     if (!playing) return;
     const interval = setInterval(() => {
@@ -52,8 +51,8 @@ export default function LivePage() {
       setPhrase(e.currentPhrase);
       setEngineMode(e.isWorkletEngineActive() ? 'Worklet' : 'Web Audio');
       setActiveVoices(e.getEngineStats()?.activeVoices ?? 0);
-      setSampleUsage(e.getSampleUsage());
-      setStatsTick(t => t + 1); // force re-render for voice count
+      // DO NOT update sampleUsage in React state — it causes re-renders
+      // DO NOT call setStatsTick — it forces unnecessary re-renders
       // audio level from analyser
       const analyser = e.getAnalyser();
       if (analyser) {
@@ -63,7 +62,7 @@ export default function LivePage() {
         for (let i = 0; i < 64; i++) sum += data[i];
         setAudioLevel(sum / 64 / 255);
       }
-    }, 100);
+    }, 500); // 500ms = 2 updates/sec (was 100ms = 10 updates/sec)
     return () => clearInterval(interval);
   }, [playing]);
 
@@ -217,53 +216,6 @@ export default function LivePage() {
           {playing && (
             <div className="mt-4">
               <canvas ref={canvasRef} width={800} height={80} className="w-full h-20 rounded-lg bg-black/40" />
-            </div>
-          )}
-          {playing && Object.keys(sampleUsage).length > 0 && (
-            <div className="mt-3 p-3 rounded-lg bg-black/40 border border-border/40">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">NOW PLAYING</div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1 text-xs">
-                {/* Find the top sample per voice category */}
-                {(() => {
-                  const categories: Record<string, { name: string; hits: number }> = {};
-                  Object.entries(sampleUsage).forEach(([name, hits]) => {
-                    let cat = 'FX';
-                    if (name.includes('kick') || name.includes('BD')) cat = 'KICK';
-                    else if (name.includes('bass')) cat = 'BASS';
-                    else if (name.includes('hat')) cat = 'HAT';
-                    else if (name.includes('clap') || name.includes('snare')) cat = 'CLAP';
-                    else if (name.includes('perc') || name.includes('tom')) cat = 'PERC';
-                    else if (name.includes('stab')) cat = 'LEAD';
-                    if (!categories[cat] || hits > categories[cat].hits) {
-                      categories[cat] = { name, hits };
-                    }
-                  });
-                  const labels: Record<string, string> = {
-                    KICK: 'KICK', BASS: 'BASS', HAT: 'HAT', CLAP: 'CLAP',
-                    PERC: 'PERC', LEAD: 'LEAD', FX: 'FX',
-                  };
-                  return Object.entries(categories)
-                    .sort((a, b) => a[0].localeCompare(b[0]))
-                    .map(([cat, { name, hits }]) => {
-                      const isReal = name.startsWith('nord') || name.startsWith('909') || name.startsWith('real') || name.startsWith('md_');
-                      const shortName = name.replace('real/', '').replace('.wav', '').substring(0, 25);
-                      return (
-                        <div key={cat} className="flex items-center gap-2">
-                          <span className="text-muted-foreground font-bold w-10">{labels[cat] || cat}</span>
-                          <span className={`font-mono truncate flex-1 ${isReal ? 'text-emerald-400' : 'text-amber-400'}`}>
-                            {shortName}
-                          </span>
-                          <span className="text-muted-foreground tabular-nums">{hits}</span>
-                        </div>
-                      );
-                    });
-                })()}
-              </div>
-              <div className="mt-2 flex items-center gap-4 text-[10px] text-muted-foreground">
-                <span>Phrase: {phrase}</span>
-                <span>Section: {section}</span>
-                <span>Voices: {activeVoices}</span>
-              </div>
             </div>
           )}
         </Card>
