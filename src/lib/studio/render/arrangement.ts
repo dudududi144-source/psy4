@@ -34,11 +34,11 @@ export interface ArrangementRecipe {
 }
 
 /** Standard psytrance arrangement: intro → build → drop → breakdown → build → drop → outro. */
-export function psytranceArrangement(bpm = 138, root = 45, scale = 'minor'): ArrangementRecipe {
+export function psytranceArrangement(bpm = 138, root = 45, scale = 'minor', seed?: number): ArrangementRecipe {
   return {
     name: 'psytrance-full',
     bpm, root, scale,
-    seed: hashSeed('psy4-arrangement'),
+    seed: seed ?? hashSeed('psy4-arrangement'),
     sections: [
       { type: 'intro', bars: 8, density: 0.25, activeDevices: ['prophet6', 'iridium', 'rytm'], bpm },
       { type: 'build', bars: 8, density: 0.5, activeDevices: ['sub37', 'rytm', 'prophet6', 'iridium'], bpm },
@@ -52,11 +52,11 @@ export function psytranceArrangement(bpm = 138, root = 45, scale = 'minor'): Arr
 }
 
 /** 16-bar loop arrangement (single drop). */
-export function loopArrangement(bpm = 138, root = 45): ArrangementRecipe {
+export function loopArrangement(bpm = 138, root = 45, scale = 'minor', seed?: number): ArrangementRecipe {
   return {
     name: 'psytrance-loop-16',
-    bpm, root, scale: 'minor',
-    seed: hashSeed('psy4-loop'),
+    bpm, root, scale,
+    seed: seed ?? hashSeed('psy4-loop'),
     sections: [
       { type: 'loop', bars: 16, density: 0.85, activeDevices: ['muse', 'sub37', 'rytm', 'digitakt', 'iridium'], bpm },
     ],
