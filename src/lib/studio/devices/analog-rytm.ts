@@ -14,6 +14,7 @@ import { Distortion, panStereo } from '../dsp/effects';
 import { Transport } from '../clock';
 import { mtof } from '../dsp/wavetable';
 import { KickEngine } from '../dsp/kickEngine';
+import { SnareEngine, HatEngine, ClapEngine, ShakerEngine, PercEngine } from '../dsp/drumEngines';
 
 export type DrumVoice = 'kick' | 'snare' | 'hat' | 'clap' | 'tom' | 'cym' | 'flex1' | 'flex2';
 
@@ -40,6 +41,9 @@ class DrumSynth {
   private dist: Distortion;
   private dc: DCBlocker;
   private kickEngine: KickEngine | null = null;
+  private snareEngine: SnareEngine | null = null;
+  private hatEngine: HatEngine | null = null;
+  private clapEngine: ClapEngine | null = null;
   private triggered = false;
   private triggerDecay = 0.15;
   private vel = 0.8;
@@ -57,10 +61,11 @@ class DrumSynth {
     this.noiseFilter = new OnePole(sr, 'hp');
     this.dist = new Distortion();
     this.dc = new DCBlocker();
-    // Use the new professional KickEngine for kick voice
-    if (voice === 'kick') {
-      this.kickEngine = new KickEngine(sr);
-    }
+    // Use professional engines for kick, snare, hat, clap
+    if (voice === 'kick') this.kickEngine = new KickEngine(sr);
+    if (voice === 'snare') this.snareEngine = new SnareEngine(sr);
+    if (voice === 'hat') this.hatEngine = new HatEngine(sr);
+    if (voice === 'clap') this.clapEngine = new ClapEngine(sr);
     this.configureVoice();
   }
 
@@ -113,6 +118,12 @@ class DrumSynth {
     this.pan = pan;
     if (this.kickEngine) {
       this.kickEngine.trigger(velocity);
+    } else if (this.snareEngine) {
+      this.snareEngine.trigger(velocity);
+    } else if (this.hatEngine) {
+      this.hatEngine.trigger(velocity);
+    } else if (this.clapEngine) {
+      this.clapEngine.trigger(velocity);
     } else {
       this.ampEnv.decay = decay;
       this.pitchEnv.trigger();
@@ -121,10 +132,12 @@ class DrumSynth {
   }
 
   process(): number {
-    // Use KickEngine for kick voice
-    if (this.kickEngine) {
-      return this.kickEngine.process();
-    }
+    // Use professional engines
+    if (this.kickEngine) return this.kickEngine.process();
+    if (this.snareEngine) return this.snareEngine.process();
+    if (this.hatEngine) return this.hatEngine.process();
+    if (this.clapEngine) return this.clapEngine.process();
+    // Fallback for tom/cym/flex voices
     if (!this.triggered && !this.ampEnv.isActive()) return 0;
     let out = 0;
     const amp = this.ampEnv.process();

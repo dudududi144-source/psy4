@@ -31,7 +31,7 @@ export class ApolloDevice {
 
   private sr: number;
   /** 8 input channels, each stereo (L/R) buffers per block. */
-  channels: ChannelStrip[];
+  channels: (ChannelStrip & { hpFilter: OnePole })[];
   /** Master limiter (print chain protection). */
   masterLimiter: Limiter;
   private dc: DCBlocker;
@@ -50,16 +50,24 @@ export class ApolloDevice {
 
   constructor(transport: Transport) {
     this.sr = transport.sampleRate;
-    this.channels = [
-      { name: 'Muse', gain: -6, pan: -0.2, fxSend: 0.25, mute: false, solo: false, peak: 0 },
-      { name: 'Sub37', gain: -2, pan: 0, fxSend: 0.05, mute: false, solo: false, peak: 0 },
-      { name: 'Prophet6', gain: -9, pan: 0.15, fxSend: 0.35, mute: false, solo: false, peak: 0 },
-      { name: 'Iridium', gain: -12, pan: -0.15, fxSend: 0.4, mute: false, solo: false, peak: 0 },
-      { name: 'Rytm', gain: -6, pan: 0, fxSend: 0.1, mute: false, solo: false, peak: 0 },
-      { name: 'Digitakt', gain: -6, pan: 0.1, fxSend: 0.25, mute: false, solo: false, peak: 0 },
-      { name: 'FXReturn', gain: -3, pan: 0, fxSend: 0, mute: false, solo: false, peak: 0 },
+    // HP filter frequencies per channel — clean up low-end mud
+    // Bass (Sub37) gets NO HP — it owns the low end. Drums get minimal HP (30Hz DC removal only).
+    const hpFreqs = [80, 20, 100, 120, 30, 80, 40, 20]; // Muse, Sub37, Prophet, Iridium, Rytm, Digitakt, FXReturn, Master
+    const rawChannels: ChannelStrip[] = [
+      { name: 'Muse', gain: -7, pan: -0.15, fxSend: 0.25, mute: false, solo: false, peak: 0 },
+      { name: 'Sub37', gain: -3, pan: 0, fxSend: 0.05, mute: false, solo: false, peak: 0 },
+      { name: 'Prophet6', gain: -10, pan: 0.1, fxSend: 0.35, mute: false, solo: false, peak: 0 },
+      { name: 'Iridium', gain: -14, pan: -0.1, fxSend: 0.4, mute: false, solo: false, peak: 0 },
+      { name: 'Rytm', gain: -2, pan: 0, fxSend: 0.08, mute: false, solo: false, peak: 0 },
+      { name: 'Digitakt', gain: -8, pan: 0.08, fxSend: 0.25, mute: false, solo: false, peak: 0 },
+      { name: 'FXReturn', gain: -4, pan: 0, fxSend: 0, mute: false, solo: false, peak: 0 },
       { name: 'Master', gain: 0, pan: 0, fxSend: 0, mute: false, solo: false, peak: 0 },
     ];
+    this.channels = rawChannels.map((c, i) => {
+      const hp = new OnePole(this.sr, 'hp');
+      hp.setCutoff(hpFreqs[i] || 40);
+      return { ...c, hpFilter: hp };
+    });
     this.masterLimiter = new Limiter(this.sr);
     this.masterLimiter.ceiling = 0.95;
     this.dc = new DCBlocker();
@@ -96,8 +104,9 @@ export class ApolloDevice {
       const inR = inputs[ch].r;
       let chPeak = 0;
       for (let i = 0; i < blockSize; i++) {
-        const l = inL[i] * gainLin;
-        const r = inR[i] * gainLin;
+        // Apply per-channel HP filter (clean up low-end mud on non-bass channels)
+        const l = strip.hpFilter.process(inL[i]) * gainLin;
+        const r = strip.hpFilter.process(inR[i]) * gainLin;
         // constant-power pan
         const p = (strip.pan + 1) * 0.5;
         const pl = Math.cos(p * Math.PI * 0.5);
