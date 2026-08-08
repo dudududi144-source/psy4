@@ -12,6 +12,7 @@ import { ADSR } from '../dsp/envelope';
 import { Transport } from '../clock';
 import { mtof } from '../dsp/wavetable';
 import { panStereo } from '../dsp/effects';
+import { BassEngine, BassParams } from '../dsp/bassEngine';
 
 export interface Sub37Params {
   oscAShape: 'saw' | 'square' | 'triangle';
@@ -68,6 +69,7 @@ export class Sub37Device extends Device {
   private env: ADSR;
   private filterEnv: ADSR;
   private dc: DCBlocker;
+  private bassEngine: BassEngine;  // new professional bass engine
   private scheduled: BassNote[] = [];
   private currentNote = 45;
   private targetNote = 45;
@@ -86,6 +88,20 @@ export class Sub37Device extends Device {
     this.subOsc = new Oscillator('square', this.sr, 13);
     this.filter = new MoogLadder(this.sr);
     this.dc = new DCBlocker();
+    // New professional bass engine with sidechain
+    this.bassEngine = new BassEngine(this.sr, {
+      harmonicShape: this.params.oscAShape,
+      subLevel: this.params.subOscLevel,
+      harmonicLevel: this.params.oscMix,
+      cutoff: this.params.cutoff,
+      resonance: this.params.resonance,
+      attack: this.params.attack,
+      decay: this.params.decay,
+      sustain: this.params.sustain,
+      release: this.params.release,
+      saturation: this.params.multidrive,
+      level: this.params.level,
+    });
     this.env = new ADSR(this.sr);
     this.filterEnv = new ADSR(this.sr);
   }
@@ -96,26 +112,21 @@ export class Sub37Device extends Device {
 
   private trigger(note: number, vel: number, duration: number) {
     this.targetNote = note;
-    this.currentNote = note; // mono: jump (glide handled below if >0)
-    this.oscA.setFrequency(mtof(note));
-    this.oscB.setFrequency(mtof(note + this.params.oscBDetune));
-    this.subOsc.setFrequency(mtof(note - 12));
-    this.env.attack = this.params.attack;
-    this.env.decay = this.params.decay;
-    this.env.sustain = this.params.sustain;
-    this.env.release = this.params.release;
-    this.env.gate(true);
-    this.filterEnv.attack = Math.max(0.001, this.params.attack);
-    this.filterEnv.decay = this.params.decay * 1.5;
-    this.filterEnv.sustain = this.params.sustain * 0.4;
-    this.filterEnv.release = this.params.release;
-    this.filterEnv.gate(true);
-    this.gateOpen = true;
+    this.currentNote = note;
+    // Use the new BassEngine
+    this.bassEngine.noteOn(note, vel);
+    // schedule note-off
     this.releaseAt = this.params.attack + duration;
     this.elapsedSinceGate = 0;
     this.currentVelocity = vel;
+    this.gateOpen = true;
   }
   private currentVelocity = 0.8;
+
+  /** Signal that the kick has fired — for sidechain ducking. */
+  kickFired() {
+    this.bassEngine.kickFired();
+  }
 
   processBlock(outL: Float32Array, outR: Float32Array, ctx: DeviceContext): void {
     const { blockStart, blockSize } = ctx;
@@ -129,48 +140,20 @@ export class Sub37Device extends Device {
       }
     }
 
-    this.filter.setResonance(this.params.resonance);
     let peak = 0;
 
     for (let i = 0; i < blockSize; i++) {
-      // glide
-      if (this.params.glide > 0 && Math.abs(this.currentNote - this.targetNote) > 0.001) {
-        const glideRate = 1 / (this.params.glide * this.sr);
-        this.currentNote += (this.targetNote - this.currentNote) * Math.min(1, glideRate);
-        this.oscA.setFrequency(mtof(this.currentNote));
-        this.oscB.setFrequency(mtof(this.currentNote + this.params.oscBDetune));
-        this.subOsc.setFrequency(mtof(this.currentNote - 12));
-      }
-
+      // Check for note-off
       if (this.gateOpen) {
         this.elapsedSinceGate += 1 / this.sr;
         if (this.elapsedSinceGate >= this.releaseAt) {
-          this.env.gate(false);
-          this.filterEnv.gate(false);
+          this.bassEngine.noteOff();
           this.gateOpen = false;
         }
       }
 
-      const amp = this.env.process();
-      const fEnv = this.filterEnv.process();
-      if (!this.env.isActive()) {
-        // silence
-        continue;
-      }
-
-      const a = this.oscA.process();
-      const b = this.oscB.process();
-      const sub = this.subOsc.process();
-      let osc = a * (1 - this.params.oscMix) + b * this.params.oscMix;
-      osc = osc * 0.7 + sub * this.params.subOscLevel * 0.5;
-
-      const cutoffMod = this.params.cutoff * (1 + fEnv * this.params.envAmt * 4);
-      this.filter.setCutoff(cutoffMod);
-      // multidrive: pre-filter saturation
-      const driven = osc * (1 + this.params.multidrive * 4);
-      const filtered = this.filter.process(driven);
-      const dc = this.dc.process(filtered);
-      const sample = dc * amp * this.currentVelocity * this.params.level;
+      // Use the new BassEngine for all audio output
+      const sample = this.bassEngine.process();
 
       const [l, r] = panStereo(sample, this.params.pan);
       outL[i] += l;

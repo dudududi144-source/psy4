@@ -51,13 +51,13 @@ export class ApolloDevice {
   constructor(transport: Transport) {
     this.sr = transport.sampleRate;
     this.channels = [
-      { name: 'Muse', gain: 0, pan: -0.3, fxSend: 0.3, mute: false, solo: false, peak: 0 },
-      { name: 'Sub37', gain: 0, pan: 0, fxSend: 0.1, mute: false, solo: false, peak: 0 },
-      { name: 'Prophet6', gain: -3, pan: 0.2, fxSend: 0.4, mute: false, solo: false, peak: 0 },
-      { name: 'Iridium', gain: -3, pan: -0.2, fxSend: 0.5, mute: false, solo: false, peak: 0 },
-      { name: 'Rytm', gain: 0, pan: 0, fxSend: 0.15, mute: false, solo: false, peak: 0 },
-      { name: 'Digitakt', gain: -2, pan: 0.1, fxSend: 0.3, mute: false, solo: false, peak: 0 },
-      { name: 'FXReturn', gain: 0, pan: 0, fxSend: 0, mute: false, solo: false, peak: 0 },
+      { name: 'Muse', gain: -6, pan: -0.2, fxSend: 0.25, mute: false, solo: false, peak: 0 },
+      { name: 'Sub37', gain: -2, pan: 0, fxSend: 0.05, mute: false, solo: false, peak: 0 },
+      { name: 'Prophet6', gain: -9, pan: 0.15, fxSend: 0.35, mute: false, solo: false, peak: 0 },
+      { name: 'Iridium', gain: -12, pan: -0.15, fxSend: 0.4, mute: false, solo: false, peak: 0 },
+      { name: 'Rytm', gain: -6, pan: 0, fxSend: 0.1, mute: false, solo: false, peak: 0 },
+      { name: 'Digitakt', gain: -6, pan: 0.1, fxSend: 0.25, mute: false, solo: false, peak: 0 },
+      { name: 'FXReturn', gain: -3, pan: 0, fxSend: 0, mute: false, solo: false, peak: 0 },
       { name: 'Master', gain: 0, pan: 0, fxSend: 0, mute: false, solo: false, peak: 0 },
     ];
     this.masterLimiter = new Limiter(this.sr);

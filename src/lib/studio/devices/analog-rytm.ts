@@ -13,6 +13,7 @@ import { AD } from '../dsp/envelope';
 import { Distortion, panStereo } from '../dsp/effects';
 import { Transport } from '../clock';
 import { mtof } from '../dsp/wavetable';
+import { KickEngine } from '../dsp/kickEngine';
 
 export type DrumVoice = 'kick' | 'snare' | 'hat' | 'clap' | 'tom' | 'cym' | 'flex1' | 'flex2';
 
@@ -38,6 +39,7 @@ class DrumSynth {
   private noiseFilter: OnePole;
   private dist: Distortion;
   private dc: DCBlocker;
+  private kickEngine: KickEngine | null = null;
   private triggered = false;
   private triggerDecay = 0.15;
   private vel = 0.8;
@@ -55,6 +57,10 @@ class DrumSynth {
     this.noiseFilter = new OnePole(sr, 'hp');
     this.dist = new Distortion();
     this.dc = new DCBlocker();
+    // Use the new professional KickEngine for kick voice
+    if (voice === 'kick') {
+      this.kickEngine = new KickEngine(sr);
+    }
     this.configureVoice();
   }
 
@@ -105,12 +111,20 @@ class DrumSynth {
     this.tune = tune;
     this.triggerDecay = decay;
     this.pan = pan;
-    this.ampEnv.decay = decay;
-    this.pitchEnv.trigger();
-    this.ampEnv.trigger();
+    if (this.kickEngine) {
+      this.kickEngine.trigger(velocity);
+    } else {
+      this.ampEnv.decay = decay;
+      this.pitchEnv.trigger();
+      this.ampEnv.trigger();
+    }
   }
 
   process(): number {
+    // Use KickEngine for kick voice
+    if (this.kickEngine) {
+      return this.kickEngine.process();
+    }
     if (!this.triggered && !this.ampEnv.isActive()) return 0;
     let out = 0;
     const amp = this.ampEnv.process();
@@ -218,6 +232,9 @@ export class RytmDevice extends Device {
     });
   }
 
+  /** Callback fired when a kick triggers — used for bass sidechain. */
+  kickCallback: (() => void) | null = null;
+
   private defaultDecay(voice: DrumVoice): number {
     switch (voice) {
       case 'kick': return this.params.kickDecay;
@@ -238,6 +255,10 @@ export class RytmDevice extends Device {
         if (off >= 0 && off < blockSize) {
           const synth = this.synths[h.voice];
           synth.trigger(h.velocity, h.tune + (h.voice === 'kick' ? this.params.kickTune : 0), h.decay, h.pan);
+          // Fire sidechain callback when kick triggers
+          if (h.voice === 'kick' && this.kickCallback) {
+            this.kickCallback();
+          }
         }
       }
     }

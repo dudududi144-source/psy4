@@ -104,6 +104,8 @@ export class Studio {
       { name: 'Digitakt', device: this.digitakt },
     ];
     this.metrics = { blocksProcessed: 0, samplesRendered: 0, peakMaster: 0, rmsMaster: 0, renderTimeMs: 0, devicePeaks: {} };
+    // Connect kick → bass sidechain: when Rytm kick fires, Sub37 ducks
+    this.rytm.kickCallback = () => { this.sub37.kickFired(); };
   }
 
   initialize() {
