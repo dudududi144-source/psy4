@@ -400,34 +400,64 @@ export class Psy4LiveEngine {
   // ─── Voices ───────────────────────────────────────────────────
 
   kick(t: number, amp = 1) {
-    const c = this.ctx!, o = c.createOscillator(), g = c.createGain();
-    o.type = 'sine';
+    const c = this.ctx!;
     const fund = this.world.kickFundamental;
-    o.frequency.setValueAtTime(fund * 2.5, t);
-    o.frequency.exponentialRampToValueAtTime(fund, t + 0.006);
-    o.frequency.exponentialRampToValueAtTime(fund * 0.85, t + 0.08);
-    g.gain.setValueAtTime(amp, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + this.world.kickDecay);
-    o.connect(g); g.connect(this.sum!);
-    o.start(t); o.stop(t + this.world.kickDecay + 0.02);
-    // MID PUNCH: triangle at 2x fundamental, short decay (the "chest" impact)
+
+    // ── SUB BODY: sine with pitch drop + exponential decay ──
+    // PSY3: sub = sin(2π·cumsum(f)/SR) * exp(-t/0.18), amp ~0.8
+    // PSY4 was: amp=1 but exp ramp to 0.001 = too quiet too fast
+    const sub = c.createOscillator(); sub.type = 'sine';
+    sub.frequency.setValueAtTime(fund * 2.4, t);
+    sub.frequency.exponentialRampToValueAtTime(fund, t + 0.008);
+    sub.frequency.exponentialRampToValueAtTime(fund * 0.85, t + 0.09);
+    const subG = c.createGain();
+    subG.gain.setValueAtTime(0, t);
+    subG.gain.linearRampToValueAtTime(0.9 * amp, t + 0.001); // fast attack
+    subG.gain.exponentialRampToValueAtTime(0.001, t + this.world.kickDecay);
+
+    // ── MID PUNCH: triangle at 2x fund, tanh saturation, short decay ──
+    // PSY3: tri = 2*abs(2*(t*f0-floor(t*f0+0.5)))-1, mid = tanh(tri*1.5)*exp(-t/0.05)*0.5
     const mid = c.createOscillator(); mid.type = 'triangle';
     mid.frequency.setValueAtTime(fund * 2, t);
     mid.frequency.exponentialRampToValueAtTime(fund * 1.5, t + 0.02);
+    const midSat = c.createWaveShaper();
+    const midCurve = new Float32Array(256);
+    for (let i = 0; i < 256; i++) { const x = (i / 128) - 1; midCurve[i] = Math.tanh(x * 1.5); }
+    midSat.curve = midCurve;
     const midG = c.createGain();
-    midG.gain.setValueAtTime(0.3 * amp, t);
-    midG.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
-    mid.connect(midG); midG.connect(this.sum!);
-    mid.start(t); mid.stop(t + 0.05);
-    // click — square wave (punchier than noise, from PSY3)
-    const cn = c.createOscillator(); cn.type = 'square';
-    cn.frequency.setValueAtTime(900, t);
-    cn.frequency.exponentialRampToValueAtTime(200, t + 0.012);
-    const cg = c.createGain();
-    cg.gain.setValueAtTime(0.15 * amp, t);
-    cg.gain.exponentialRampToValueAtTime(0.001, t + 0.015);
-    cn.connect(cg); cg.connect(this.sum!);
-    cn.start(t); cn.stop(t + 0.02);
+    midG.gain.setValueAtTime(0.4 * amp, t);
+    midG.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+
+    // ── CLICK: very short, low amplitude, high-passed ──
+    // PSY3: click = diff(noise) * exp(-t/0.002) * 0.35 — very short, small
+    // PSY4 was: square 900→200Hz at 0.15 amp — too loud, too tonal
+    const clickSrc = c.createBufferSource(); clickSrc.buffer = this.pink;
+    const clickHP = c.createBiquadFilter(); clickHP.type = 'highpass'; clickHP.frequency.value = 3000;
+    const clickG = c.createGain();
+    clickG.gain.setValueAtTime(0.08 * amp, t);
+    clickG.gain.exponentialRampToValueAtTime(0.001, t + 0.003);
+
+    // ── SATURATION on sub+mid (controlled harmonic generation) ──
+    const sat = c.createWaveShaper();
+    const satCurve = new Float32Array(256);
+    const driveAmt = 1 + this.world.drive * 1.5;
+    for (let i = 0; i < 256; i++) { const x = (i / 128) - 1; satCurve[i] = Math.tanh(x * driveAmt); }
+    sat.curve = satCurve;
+    const satG = c.createGain(); satG.gain.value = 0.8;
+
+    // Route: sub → sat → satG → sum
+    //        mid → midSat → midG → sat → satG → sum
+    //        click → clickHP → clickG → sum (no sat, clean transient)
+    sub.connect(sat);
+    mid.connect(midSat); midSat.connect(midG); midG.connect(sat);
+    sat.connect(satG); satG.connect(this.sum!);
+    clickSrc.connect(clickHP); clickHP.connect(clickG); clickG.connect(this.sum!);
+
+    sub.start(t); mid.start(t); clickSrc.start(t);
+    sub.stop(t + this.world.kickDecay + 0.02);
+    mid.stop(t + 0.06);
+    clickSrc.stop(t + 0.01);
+
     // sidechain
     if (this.duck) {
       const d = this.duck.gain;
@@ -439,41 +469,59 @@ export class Psy4LiveEngine {
 
   bass(t: number, midi: number, dur: number, amp = 0.5, acid = false) {
     const c = this.ctx!, f = mtof(midi);
-    // SUB layer: clean sine at fundamental
+
+    // ── SUB LAYER: sine at fundamental/2, strong, mono ──
+    // PSY3: sub = sin(2π·f/2·t), gain=0.5, mixed at 0.5 ratio
+    // PSY4 was: sub gain=0.4, too quiet
     const sub = c.createOscillator(); sub.type = 'sine'; sub.frequency.value = f / 2;
-    const sg = c.createGain(); sg.gain.value = 0.4;
-    // HARMONIC layer: saw through resonant filter (character for small speakers)
+    const subG = c.createGain(); subG.gain.value = 0.6;
+
+    // ── BODY LAYER: saw through resonant LP filter with envelope ──
+    // PSY3: saw → LP with cutoff = 1500*exp(-t/0.08)+150 (drops to 150Hz!)
+    // PSY4 was: cutoff = world.bassCutoff*2 → world.bassCutoff (400-600Hz, too high)
     const o = c.createOscillator();
     const wave = acid ? this.sqWave : this.sawWave;
     if (wave) o.setPeriodicWave(wave);
     o.frequency.value = f;
     const fl = c.createBiquadFilter(); fl.type = 'lowpass';
-    fl.Q.value = acid ? this.world.bassResonance : 3 + this.macros.psychedelia * 2;
-    fl.frequency.setValueAtTime(acid ? 2500 : this.world.bassCutoff * 2, t);
-    fl.frequency.exponentialRampToValueAtTime(this.world.bassCutoff, t + Math.min(dur, 0.1));
-    // Saturation for harmonic richness
+    fl.Q.value = acid ? this.world.bassResonance : 2 + this.macros.psychedelia * 2;
+    // Cutoff drops from 1200Hz to 150Hz (like PSY3) — much lower than before
+    const cutoffStart = acid ? 2500 : 1200;
+    const cutoffEnd = acid ? this.world.bassCutoff : 150 + this.world.bassCutoff * 0.3;
+    fl.frequency.setValueAtTime(cutoffStart, t);
+    fl.frequency.exponentialRampToValueAtTime(cutoffEnd, t + Math.min(dur, 0.08));
+
+    // ── SATURATION: controlled harmonic generation for character ──
     const dist = c.createWaveShaper();
     const curve = new Float32Array(256);
     const driveAmt = 1 + this.world.drive * 2 + this.macros.aggression;
     for (let i = 0; i < 256; i++) { const x = (i / 128) - 1; curve[i] = Math.tanh(x * driveAmt); }
     dist.curve = curve;
+
+    // ── AMP ENVELOPE: snappy attack, sustain, quick release ──
     const g = c.createGain();
     g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(0.38 * amp, t + 0.003);
+    g.gain.linearRampToValueAtTime(0.42 * amp, t + 0.003); // PSY3 uses 0.42
     g.gain.linearRampToValueAtTime(0, t + dur);
+
+    // Route: osc → filter → saturation → gain → sum
+    //        sub → subG → gain (sub bypasses filter for clean low end)
     o.connect(fl); fl.connect(dist); dist.connect(g);
-    sub.connect(sg); sg.connect(g);
+    sub.connect(subG); subG.connect(g);
     g.connect(this.sum!);
-    o.start(t); sub.start(t); o.stop(t + dur + 0.03); sub.stop(t + dur + 0.03);
+    o.start(t); sub.start(t);
+    o.stop(t + dur + 0.03); sub.stop(t + dur + 0.03);
   }
 
   lead(t: number, midi: number, dur: number, amp = 0.2, pan = 0) {
     const c = this.ctx!, f = mtof(midi);
     const fl = c.createBiquadFilter(); fl.type = 'lowpass';
-    const baseCut = this.world.leadCutoff * (0.5 + this.macros.brightness * 1);
+    // Lower cutoff (was leadCutoff*(0.5+brightness*1) = 1200-6000Hz, too bright)
+    // PSY3: LP starts at 6000Hz, drops to 1200Hz — much warmer
+    const baseCut = 1500 + this.macros.brightness * 1500; // 1500-3000Hz range
     fl.frequency.setValueAtTime(baseCut * 2, t);
     fl.frequency.exponentialRampToValueAtTime(baseCut, t + dur);
-    fl.Q.value = 1 + this.macros.psychedelia * 4;
+    fl.Q.value = 1 + this.macros.psychedelia * 3;
     // LFO modulation on filter cutoff (psychedelic movement)
     if (this.macros.psychedelia > 0.3) {
       const lfo = c.createOscillator(); lfo.type = 'sine';
@@ -483,9 +531,10 @@ export class Psy4LiveEngine {
       lfo.connect(lfoGain); lfoGain.connect(fl.frequency);
       lfo.start(t); lfo.stop(t + dur + 0.1);
     }
+    // Higher amplitude (was 0.14 * amp/0.2 = 0.14, PSY3 uses 0.16 * v)
     const g = c.createGain();
     g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(0.14 * amp / 0.2, t + 0.006);
+    g.gain.linearRampToValueAtTime(0.16 * amp / 0.2, t + 0.006);
     g.gain.linearRampToValueAtTime(0, t + dur);
     const wave = this.getWave(this.world.leadType);
     // 5 detuned oscillators (richer supersaw, from PSY3)
@@ -601,7 +650,8 @@ export class Psy4LiveEngine {
     o.start(t); o.stop(t + 0.1);
   }
 
-  pad(t: number, root: number, chord: number[], dur: number, amp = 0.04) {
+  pad(t: number, root: number, chord: number[], dur: number, amp = 0.08) {
+    // Increased default amp from 0.04 to 0.08 (PSY3 pad peak = 0.196, PSY4 was 0.024)
     const c = this.ctx!;
     chord.forEach((iv, k) => {
       const f = mtof(root + 12 + iv);
