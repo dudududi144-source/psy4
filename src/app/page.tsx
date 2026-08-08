@@ -232,17 +232,22 @@ export default function Page() {
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="grid w-full grid-cols-2 sm:grid-cols-7 h-auto p-1 bg-card/40 psy-border">
             <TabsTrigger value="play" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-fuchsia-500/30 data-[state=active]:to-cyan-500/30 data-[state=active]:text-white"><Play className="w-3.5 h-3.5 mr-1.5" />Play</TabsTrigger>
+            <TabsTrigger value="live" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-emerald-500/30 data-[state=active]:to-cyan-500/30 data-[state=active]:text-white"><Radio className="w-3.5 h-3.5 mr-1.5" />Live</TabsTrigger>
             <TabsTrigger value="rig" className="data-[state=active]:bg-fuchsia-500/15 data-[state=active]:text-fuchsia-200"><Radio className="w-3.5 h-3.5 mr-1.5" />Rig</TabsTrigger>
             <TabsTrigger value="graph" className="data-[state=active]:bg-cyan-500/15 data-[state=active]:text-cyan-200"><Network className="w-3.5 h-3.5 mr-1.5" />Graph</TabsTrigger>
             <TabsTrigger value="tests" className="data-[state=active]:bg-amber-500/15 data-[state=active]:text-amber-200"><FlaskConical className="w-3.5 h-3.5 mr-1.5" />Tests</TabsTrigger>
-            <TabsTrigger value="artifacts" className="data-[state=active]:bg-lime-500/15 data-[state=active]:text-lime-200"><AudioLines className="w-3.5 h-3.5 mr-1.5" />Artifacts</TabsTrigger>
             <TabsTrigger value="audit" className="data-[state=active]:bg-red-500/15 data-[state=active]:text-red-200"><ShieldCheck className="w-3.5 h-3.5 mr-1.5" />Audit</TabsTrigger>
-            <TabsTrigger value="proof" className="data-[state=active]:bg-fuchsia-500/15 data-[state=active]:text-fuchsia-200"><Terminal className="w-3.5 h-3.5 mr-1.5" />Proof Log</TabsTrigger>
+            <TabsTrigger value="proof" className="data-[state=active]:bg-fuchsia-500/15 data-[state=active]:text-fuchsia-200"><Terminal className="w-3.5 h-3.5 mr-1.5" />Proof</TabsTrigger>
           </TabsList>
 
           {/* PLAY TAB — the non-musician product interface */}
           <TabsContent value="play" className="mt-6">
             <PlayTab audioRef={audioRef} />
+          </TabsContent>
+
+          {/* LIVE TAB — real-time phrase-based performance */}
+          <TabsContent value="live" className="mt-6">
+            <LiveTab />
           </TabsContent>
 
           {/* RIG TAB */}
@@ -875,7 +880,7 @@ function PlayTab({ audioRef }: { audioRef: React.RefObject<HTMLAudioElement | nu
   const doGenerate = async (action?: string, macroOverrides?: Partial<typeof macros>) => {
     setGenerating(true);
     const useMacros = { ...macros, ...macroOverrides };
-    const body: Record<string, unknown> = { worldId, macros: useMacros, bars: 32, sampleRate: 22050 };
+    const body: Record<string, unknown> = { worldId, macros: useMacros, bars: 16, sampleRate: 22050 };
     if (seed !== null) body.seed = seed;
     if (action) body.action = action;
     try {
@@ -979,7 +984,7 @@ function PlayTab({ audioRef }: { audioRef: React.RefObject<HTMLAudioElement | nu
               <div>
                 <div className="font-bold text-lg">{worlds.find((w) => w.id === result.memory.worldId)?.name || result.memory.worldId}</div>
                 <div className="text-xs text-muted-foreground font-mono">
-                  seed {result.provenance.seed} · {result.provenance.bpm} BPM · {result.memory.currentScale} · {result.provenance.durationSec.toFixed(1)}s · {result.renderMs}ms render
+                  seed {result.provenance.seed} · {result.provenance.bpm} BPM · {result.memory.currentScale} · {(result.provenance.audioDurationSec ?? 0).toFixed(1)}s · {result.renderMs}ms render
                 </div>
               </div>
             </div>
@@ -1111,6 +1116,406 @@ function PlayTab({ audioRef }: { audioRef: React.RefObject<HTMLAudioElement | nu
           <Music className="w-12 h-12 mx-auto mb-4 text-fuchsia-400 psy-pulse" />
           <p className="text-lg font-semibold mb-1">Press Generate to create psychedelic music.</p>
           <p className="text-sm text-muted-foreground">The engine composes, arranges, evolves, and mixes a complete piece — you just choose the vibe.</p>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// LIVE TAB — real-time phrase-based performance engine
+// ============================================================
+
+interface LivePhraseResponse {
+  phraseIndex: number; startBar: number; bars: number; durationSec: number;
+  bpm: number; section: string; energy: number; density: number; seed: number;
+  taste: { overall: number; verdict: string; groove: number; variation: number; novelty: number };
+  analysis: { peak: number; rms: number; kickPeriodicity: number; bassKickAlignment: number; lowEnergy: number };
+  wavBase64: string; wavSize: number;
+}
+
+function LiveTab() {
+  const [worlds, setWorlds] = useState<WorldInfo[]>([]);
+  const [worldId, setWorldId] = useState('progressive-psy');
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [macros, setMacros] = useState({
+    energy: 0.6, psychedelia: 0.55, darkness: 0.4, density: 0.55,
+    groove: 0.5, evolution: 0.5, space: 0.4, surprise: 0.3,
+    aggression: 0.4, brightness: 0.55,
+  });
+  const [pendingMacros, setPendingMacros] = useState(false);
+  const [currentPhrase, setCurrentPhrase] = useState<LivePhraseResponse | null>(null);
+  const [phraseQueue, setPhraseQueue] = useState<LivePhraseResponse[]>([]);
+  const [status, setStatus] = useState<string>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState({ phrasesPlayed: 0, totalBars: 0, avgTaste: 0, sessionAge: 0 });
+
+  // Web Audio context + scheduling
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const queueRef = useRef<{ buffer: AudioBuffer; phrase: LivePhraseResponse }[]>([]);
+  const nextStartTimeRef = useRef(0);
+  const schedulerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const isPlayingRef = useRef(false);
+  const generatingRef = useRef(false);
+  const tasteHistoryRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    fetch('/api/studio/worlds').then((r) => r.json()).then((d) => setWorlds(d.worlds || [])).catch(() => {});
+  }, []);
+
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+
+  // base64 → ArrayBuffer
+  const base64ToArrayBuffer = (base64: string): ArrayBuffer => {
+    const binary = atob(base64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  };
+
+  // decode WAV → AudioBuffer
+  const decodeWav = async (ctx: AudioContext, wavBase64: string): Promise<AudioBuffer> => {
+    const arrayBuffer = base64ToArrayBuffer(wavBase64);
+    return await ctx.decodeAudioData(arrayBuffer);
+  };
+
+  // request next phrase from server
+  const fetchNextPhrase = async (sid: string): Promise<LivePhraseResponse | null> => {
+    try {
+      const r = await fetch('/api/studio/live/phrase', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: sid, bars: 4 }),
+      });
+      if (!r.ok) { const e = await r.json(); throw new Error(e.error || `HTTP ${r.status}`); }
+      return await r.json() as LivePhraseResponse;
+    } catch (e) {
+      setError(`Phrase fetch failed: ${(e as Error).message}`);
+      return null;
+    }
+  };
+
+  // schedule a phrase buffer for playback
+  const schedulePhrase = (ctx: AudioContext, buffer: AudioBuffer, phrase: LivePhraseResponse, startTime: number) => {
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    src.start(startTime);
+    // update UI when this phrase starts
+    const delay = (startTime - ctx.currentTime) * 1000;
+    setTimeout(() => {
+      setCurrentPhrase(phrase);
+      setStats((s) => {
+        tasteHistoryRef.current.push(phrase.taste.overall);
+        const avg = tasteHistoryRef.current.reduce((a, b) => a + b, 0) / tasteHistoryRef.current.length;
+        return { phrasesPlayed: s.phrasesPlayed + 1, totalBars: s.totalBars + phrase.bars, avgTaste: avg, sessionAge: s.sessionAge };
+      });
+    }, Math.max(0, delay));
+    return src;
+  };
+
+  // the scheduler loop — runs every 500ms, schedules queued phrases
+  const runScheduler = () => {
+    const ctx = audioCtxRef.current;
+    if (!ctx || !isPlayingRef.current) return;
+    // if we have queued phrases and the next start time is approaching, schedule them
+    while (queueRef.current.length > 0 && nextStartTimeRef.current < ctx.currentTime + 2.0) {
+      const { buffer, phrase } = queueRef.current.shift()!;
+      schedulePhrase(ctx, buffer, phrase, nextStartTimeRef.current);
+      nextStartTimeRef.current += buffer.duration;
+      setPhraseQueue((q) => q.filter((p) => p.phraseIndex !== phrase.phraseIndex));
+    }
+    // if queue is low, pre-fetch the next phrase (lookahead)
+    if (queueRef.current.length < 2 && !generatingRef.current && sessionIdRef.current) {
+      generatingRef.current = true;
+      setStatus('generating phrase...');
+      fetchNextPhrase(sessionIdRef.current).then(async (phrase) => {
+        if (phrase && ctx && isPlayingRef.current) {
+          try {
+            const buffer = await decodeWav(ctx, phrase.wavBase64);
+            queueRef.current.push({ buffer, phrase });
+            setPhraseQueue((q) => [...q, phrase]);
+            setStatus('playing');
+          } catch (e) {
+            setError(`Decode failed: ${(e as Error).message}`);
+          }
+        }
+        generatingRef.current = false;
+      });
+    }
+  };
+
+  // start live playback
+  const startLive = async () => {
+    setError(null);
+    try {
+      // create session
+      setStatus('creating session...');
+      const r = await fetch('/api/studio/live/create', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ worldId, macros }),
+      });
+      if (!r.ok) throw new Error('Failed to create session');
+      const session = await r.json();
+      setSessionId(session.sessionId);
+      sessionIdRef.current = session.sessionId;
+
+      // init audio context (must be from user gesture)
+      if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
+      if (audioCtxRef.current.state === 'suspended') await audioCtxRef.current.resume();
+      const ctx = audioCtxRef.current;
+
+      // fetch first phrase
+      setStatus('generating first phrase...');
+      const phrase = await fetchNextPhrase(session.sessionId);
+      if (!phrase) throw new Error('Failed to generate first phrase');
+
+      const buffer = await decodeWav(ctx, phrase.wavBase64);
+      queueRef.current.push({ buffer, phrase });
+      setPhraseQueue([phrase]);
+
+      // start playback
+      nextStartTimeRef.current = ctx.currentTime + 0.1;
+      setIsPlaying(true);
+      isPlayingRef.current = true;
+      setStatus('playing');
+
+      // start scheduler
+      if (schedulerRef.current) clearInterval(schedulerRef.current);
+      schedulerRef.current = setInterval(runScheduler, 500);
+    } catch (e) {
+      setError(`Start failed: ${(e as Error).message}`);
+      setStatus('error');
+      setIsPlaying(false);
+    }
+  };
+
+  // stop live playback
+  const stopLive = () => {
+    setIsPlaying(false);
+    isPlayingRef.current = false;
+    if (schedulerRef.current) { clearInterval(schedulerRef.current); schedulerRef.current = null; }
+    queueRef.current = [];
+    setPhraseQueue([]);
+    setStatus('stopped');
+    // don't close audioCtx — allow restart
+  };
+
+  // send macro changes (queued for next phrase boundary)
+  const sendMacros = (newMacros: typeof macros) => {
+    setMacros(newMacros);
+    if (sessionId) {
+      setPendingMacros(true);
+      fetch('/api/studio/live/macros', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, macros: newMacros }),
+      }).then(() => {
+        setPendingMacros(false);
+        toast.success('Macros queued for next phrase');
+      }).catch(() => setPendingMacros(false));
+    }
+  };
+
+  // send action (queued for next phrase boundary)
+  const sendAction = (action: string) => {
+    if (!sessionId) return;
+    setStatus(`queuing ${action}...`);
+    fetch('/api/studio/live/action', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, action }),
+    }).then(() => {
+      toast.success(`"${action}" queued for next phrase`);
+      setStatus('playing');
+    }).catch(() => setStatus('playing'));
+  };
+
+  // cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (schedulerRef.current) clearInterval(schedulerRef.current);
+      if (audioCtxRef.current) audioCtxRef.current.close().catch(() => {});
+    };
+  }, []);
+
+  const macroControls = [
+    { key: 'energy', label: 'Energy', icon: Zap, color: 'text-orange-400' },
+    { key: 'psychedelia', label: 'Psychedelia', icon: Sparkle, color: 'text-fuchsia-400' },
+    { key: 'darkness', label: 'Darkness', icon: Moon, color: 'text-purple-400' },
+    { key: 'brightness', label: 'Brightness', icon: Sun, color: 'text-yellow-400' },
+    { key: 'density', label: 'Density', icon: Layers, color: 'text-cyan-400' },
+    { key: 'groove', label: 'Groove', icon: Drum, color: 'text-lime-400' },
+    { key: 'evolution', label: 'Evolution', icon: TrendingUp, color: 'text-emerald-400' },
+    { key: 'space', label: 'Space', icon: Waves, color: 'text-blue-400' },
+    { key: 'surprise', label: 'Surprise', icon: Shuffle, color: 'text-pink-400' },
+    { key: 'aggression', label: 'Aggression', icon: Flame, color: 'text-red-400' },
+  ] as const;
+
+  const actionButtons = [
+    { label: 'Stranger', action: 'stranger', icon: Shuffle, color: 'bg-fuchsia-600 hover:bg-fuchsia-700' },
+    { label: 'Darker', action: 'darker', icon: Moon, color: 'bg-purple-600 hover:bg-purple-700' },
+    { label: 'Brighter', action: 'brighter', icon: Sun, color: 'bg-yellow-600 hover:bg-yellow-700' },
+    { label: 'More Bass', action: 'more-bass', icon: Drum, color: 'bg-orange-600 hover:bg-orange-700' },
+    { label: 'More Groove', action: 'more-groove', icon: Music, color: 'bg-lime-600 hover:bg-lime-700' },
+    { label: 'More Space', action: 'more-space', icon: Waves, color: 'bg-blue-600 hover:bg-blue-700' },
+    { label: 'Breakdown', action: 'breakdown', icon: Heart, color: 'bg-indigo-600 hover:bg-indigo-700' },
+    { label: 'Build', action: 'build', icon: TrendingUp, color: 'bg-cyan-600 hover:bg-cyan-700' },
+    { label: 'Drop', action: 'drop', icon: Flame, color: 'bg-red-600 hover:bg-red-700' },
+    { label: 'Reset', action: 'reset', icon: RotateCcw, color: 'bg-gray-600 hover:bg-gray-700' },
+  ];
+
+  return (
+    <div className="space-y-5">
+      {/* LIVE TRANSPORT */}
+      <Card className={`psy-card p-5 sm:p-6 ${isPlaying ? 'psy-glow' : ''}`}>
+        <div className="flex items-center gap-3 mb-4">
+          <div className={`w-12 h-12 rounded-xl psy-border flex items-center justify-center ${isPlaying ? 'bg-gradient-to-br from-red-500/30 to-fuchsia-500/30' : 'bg-card/60'}`}>
+            <Radio className={`w-6 h-6 ${isPlaying ? 'text-red-300 psy-pulse' : 'text-fuchsia-300'}`} />
+          </div>
+          <div>
+            <h3 className="font-bold text-xl psy-gradient-text">Live Performance Engine</h3>
+            <p className="text-sm text-muted-foreground">Phrase-based streaming · quantized macro changes · continuous playback</p>
+          </div>
+        </div>
+        <div className="grid sm:grid-cols-[1fr_auto_auto] gap-3 items-end">
+          <div>
+            <label className="text-xs uppercase tracking-wider text-muted-foreground mb-1.5 block">World</label>
+            <Select value={worldId} onValueChange={(v) => { setWorldId(v); if (isPlaying) stopLive(); }} disabled={isPlaying}>
+              <SelectTrigger className="psy-border bg-card/60"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {worlds.map((w) => <SelectItem key={w.id} value={w.id}><span className="font-semibold">{w.name}</span></SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          {!isPlaying ? (
+            <Button onClick={startLive} size="lg" className="bg-gradient-to-r from-emerald-600 to-cyan-600 hover:opacity-90 text-white font-bold text-lg px-8 h-14">
+              <Play className="w-5 h-5 mr-2" /> Start Live
+            </Button>
+          ) : (
+            <Button onClick={stopLive} size="lg" className="bg-red-600 hover:bg-red-700 text-white font-bold text-lg px-8 h-14">
+              <Square className="w-5 h-5 mr-2" /> Stop
+            </Button>
+          )}
+          <div className="text-center px-4 py-2 rounded-lg bg-card/40 psy-border">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Status</div>
+            <div className={`text-sm font-bold ${isPlaying ? 'text-emerald-400' : 'text-muted-foreground'}`}>{status}</div>
+          </div>
+        </div>
+        {error && (
+          <div className="mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-sm text-red-300">
+            {error}
+            <Button size="sm" variant="outline" className="ml-3 psy-border" onClick={() => setError(null)}>Dismiss</Button>
+          </div>
+        )}
+      </Card>
+
+      {/* NOW PLAYING + QUEUE */}
+      {isPlaying && currentPhrase && (
+        <Card className="psy-card p-5">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Section</div>
+              <div className="text-lg font-bold text-fuchsia-300">{currentPhrase.section}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Phrase</div>
+              <div className="text-lg font-bold">#{currentPhrase.phraseIndex} · bar {currentPhrase.startBar}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Taste</div>
+              <div className="text-lg font-bold">{(currentPhrase.taste.overall * 100).toFixed(0)}% <span className="text-xs text-muted-foreground">{currentPhrase.taste.verdict}</span></div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Queue</div>
+              <div className="text-lg font-bold">{phraseQueue.length} ready</div>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {[
+              { label: 'Groove', value: currentPhrase.taste.groove },
+              { label: 'Variation', value: currentPhrase.taste.variation },
+              { label: 'Novelty', value: currentPhrase.taste.novelty },
+              { label: 'Kick', value: currentPhrase.analysis.kickPeriodicity },
+            ].map((m) => (
+              <div key={m.label} className="text-center">
+                <div className="text-[10px] uppercase text-muted-foreground mb-1">{m.label}</div>
+                <div className="h-1.5 bg-muted/30 rounded-full overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-fuchsia-500 to-cyan-500" style={{ width: `${m.value * 100}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* LIVE MACRO CONTROLS */}
+      <Card className="psy-card p-5 sm:p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h4 className="font-semibold flex items-center gap-2"><GaugeIcon className="w-4 h-4 text-fuchsia-300" /> Live Macros</h4>
+          {pendingMacros && <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/40">queued for next phrase</Badge>}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
+          {macroControls.map((c) => (
+            <div key={c.key}>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-medium flex items-center gap-1.5"><c.icon className={`w-3.5 h-3.5 ${c.color}`} />{c.label}</label>
+                <span className="text-xs font-mono text-muted-foreground">{Math.round(macros[c.key as keyof typeof macros] * 100)}</span>
+              </div>
+              <Slider
+                value={[macros[c.key as keyof typeof macros] * 100]}
+                onValueChange={(v) => {
+                  const newMacros = { ...macros, [c.key]: v[0] / 100 };
+                  setMacros(newMacros);
+                  if (isPlaying) sendMacros(newMacros);
+                }}
+                min={0} max={100} step={1}
+                disabled={!isPlaying}
+                className="cursor-pointer"
+              />
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground mt-4">Changes apply at the next phrase boundary — no audio gaps, no abrupt changes.</p>
+      </Card>
+
+      {/* LIVE ACTIONS */}
+      <Card className="psy-card p-5 sm:p-6">
+        <h4 className="font-semibold mb-4 flex items-center gap-2"><Zap className="w-4 h-4 text-fuchsia-300" /> Performance Actions</h4>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+          {actionButtons.map((b) => (
+            <Button
+              key={b.action}
+              onClick={() => sendAction(b.action)}
+              disabled={!isPlaying}
+              className={`${b.color} text-white font-medium h-auto py-3 flex-col gap-1`}
+            >
+              <b.icon className="w-4 h-4" />
+              <span className="text-xs">{b.label}</span>
+            </Button>
+          ))}
+        </div>
+      </Card>
+
+      {/* SESSION STATS */}
+      {isPlaying && (
+        <Card className="psy-card p-5">
+          <h4 className="font-semibold mb-3 flex items-center gap-2"><Activity className="w-4 h-4 text-cyan-300" /> Session Stats</h4>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
+            <div><div className="text-2xl font-black text-fuchsia-300">{stats.phrasesPlayed}</div><div className="text-[10px] uppercase text-muted-foreground">Phrases Played</div></div>
+            <div><div className="text-2xl font-black text-cyan-300">{stats.totalBars}</div><div className="text-[10px] uppercase text-muted-foreground">Total Bars</div></div>
+            <div><div className="text-2xl font-black text-lime-300">{(stats.avgTaste * 100).toFixed(0)}%</div><div className="text-[10px] uppercase text-muted-foreground">Avg Taste</div></div>
+            <div><div className="text-2xl font-black text-amber-300">{(stats.totalBars * 60 / 128 / 4).toFixed(0)}s</div><div className="text-[10px] uppercase text-muted-foreground">Audio Time</div></div>
+          </div>
+        </Card>
+      )}
+
+      {!isPlaying && (
+        <Card className="psy-card p-10 text-center">
+          <Radio className="w-12 h-12 mx-auto mb-4 text-fuchsia-400 psy-pulse" />
+          <p className="text-lg font-semibold mb-1">Press Start Live to begin continuous playback.</p>
+          <p className="text-sm text-muted-foreground">Music generates in 4-bar phrases with lookahead. Macros and actions apply at phrase boundaries — no gaps, no clicks.</p>
         </Card>
       )}
     </div>
