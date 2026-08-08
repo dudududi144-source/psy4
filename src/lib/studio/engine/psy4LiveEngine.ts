@@ -28,6 +28,7 @@
 
 import { getVoiceSpecs, VoiceSpecSet, ChannelStripSpec } from './voiceSpecs';
 import { getSoundBank } from './soundBank';
+import { MoogFilterChain, MultibandCompressor, TruePeakLimiter, GlueCompressor, MasterSaturation } from './proAudioNodes';
 
 // ─── Music Theory ───────────────────────────────────────────────
 
@@ -312,6 +313,12 @@ export class Psy4LiveEngine {
   private voiceSpecs: VoiceSpecSet | null = null;
   private soundBank = getSoundBank();
 
+  // Professional master chain
+  private multiband: MultibandCompressor | null = null;
+  private glue: GlueCompressor | null = null;
+  private saturation: MasterSaturation | null = null;
+  private truePeak: TruePeakLimiter | null = null;
+
   init() {
     if (this.ctx) return;
     const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -325,23 +332,46 @@ export class Psy4LiveEngine {
       console.log('SoundBank loaded:', this.soundBank.listLoaded());
     }).catch(e => console.warn('SoundBank load failed:', e));
 
+    // ── MASTER CHAIN (professional, from PSY3 style_master.py) ──
+    // sum → duck → HP → multiband → glue → saturation → truePeak → EQ → master → destination
     this.sum = c.createGain();
     this.duck = c.createGain();
-    this.comp = c.createDynamicsCompressor();
-    this.comp.threshold.value = -14; this.comp.ratio.value = 2.5;
-    this.comp.attack.value = 0.015; this.comp.release.value = 0.2;
-    this.lim = c.createDynamicsCompressor();
-    this.lim.threshold.value = -1.5; this.lim.ratio.value = 20;
-    this.lim.attack.value = 0.001; this.lim.release.value = 0.05;
+    
+    // HP on master (remove subsonic)
+    const masterHP = c.createBiquadFilter();
+    masterHP.type = 'highpass';
+    masterHP.frequency.value = 25;
+    masterHP.Q.value = 0.707;
+    
+    // DC blocker
+    const dcBlock = c.createWaveShaper();
+    const dcCurve = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) { const x = (i / 512) - 1; dcCurve[i] = x; } // linear = no shaping, just pass-through (DC handled by HP)
+    
+    // EQ shelves (tonal shaping)
     this.eqL = c.createBiquadFilter(); this.eqL.type = 'lowshelf';
     this.eqL.frequency.value = 80; this.eqL.gain.value = 2;
     this.eqH = c.createBiquadFilter(); this.eqH.type = 'highshelf';
     this.eqH.frequency.value = 10000; this.eqH.gain.value = 1.5;
-    this.master = c.createGain(); this.master.gain.value = 0.82;
+    
+    // Professional processing nodes
+    this.multiband = new MultibandCompressor(c);
+    this.glue = new GlueCompressor(c);
+    this.saturation = new MasterSaturation(c, 1.15, 0.15);
+    this.truePeak = new TruePeakLimiter(c, 0.94);
+    
+    this.master = c.createGain(); this.master.gain.value = 0.88;
 
-    this.sum.connect(this.duck); this.duck.connect(this.comp);
-    this.comp.connect(this.lim); this.lim.connect(this.eqL);
-    this.eqL.connect(this.eqH); this.eqH.connect(this.master);
+    // Chain: sum → duck → HP → multiband → glue → saturation → truePeak → EQ → master → destination
+    this.sum.connect(this.duck);
+    this.duck.connect(masterHP);
+    masterHP.connect(this.multiband.inputNode);
+    this.multiband.connect(this.glue.inputNode);
+    this.glue.connect(this.saturation.inputNode);
+    this.saturation.connect(this.truePeak.inputNode);
+    this.truePeak.connect(this.eqL);
+    this.eqL.connect(this.eqH);
+    this.eqH.connect(this.master);
     this.master.connect(c.destination);
 
     this.analyser = c.createAnalyser(); this.analyser.fftSize = 2048;
