@@ -526,14 +526,34 @@ export class Psy4LiveEngine {
   }
 
   hat(t: number, open = false, amp = 0.1, pan = 0.3) {
-    const c = this.ctx!, s = c.createBufferSource(); s.buffer = this.pink;
-    const hp = c.createBiquadFilter(); hp.type = 'highpass';
-    hp.frequency.value = open ? 7000 : 8500;
+    const c = this.ctx!;
+    // Metallic oscillator bank (4 inharmonic squares) + noise blend
+    // Replaces noise-only hat with richer, more realistic timbre
+    const ratios = [1, 1.577, 2.135, 3.422];
+    const baseFreq = open ? 265 : 340;
     const g = c.createGain();
     g.gain.setValueAtTime(amp, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + (open ? 0.25 : 0.04));
     const p = c.createStereoPanner(); p.pan.value = pan;
-    s.connect(hp); hp.connect(g); g.connect(p); p.connect(this.sum!);
+    // Metallic layer
+    const metalMix = c.createGain(); metalMix.gain.value = 0.6;
+    for (const r of ratios) {
+      const o = c.createOscillator(); o.type = 'square';
+      o.frequency.value = baseFreq * r;
+      o.connect(metalMix);
+      o.start(t); o.stop(t + 0.1);
+    }
+    // Noise layer (for texture)
+    const s = c.createBufferSource(); s.buffer = this.pink;
+    const hp = c.createBiquadFilter(); hp.type = 'highpass';
+    hp.frequency.value = open ? 7000 : 8500;
+    const noiseG = c.createGain(); noiseG.gain.value = 0.4;
+    s.connect(hp); hp.connect(noiseG);
+    // Mix → filter → gain → panner → sum
+    const outFilter = c.createBiquadFilter(); outFilter.type = 'highpass';
+    outFilter.frequency.value = open ? 6000 : 7500;
+    metalMix.connect(outFilter); noiseG.connect(outFilter);
+    outFilter.connect(g); g.connect(p); p.connect(this.sum!);
     s.start(t); s.stop(t + 0.3);
   }
 
@@ -550,14 +570,23 @@ export class Psy4LiveEngine {
   }
 
   clap(t: number, amp = 0.3) {
-    const c = this.ctx!, s = c.createBufferSource(); s.buffer = this.pink;
-    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1800; bp.Q.value = 1.5;
-    const g = c.createGain();
-    g.gain.setValueAtTime(amp, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-    s.connect(bp); bp.connect(g); g.connect(this.sum!);
-    if (this.rSend) g.connect(this.rSend);
-    s.start(t); s.stop(t + 0.18);
+    // Multi-burst clap: 3 staggered noise bursts + 1 tail (like real claps)
+    const c = this.ctx!;
+    const burstTimes = [0, 0.01, 0.02, 0.035]; // 0ms, 10ms, 20ms, 35ms
+    const burstAmps = [0.4, 0.4, 0.4, 0.6]; // tail is louder
+    const burstDecays = [0.015, 0.015, 0.015, 0.12]; // tail is longer
+    for (let i = 0; i < 4; i++) {
+      const s = c.createBufferSource(); s.buffer = this.pink;
+      const bp = c.createBiquadFilter(); bp.type = 'bandpass';
+      bp.frequency.value = 1800; bp.Q.value = 1.2;
+      const g = c.createGain();
+      g.gain.setValueAtTime(amp * burstAmps[i], t + burstTimes[i]);
+      g.gain.exponentialRampToValueAtTime(0.001, t + burstTimes[i] + burstDecays[i]);
+      const p = c.createStereoPanner(); p.pan.value = (i % 2 === 0) ? -0.15 : 0.15;
+      s.connect(bp); bp.connect(g); g.connect(p); p.connect(this.sum!);
+      if (i === 3 && this.rSend) g.connect(this.rSend); // only tail gets reverb
+      s.start(t + burstTimes[i]); s.stop(t + burstTimes[i] + burstDecays[i] + 0.05);
+    }
   }
 
   perc(t: number, amp = 0.15, pan = 0.4) {
@@ -574,7 +603,7 @@ export class Psy4LiveEngine {
 
   pad(t: number, root: number, chord: number[], dur: number, amp = 0.04) {
     const c = this.ctx!;
-    chord.forEach((iv) => {
+    chord.forEach((iv, k) => {
       const f = mtof(root + 12 + iv);
       const lp = c.createBiquadFilter(); lp.type = 'lowpass';
       lp.frequency.value = this.world.padCutoff * (0.7 + this.macros.brightness * 0.6);
@@ -587,6 +616,14 @@ export class Psy4LiveEngine {
         const o = c.createOscillator();
         if (wave) o.setPeriodicWave(wave);
         o.frequency.value = f; o.detune.value = i ? 7 : -7;
+        // EVOLVE: slow detune modulation (from PSY3's pad evolve parameter)
+        // Creates breathing pads instead of static organ chords
+        const lfo = c.createOscillator(); lfo.type = 'sine';
+        lfo.frequency.value = 0.1 + k * 0.03; // slightly different rate per voice
+        const lfoGain = c.createGain();
+        lfoGain.gain.value = 3 + this.macros.evolution * 5; // cents of detune
+        lfo.connect(lfoGain); lfoGain.connect(o.detune);
+        lfo.start(t); lfo.stop(t + dur + 0.1);
         const pp = c.createStereoPanner(); pp.pan.value = i ? 0.4 : -0.4;
         o.connect(pp); pp.connect(lp); o.start(t); o.stop(t + dur + 0.1);
       }
@@ -837,12 +874,16 @@ export class Psy4LiveEngine {
     const w = this.world;
 
     // ─── SECTION AUTOMATION ──────────────────────────────────
+    // DROP CONTRAST: last 2 bars of build — remove bass, narrow filter, create tension
+    const isPreDrop = S.type === 'build' && bar >= S.bars - 2;
+    const isDropStart = S.type === 'drop' && bar === 0;
+
     // Riser before drop (last 2 bars of build)
-    if (S.type === 'build' && bar >= S.bars - 2 && sb === 0) {
+    if (isPreDrop && sb === 0) {
       this.riser(t, this.s16() * 32);
     }
     // Impact at drop start
-    if (S.type === 'drop' && bar === 0 && sb === 0) {
+    if (isDropStart && sb === 0) {
       this.impact(t);
     }
     // Filter sweep in breakdown
@@ -852,6 +893,10 @@ export class Psy4LiveEngine {
     // Sweep at section transitions (last bar)
     if (bar === S.bars - 1 && sb === 12 && S.type !== 'break') {
       this.sweep(t, this.s16() * 4);
+    }
+    // Downlifter at drop start (descending sweep after impact = contrast)
+    if (isDropStart && sb === 4) {
+      this.downlifter(t, 0.1 + this.macros.energy * 0.05);
     }
 
     // ─── SECTION-AWARE REVERB/DELAY AUTOMATION ─────────────
@@ -908,8 +953,8 @@ export class Psy4LiveEngine {
     else if (w.bass === 'off') bassOn = sb % 4 === 2;          // offbeat
     else if (w.bass === 'acid') bassOn = isOff || sb === 0;    // acid (denser)
 
-    // Rest before drop (last step of build)
-    if (S.type === 'build' && bar === S.bars - 1 && sb >= 14) bassOn = false;
+    // Rest before drop (last 2 bars of build — creates tension/contrast)
+    if (isPreDrop) bassOn = false;
     // No bass in breakdown
     if (S.type === 'break') bassOn = false;
 
