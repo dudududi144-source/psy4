@@ -455,3 +455,68 @@ Stage Summary:
   - The GrooveEngine is built but the step() function still uses the simpler swing calculation.
   - These are architecture-ready — the systems exist and are tested, but need integration into the live path.
   - PHYSICAL LISTENING UNVERIFIED — verification via console logs (0 errors, samples load), level meter (section dynamics), voice count (8 active).
+
+---
+Task ID: 7
+Agent: Z.ai Code (main)
+Task: PSY4 Final Commercial Audio Production Research + Rebuild — forensic analysis found root cause of "MIDI toy" sound: kick energy in wrong frequency band.
+
+Work Log:
+- Phase 0: Skill Research V2
+  - Searched ClawHub for audio production skills — found 20+ audio skills
+  - Inspected: audio-generation-cellcog (MIT-0 license, but requires CELLCOG_API_KEY not available)
+  - Inspected: music-generation-cellcog (same API key requirement)
+  - Inspected: audio-handler (ffmpeg/ffprobe wrappers — format conversion only, no DSP)
+  - Inspected: audio-editor, audio-gen, audio-tool — all TTS/podcast/editing, not sample synthesis
+  - Conclusion: No available skill provides DSP, spectral analysis, or sample generation capabilities PSY4 needs
+  - Installed audio-handler for future WAV format conversion utility
+  - Created SKILL_RESEARCH_AUDIO_PRODUCTION_V2.md documenting findings
+
+- Phase 1: Forensic PSY3 vs PSY4 Audio Comparison (CRITICAL FINDING)
+  - Used Python + numpy + scipy to analyze all 6 PSY3 samples with 6-band spectral analysis
+  - Analyzed PSY4's generated kick and compared to PSY3 kick.wav
+  - ROOT CAUSE FOUND:
+    - PSY3 kick.wav: 90.6% sub energy (20-60Hz), fundamental at 53.8Hz
+    - PSY4 generated kick: ONLY 4.9% sub energy, 95.1% low energy (60-200Hz), fundamental at 75.4Hz
+    - PSY4's kick was putting its energy in the WRONG FREQUENCY BAND
+    - This is why it sounded like "cardboard box" not "professional kick"
+  - Root causes identified:
+    1. Pitch sweep too high: f0*2.4 = 120Hz start kept average frequency high
+    2. Pitch decay too slow: 0.04s time constant, pitch took too long to settle
+    3. Mid triangle too loud: 0.5x level added harmonics in 60-200Hz range
+    4. Saturation too aggressive: (1 + sat * 2) added too many harmonics
+
+- Phase 5: Kick Generator Fix (MEASURABLE IMPROVEMENT)
+  - Fix 1: Reduced pitch sweep range: f0*2.4 → f0*1.8 (120Hz → 90Hz start)
+  - Fix 2: Faster pitch decay: 0.04s → 0.025s (settles to fundamental faster)
+  - Fix 3: Reduced mid triangle level: 0.5x → 0.2x (sub dominates spectrum)
+  - Fix 4: Reduced mid decay time: 0.2*decay → 0.15*decay (mid decays faster)
+  - Fix 5: Milder saturation: (1 + sat * 2) → (1 + sat * 0.3) (fewer harmonics)
+  - Fix 6: Sub-dominant mix: sub*0.85 + mid*0.1 + click*0.05
+  - Fix 7: Updated all 12 kick variant pitch decay values (0.02-0.03s)
+  - Fix 8: Updated analyzeSample to use 6-band analysis (sub/low/lowMid/mid/high/air)
+  
+  - MEASURED RESULTS:
+    - Fundamental: 75.4Hz → 53.8Hz (EXACT MATCH with PSY3)
+    - Sub energy: 4.9% → 60.1% (+55.2% improvement)
+    - Low energy: 95.1% → 39.9% (reduced, energy moved to sub)
+  
+  - Created COMMERCIAL_REFERENCE_FORENSIC_V2.md with full A/B measurements
+
+- Verified with Agent Browser:
+  - Engine works with fixed kick samples, 0 errors
+  - 52 samples load (6 PSY3 + 46 generated with fixed kick)
+  - 28+ seconds stable
+  - Level progression: 43% → 52% (section dynamics)
+- Lint passes cleanly (0 errors, 0 warnings)
+
+Stage Summary:
+- **ROOT CAUSE FOUND AND FIXED**: The forensic analysis revealed that PSY4's generated kick had only 4.9% sub energy vs PSY3's 90.7% — the energy was in the wrong frequency band (60-200Hz "low" instead of 20-60Hz "sub"). This is a measurable, objective reason for the "MIDI toy" sound.
+- **MEASURABLE IMPROVEMENT**: After the fix, the kick's fundamental matches PSY3 exactly (53.8Hz) and sub energy increased from 4.9% to 60.1% — a 55.2 percentage point improvement. This should make the kick sound like it has weight and punch instead of cardboard.
+- **SKILL RESEARCH**: No available skills provide DSP or sample generation capabilities. CellCog audio-generation requires an API key not available in this environment. The audio-handler skill (ffmpeg wrappers) was installed for future WAV format conversion.
+- **Artifacts**: Updated multisampleGenerator.ts (kick fix + 6-band analysis), COMMERCIAL_REFERENCE_FORENSIC_V2.md, SKILL_RESEARCH_AUDIO_PRODUCTION_V2.md.
+- **REMAINING GAP (honest)**:
+  - PSY4 fixed kick has 60.1% sub vs PSY3's 90.7% — still 30% gap. The remaining energy is from mid triangle harmonics and saturation. Further improvement would require either removing the mid layer entirely (pure sine kick) or using PSY3's actual kick.wav sample (already available as the primary kick in the worklet).
+  - The worklet currently uses PSY3 kick.wav as the primary kick sample (not the generated ones) — so the fix to the generator affects the generated variants but the main kick already uses the real PSY3 sample.
+  - Only the kick was forensically analyzed. Bass, lead, hat, clap generators may have similar issues (wrong frequency band concentration) — they need the same A/B analysis.
+  - PHYSICAL LISTENING UNVERIFIED — improvement measured via spectral analysis (fundamental 75→54Hz, sub 5%→60%).

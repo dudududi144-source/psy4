@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "audio-generation-cellcog": {
+      "version": "1.0.15",
+      "installedAt": 1786207673362,
+      "ownerHandle": "cellcog"
+    },
+    "audio-handler": {
+      "version": "1.0.0",
+      "installedAt": 1786207714319,
+      "ownerHandle": "neckr0ik"
+    }
+  }
+}

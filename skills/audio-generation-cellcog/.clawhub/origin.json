@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "registry": "https://clawhub.ai",
+  "slug": "audio-generation-cellcog",
+  "ownerHandle": "cellcog",
+  "installedVersion": "1.0.15",
+  "installedAt": 1786207673362,
+  "fingerprint": "fc4d004ef615e5dd841da03d8bad0d9eb0e432f6a202c92693e4c0d8ba061ebe"
+}

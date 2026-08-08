@@ -84,14 +84,10 @@ function analyzeSample(data: Float32Array, sr: number): {
     const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / fftSize);
     windowed[i] = data[i] * w;
   }
-  // Magnitude spectrum (simplified — just compute energy in bands via filtering)
-  let lowE = 0, midE = 0, highE = 0;
+  // 6-band analysis: sub (20-60), low (60-200), lowMid (200-800), mid (800-3000), high (3000-8000), air (8000+)
+  let subE = 0, lowE = 0, lowMidE = 0, midE = 0, highE = 0, airE = 0;
   let weightedSum = 0, magSum = 0;
   let maxLowMag = 0, fundamental = 0;
-  // Simple band energy via time-domain filtering approximation
-  const lowCut = Math.floor(200 / sr * fftSize);
-  const midCut = Math.floor(2000 / sr * fftSize);
-  // Crude DFT for centroid (just first 256 bins for speed)
   const numBins = 256;
   for (let k = 1; k < numBins; k++) {
     const freq = k * sr / fftSize;
@@ -105,31 +101,43 @@ function analyzeSample(data: Float32Array, sr: number): {
     weightedSum += freq * mag;
     magSum += mag;
     const e = mag * mag;
-    if (freq < 200) {
-      lowE += e;
-      if (freq > 30 && freq < 500 && mag > maxLowMag) {
-        maxLowMag = mag;
-        fundamental = freq;
-      }
-    } else if (freq < 2000) {
-      midE += e;
-    } else {
-      highE += e;
+    // 6-band classification (matches forensic analysis)
+    if (freq >= 20 && freq < 60) subE += e;
+    else if (freq >= 60 && freq < 200) lowE += e;
+    else if (freq >= 200 && freq < 800) lowMidE += e;
+    else if (freq >= 800 && freq < 3000) midE += e;
+    else if (freq >= 3000 && freq < 8000) highE += e;
+    else if (freq >= 8000) airE += e;
+    // Fundamental detection (strongest peak in 30-500Hz)
+    if (freq > 30 && freq < 500 && mag > maxLowMag) {
+      maxLowMag = mag;
+      fundamental = freq;
     }
   }
-  const totalE = lowE + midE + highE + 1e-9;
+  // For the GeneratedSample interface, we map:
+  //   lowEnergy = sub + low (20-200Hz) — the "low" region
+  //   midEnergy = lowMid + mid (200-3000Hz)
+  //   highEnergy = high + air (3000+)
+  // But we also want the sub-specific value for kick quality checks.
+  const lowTotal = subE + lowE + 1e-9;
+  const midTotal = lowMidE + midE + 1e-9;
+  const highTotal = highE + airE + 1e-9;
+  const totalE = lowTotal + midTotal + highTotal;
   return {
     peak,
     rms,
     centroid: magSum > 0 ? weightedSum / magSum : 0,
-    lowEnergy: lowE / totalE,
-    midEnergy: midE / totalE,
-    highEnergy: highE / totalE,
+    lowEnergy: lowTotal / totalE,    // sub+low combined (20-200Hz)
+    midEnergy: midTotal / totalE,    // lowMid+mid (200-3000Hz)
+    highEnergy: highTotal / totalE,  // high+air (3000+)
     fundamental,
   };
 }
 
 // ─── Kick generator (PSY3 engine.py kick with parameter variation) ─────────
+// KEY FIX: PSY3 kick.wav has 90.6% sub energy (20-60Hz). PSY4 was putting
+// 90% in the 60-200Hz "low" region — that's why it sounded like cardboard.
+// Fix: reduce mid triangle level, use pure sub sine, minimal saturation.
 
 function generateKick(params: {
   fundamental: number;     // Hz (45-55)
@@ -152,33 +160,47 @@ function generateKick(params: {
 
   for (let i = 0; i < n; i++) {
     const t = i / SR;
-    // Pitch envelope: f0*2.4 → f0
-    const f = (f0 * 2.4 - f0) * Math.exp(-t / pitchDecay) + f0;
+    // Pitch envelope: f0*1.8 → f0 (FAST decay — PSY3 settles to fundamental in ~25ms)
+    // KEY FIX: PSY3 kick.wav has 90.7% sub energy. The pitch sweep must be SHORT
+    // and not too high, so the fundamental settles to f0 quickly and the sustained
+    // body is at the correct sub frequency (50Hz = sub region 20-60Hz).
+    // Original used f0*2.4 (120Hz start) which kept average freq too high.
+    const f = (f0 * 1.8 - f0) * Math.exp(-t / pitchDecay) + f0;
     phase += 2 * Math.PI * f / SR;
-    const subEnv = Math.exp(-t / (decay * 0.9));
+
+    // ── SUB LAYER (dominant — this is the kick's identity) ──
+    // PSY3: sub = sin(phase) * exp(-t/0.18) — 0.18s decay, pure sine
+    // This concentrates 90%+ energy in the sub region (20-60Hz)
+    const subEnv = Math.exp(-t / (decay * 0.82)); // slightly longer than PSY3 for weight
     const sub = Math.sin(phase) * subEnv * subLevel;
 
-    // Mid: saturated triangle
+    // ── BODY LAYER (very subtle — adds definition without muddying sub) ──
+    // PSY3: mid = tanh(tri*1.5) * exp(-t/0.05) * 0.5 — SHORT decay, LOW level
+    // The triangle at f0 adds 2nd/3rd harmonics but decays 3.6x faster than sub
+    // KEY: mid level must be VERY LOW so sub dominates the spectrum (PSY3 = 90% sub)
     const triPhase = (t * f0) % 1;
     const tri = 2 * Math.abs(2 * triPhase - 1) - 1;
-    const midEnv = Math.exp(-t / (decay * 0.25)) * midLevel;
+    const midEnv = Math.exp(-t / (decay * 0.15)) * midLevel * 0.2; // reduced to 0.1 effective
     const mid = fastTanh(tri * 1.5) * midEnv;
 
-    // Click
+    // ── CLICK LAYER (tiny — transient definition only) ──
     const noiseSample = noise.next();
     const click = (noiseSample - prevNoise) * Math.exp(-t / 0.002) * clickLevel;
     prevNoise = noiseSample;
 
-    let sample = (sub + mid + click) * 0.8;
-    // Saturation
-    sample = fastTanh(sample * (1 + saturation * 2));
+    // Mix: sub dominates, mid is subtle, click is tiny
+    let sample = (sub * 0.85 + mid * 0.1 + click * 0.05) * 0.9;
+
+    // VERY subtle saturation — just enough to add warmth, not harmonics
+    // PSY3 uses tanh(sample * 1.1) — very mild
+    sample = fastTanh(sample * (1 + saturation * 0.3));
     data[i] = sample;
   }
 
-  // Normalize to -1dB peak
+  // Normalize to -1dB peak (like PSY3: 0.89)
   const peak = Math.max(...Array.from(data).map(Math.abs));
   if (peak > 0) {
-    const norm = 0.89 / peak;
+    const norm = 0.95 / peak; // slightly hotter than before
     for (let i = 0; i < n; i++) data[i] *= norm;
   }
 
@@ -429,18 +451,18 @@ export function generateMultisampleBank(): GeneratedSample[] {
 
   // ── KICKS: 12 variants with different characters ──
   const kickVariants = [
-    { fundamental: 50, pitchDecay: 0.04, decay: 0.22, subLevel: 0.95, midLevel: 0.4, clickLevel: 0.08, saturation: 0.4, character: ['deep', 'sub'], genreFit: ['dark-psy', 'forest'], bpmRange: [145, 155] },
-    { fundamental: 48, pitchDecay: 0.035, decay: 0.18, subLevel: 0.9, midLevel: 0.5, clickLevel: 0.1, saturation: 0.6, character: ['dark', 'punchy'], genreFit: ['dark-psy'], bpmRange: [148, 155] },
-    { fundamental: 52, pitchDecay: 0.04, decay: 0.2, subLevel: 0.9, midLevel: 0.45, clickLevel: 0.09, saturation: 0.5, character: ['balanced', 'psy'], genreFit: ['progressive-psy', 'goa'], bpmRange: [135, 145] },
-    { fundamental: 54, pitchDecay: 0.045, decay: 0.24, subLevel: 0.85, midLevel: 0.4, clickLevel: 0.07, saturation: 0.3, character: ['warm', 'progressive'], genreFit: ['progressive-psy', 'morning-psy'], bpmRange: [125, 140] },
-    { fundamental: 46, pitchDecay: 0.03, decay: 0.16, subLevel: 0.95, midLevel: 0.55, clickLevel: 0.12, saturation: 0.7, character: ['aggressive', 'dark'], genreFit: ['dark-psy', 'acid-psy'], bpmRange: [150, 160] },
-    { fundamental: 50, pitchDecay: 0.05, decay: 0.26, subLevel: 0.9, midLevel: 0.35, clickLevel: 0.06, saturation: 0.35, character: ['long', 'sub'], genreFit: ['hypnotic', 'cosmic'], bpmRange: [128, 140] },
-    { fundamental: 52, pitchDecay: 0.035, decay: 0.17, subLevel: 0.88, midLevel: 0.52, clickLevel: 0.11, saturation: 0.55, character: ['punchy', 'short'], genreFit: ['goa', 'full-on'], bpmRange: [138, 148] },
-    { fundamental: 48, pitchDecay: 0.04, decay: 0.2, subLevel: 0.92, midLevel: 0.42, clickLevel: 0.08, saturation: 0.45, character: ['deep', 'forest'], genreFit: ['forest'], bpmRange: [145, 152] },
-    { fundamental: 55, pitchDecay: 0.045, decay: 0.22, subLevel: 0.82, midLevel: 0.48, clickLevel: 0.09, saturation: 0.4, character: ['bright', 'morning'], genreFit: ['morning-psy'], bpmRange: [138, 145] },
-    { fundamental: 50, pitchDecay: 0.04, decay: 0.2, subLevel: 0.93, midLevel: 0.44, clickLevel: 0.085, saturation: 0.5, character: ['standard', 'balanced'], genreFit: ['all'], bpmRange: [130, 150] },
-    { fundamental: 47, pitchDecay: 0.032, decay: 0.15, subLevel: 0.96, midLevel: 0.58, clickLevel: 0.13, saturation: 0.75, character: ['hard', 'aggressive'], genreFit: ['dark-psy', 'forest'], bpmRange: [150, 160] },
-    { fundamental: 53, pitchDecay: 0.042, decay: 0.21, subLevel: 0.87, midLevel: 0.46, clickLevel: 0.08, saturation: 0.42, character: ['balanced', 'warm'], genreFit: ['goa', 'progressive-psy'], bpmRange: [135, 145] },
+    { fundamental: 50, pitchDecay: 0.025, decay: 0.22, subLevel: 0.95, midLevel: 0.4, clickLevel: 0.08, saturation: 0.4, character: ['deep', 'sub'], genreFit: ['dark-psy', 'forest'], bpmRange: [145, 155] },
+    { fundamental: 48, pitchDecay: 0.022, decay: 0.18, subLevel: 0.9, midLevel: 0.5, clickLevel: 0.1, saturation: 0.6, character: ['dark', 'punchy'], genreFit: ['dark-psy'], bpmRange: [148, 155] },
+    { fundamental: 52, pitchDecay: 0.025, decay: 0.2, subLevel: 0.9, midLevel: 0.45, clickLevel: 0.09, saturation: 0.5, character: ['balanced', 'psy'], genreFit: ['progressive-psy', 'goa'], bpmRange: [135, 145] },
+    { fundamental: 54, pitchDecay: 0.028, decay: 0.24, subLevel: 0.85, midLevel: 0.4, clickLevel: 0.07, saturation: 0.3, character: ['warm', 'progressive'], genreFit: ['progressive-psy', 'morning-psy'], bpmRange: [125, 140] },
+    { fundamental: 46, pitchDecay: 0.02, decay: 0.16, subLevel: 0.95, midLevel: 0.55, clickLevel: 0.12, saturation: 0.7, character: ['aggressive', 'dark'], genreFit: ['dark-psy', 'acid-psy'], bpmRange: [150, 160] },
+    { fundamental: 50, pitchDecay: 0.03, decay: 0.26, subLevel: 0.9, midLevel: 0.35, clickLevel: 0.06, saturation: 0.35, character: ['long', 'sub'], genreFit: ['hypnotic', 'cosmic'], bpmRange: [128, 140] },
+    { fundamental: 52, pitchDecay: 0.022, decay: 0.17, subLevel: 0.88, midLevel: 0.52, clickLevel: 0.11, saturation: 0.55, character: ['punchy', 'short'], genreFit: ['goa', 'full-on'], bpmRange: [138, 148] },
+    { fundamental: 48, pitchDecay: 0.025, decay: 0.2, subLevel: 0.92, midLevel: 0.42, clickLevel: 0.08, saturation: 0.45, character: ['deep', 'forest'], genreFit: ['forest'], bpmRange: [145, 152] },
+    { fundamental: 55, pitchDecay: 0.028, decay: 0.22, subLevel: 0.82, midLevel: 0.48, clickLevel: 0.09, saturation: 0.4, character: ['bright', 'morning'], genreFit: ['morning-psy'], bpmRange: [138, 145] },
+    { fundamental: 50, pitchDecay: 0.025, decay: 0.2, subLevel: 0.93, midLevel: 0.44, clickLevel: 0.085, saturation: 0.5, character: ['standard', 'balanced'], genreFit: ['all'], bpmRange: [130, 150] },
+    { fundamental: 47, pitchDecay: 0.02, decay: 0.15, subLevel: 0.96, midLevel: 0.58, clickLevel: 0.13, saturation: 0.75, character: ['hard', 'aggressive'], genreFit: ['dark-psy', 'forest'], bpmRange: [150, 160] },
+    { fundamental: 53, pitchDecay: 0.025, decay: 0.21, subLevel: 0.87, midLevel: 0.46, clickLevel: 0.08, saturation: 0.42, character: ['balanced', 'warm'], genreFit: ['goa', 'progressive-psy'], bpmRange: [135, 145] },
   ];
   for (const v of kickVariants) samples.push(generateKick(v));
 
