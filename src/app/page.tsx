@@ -8,12 +8,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
+import { Slider } from '@/components/ui/slider';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 import {
   Activity, Radio, Cpu, AudioLines, Play, Square, Zap, GitBranch,
   CheckCircle2, XCircle, AlertCircle, FlaskConical, AudioWaveform,
   Network, Gauge, Sparkles, Terminal, Download, RefreshCw, ShieldCheck,
+  Music, Sparkle, Moon, Sun, Waves, Drum, Shuffle, Flame, RotateCcw,
+  TrendingUp, Layers, Brain, Heart, Gauge as GaugeIcon,
 } from 'lucide-react';
 
 interface DeviceSpec {
@@ -55,7 +59,7 @@ export default function Page() {
   const [runningValid, setRunningValid] = useState(false);
   const [execLog, setExecLog] = useState<ExecutionLog | null>(null);
   const [runningExec, setRunningExec] = useState(false);
-  const [activeTab, setActiveTab] = useState('rig');
+  const [activeTab, setActiveTab] = useState('play');
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => { audioRef.current = new Audio(); }, []);
@@ -226,7 +230,8 @@ export default function Page() {
       {/* MAIN TABS */}
       <main className="relative z-10 max-w-7xl mx-auto w-full px-4 sm:px-6 pb-16 flex-1">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-6 h-auto p-1 bg-card/40 psy-border">
+          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-7 h-auto p-1 bg-card/40 psy-border">
+            <TabsTrigger value="play" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-fuchsia-500/30 data-[state=active]:to-cyan-500/30 data-[state=active]:text-white"><Play className="w-3.5 h-3.5 mr-1.5" />Play</TabsTrigger>
             <TabsTrigger value="rig" className="data-[state=active]:bg-fuchsia-500/15 data-[state=active]:text-fuchsia-200"><Radio className="w-3.5 h-3.5 mr-1.5" />Rig</TabsTrigger>
             <TabsTrigger value="graph" className="data-[state=active]:bg-cyan-500/15 data-[state=active]:text-cyan-200"><Network className="w-3.5 h-3.5 mr-1.5" />Graph</TabsTrigger>
             <TabsTrigger value="tests" className="data-[state=active]:bg-amber-500/15 data-[state=active]:text-amber-200"><FlaskConical className="w-3.5 h-3.5 mr-1.5" />Tests</TabsTrigger>
@@ -234,6 +239,11 @@ export default function Page() {
             <TabsTrigger value="audit" className="data-[state=active]:bg-red-500/15 data-[state=active]:text-red-200"><ShieldCheck className="w-3.5 h-3.5 mr-1.5" />Audit</TabsTrigger>
             <TabsTrigger value="proof" className="data-[state=active]:bg-fuchsia-500/15 data-[state=active]:text-fuchsia-200"><Terminal className="w-3.5 h-3.5 mr-1.5" />Proof Log</TabsTrigger>
           </TabsList>
+
+          {/* PLAY TAB — the non-musician product interface */}
+          <TabsContent value="play" className="mt-6">
+            <PlayTab audioRef={audioRef} />
+          </TabsContent>
 
           {/* RIG TAB */}
           <TabsContent value="rig" className="mt-6 space-y-6">
@@ -825,4 +835,284 @@ interface AuditReportData {
   capabilityMatrix: { capability: string; classification: string; evidence: string }[];
   finalVerdict: { proven: number; partiallyProven: number; simulated: number; unproven: number; failed: number; total: number; overall: string };
   machineReadable: Record<string, unknown>;
+}
+
+// ============================================================
+// PLAY TAB — the non-musician autonomous music engine interface
+// ============================================================
+
+interface WorldInfo { id: string; name: string; description: string; }
+interface GenerateResponse {
+  success: boolean; fileName: string; url: string; fileSize: number;
+  provenance: { artifactSha256: string; configHash: string; seed: number; bpm: number; sampleRate: number; bars: number; durationSec: number; timestamp: string; validationResult: string };
+  analysis: { peak: number; rms: number; kickPeriodicity: number; bassKickAlignment: number; onsetDensity: number; sectionCount: number; lowEnergy: number; midEnergy: number; highEnergy: number; spectralCentroid: number; dynamicRange: number; stereoCorrelation: number; durationSec: number };
+  verdict: { pass: boolean; reasons: string[] };
+  taste: { overall: number; groove: number; variation: number; novelty: number; energy: number; spectralBalance: number; lowEndQuality: number; psychedelicEvolution: number; verdict: string; reasons: string[] };
+  memory: { worldId: string; seed: number; songId: string; currentKey: number; currentScale: string; currentTempo: number; currentSection: string; totalMutations: number; macros: Record<string, number> };
+  arrangement: { type: string; bars: number; energy: number; density: number; layers: number }[];
+  renderMs: number;
+}
+
+function PlayTab({ audioRef }: { audioRef: React.RefObject<HTMLAudioElement | null> }) {
+  const [worlds, setWorlds] = useState<WorldInfo[]>([]);
+  const [worldId, setWorldId] = useState('progressive-psy');
+  const [macros, setMacros] = useState({
+    energy: 0.6, psychedelia: 0.55, darkness: 0.4, density: 0.55,
+    groove: 0.5, evolution: 0.5, space: 0.4, surprise: 0.3,
+    aggression: 0.4, brightness: 0.55,
+  });
+  const [generating, setGenerating] = useState(false);
+  const [result, setResult] = useState<GenerateResponse | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [seed, setSeed] = useState<number | null>(null);
+
+  useEffect(() => {
+    fetch('/api/studio/worlds').then((r) => r.json()).then((d) => {
+      setWorlds(d.worlds || []);
+    }).catch(() => {});
+  }, []);
+
+  const doGenerate = async (action?: string, macroOverrides?: Partial<typeof macros>) => {
+    setGenerating(true);
+    const useMacros = { ...macros, ...macroOverrides };
+    const body: Record<string, unknown> = { worldId, macros: useMacros, bars: 32, sampleRate: 22050 };
+    if (seed !== null) body.seed = seed;
+    if (action) body.action = action;
+    try {
+      const r = await fetch('/api/studio/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json();
+      if (d.success) {
+        setResult(d);
+        setSeed(d.provenance.seed);
+        setMacros(useMacros);
+        toast.success(`Generated: ${d.taste.verdict} (${(d.taste.overall * 100).toFixed(0)}% taste score)`);
+        // auto-play
+        if (audioRef.current) {
+          audioRef.current.src = d.url + '?t=' + Date.now();
+          audioRef.current.play().then(() => setPlaying(true)).catch(() => {});
+        }
+      } else {
+        toast.error(d.error || 'Generation failed');
+      }
+    } catch (e) {
+      toast.error('Generation failed: ' + (e as Error).message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const togglePlay = () => {
+    if (!audioRef.current || !result) return;
+    if (playing) { audioRef.current.pause(); setPlaying(false); }
+    else { audioRef.current.play().then(() => setPlaying(true)).catch(() => {}); }
+  };
+
+  const macroControls = [
+    { key: 'energy', label: 'Energy', icon: Zap, color: 'text-orange-400' },
+    { key: 'psychedelia', label: 'Psychedelia', icon: Sparkle, color: 'text-fuchsia-400' },
+    { key: 'darkness', label: 'Darkness', icon: Moon, color: 'text-purple-400' },
+    { key: 'brightness', label: 'Brightness', icon: Sun, color: 'text-yellow-400' },
+    { key: 'density', label: 'Density', icon: Layers, color: 'text-cyan-400' },
+    { key: 'groove', label: 'Groove', icon: Drum, color: 'text-lime-400' },
+    { key: 'evolution', label: 'Evolution', icon: TrendingUp, color: 'text-emerald-400' },
+    { key: 'space', label: 'Space', icon: Waves, color: 'text-blue-400' },
+    { key: 'surprise', label: 'Surprise', icon: Shuffle, color: 'text-pink-400' },
+    { key: 'aggression', label: 'Aggression', icon: Flame, color: 'text-red-400' },
+  ] as const;
+
+  const actionButtons = [
+    { label: 'Stranger', action: 'stranger', icon: Shuffle, color: 'bg-fuchsia-600 hover:bg-fuchsia-700' },
+    { label: 'Darker', action: 'darker', icon: Moon, color: 'bg-purple-600 hover:bg-purple-700' },
+    { label: 'Brighter', action: 'brighter', icon: Sun, color: 'bg-yellow-600 hover:bg-yellow-700' },
+    { label: 'More Bass', action: 'more-bass', icon: Drum, color: 'bg-orange-600 hover:bg-orange-700' },
+    { label: 'More Groove', action: 'more-groove', icon: Music, color: 'bg-lime-600 hover:bg-lime-700' },
+    { label: 'More Space', action: 'more-space', icon: Waves, color: 'bg-blue-600 hover:bg-blue-700' },
+    { label: 'Breakdown', action: 'breakdown', icon: Heart, color: 'bg-indigo-600 hover:bg-indigo-700' },
+    { label: 'Build', action: 'build', icon: TrendingUp, color: 'bg-cyan-600 hover:bg-cyan-700' },
+    { label: 'Drop', action: 'drop', icon: Flame, color: 'bg-red-600 hover:bg-red-700' },
+    { label: 'Reset', action: 'reset', icon: RotateCcw, color: 'bg-gray-600 hover:bg-gray-700' },
+  ];
+
+  return (
+    <div className="space-y-5">
+      {/* WORLD SELECTOR + GENERATE */}
+      <Card className="psy-card p-5 sm:p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-12 h-12 rounded-xl psy-glow psy-border bg-gradient-to-br from-fuchsia-500/20 to-cyan-500/20 flex items-center justify-center">
+            <Music className="w-6 h-6 text-fuchsia-300" />
+          </div>
+          <div>
+            <h3 className="font-bold text-xl psy-gradient-text">Autonomous Psychedelic Music Engine</h3>
+            <p className="text-sm text-muted-foreground">Pick a world, press Generate, interact while it plays. No musical knowledge needed.</p>
+          </div>
+        </div>
+        <div className="grid sm:grid-cols-[1fr_auto] gap-3 items-end">
+          <div>
+            <label className="text-xs uppercase tracking-wider text-muted-foreground mb-1.5 block">World (musical identity)</label>
+            <Select value={worldId} onValueChange={setWorldId}>
+              <SelectTrigger className="psy-border bg-card/60"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {worlds.map((w) => <SelectItem key={w.id} value={w.id}><div><span className="font-semibold">{w.name}</span><span className="text-xs text-muted-foreground ml-2">{w.description}</span></div></SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button
+            onClick={() => doGenerate()}
+            disabled={generating}
+            size="lg"
+            className="bg-gradient-to-r from-fuchsia-600 via-purple-600 to-cyan-600 hover:opacity-90 text-white font-bold text-lg px-8 h-14"
+          >
+            {generating ? <RefreshCw className="w-5 h-5 mr-2 animate-spin" /> : <Sparkles className="w-5 h-5 mr-2" />}
+            {generating ? 'Generating...' : 'Generate'}
+          </Button>
+        </div>
+      </Card>
+
+      {/* NOW PLAYING / PLAYER */}
+      {result && (
+        <Card className="psy-card p-5 sm:p-6 psy-glow">
+          <div className="flex items-center justify-between flex-wrap gap-4 mb-4">
+            <div className="flex items-center gap-3">
+              <Button onClick={togglePlay} size="icon" className="w-14 h-14 rounded-full bg-gradient-to-br from-fuchsia-500 to-cyan-500 hover:opacity-90">
+                {playing ? <Square className="w-6 h-6" /> : <Play className="w-6 h-6 ml-0.5" />}
+              </Button>
+              <div>
+                <div className="font-bold text-lg">{worlds.find((w) => w.id === result.memory.worldId)?.name || result.memory.worldId}</div>
+                <div className="text-xs text-muted-foreground font-mono">
+                  seed {result.provenance.seed} · {result.provenance.bpm} BPM · {result.memory.currentScale} · {result.provenance.durationSec.toFixed(1)}s · {result.renderMs}ms render
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge className={result.verdict.pass ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-red-500/20 text-red-300 border-red-500/40'}>
+                {result.verdict.pass ? 'VALID' : 'INVALID'}
+              </Badge>
+              <Badge className={result.taste.verdict === 'KEEP' ? 'bg-emerald-500/20 text-emerald-300' : result.taste.verdict === 'MUTATE' ? 'bg-amber-500/20 text-amber-300' : 'bg-red-500/20 text-red-300'}>
+                TASTE: {result.taste.verdict} ({(result.taste.overall * 100).toFixed(0)}%)
+              </Badge>
+            </div>
+          </div>
+
+          {/* Audio analysis bars */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 mb-4">
+            {[
+              { label: 'Groove', value: result.taste.groove },
+              { label: 'Energy', value: result.taste.energy },
+              { label: 'Variation', value: result.taste.variation },
+              { label: 'Novelty', value: result.taste.novelty },
+              { label: 'Spectral', value: result.taste.spectralBalance },
+              { label: 'Low End', value: result.taste.lowEndQuality },
+              { label: 'Evolution', value: result.taste.psychedelicEvolution },
+              { label: 'Overall', value: result.taste.overall },
+            ].map((m) => (
+              <div key={m.label} className="text-center">
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{m.label}</div>
+                <div className="h-2 bg-muted/30 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-fuchsia-500 to-cyan-500 transition-all"
+                    style={{ width: `${m.value * 100}%` }}
+                  />
+                </div>
+                <div className="text-xs font-mono text-fuchsia-300 mt-0.5">{(m.value * 100).toFixed(0)}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Arrangement visualization */}
+          <div className="mb-3">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Arrangement ({result.arrangement.length} sections)</div>
+            <div className="flex gap-0.5 h-8 rounded overflow-hidden">
+              {result.arrangement.map((s, i) => (
+                <div
+                  key={i}
+                  className="flex-1 flex items-center justify-center text-[9px] font-mono text-white/90 transition-all hover:scale-y-110"
+                  style={{
+                    background: `linear-gradient(180deg, color-mix(in oklch, var(--psy-fuchsia) ${s.energy * 100}%, transparent), color-mix(in oklch, var(--psy-cyan) ${s.density * 100}%, transparent))`,
+                    minWidth: `${s.bars * 4}px`,
+                  }}
+                  title={`${s.type}: ${s.bars} bars, energy=${s.energy.toFixed(2)}, density=${s.density.toFixed(2)}, ${s.layers} layers`}
+                >
+                  {s.type.slice(0, 4)}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Provenance */}
+          <div className="text-[10px] font-mono text-muted-foreground border-t border-border/40 pt-2">
+            SHA-256: {result.provenance.artifactSha256.slice(0, 24)}... · config: {result.provenance.configHash} · mutations: {result.memory.totalMutations}
+          </div>
+        </Card>
+      )}
+
+      {/* MACRO CONTROLS */}
+      <Card className="psy-card p-5 sm:p-6">
+        <h4 className="font-semibold mb-4 flex items-center gap-2"><GaugeIcon className="w-4 h-4 text-fuchsia-300" /> Musical Controls</h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
+          {macroControls.map((c) => (
+            <div key={c.key}>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-medium flex items-center gap-1.5"><c.icon className={`w-3.5 h-3.5 ${c.color}`} />{c.label}</label>
+                <span className="text-xs font-mono text-muted-foreground">{Math.round(macros[c.key as keyof typeof macros] * 100)}</span>
+              </div>
+              <Slider
+                value={[macros[c.key as keyof typeof macros] * 100]}
+                onValueChange={(v) => setMacros((m) => ({ ...m, [c.key]: v[0] / 100 }))}
+                min={0} max={100} step={1}
+                className="cursor-pointer"
+              />
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground mt-4">Controls are safe — every combination produces musically coherent results. Changes apply on next Generate.</p>
+      </Card>
+
+      {/* ACTION BUTTONS */}
+      <Card className="psy-card p-5 sm:p-6">
+        <h4 className="font-semibold mb-4 flex items-center gap-2"><Zap className="w-4 h-4 text-fuchsia-300" /> Quick Actions</h4>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+          {actionButtons.map((b) => (
+            <Button
+              key={b.action}
+              onClick={() => doGenerate(b.action)}
+              disabled={generating}
+              className={`${b.color} text-white font-medium h-auto py-3 flex-col gap-1`}
+              variant="default"
+            >
+              <b.icon className="w-4 h-4" />
+              <span className="text-xs">{b.label}</span>
+            </Button>
+          ))}
+        </div>
+      </Card>
+
+      {/* NEW SEED */}
+      <Card className="psy-card p-5">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h4 className="font-semibold flex items-center gap-2"><Shuffle className="w-4 h-4 text-cyan-300" /> Infinite Variation</h4>
+            <p className="text-sm text-muted-foreground">Same seed = same song. New seed = new musical identity from the same world.</p>
+          </div>
+          <div className="flex gap-2">
+            {seed !== null && (
+              <Button variant="outline" className="psy-border" onClick={() => doGenerate()} disabled={generating}>
+                <RefreshCw className="w-4 h-4 mr-1.5" /> Replay seed {seed}
+              </Button>
+            )}
+            <Button variant="outline" className="psy-border" onClick={() => { setSeed(null); doGenerate(); }} disabled={generating}>
+              <Sparkles className="w-4 h-4 mr-1.5" /> New seed
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      {!result && !generating && (
+        <Card className="psy-card p-10 text-center">
+          <Music className="w-12 h-12 mx-auto mb-4 text-fuchsia-400 psy-pulse" />
+          <p className="text-lg font-semibold mb-1">Press Generate to create psychedelic music.</p>
+          <p className="text-sm text-muted-foreground">The engine composes, arranges, evolves, and mixes a complete piece — you just choose the vibe.</p>
+        </Card>
+      )}
+    </div>
+  );
 }
