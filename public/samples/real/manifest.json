@@ -1,0 +1,707 @@
+[
+  {
+    "file": "real/909_BD_02.wav",
+    "category": "kick",
+    "subcategory": "909"
+  },
+  {
+    "file": "real/909_BD_04.wav",
+    "category": "kick",
+    "subcategory": "909"
+  },
+  {
+    "file": "real/909_BD_05.wav",
+    "category": "kick",
+    "subcategory": "909"
+  },
+  {
+    "file": "real/909_BD_06.wav",
+    "category": "kick",
+    "subcategory": "909"
+  },
+  {
+    "file": "real/909_BD_07.wav",
+    "category": "kick",
+    "subcategory": "909"
+  },
+  {
+    "file": "real/md_clap_Claps_0000.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_clap_Claps_0001.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_clap_Claps_0002.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_clap_Claps_0004.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_clap_Claps_0006.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_clap_Claps_0007.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_clap_Claps_0008.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_clap_Claps_0009.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0008.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0012.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0013.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0014.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0015.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0017.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0019.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0020.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0021.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0022.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0023.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0024.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0028.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0029.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0033.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0039.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0041.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0044.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0051.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_hat_Hats_0053.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0000.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0007.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0010.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0011.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0017.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0018.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0021.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0024.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0029.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0030.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0033.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0038.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0039.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0040.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0041.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0043.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0045.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0051.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0058.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_kick_Kicks_0059.wav",
+    "category": "kick",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0000.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0001.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0002.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0003.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0004.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0005.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0006.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0007.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0008.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0009.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0010.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0011.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0012.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0013.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0014.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0015.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0016.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0017.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0018.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0019.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0028.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0032.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0033.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0037.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0040.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0044.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0062.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0063.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0078.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0094.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0102.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0112.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_perc_Percs_0119.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_ride_Cymbals_0000.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_ride_Cymbals_0001.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_ride_Cymbals_0002.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_ride_Cymbals_0003.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_ride_Cymbals_0004.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_ride_Cymbals_0005.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_ride_Cymbals_0006.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_ride_Cymbals_0007.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_ride_Cymbals_0008.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_ride_Cymbals_0009.wav",
+    "category": "hat",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_snare_Snares_0000.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_snare_Snares_0001.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_snare_Snares_0002.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_snare_Snares_0003.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_snare_Snares_0004.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_snare_Snares_0005.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_snare_Snares_0006.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_snare_Snares_0007.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_snare_Snares_0008.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_snare_Snares_0009.wav",
+    "category": "clap",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0000.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0001.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0002.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0003.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0004.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0005.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0006.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0007.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0008.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0009.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0010.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0011.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0012.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0013.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_stab_Stabs_0014.wav",
+    "category": "lead",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_tom_Toms_0000.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_tom_Toms_0001.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_tom_Toms_0002.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_tom_Toms_0003.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_tom_Toms_0004.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_tom_Toms_0005.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_tom_Toms_0006.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_tom_Toms_0007.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_tom_Toms_0008.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/md_tom_Toms_0009.wav",
+    "category": "perc",
+    "subcategory": "md"
+  },
+  {
+    "file": "real/nord_kick_deep_68.wav",
+    "category": "kick",
+    "subcategory": "nord"
+  },
+  {
+    "file": "real/nord_kick_punchy_67.wav",
+    "category": "kick",
+    "subcategory": "nord"
+  },
+  {
+    "file": "real/nord_kick_sub_93.wav",
+    "category": "kick",
+    "subcategory": "nord"
+  },
+  {
+    "file": "real/nord_kick_warm_45.wav",
+    "category": "kick",
+    "subcategory": "nord"
+  },
+  {
+    "file": "real/nord_perc_Perc1.wav",
+    "category": "perc",
+    "subcategory": "nord"
+  },
+  {
+    "file": "real/nord_perc_Perc2.wav",
+    "category": "perc",
+    "subcategory": "nord"
+  },
+  {
+    "file": "real/nord_perc_Perc3.wav",
+    "category": "perc",
+    "subcategory": "nord"
+  },
+  {
+    "file": "real/nord_snare_Snare1.wav",
+    "category": "clap",
+    "subcategory": "nord"
+  },
+  {
+    "file": "real/nord_snare_Snare10.wav",
+    "category": "clap",
+    "subcategory": "nord"
+  },
+  {
+    "file": "real/nord_snare_Snare11.wav",
+    "category": "clap",
+    "subcategory": "nord"
+  }
+]

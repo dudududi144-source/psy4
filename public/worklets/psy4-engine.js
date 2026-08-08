@@ -1305,12 +1305,12 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_HAT: {
-        // Use REAL hat sample — cycle through closed hat variants for variety
+        // Use REAL hat samples — search by CATEGORY (includes MachineDrum hats)
         if (this.samplesReady) {
-          const hatNames = Object.keys(this.samples).filter(n => n.startsWith('hat_closed') || (n.startsWith('hat_') && !n.startsWith('hat_open') && n !== 'hat_closed.wav'));
-          const openNames = Object.keys(this.samples).filter(n => n.startsWith('hat_open'));
-          const names = hatNames.length > 0 ? hatNames : (openNames.length > 0 ? [] : ['hat_closed.wav']);
-          if (this.samples['hat_closed.wav'] && names.length === 0) names.push('hat_closed.wav');
+          const hatNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'hat');
+          // Prefer real samples (md_hat, nord, 909, real) over PSY3/procedural
+          const realHatNames = hatNames.filter(n => n.startsWith('md_') || n.startsWith('nord') || n.startsWith('909') || n.startsWith('real/'));
+          const names = realHatNames.length > 0 ? realHatNames : hatNames;
           if (names.length > 0) {
             const hatName = names[this.rrCounters.hat % names.length];
             const v = this.getFreeVoice(this.hatSamplePool);
@@ -1320,6 +1320,8 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
               const pitchVar = 1.0 + (this.rrCounters.hat % 8 - 3.5) * 0.005;
               const panVar = (this.rrCounters.hat % 8 - 3.5) * 0.04;
               v.trigger(samp.data, samp.sampleRate, pitchVar, velocity, 0.04, panVar);
+              // TRACK: which sample actually played
+              this.sampleUsage[hatName] = (this.sampleUsage[hatName] || 0) + 1;
             }
           } else {
             const v = this.getFreeVoice(this.hatPool);

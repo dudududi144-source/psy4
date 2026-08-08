@@ -28,31 +28,14 @@ export interface SampleInfo {
   fundamental?: number;   // estimated fundamental Hz
 }
 
-const SAMPLE_CATALOG: { file: string; category: SampleInfo['category']; subcategory: string }[] = [
-  // PSY3 samples (knowledge source)
+// Build sample catalog — PSY3 samples + real CC0 samples from manifest
+const PSY3_CATALOG: { file: string; category: SampleInfo['category']; subcategory: string }[] = [
   { file: 'kick.wav',       category: 'kick', subcategory: 'psy3' },
   { file: 'bass_A.wav',     category: 'bass', subcategory: 'psy3' },
   { file: 'lead.wav',       category: 'lead', subcategory: 'psy3' },
   { file: 'hat_closed.wav', category: 'hat',  subcategory: 'psy3-closed' },
   { file: 'hat_open.wav',   category: 'hat',  subcategory: 'psy3-open' },
   { file: 'clap.wav',       category: 'clap', subcategory: 'psy3' },
-  // REAL drum machine samples (CC0 from archive.org drum-machines-collection)
-  // These provide professional-quality source material
-  { file: 'real/nord_kick_sub_93.wav',    category: 'kick', subcategory: 'sub-heavy' },     // 93% sub, 53.8Hz
-  { file: 'real/nord_kick_deep_68.wav',   category: 'kick', subcategory: 'deep-sub' },      // 68.7% sub, 32.3Hz
-  { file: 'real/nord_kick_punchy_67.wav', category: 'kick', subcategory: 'punchy' },        // 67.6% sub, 43.1Hz
-  { file: 'real/nord_kick_warm_45.wav',   category: 'kick', subcategory: 'warm' },          // 45.2% sub, 43.1Hz
-  { file: 'real/909_BD_04.wav',           category: 'kick', subcategory: '909-classic' },   // 13.4% sub, 75.4Hz
-  { file: 'real/909_BD_02.wav',           category: 'kick', subcategory: '909-punch' },
-  { file: 'real/909_BD_05.wav',           category: 'kick', subcategory: '909-bright' },
-  { file: 'real/909_BD_06.wav',           category: 'kick', subcategory: '909-dark' },
-  { file: 'real/909_BD_07.wav',           category: 'kick', subcategory: '909-mid' },
-  { file: 'real/nord_snare_Snare1.wav',   category: 'clap', subcategory: 'nord-snare' },
-  { file: 'real/nord_snare_Snare10.wav',  category: 'clap', subcategory: 'nord-snare-bright' },
-  { file: 'real/nord_snare_Snare11.wav',  category: 'clap', subcategory: 'nord-snare-short' },
-  { file: 'real/nord_perc_Perc1.wav',     category: 'perc', subcategory: 'nord-perc-1' },
-  { file: 'real/nord_perc_Perc2.wav',     category: 'perc', subcategory: 'nord-perc-2' },
-  { file: 'real/nord_perc_Perc3.wav',     category: 'perc', subcategory: 'nord-perc-3' },
 ];
 
 export class SampleBank {
@@ -65,31 +48,59 @@ export class SampleBank {
   }
 
   /**
-   * Load all samples from /samples/ directory.
+   * Load all samples — PSY3 samples + real CC0 samples from manifest.
    * Decodes WAV → extracts mono Float32Array → computes acoustic features.
    */
   async loadAll(): Promise<boolean> {
-    const results = await Promise.all(
-      SAMPLE_CATALOG.map(async (entry) => {
-        try {
-          const response = await fetch(`/samples/${entry.file}`);
-          if (!response.ok) return null;
-          const arrayBuffer = await response.arrayBuffer();
-          const audioBuffer = await this.ctx.decodeAudioData(arrayBuffer);
-          return this.processSample(entry.file, entry.category, entry.subcategory, audioBuffer);
-        } catch (e) {
-          console.warn(`[SampleBank] Failed to load ${entry.file}:`, e);
-          return null;
+    // Build full catalog: PSY3 + real samples from manifest
+    const catalog = [...PSY3_CATALOG];
+    try {
+      const manifestResponse = await fetch('/samples/real/manifest.json');
+      if (manifestResponse.ok) {
+        const manifest = await manifestResponse.json();
+        for (const entry of manifest) {
+          catalog.push({
+            file: entry.file,
+            category: entry.category as SampleInfo['category'],
+            subcategory: entry.subcategory || 'real',
+          });
         }
-      })
-    );
+        console.log(`[SampleBank] Manifest: ${manifest.length} real samples found`);
+      }
+    } catch (e) {
+      console.warn('[SampleBank] Could not load real sample manifest:', e);
+    }
+
+    console.log(`[SampleBank] Loading ${catalog.length} total samples...`);
+
+    // Load all samples in parallel (batch of 20 to avoid overwhelming)
+    const batchSize = 20;
+    const results: (SampleInfo | null)[] = [];
+    for (let i = 0; i < catalog.length; i += batchSize) {
+      const batch = catalog.slice(i, i + batchSize);
+      const batchResults = await Promise.all(
+        batch.map(async (entry) => {
+          try {
+            const response = await fetch(`/samples/${entry.file}`);
+            if (!response.ok) return null;
+            const arrayBuffer = await response.arrayBuffer();
+            const audioBuffer = await this.ctx.decodeAudioData(arrayBuffer);
+            return this.processSample(entry.file, entry.category, entry.subcategory, audioBuffer);
+          } catch (e) {
+            // Silently skip failed samples (some may 404)
+            return null;
+          }
+        })
+      );
+      results.push(...batchResults);
+    }
 
     for (const info of results) {
       if (info) this.samples.set(info.name, info);
     }
 
     this.loaded = this.samples.size > 0;
-    console.log(`[SampleBank] Loaded ${this.samples.size}/${SAMPLE_CATALOG.length} samples`);
+    console.log(`[SampleBank] Loaded ${this.samples.size}/${catalog.length} samples`);
     return this.loaded;
   }
 
