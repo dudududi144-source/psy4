@@ -34,13 +34,13 @@ export interface IridiumParams {
 }
 
 export const IRIDIUM_DEFAULTS: IridiumParams = {
-  wtIndexA: 2,
-  wtIndexB: 5,
+  wtIndexA: 4,        // 'warm' wavetable (was 'square' = bright)
+  wtIndexB: 5,        // 'formant' (was 'bright' = harsh)
   wtMorph: 0,
-  morphRate: 0.08,
-  fmAmount: 0.3,
-  cutoff: 2400,
-  resonance: 0.4,
+  morphRate: 0.05,    // slower morph = less spectral movement
+  fmAmount: 0.12,     // much less FM (was 0.3 = too many high-freq sidebands)
+  cutoff: 1400,       // lower cutoff (was 2400 = let too much high-freq through)
+  resonance: 0.3,
   attack: 1.5,
   decay: 2.0,
   sustain: 0.8,
@@ -48,8 +48,8 @@ export const IRIDIUM_DEFAULTS: IridiumParams = {
   reverb: 0.35,
   delay: 0.2,
   delayFb: 0.4,
-  level: 0.18,
-  granular: 0.4,
+  level: 0.15,        // slightly lower
+  granular: 0.3,      // less granular (was 0.4 = more high-freq scatter)
 };
 
 interface TextureNote { note: number; vel: number; sample: number; duration: number; fired: boolean; }

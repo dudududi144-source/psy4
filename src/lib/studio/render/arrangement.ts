@@ -109,10 +109,21 @@ export function scheduleArrangement(studio: Studio, recipe: ArrangementRecipe) {
   const bassSeq = new EvolvingSequence({ ...cfg, root: cfg.root - 12 }, rng.fork(2), 8);
   const padSeq = new EvolvingSequence({ ...cfg, root: cfg.root }, rng.fork(3), 16);
 
+  // Calculate how many bars the studio will render
+  const renderBars = studio.config.bars;
+  const arrangementBars = recipe.sections.reduce((a, s) => a + s.bars, 0);
+
+  // If the arrangement is shorter than the render, loop it
+  // (prevents the 45-56s dropout where bars 17-32 had no scheduled events)
   let barOffset = 0;
-  for (const section of recipe.sections) {
-    scheduleSection(studio, recipe, section, barOffset, rng, seq, bassSeq, padSeq);
-    barOffset += section.bars;
+  let totalScheduled = 0;
+  while (totalScheduled < renderBars) {
+    for (const section of recipe.sections) {
+      if (totalScheduled >= renderBars) break;
+      scheduleSection(studio, recipe, section, barOffset, rng, seq, bassSeq, padSeq);
+      barOffset += section.bars;
+      totalScheduled += section.bars;
+    }
   }
 }
 

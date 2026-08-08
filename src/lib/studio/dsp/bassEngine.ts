@@ -62,8 +62,8 @@ export const BASS_DEFAULTS: BassParams = {
   decay: 0.08,
   sustain: 0.7,
   release: 0.04,
-  sidechainDepth: 0.5,
-  sidechainRelease: 0.08,
+  sidechainDepth: 0.35,   // gentler ducking (was 0.5 = too much)
+  sidechainRelease: 0.12,
   saturation: 0.3,
   level: 0.8,
 };
