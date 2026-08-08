@@ -138,10 +138,12 @@ export class Prophet6Device extends Device {
     this.chorus.wet = this.params.chorus * 0.5;
     let peak = 0;
 
-    // temp mono bus for chorus input
-    const mono = new Float32Array(blockSize);
+    // STEREO: render L/R independently — oscA panned left, oscB panned right
+    // (this creates true stereo information at the source, not just chorus width)
+    const monoL = new Float32Array(blockSize);
+    const monoR = new Float32Array(blockSize);
     for (let i = 0; i < blockSize; i++) {
-      let sum = 0;
+      let sumL = 0, sumR = 0;
       for (const v of this.voices) {
         if (!v.active) continue;
         v.age += 1 / this.sr;
@@ -150,18 +152,20 @@ export class Prophet6Device extends Device {
         if (!v.env.isActive() && v.released) { v.active = false; continue; }
         const a = v.oscA.process();
         const b = v.oscB.process();
-        const osc = a * (1 - this.params.oscMix) + b * this.params.oscMix;
         const cutoff = this.params.cutoff * (1 + env * this.params.envAmt * 3);
         v.filter.setCutoff(cutoff);
         v.filter.setResonance(this.params.resonance);
-        sum += v.filter.process(osc) * env * v.vel;
+        // oscA → left, oscB → right (true stereo source)
+        sumL += v.filter.process(a) * env * v.vel * (1 - this.params.oscMix);
+        sumR += v.filter.process(b) * env * v.vel * this.params.oscMix;
       }
-      mono[i] = this.dc.process(sum) * this.params.level;
+      monoL[i] = this.dc.process(sumL) * this.params.level;
+      monoR[i] = this.dc.process(sumR) * this.params.level;
     }
 
-    // chorus → stereo
+    // chorus → stereo (now processing true stereo input from detuned osc pair)
     for (let i = 0; i < blockSize; i++) {
-      const [l, r] = this.chorus.processStereo(mono[i], mono[i]);
+      const [l, r] = this.chorus.processStereo(monoL[i], monoR[i]);
       outL[i] += l; outR[i] += r;
       const p = Math.max(Math.abs(l), Math.abs(r));
       if (p > peak) peak = p;

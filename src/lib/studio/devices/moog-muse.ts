@@ -165,7 +165,7 @@ export class MuseDevice extends Device {
       const cutoffMod = this.params.cutoff * (1 + lfoVal * this.params.lfoDepth);
       this.filter.setCutoff(cutoffMod);
 
-      let sum = 0;
+      let sumL = 0, sumR = 0;
       for (const v of this.voices) {
         if (!v.active) continue;
         v.gateSample += 1 / this.sr;
@@ -181,20 +181,26 @@ export class MuseDevice extends Device {
         }
         const a = v.oscA.process();
         const b = v.oscB.process();
-        const osc = a * (1 - this.params.oscMix) + b * this.params.oscMix;
-        sum += osc * env * v.vel;
+        // STEREO: oscA → left, oscB → right (detuned pair creates width)
+        sumL += a * env * v.vel * (1 - this.params.oscMix * 0.5);
+        sumR += b * env * v.vel * this.params.oscMix * 0.5;
+        // center mix
+        const center = (a + b) * 0.5 * env * v.vel * this.params.oscMix * 0.5;
+        sumL += center; sumR += center;
       }
 
-      // filter (shared paraphonic filter)
-      const envAmt = this.voices.reduce((acc, v) => acc + (v.active ? v.env.process() : 0), 0);
-      // apply filter with envelope amount baked into cutoff already via base; keep simple
-      const filtered = this.filter.process(sum * this.params.drive);
-      const dc = this.dc.process(filtered);
-      const sample = dc * this.params.level;
+      // filter (shared paraphonic filter) — process L/R separately for stereo
+      const filteredL = this.filter.process(sumL * this.params.drive);
+      const filteredR = this.filter.process(sumR * this.params.drive);
+      const dcL = this.dc.process(filteredL);
+      const dcR = this.dc.process(filteredR);
+      const sampleL = dcL * this.params.level;
+      const sampleR = dcR * this.params.level;
 
-      outL[i] += sample;
-      outR[i] += sample;
-      if (Math.abs(sample) > peak) peak = Math.abs(sample);
+      outL[i] += sampleL;
+      outR[i] += sampleR;
+      const p = Math.max(Math.abs(sampleL), Math.abs(sampleR));
+      if (p > peak) peak = p;
     }
     this.peak = Math.max(this.peak, peak);
   }
