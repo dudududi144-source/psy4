@@ -1606,7 +1606,7 @@ export class Psy4LiveEngine {
 
     // ─── SECTION-AWARE REVERB/DELAY AUTOMATION ─────────────
     if (sb === 0 && bar === 0) {
-      // At section start, adjust reverb and delay sends
+      // Legacy path: adjust Web Audio reverb/delay sends
       if (this.rSend && this.ctx) {
         const reverbTarget = S.type === 'break' ? 0.4 + this.macros.space * 0.3
                            : S.type === 'drop' ? 0.15 + this.macros.space * 0.2
@@ -1618,6 +1618,45 @@ export class Psy4LiveEngine {
                           : S.type === 'build' ? 0.25 + this.macros.psychedelia * 0.15
                           : 0.15 + this.macros.psychedelia * 0.1;
         this.dSend.gain.setTargetAtTime(delayTarget, t, 0.5);
+      }
+
+      // ── WORKLET ENGINE: section-aware FX automation ──
+      // Build: more reverb+delay (tension/space)
+      // Drop: less reverb (punch/dry), moderate delay
+      // Break: max reverb (atmospheric), high delay (psychedelic)
+      // Intro/Outro: medium reverb
+      if (this.useWorkletEngine && this.engineNode) {
+        const space = this.macros.space;
+        const psy = this.macros.psychedelia;
+        let revSends: number[], delSends: number[], revWet: number, delWet: number, delFb: number;
+        if (S.type === 'break') {
+          // Break: max space, atmospheric
+          revSends = [0.12, 0.03, 0.40, 0.60, 0.45];
+          delSends = [0.08, 0.0, 0.30, 0.20, 0.25];
+          revWet = 0.45; delWet = 0.35; delFb = 0.45;
+        } else if (S.type === 'build') {
+          // Build: rising tension, more delay
+          revSends = [0.10, 0.02, 0.30, 0.45, 0.35];
+          delSends = [0.06, 0.0, 0.25, 0.15, 0.20];
+          revWet = 0.35; delWet = 0.30; delFb = 0.40;
+        } else if (S.type === 'drop' || S.type === 'climax') {
+          // Drop: dry punch, less reverb on drums/bass, moderate on music
+          revSends = [0.05, 0.01, 0.20, 0.35, 0.25];
+          delSends = [0.04, 0.0, 0.15, 0.08, 0.12];
+          revWet = 0.25; delWet = 0.20; delFb = 0.35;
+        } else {
+          // Intro/outro: medium space
+          revSends = [0.08, 0.02, 0.25, 0.40, 0.30];
+          delSends = [0.05, 0.0, 0.20, 0.10, 0.15];
+          revWet = 0.30; delWet = 0.25; delFb = 0.38;
+        }
+        // Apply macro space/psychedelia modulation
+        revWet *= (0.7 + space * 0.6);
+        delWet *= (0.7 + psy * 0.6);
+        this.engineNode.setFX({
+          reverbSends: revSends, delaySends: delSends,
+          reverbWet: revWet, delayWet: delWet, delayFeedback: delFb,
+        });
       }
     }
 

@@ -841,6 +841,153 @@ class SampleVoice {
   }
 }
 
+// ─── Algorithmic Reverb (Schroeder-style: 4 comb + 2 allpass) ──────────────
+// Creates space and depth. A dry psytrance mix sounds flat/amateur.
+// Reverb is a SEND — voices send a portion of their signal here, and the
+// reverb output feeds back to the master. This is how professional mixes work.
+
+class SchroederReverb {
+  constructor() {
+    // 4 parallel comb filters (different delays for density)
+    this.combDelays = [1687, 1601, 2053, 2251]; // samples at 44100 (prime)
+    this.combBuffers = [];
+    this.combIdx = [];
+    this.combFeedback = 0.84;
+    this.combDamping = 0.2;
+    this.combLP = []; // one-pole LP per comb for high-freq damping
+    for (let i = 0; i < 4; i++) {
+      this.combBuffers.push(new Float32Array(this.combDelays[i]));
+      this.combIdx.push(0);
+      this.combLP.push(0);
+    }
+    // 2 series allpass filters (diffusion)
+    this.allpassDelays = [347, 113]; // samples
+    this.allpassBuffers = [];
+    this.allpassIdx = [];
+    this.allpassFeedback = 0.7;
+    for (let i = 0; i < 2; i++) {
+      this.allpassBuffers.push(new Float32Array(this.allpassDelays[i]));
+      this.allpassIdx.push(0);
+    }
+    this.wet = 0.3;
+    this.inputGain = 0.15; // send level
+  }
+
+  setWet(wet) { this.wet = wet; }
+  setInputGain(g) { this.inputGain = g; }
+
+  // Process a mono input, return stereo [left, right] reverb output
+  process(input, sr) {
+    // Scale input by send level
+    const inSample = input * this.inputGain;
+
+    // ── Comb filters (parallel) ──
+    let combSum = 0;
+    for (let i = 0; i < 4; i++) {
+      const buf = this.combBuffers[i];
+      const idx = this.combIdx[i];
+      const delayed = buf[idx];
+      // One-pole lowpass for damping (high frequencies decay faster)
+      this.combLP[i] = delayed + this.combDamping * (this.combLP[i] - delayed);
+      const out = inSample + this.combLP[i] * this.combFeedback;
+      buf[idx] = out;
+      this.combIdx[i] = (idx + 1) % this.combDelays[i];
+      combSum += out;
+    }
+    combSum *= 0.25; // normalize
+
+    // ── Allpass filters (series) for diffusion ──
+    let ap = combSum;
+    for (let i = 0; i < 2; i++) {
+      const buf = this.allpassBuffers[i];
+      const idx = this.allpassIdx[i];
+      const delayed = buf[idx];
+      const out = -ap * this.allpassFeedback + delayed;
+      buf[idx] = ap + delayed * this.allpassFeedback;
+      this.allpassIdx[i] = (idx + 1) % this.allpassDelays[i];
+      ap = out;
+    }
+
+    // Stereo: slight delay between L and R for width
+    // (re-use allpass output, offset by a few samples for stereo effect)
+    const left = ap * this.wet;
+    const right = combSum * this.wet * 0.9; // slightly different for width
+    return [left, right];
+  }
+
+  reset() {
+    for (const buf of this.combBuffers) buf.fill(0);
+    for (const buf of this.allpassBuffers) buf.fill(0);
+    this.combLP.fill(0);
+  }
+}
+
+// ─── Tempo-Synced Stereo Delay (ping-pong) ────────────────────────────────
+// Creates psychedelic movement. Left and right channels have different
+// delay times (e.g., 3/16 and 3/8) for a wide, evolving echo.
+
+class StereoDelay {
+  constructor() {
+    this.bufferSize = 44100 * 2; // 2 seconds max
+    this.leftBuf = new Float32Array(this.bufferSize);
+    this.rightBuf = new Float32Array(this.bufferSize);
+    this.leftIdx = 0;
+    this.rightIdx = 0;
+    this.leftDelay = 0.375;  // seconds (3/8 at 120bpm)
+    this.rightDelay = 0.281; // seconds (slightly different for ping-pong)
+    this.feedback = 0.35;
+    this.wet = 0.25;
+    this.inputGain = 0.2;
+    this.sr = 44100;
+    // LP filter on feedback for darker echoes
+    this.fbLP = [0, 0];
+  }
+
+  setDelayTimes(leftMs, rightMs) {
+    this.leftDelay = leftMs / 1000;
+    this.rightDelay = rightMs / 1000;
+  }
+
+  setFeedback(fb) { this.feedback = fb; }
+  setWet(wet) { this.wet = wet; }
+  setInputGain(g) { this.inputGain = g; }
+
+  // Process stereo input [left, right], return stereo [left, right] delay output
+  process(leftIn, rightIn, sr) {
+    this.sr = sr;
+    const leftDelaySamples = Math.floor(this.leftDelay * sr);
+    const rightDelaySamples = Math.floor(this.rightDelay * sr);
+
+    // Read delayed samples
+    const leftReadIdx = (this.leftIdx - leftDelaySamples + this.bufferSize) % this.bufferSize;
+    const rightReadIdx = (this.rightIdx - rightDelaySamples + this.bufferSize) % this.bufferSize;
+    const leftDelayed = this.leftBuf[leftReadIdx];
+    const rightDelayed = this.rightBuf[rightReadIdx];
+
+    // Feedback with LP filtering (darker echoes)
+    const fbCutoff = 0.3;
+    this.fbLP[0] = this.fbLP[0] + fbCutoff * (leftDelayed - this.fbLP[0]);
+    this.fbLP[1] = this.fbLP[1] + fbCutoff * (rightDelayed - this.fbLP[1]);
+
+    // Ping-pong: left feedback goes to right, right to left
+    const leftWrite = leftIn * this.inputGain + this.fbLP[1] * this.feedback;
+    const rightWrite = rightIn * this.inputGain + this.fbLP[0] * this.feedback;
+
+    this.leftBuf[this.leftIdx] = leftWrite;
+    this.rightBuf[this.rightIdx] = rightWrite;
+    this.leftIdx = (this.leftIdx + 1) % this.bufferSize;
+    this.rightIdx = (this.rightIdx + 1) % this.bufferSize;
+
+    return [leftDelayed * this.wet, rightDelayed * this.wet];
+  }
+
+  reset() {
+    this.leftBuf.fill(0);
+    this.rightBuf.fill(0);
+    this.fbLP.fill(0);
+  }
+}
+
 // ─── Master chain (saturation + limiter) ───────────────────────────────────
 
 class MasterChain {
@@ -937,6 +1084,16 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     // Round robin counters (for variation — avoid machine-gun effect)
     this.rrCounters = { kick: 0, hat: 0, clap: 0 };
 
+    // ── FX SENDS: Reverb + Delay (the key to "produced" sound) ──
+    // A dry mix sounds flat/amateur. These are SEND effects — voices
+    // send a portion of their signal here, and the FX output feeds master.
+    this.reverb = new SchroederReverb();
+    this.delay = new StereoDelay();
+    // Per-bus send amounts: [drum, bass, music, atmos, fx]
+    // Bass/kick send very little (keep them dry/punchy). Music/atmos send more.
+    this.reverbSends = [0.08, 0.02, 0.25, 0.40, 0.30];
+    this.delaySends = [0.05, 0.0, 0.20, 0.10, 0.15];
+
     // Master chain
     this.master = new MasterChain();
 
@@ -995,6 +1152,15 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'world':
         this.worldParams = { ...this.worldParams, ...msg.params };
+        break;
+      case 'setFX':
+        // Adjust reverb/delay sends based on section (automation)
+        // msg.reverbSends and msg.delaySends are arrays of 5 values
+        if (msg.reverbSends) this.reverbSends = msg.reverbSends;
+        if (msg.delaySends) this.delaySends = msg.delaySends;
+        if (msg.reverbWet !== undefined) this.reverb.setWet(msg.reverbWet);
+        if (msg.delayWet !== undefined) this.delay.setWet(msg.delayWet);
+        if (msg.delayFeedback !== undefined) this.delay.setFeedback(msg.delayFeedback);
         break;
       case 'events':
         // Batch of events from main thread
@@ -1379,6 +1545,32 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
                + musicBusR * this.busGains[2]
                + atmosBusR * this.busGains[3]
                + fxBusR * this.busGains[4];
+
+      // ── FX SENDS: Reverb + Delay ──
+      // Send portions of each bus to reverb and delay (parallel sends)
+      // The FX outputs are added to the master mix, creating space and depth.
+      const reverbInput = (drumBusL + drumBusR) * 0.5 * this.reverbSends[0]
+                        + (bassBusL + bassBusR) * 0.5 * this.reverbSends[1]
+                        + (musicBusL + musicBusR) * 0.5 * this.reverbSends[2]
+                        + (atmosBusL + atmosBusR) * 0.5 * this.reverbSends[3]
+                        + (fxBusL + fxBusR) * 0.5 * this.reverbSends[4];
+      const [revL, revR] = this.reverb.process(reverbInput, sr);
+
+      const delayInputL = drumBusL * this.delaySends[0]
+                        + bassBusL * this.delaySends[1]
+                        + musicBusL * this.delaySends[2]
+                        + atmosBusL * this.delaySends[3]
+                        + fxBusL * this.delaySends[4];
+      const delayInputR = drumBusR * this.delaySends[0]
+                        + bassBusR * this.delaySends[1]
+                        + musicBusR * this.delaySends[2]
+                        + atmosBusR * this.delaySends[3]
+                        + fxBusR * this.delaySends[4];
+      const [delL, delR] = this.delay.process(delayInputL, delayInputR, sr);
+
+      // Add FX returns to master mix
+      mixL += revL + delL;
+      mixR += revR + delR;
 
       // Master processing (per channel)
       mixL = this.master.process(mixL, sr);

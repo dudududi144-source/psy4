@@ -156,6 +156,21 @@ export class Psy4EngineNode {
   }
 
   /**
+   * Set FX send levels for section automation.
+   * reverbSends/delaySends: [drum, bass, music, atmos, fx] send amounts 0..1
+   * Used to automate reverb/delay depth per section (build=more, drop=less, break=max)
+   */
+  setFX(opts: {
+    reverbSends?: number[];
+    delaySends?: number[];
+    reverbWet?: number;
+    delayWet?: number;
+    delayFeedback?: number;
+  }) {
+    this.node?.port.postMessage({ type: 'setFX', ...opts });
+  }
+
+  /**
    * Load sample bank data into the worklet.
    * Transfers Float32Array buffers (zero-copy) so the worklet can play
    * the REAL PSY3 samples instead of pure synth DSP.

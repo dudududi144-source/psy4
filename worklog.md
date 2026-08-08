@@ -211,3 +211,59 @@ Stage Summary:
   - Reverb/delay are not yet in the worklet (legacy path has them). Worklet is currently dry.
   - Stereo width is basic (pan-based). M/S processing and micro-delay width are P1.
   - PHYSICAL LISTENING UNVERIFIED — verification is via console logs, voice count, level meter, and code audit.
+
+---
+Task ID: 4
+Agent: Z.ai Code (main)
+Task: PSY4 Phase 2 continued — Add reverb + delay FX to worklet (the biggest remaining sound quality lever), section-aware FX automation, and remaining documentation.
+
+Work Log:
+- Identified biggest remaining gap: worklet mix was completely DRY (no reverb/delay). A dry psytrance mix sounds flat/amateur. This was the single highest-impact improvement.
+- Built SchroederReverb class in worklet (psy4-engine.js):
+  - 4 parallel comb filters (prime delays: 1687, 1601, 2053, 2251 samples)
+  - One-pole LP damping per comb (high frequencies decay faster — realistic)
+  - 2 series allpass filters for diffusion
+  - Stereo output (slight L/R variation for width)
+  - Wet/inputGain controls
+- Built StereoDelay class in worklet:
+  - Ping-pong architecture (left feedback → right, right → left)
+  - Different delay times L/R (0.375s / 0.281s) for wide echo
+  - LP filter on feedback (darker echoes, not harsh)
+  - 2-second max buffer
+  - Wet/feedback controls
+- Integrated FX sends into render loop:
+  - Per-bus send amounts: [drum, bass, music, atmos, fx]
+  - Reverb sends: [0.08, 0.02, 0.25, 0.40, 0.30] — bass/kick dry, music/atmos wet
+  - Delay sends: [0.05, 0.0, 0.20, 0.10, 0.15] — bass no delay, music gets most
+  - FX returns added to master mix before master processing
+- Added 'setFX' message handler for section-aware FX automation
+- Built section-aware FX automation in psy4LiveEngine.ts step():
+  - BREAK: max reverb (wet 0.45), high delay (wet 0.35, feedback 0.45) — atmospheric
+  - BUILD: medium reverb (0.35), rising delay (0.30) — tension
+  - DROP: dry punch (reverb 0.25), moderate delay (0.20) — kick dominant
+  - INTRO/OUTRO: medium space (reverb 0.30, delay 0.25)
+  - Macros modulate: reverbWet *= (0.7 + space*0.6), delayWet *= (0.7 + psy*0.6)
+- Added setFX() method to engineWorklet.ts Psy4EngineNode
+- Created documentation:
+  - SAMPLE_MANIFEST.json: complete provenance/licensing for all 6 samples + ingestion pipeline spec
+  - SAMPLE_SELECTION_RULES.md: context-aware selection logic for kick/hat/clap/bass/lead/acid/FX
+  - MUSICAL_GRAMMAR.md: AABA phrase structure, EvolvingSequence, bass patterns, tension shapes
+- Verified with Agent Browser:
+  - Engine plays with reverb+delay active, 0 errors
+  - Progression through sections: intro (33%) → build (47%) → drop (56%)
+  - FX automation working (level changes per section = reverb/delay depth changing)
+  - 35+ seconds stable, 0 errors
+  - Voice count realistic (3-6 active)
+- Lint passes cleanly (0 errors, 0 warnings)
+
+Stage Summary:
+- **Reverb + Delay now in worklet**: The mix is no longer dry. Schroeder reverb (4 comb + 2 allpass) creates space and depth. Ping-pong stereo delay creates psychedelic movement. Both are SEND effects with per-bus send amounts — exactly how professional mixes work.
+- **Section-aware FX automation**: Reverb/delay depth changes per section. Break = max reverb (atmospheric). Drop = dry punch (kick dominant). Build = rising delay (tension). This creates dynamic contrast, not static processing.
+- **Per-bus send architecture**: Drum/bass send very little to reverb (keep them dry/punchy). Music/atmos send more (create space). This follows PSY3 rule: "Never wash the kick."
+- **Artifacts**: SchroederReverb + StereoDelay classes in psy4-engine.js, setFX() in engineWorklet.ts, section automation in psy4LiveEngine.ts, SAMPLE_MANIFEST.json, SAMPLE_SELECTION_RULES.md, MUSICAL_GRAMMAR.md.
+- **REMAINING GAP (honest)**:
+  - Worklet master chain still simplified (saturation + limiter). Full multiband/glue is legacy only.
+  - Per-voice HP filtering not yet in worklet (samples play raw). Channel strip HP is in legacy path.
+  - M/S stereo processing not yet implemented (basic pan only).
+  - Counter-melody engine not yet built (P1).
+  - PHYSICAL LISTENING UNVERIFIED — verification is via console logs, level meter (section-aware dynamics visible), and code audit.
