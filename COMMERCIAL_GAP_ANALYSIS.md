@@ -322,27 +322,40 @@ Total unique timbres ≈ 8 world configs × 3 osc types × ~5 parameter variatio
 
 ## 6. COMMERCIAL READINESS SCORE
 
-| Category | Score (0-100) | Notes |
-|----------|---------------|-------|
-| TECHNICAL | 70 | Works, no NaN, stable. Main-thread scheduler is the weakness. |
-| SONIC | 35 | Basic synthesis, no FM/ring/comb, hats are noise-only, no per-voice variation |
-| MUSICAL | 30 | 4-note motif, random acid, no counter-melody, no phrase planning |
-| MIX | 25 | Single-band comp, no multiband, no true-peak, no LUFS target |
-| STEREO | 40 | Per-voice panners exist, but sources are mostly mono, no M/S on master |
-| ARRANGEMENT | 35 | Sections exist but no transition prep, no drop contrast, no density curves |
-| DYNAMICS | 30 | Fixed comp settings, no section-aware dynamics, no sidechain variation |
-| REFERENCE | 0 | No reference analysis at all |
-| **OVERALL** | **33** | **Not commercial-grade. Prototype with potential.** |
+### THREE-SCORE ASSESSMENT (updated with benchmark data)
+
+| Category | Score (0-100) | Evidence |
+|----------|---------------|----------|
+| **ENGINE HEALTH** | 85 | Works, stable, no NaN, no clipping, 60+ sec continuous. Main-thread scheduler is the weakness. |
+| **MUSICAL QUALITY** | 35 | 4-note motif, random acid, no counter-melody, no phrase planning, drop = same-but-louder |
+| **SONIC / PRODUCTION** | 25 | **Kick: 99% high energy (should be 87% like PSY3). Bass: 98% high (should be 76%). Lead: 92% high (should be 1.7%). Full mix: 99% high (should be 1.2%). Pad: 8x quieter than PSY3.** |
+
+### ROOT CAUSE (updated after benchmark)
+
+**הבעיה המרכזית אינה arrangement או features חסרים.**
+
+**הבעיה היא שה-synthesis primitives עצמם מייצרים צלילים צורמים וחלשים.**
+
+| Voice | PSY4 low% | PSY3 low% | PSY4 high% | PSY3 high% | Diagnosis |
+|-------|-----------|-----------|------------|------------|-----------|
+| KICK  | 53%       | 87%       | 99%        | 0.6%       | **PSY4 kick = click, not kick** |
+| BASS  | 46%       | 76%       | 98%        | 0%         | **PSY4 bass = mid/high synth, not bass** |
+| LEAD  | 4%        | 0.1%      | 92%        | 1.7%       | **PSY4 lead = harsh/noisy** |
+| FULL  | 53%       | 81%       | 99%        | 1.2%       | **PSY4 mix = all high, no warmth** |
+
+**PSY4 לא צריך עוד voices. צריך לתקן את הקיימים — ברמת ה-gain staging, filter cutoff, oscillator choice.**
 
 ## 7. P0/P1/P2 ROADMAP
 
-### P0 — Must fix before anything else
-1. **Sidechain depth variation per section** — pass section type to kick scheduling
-2. **Bass note variation within phrases** — bass pattern mutation, not fixed cycle
-3. **Drop contrast** — pre-drop element removal + filter-down
-4. **Pad evolution** — LFO detune modulation (PSY3's evolve parameter)
-5. **Hat improvement** — metallic oscillator bank instead of noise-only
-6. **Clap multi-burst** — 3-4 staggered noise bursts
+### P0 — Must fix before anything else (UPDATED after benchmark)
+
+**הבעיה האמיתית התגלתה ב-benchmark: ה-synthesis primitives עצמם פשוטים מדי.**
+
+1. **FIX KICK GAIN STAGING** — sub sine חלש מדי, click חזק מדי. PSY4 kick = 99% high (קליק), PSY3 = 87% low (קיק). תיקון: הגדל sub amplitude, הקטן click/mid.
+2. **FIX BASS LOW-END** — saw דרך LP 400Hz מייצר 98% high. PSY3 = 76% low. תיקון: הנמך cutoff ל-200Hz, הגדל sub, הקטן harmonic layer.
+3. **FIX LEAD HARSHNESS** — PeriodicWave עם 48 harmonics מייצר aliasing. PSY3 bl_saw מתאים N לתדר. תיקון: הנמן filter cutoff, הקטן detune, או עבור לnative oscillator type.
+4. **FIX PAD LEVEL** — peak 0.024 (PSY3 = 0.196, פי 8 חלש). תיקון: הגדל amplitude.
+5. **FIX FULL MIX SPECTRAL BALANCE** — 99% high vs PSY3 1.2%. תיקון: תקן kick/bass/lead, והfull mix יתקן את עצמו.
 
 ### P1 — High impact
 7. **Modulation matrix** — routable LFO/env/macro → destinations
