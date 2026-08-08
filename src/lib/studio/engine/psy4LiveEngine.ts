@@ -29,6 +29,10 @@
 import { getVoiceSpecs, VoiceSpecSet, ChannelStripSpec } from './voiceSpecs';
 import { getSoundBank } from './soundBank';
 import { MoogFilterChain, MultibandCompressor, TruePeakLimiter, GlueCompressor, MasterSaturation } from './proAudioNodes';
+import {
+  ensureWorkletsLoaded, createMoogFilter, createBLSaw, createBLSquare,
+  type MoogFilterNode, type BLSawNode,
+} from './workletDsp';
 
 // ─── Music Theory ───────────────────────────────────────────────
 
@@ -319,6 +323,21 @@ export class Psy4LiveEngine {
   private saturation: MasterSaturation | null = null;
   private truePeak: TruePeakLimiter | null = null;
 
+  // ─── BUS ARCHITECTURE ──────────────────────────────────────────
+  // Production-grade routing: channels → bus (EQ+comp+sat) → sum → master
+  //   drum bus  : kick, hat, clap, perc, shaker
+  //   bass bus  : bass, acid
+  //   music bus : lead
+  //   atmos bus : pad, texture
+  //   fx bus    : riser, impact, sweep, zap, blip, downlifter
+  private buses: Map<string, { input: GainNode; comp: DynamicsCompressorNode; out: GainNode }> = new Map();
+
+  // ─── Worklet DSP state ─────────────────────────────────────────
+  // When true, voices use real Moog ladder + BL saw (sample-accurate).
+  // When false (worklet not yet loaded), voices fall back to BiquadFilter.
+  workletsReady = false;
+  private workletLoadPromise: Promise<boolean> | null = null;
+
   init() {
     if (this.ctx) return;
     const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -377,8 +396,49 @@ export class Psy4LiveEngine {
     this.analyser = c.createAnalyser(); this.analyser.fftSize = 2048;
     this.master.connect(this.analyser);
 
+    // ── LOAD AUDIOWORKLET DSP (async) ──────────────────────────
+    // Real Moog ladder filter + band-limited saw oscillator.
+    // Voices check this.workletsReady and fall back to BiquadFilter until loaded.
+    this.workletLoadPromise = ensureWorkletsLoaded(c);
+    this.workletLoadPromise.then((ok) => { this.workletsReady = ok; });
+
+    // ── BUILD BUS ARCHITECTURE ────────────────────────────────
+    // Each bus: input → lowShelf EQ → highShelf EQ → comp → saturation → out → sum
+    // This gives per-group tonal shaping + glue compression + harmonic cohesion.
+    const busConfig: Record<string, {
+      lowShelf: number; lowFreq: number;
+      highShelf: number; highFreq: number;
+      thr: number; ratio: number; satDrive: number; makeupDb: number;
+    }> = {
+      drum:  { lowShelf: 2,   lowFreq: 100, highShelf: 1.5, highFreq: 6000, thr: -10, ratio: 3,   satDrive: 1.4, makeupDb: 1 },
+      bass:  { lowShelf: 1.5, lowFreq: 60,  highShelf: -4,  highFreq: 800,  thr: -12, ratio: 2.5, satDrive: 1.3, makeupDb: 1 },
+      music: { lowShelf: -3,  lowFreq: 200, highShelf: 1.5, highFreq: 5000, thr: -14, ratio: 2,   satDrive: 1.2, makeupDb: 1 },
+      atmos: { lowShelf: -4,  lowFreq: 200, highShelf: 1,   highFreq: 4000, thr: -20, ratio: 1.5, satDrive: 1.1, makeupDb: 0 },
+      fx:    { lowShelf: -6,  lowFreq: 300, highShelf: 2,   highFreq: 5000, thr: -16, ratio: 2,   satDrive: 1.2, makeupDb: 1 },
+    };
+    for (const [name, cfg] of Object.entries(busConfig)) {
+      const input = c.createGain();
+      const lowShelf = c.createBiquadFilter();
+      lowShelf.type = 'lowshelf'; lowShelf.frequency.value = cfg.lowFreq; lowShelf.gain.value = cfg.lowShelf;
+      const highShelf = c.createBiquadFilter();
+      highShelf.type = 'highshelf'; highShelf.frequency.value = cfg.highFreq; highShelf.gain.value = cfg.highShelf;
+      const comp = c.createDynamicsCompressor();
+      comp.threshold.value = cfg.thr; comp.ratio.value = cfg.ratio;
+      comp.attack.value = 0.005; comp.release.value = 0.1; comp.knee.value = 4;
+      const sat = c.createWaveShaper();
+      const satCurve = new Float32Array(1024);
+      for (let i = 0; i < 1024; i++) { const x = (i / 512) - 1; satCurve[i] = Math.tanh(x * cfg.satDrive); }
+      sat.curve = satCurve;
+      const out = c.createGain();
+      out.gain.value = Math.pow(10, cfg.makeupDb / 20);
+      input.connect(lowShelf); lowShelf.connect(highShelf);
+      highShelf.connect(comp); comp.connect(sat); sat.connect(out);
+      out.connect(this.sum);
+      this.buses.set(name, { input, comp, out });
+    }
+
     // ── BUILD CHANNEL STRIPS ─────────────────────────────────
-    // Each voice gets: input → HP filter → gain → pan → sum
+    // Each voice gets: input → HP filter → gain → pan → bus → sum
     //                                → reverbSend → reverb
     //                                → delaySend → delay
     if (this.voiceSpecs) {
@@ -396,9 +456,9 @@ export class Psy4LiveEngine {
         const delaySend = c.createGain();
         delaySend.gain.value = strip.delaySend;
 
-        // Chain: input → hp → gain → panner → sum
+        // Chain: input → hp → gain → panner → bus (group-based routing)
         input.connect(hp); hp.connect(gain); gain.connect(panner);
-        panner.connect(this.sum);
+        panner.connect(this.busForChannel(name));
         // Sends (post-fader)
         gain.connect(reverbSend); gain.connect(delaySend);
 
@@ -445,6 +505,75 @@ export class Psy4LiveEngine {
     return this.sum!;
   }
 
+  /** Route a channel strip to its production bus (drum/bass/music/atmos/fx). */
+  private busForChannel(name: string): GainNode {
+    const drum = ['kick', 'hat', 'clap', 'perc', 'shaker'];
+    const bass = ['bass', 'acid'];
+    const music = ['lead'];
+    const atmos = ['pad', 'texture'];
+    let busName = 'fx';
+    if (drum.includes(name)) busName = 'drum';
+    else if (bass.includes(name)) busName = 'bass';
+    else if (music.includes(name)) busName = 'music';
+    else if (atmos.includes(name)) busName = 'atmos';
+    const bus = this.buses.get(busName);
+    return bus ? bus.input : this.sum!;
+  }
+
+  /**
+   * Create a Moog filter (real 4-stage tanh ladder via AudioWorklet if loaded,
+   * else fall back to BiquadFilter approximation). Returns a node with
+   * .inputNode / .outputNode / .cutoff / .resonance / .drive / .level.
+   */
+  private createVoiceFilter(opts: {
+    cutoff?: number; resonance?: number; drive?: number; level?: number;
+  }): { inputNode: AudioNode; outputNode: AudioNode; cutoff: AudioParam; resonance: AudioParam; drive: AudioParam; level: AudioParam; scheduleCutoff?: (t: number, start: number, end: number, dur: number) => void; dispose?: () => void } {
+    const c = this.ctx!;
+    if (this.workletsReady) {
+      const node = createMoogFilter(c, opts);
+      if (node) {
+        const n = node as MoogFilterNode;
+        return {
+          inputNode: n, outputNode: n,
+          cutoff: n.cutoff, resonance: n.resonance, drive: n.drive, level: n.level,
+          scheduleCutoff: (t, start, end, dur) => {
+            n.cutoff.cancelScheduledValues(t);
+            n.cutoff.setValueAtTime(start, t);
+            n.cutoff.exponentialRampToValueAtTime(Math.max(20, end), t + dur);
+          },
+          dispose: () => { try { n.disconnect(); } catch { /* noop */ } },
+        };
+      }
+    }
+    // Fallback: BiquadFilter + WaveShaper approximation
+    return this.createFallbackFilter(opts);
+  }
+
+  /** BiquadFilter + WaveShaper fallback (used until worklets load). */
+  private createFallbackFilter(opts: {
+    cutoff?: number; resonance?: number; drive?: number; level?: number;
+  }): { inputNode: AudioNode; outputNode: AudioNode; cutoff: AudioParam; resonance: AudioParam; drive: AudioParam; level: AudioParam; scheduleCutoff?: (t: number, start: number, end: number, dur: number) => void; dispose?: () => void } {
+    const c = this.ctx!;
+    const chain = new MoogFilterChain(c);
+    chain.setParams({
+      cutoff: opts.cutoff ?? 1000,
+      resonance: opts.resonance ?? 0.3,
+      drive: opts.drive ?? 1,
+      level: opts.level ?? 1,
+    });
+    return {
+      inputNode: chain.inputNode,
+      outputNode: chain.outputNode,
+      cutoff: (chain as unknown as { filter: BiquadFilterNode }).filter.frequency,
+      resonance: (chain as unknown as { filter: BiquadFilterNode }).filter.Q,
+      // drive/level on fallback aren't AudioParams (WaveShaper can't automate) — return dummy
+      drive: { value: opts.drive ?? 1, setValueAtTime: () => {}, setTargetAtTime: () => {}, linearRampToValueAtTime: () => {}, exponentialRampToValueAtTime: () => {}, cancelScheduledValues: () => {}, cancelAndHoldAtTime: () => {} } as unknown as AudioParam,
+      level: { value: opts.level ?? 1, setValueAtTime: () => {}, setTargetAtTime: () => {}, linearRampToValueAtTime: () => {}, exponentialRampToValueAtTime: () => {}, cancelScheduledValues: () => {}, cancelAndHoldAtTime: () => {} } as unknown as AudioParam,
+      scheduleCutoff: (t, start, end, dur) => chain.scheduleCutoff(t, start, end, dur),
+      dispose: () => { try { chain.disconnect(); } catch { /* noop */ } },
+    };
+  }
+
   private makeWave(type: string, nH: number): PeriodicWave {
     const c = this.ctx!;
     const real = new Float32Array(nH + 1), imag = new Float32Array(nH + 1);
@@ -487,6 +616,68 @@ export class Psy4LiveEngine {
   }
 
   // ─── Voices ───────────────────────────────────────────────────
+
+  /**
+   * Create a band-limited oscillator (worklet polyBLEP if loaded, else
+   * OscillatorNode+PeriodicWave fallback). Returns a uniform interface with
+   * start()/stop()/disconnect() so voices don't care which engine is active.
+   *
+   * For worklet nodes: start() is a no-op (worklet runs continuously), stop(t)
+   * schedules disconnect at time t. The envelope GainNode gates the audio.
+   */
+  private createVoiceOsc(freq: number, type: 'saw' | 'square' = 'saw'): {
+    node: AudioNode; frequency: AudioParam; detune: AudioParam;
+    start: (t: number) => void; stop: (t: number) => void;
+  } {
+    const c = this.ctx!;
+    if (this.workletsReady) {
+      if (type === 'saw') {
+        const n = createBLSaw(c, { frequency: freq });
+        if (n) {
+          const bl = n as BLSawNode;
+          // Worklet runs continuously; envelope gates it. Schedule disconnect after stop.
+          return {
+            node: bl, frequency: bl.frequency,
+            // BL saw has no detune param; emulate via frequency scaling at call site
+            detune: { value: 0, setValueAtTime: () => {}, setTargetAtTime: () => {}, linearRampToValueAtTime: () => {}, exponentialRampToValueAtTime: () => {}, cancelScheduledValues: () => {}, cancelAndHoldAtTime: () => {} } as unknown as AudioParam,
+            start: () => {},
+            stop: (tt) => {
+              const delay = Math.max(0, (tt - c.currentTime) * 1000) + 50;
+              setTimeout(() => { try { bl.disconnect(); } catch { /* noop */ } }, delay);
+            },
+          };
+        }
+      } else {
+        const n = createBLSquare(c, { frequency: freq });
+        if (n) {
+          const bl = n;
+          return {
+            node: bl, frequency: bl.frequency,
+            detune: { value: 0, setValueAtTime: () => {}, setTargetAtTime: () => {}, linearRampToValueAtTime: () => {}, exponentialRampToValueAtTime: () => {}, cancelScheduledValues: () => {}, cancelAndHoldAtTime: () => {} } as unknown as AudioParam,
+            start: () => {},
+            stop: (tt) => {
+              const delay = Math.max(0, (tt - c.currentTime) * 1000) + 50;
+              setTimeout(() => { try { bl.disconnect(); } catch { /* noop */ } }, delay);
+            },
+          };
+        }
+      }
+    }
+    // Fallback: native OscillatorNode + PeriodicWave (aliases at high freq but works)
+    const o = c.createOscillator();
+    const wave = type === 'square' ? this.sqWave : this.sawWave;
+    if (wave) o.setPeriodicWave(wave);
+    o.frequency.value = freq;
+    return { node: o, frequency: o.frequency, detune: o.detune, start: (tt) => o.start(tt), stop: (tt) => o.stop(tt) };
+  }
+
+  /** Disconnect a list of nodes after a delay (cleanup for worklet nodes). */
+  private scheduleCleanup(nodes: AudioNode[], t: number, delaySec = 0.1) {
+    const c = this.ctx!;
+    if (!c) return;
+    const delayMs = Math.max(0, (t - c.currentTime + delaySec) * 1000);
+    setTimeout(() => { for (const n of nodes) { try { n.disconnect(); } catch { /* noop */ } } }, delayMs);
+  }
 
   kick(t: number, amp = 1) {
     const c = this.ctx!;
@@ -564,109 +755,175 @@ export class Psy4LiveEngine {
 
   bass(t: number, midi: number, dur: number, amp = 0.5, acid = false) {
     const c = this.ctx!, f = mtof(midi);
+    const spec = this.voiceSpecs?.bass;
+    const bassInput = this.getChannelInput('bass');
 
-    // ── SUB LAYER: sine at fundamental/2, strong, mono ──
-    // PSY3: sub = sin(2π·f/2·t), gain=0.5, mixed at 0.5 ratio
-    // PSY4 was: sub gain=0.4, too quiet
+    // ── BASS REBUILD: multi-layer architecture ──
+    //   SUB   : clean sine at f/2, mono, bypasses filter for clean low end
+    //   BODY  : BL saw → real Moog ladder filter (cutoff envelope) → drive
+    //   The Moog filter's tanh saturation adds harmonic character that
+    //   BiquadFilter cannot — this is the PSY3 sound.
+
+    // 1. SUB LAYER (clean fundamental, no filter)
     const sub = c.createOscillator(); sub.type = 'sine'; sub.frequency.value = f / 2;
-    const subG = c.createGain(); subG.gain.value = 0.6;
+    const subG = c.createGain();
+    subG.gain.setValueAtTime(0, t);
+    subG.gain.linearRampToValueAtTime((spec?.subLevel ?? 0.6) * amp, t + 0.003);
+    subG.gain.linearRampToValueAtTime(0, t + dur);
+    sub.connect(subG); subG.connect(bassInput);
+    sub.start(t); sub.stop(t + dur + 0.03);
 
-    // ── BODY LAYER: saw through resonant LP filter with envelope ──
-    // PSY3: saw → LP with cutoff = 1500*exp(-t/0.08)+150 (drops to 150Hz!)
-    // PSY4 was: cutoff = world.bassCutoff*2 → world.bassCutoff (400-600Hz, too high)
-    const o = c.createOscillator();
-    const wave = acid ? this.sqWave : this.sawWave;
-    if (wave) o.setPeriodicWave(wave);
-    o.frequency.value = f;
-    const fl = c.createBiquadFilter(); fl.type = 'lowpass';
-    fl.Q.value = acid ? this.world.bassResonance : 2 + this.macros.psychedelia * 2;
-    // Cutoff drops from 1200Hz to 150Hz (like PSY3) — much lower than before
-    const cutoffStart = acid ? 2500 : 1200;
-    const cutoffEnd = acid ? this.world.bassCutoff : 150 + this.world.bassCutoff * 0.3;
-    fl.frequency.setValueAtTime(cutoffStart, t);
-    fl.frequency.exponentialRampToValueAtTime(cutoffEnd, t + Math.min(dur, 0.08));
+    // 2. BODY LAYER: BL saw → real Moog filter → amp envelope
+    const oscWrap = this.createVoiceOsc(f, acid ? 'square' : 'saw');
 
-    // ── SATURATION: controlled harmonic generation for character ──
-    const dist = c.createWaveShaper();
-    const curve = new Float32Array(256);
-    const driveAmt = 1 + this.world.drive * 2 + this.macros.aggression;
-    for (let i = 0; i < 256; i++) { const x = (i / 128) - 1; curve[i] = Math.tanh(x * driveAmt); }
-    dist.curve = curve;
+    // Real Moog ladder filter (4-stage tanh, sample-accurate via AudioWorklet)
+    const cutoffStart = acid ? 2500 : (spec?.cutoffStart ?? 1200);
+    const cutoffEnd = acid ? this.world.bassCutoff : (spec?.cutoffEnd ?? 150);
+    const resQ = acid ? this.world.bassResonance : (spec?.resonance ?? 3);
+    const filter = this.createVoiceFilter({
+      cutoff: cutoffStart,
+      resonance: Math.min(1, resQ / 20),   // map Q→0..1 for Moog self-osc
+      drive: 1 + (spec?.saturation ?? 0.3) * 2 + this.macros.aggression * 0.5,
+      level: 1,
+    });
+    // Filter envelope: cutoff sweeps high→low (psytrance bass pluck character)
+    if (filter.scheduleCutoff) {
+      filter.scheduleCutoff(t, cutoffStart, cutoffEnd, Math.min(dur, 0.08));
+    }
 
-    // ── AMP ENVELOPE: snappy attack, sustain, quick release ──
+    // Amp envelope: snappy attack, sustain, quick release (PSY3 uses 0.42 level)
     const g = c.createGain();
     g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(0.42 * amp, t + 0.003); // PSY3 uses 0.42
+    g.gain.linearRampToValueAtTime((spec?.ampLevel ?? 0.42) * amp, t + 0.003);
     g.gain.linearRampToValueAtTime(0, t + dur);
 
-    // Route: osc → filter → saturation → gain → sum
-    //        sub → subG → gain (sub bypasses filter for clean low end)
-    o.connect(fl); fl.connect(dist); dist.connect(g);
-    sub.connect(subG); subG.connect(g);
-    g.connect(this.getChannelInput('bass'));
-    o.start(t); sub.start(t);
-    o.stop(t + dur + 0.03); sub.stop(t + dur + 0.03);
+    // Route: osc → filter → gain → bassInput
+    oscWrap.node.connect(filter.inputNode);
+    filter.outputNode.connect(g);
+    g.connect(bassInput);
+
+    oscWrap.start(t);
+    oscWrap.stop(t + dur + 0.05);
+    // Clean up worklet nodes after note ends
+    this.scheduleCleanup([filter.inputNode as AudioNode, g], t + dur + 0.1, 0.05);
+
+    // Sidechain ducking (kick has priority over bass)
+    if (this.duck) {
+      const d = this.duck.gain;
+      d.cancelScheduledValues(t);
+      d.setValueAtTime(1 - this.world.duck * (0.5 + this.macros.aggression * 0.5), t);
+      d.setTargetAtTime(1, t + 0.02, 0.08 + this.macros.groove * 0.04);
+    }
   }
 
   lead(t: number, midi: number, dur: number, amp = 0.2, pan = 0) {
     const c = this.ctx!, f = mtof(midi);
-    const fl = c.createBiquadFilter(); fl.type = 'lowpass';
-    // Lower cutoff (was leadCutoff*(0.5+brightness*1) = 1200-6000Hz, too bright)
-    // PSY3: LP starts at 6000Hz, drops to 1200Hz — much warmer
-    const baseCut = 1500 + this.macros.brightness * 1500; // 1500-3000Hz range
-    fl.frequency.setValueAtTime(baseCut * 2, t);
-    fl.frequency.exponentialRampToValueAtTime(baseCut, t + dur);
-    fl.Q.value = 1 + this.macros.psychedelia * 3;
+    const spec = this.voiceSpecs?.lead;
+    const leadInput = this.getChannelInput('lead');
+
+    // ── LEAD REBUILD: BL supersaw → real Moog filter → amp envelope ──
+    // The Moog filter's resonance + tanh saturation gives the warm, vocal
+    // character that makes psytrance leads sing instead of buzz.
+    const baseCut = (spec?.cutoff ?? 1800) * (0.7 + this.macros.brightness * 0.6);
+
+    // Real Moog ladder filter with filter envelope (open → settle)
+    const filter = this.createVoiceFilter({
+      cutoff: baseCut * 2,
+      resonance: Math.min(1, ((spec?.resonance ?? 2) + this.macros.psychedelia * 3) / 20),
+      drive: 1 + (spec?.saturation ?? 0.2) * 1.5,
+      level: 1,
+    });
+    if (filter.scheduleCutoff) {
+      filter.scheduleCutoff(t, baseCut * 2, baseCut, dur);
+    }
+
     // LFO modulation on filter cutoff (psychedelic movement)
     if (this.macros.psychedelia > 0.3) {
       const lfo = c.createOscillator(); lfo.type = 'sine';
       lfo.frequency.value = 0.5 + this.macros.psychedelia * 3;
       const lfoGain = c.createGain();
       lfoGain.gain.value = baseCut * 0.3 * this.macros.psychedelia;
-      lfo.connect(lfoGain); lfoGain.connect(fl.frequency);
+      lfo.connect(lfoGain); lfoGain.connect(filter.cutoff);
       lfo.start(t); lfo.stop(t + dur + 0.1);
     }
-    // Higher amplitude (was 0.14 * amp/0.2 = 0.14, PSY3 uses 0.16 * v)
+
+    // Amp envelope
     const g = c.createGain();
     g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(0.16 * amp / 0.2, t + 0.006);
+    g.gain.linearRampToValueAtTime((spec?.level ?? 0.16) * amp / 0.2, t + 0.006);
     g.gain.linearRampToValueAtTime(0, t + dur);
-    const wave = this.getWave(this.world.leadType);
-    // 5 detuned oscillators (richer supersaw, from PSY3)
-    for (let i = 0; i < 5; i++) {
-      const o = c.createOscillator();
-      if (wave) o.setPeriodicWave(wave);
-      o.frequency.value = f;
-      o.detune.value = (i - 2) * this.world.leadDetune * (0.5 + this.macros.psychedelia);
-      const pp = c.createStereoPanner(); pp.pan.value = (i - 2) * 0.2;
-      o.connect(pp); pp.connect(fl); o.start(t); o.stop(t + dur + 0.05);
+
+    // Supersaw: N detuned BL saws, stereo-spread
+    const numOscs = spec?.numOscs ?? 5;
+    const detune = (spec?.detune ?? 10) * (0.5 + this.macros.psychedelia);
+    const spread = spec?.stereoSpread ?? 0.4;
+    const oscType = (spec?.oscType === 'square') ? 'square' : 'saw';
+    const cleanupNodes: AudioNode[] = [];
+    for (let i = 0; i < numOscs; i++) {
+      const oscWrap = this.createVoiceOsc(f, oscType);
+      // Detune (BL saw has no detune param — adjust frequency directly)
+      const detuneCents = (i - (numOscs - 1) / 2) * detune;
+      const detuneMult = Math.pow(2, detuneCents / 1200);
+      oscWrap.frequency.setValueAtTime(f * detuneMult, t);
+      const pp = c.createStereoPanner();
+      pp.pan.value = (i - (numOscs - 1) / 2) * (spread * 2 / Math.max(1, numOscs - 1));
+      oscWrap.node.connect(pp); pp.connect(filter.inputNode);
+      oscWrap.start(t);
+      oscWrap.stop(t + dur + 0.05);
+      cleanupNodes.push(pp);
     }
-    fl.connect(g); g.connect(this.getChannelInput('lead'));
+    filter.outputNode.connect(g); g.connect(leadInput);
     if (this.dSend) g.connect(this.dSend);
     if (this.rSend) g.connect(this.rSend);
+    this.scheduleCleanup([filter.inputNode as AudioNode, ...cleanupNodes], t + dur + 0.1, 0.05);
   }
 
   acid(t: number, midi: number, dur: number, amp = 0.25) {
     const c = this.ctx!, f = mtof(midi);
-    const o = c.createOscillator();
-    if (this.sqWave) o.setPeriodicWave(this.sqWave);
-    o.frequency.value = f;
-    const fl = c.createBiquadFilter(); fl.type = 'lowpass';
-    fl.Q.value = 12 + this.macros.psychedelia * 8;
-    // acid filter sweep: open → close
-    fl.frequency.setValueAtTime(200 + this.macros.brightness * 3000, t);
-    fl.frequency.exponentialRampToValueAtTime(100, t + dur * 0.7);
+    const acidInput = this.getChannelInput('lead'); // acid shares lead channel/music bus
+
+    // ── ACID REBUILD: BL square → high-resonance Moog filter → distortion ──
+    // The acid sound is ALL about the resonant filter sweep. The real Moog
+    // ladder's self-oscillation at high resonance gives the squelchy, vocal
+    // "acid" character that BiquadFilter's linear resonance cannot.
+
+    const oscWrap = this.createVoiceOsc(f, 'square');
+
+    // High-resonance Moog filter (near self-oscillation) with envelope sweep
+    const cutoffStart = 200 + this.macros.brightness * 3000;
+    const cutoffEnd = 100;
+    const filter = this.createVoiceFilter({
+      cutoff: cutoffStart,
+      resonance: Math.min(1, (12 + this.macros.psychedelia * 8) / 20), // high res for squelch
+      drive: 2 + this.macros.aggression * 2,  // drive adds harmonic grit
+      level: 1,
+    });
+    if (filter.scheduleCutoff) {
+      filter.scheduleCutoff(t, cutoffStart, cutoffEnd, dur * 0.7);
+    }
+
+    // Distortion after filter (classic acid chain: osc → filter → overdrive)
+    const dist = c.createWaveShaper();
+    const curve = new Float32Array(1024);
+    const driveAmt = 2 + this.macros.aggression * 2;
+    for (let i = 0; i < 1024; i++) { const x = (i / 512) - 1; curve[i] = Math.tanh(x * driveAmt); }
+    dist.curve = curve;
+
+    // Amp envelope
     const g = c.createGain();
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(amp, t + 0.003);
     g.gain.linearRampToValueAtTime(0, t + dur);
-    const dist = c.createWaveShaper();
-    const curve = new Float32Array(256);
-    for (let i = 0; i < 256; i++) { const x = (i / 128) - 1; curve[i] = Math.tanh(x * 3); }
-    dist.curve = curve;
-    o.connect(fl); fl.connect(dist); dist.connect(g); g.connect(this.getChannelInput('lead'));
+
+    oscWrap.node.connect(filter.inputNode);
+    filter.outputNode.connect(dist); dist.connect(g);
+    g.connect(acidInput);
     if (this.dSend) g.connect(this.dSend);
-    o.start(t); o.stop(t + dur + 0.05);
+    if (this.rSend) g.connect(this.rSend);
+
+    oscWrap.start(t);
+    oscWrap.stop(t + dur + 0.05);
+    this.scheduleCleanup([filter.inputNode as AudioNode, dist, g], t + dur + 0.1, 0.05);
   }
 
   hat(t: number, open = false, amp = 0.1, pan = 0.3) {
@@ -779,35 +1036,58 @@ export class Psy4LiveEngine {
   }
 
   pad(t: number, root: number, chord: number[], dur: number, amp = 0.08) {
-    // Increased default amp from 0.04 to 0.08 (PSY3 pad peak = 0.196, PSY4 was 0.024)
+    // ── PAD REBUILD: detuned BL saws → Moog filter → evolving detune LFO ──
+    // Pads need width, movement, and warmth. The Moog filter's smooth cutoff
+    // + tanh saturation gives the lush, analog pad character. Each chord
+    // voice uses 2 detuned BL saws with a slow evolve LFO for breathing.
     const c = this.ctx!;
+    const spec = this.voiceSpecs?.pad;
+    const padInput = this.getChannelInput('pad');
+    const cleanupNodes: AudioNode[] = [];
+
     chord.forEach((iv, k) => {
       const f = mtof(root + 12 + iv);
-      const lp = c.createBiquadFilter(); lp.type = 'lowpass';
-      lp.frequency.value = this.world.padCutoff * (0.7 + this.macros.brightness * 0.6);
+
+      // Real Moog filter (smooth, warm — not sterile BiquadFilter)
+      const filter = this.createVoiceFilter({
+        cutoff: (spec?.cutoff ?? this.world.padCutoff) * (0.7 + this.macros.brightness * 0.6),
+        resonance: Math.min(1, (spec?.resonance ?? 0.5) / 20),
+        drive: 1.1,
+        level: 1,
+      });
+
       const g = c.createGain();
       g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(amp, t + 0.5);
+      g.gain.linearRampToValueAtTime(amp, t + (spec?.attack ?? 0.5));
       g.gain.linearRampToValueAtTime(0, t + dur);
-      const wave = this.getWave(this.world.leadType);
-      for (let i = 0; i < 2; i++) {
-        const o = c.createOscillator();
-        if (wave) o.setPeriodicWave(wave);
-        o.frequency.value = f; o.detune.value = i ? 7 : -7;
-        // EVOLVE: slow detune modulation (from PSY3's pad evolve parameter)
-        // Creates breathing pads instead of static organ chords
+
+      const oscType = (spec?.oscType === 'square') ? 'square' : 'saw';
+      for (let i = 0; i < (spec?.numOscs ?? 2); i++) {
+        const oscWrap = this.createVoiceOsc(f, oscType);
+        // Static detune (BL saw has no detune param — adjust frequency)
+        const detuneCents = i ? (spec?.detune ?? 7) : -(spec?.detune ?? 7);
+        oscWrap.frequency.setValueAtTime(f * Math.pow(2, detuneCents / 1200), t);
+
+        // EVOLVE: slow detune modulation via LFO modulating frequency
+        // (BL saw frequency is an AudioParam, so LFO → frequency works)
         const lfo = c.createOscillator(); lfo.type = 'sine';
-        lfo.frequency.value = 0.1 + k * 0.03; // slightly different rate per voice
+        lfo.frequency.value = (spec?.evolveRate ?? 0.1) + k * 0.03;
         const lfoGain = c.createGain();
-        lfoGain.gain.value = 3 + this.macros.evolution * 5; // cents of detune
-        lfo.connect(lfoGain); lfoGain.connect(o.detune);
+        lfoGain.gain.value = f * (spec?.evolveDepth ?? 5) / 1200 * (1 + this.macros.evolution);
+        lfo.connect(lfoGain); lfoGain.connect(oscWrap.frequency);
         lfo.start(t); lfo.stop(t + dur + 0.1);
+
         const pp = c.createStereoPanner(); pp.pan.value = i ? 0.4 : -0.4;
-        o.connect(pp); pp.connect(lp); o.start(t); o.stop(t + dur + 0.1);
+        oscWrap.node.connect(pp); pp.connect(filter.inputNode);
+        oscWrap.start(t);
+        oscWrap.stop(t + dur + 0.1);
+        cleanupNodes.push(pp, lfoGain);
       }
-      lp.connect(g); g.connect(this.getChannelInput('pad'));
+      filter.outputNode.connect(g); g.connect(padInput);
       if (this.rSend) g.connect(this.rSend);
+      cleanupNodes.push(filter.inputNode as AudioNode, g);
     });
+    this.scheduleCleanup(cleanupNodes, t + dur + 0.15, 0.05);
   }
 
   texture(t: number, dur: number, amp = 0.08) {

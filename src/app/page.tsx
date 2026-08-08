@@ -195,7 +195,7 @@ export default function LivePage() {
             </Button>
             <div className="text-center px-4 py-2 rounded-lg bg-card/40 border border-border/40">
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Level</div>
-              <div className="text-sm font-bold text-emerald-400">{(audioLevel * 100).toFixed(0)}%</div>
+              <div className="text-sm font-bold text-emerald-400">{((audioLevel ?? 0) * 100).toFixed(0)}%</div>
             </div>
             <div className="text-center px-4 py-2 rounded-lg bg-card/40 border border-border/40">
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Engine</div>
