@@ -29,12 +29,30 @@ export interface SampleInfo {
 }
 
 const SAMPLE_CATALOG: { file: string; category: SampleInfo['category']; subcategory: string }[] = [
-  { file: 'kick.wav',       category: 'kick', subcategory: 'main' },
-  { file: 'bass_A.wav',     category: 'bass', subcategory: 'main' },
-  { file: 'lead.wav',       category: 'lead', subcategory: 'main' },
-  { file: 'hat_closed.wav', category: 'hat',  subcategory: 'closed' },
-  { file: 'hat_open.wav',   category: 'hat',  subcategory: 'open' },
-  { file: 'clap.wav',       category: 'clap', subcategory: 'main' },
+  // PSY3 samples (knowledge source)
+  { file: 'kick.wav',       category: 'kick', subcategory: 'psy3' },
+  { file: 'bass_A.wav',     category: 'bass', subcategory: 'psy3' },
+  { file: 'lead.wav',       category: 'lead', subcategory: 'psy3' },
+  { file: 'hat_closed.wav', category: 'hat',  subcategory: 'psy3-closed' },
+  { file: 'hat_open.wav',   category: 'hat',  subcategory: 'psy3-open' },
+  { file: 'clap.wav',       category: 'clap', subcategory: 'psy3' },
+  // REAL drum machine samples (CC0 from archive.org drum-machines-collection)
+  // These provide professional-quality source material
+  { file: 'real/nord_kick_sub_93.wav',    category: 'kick', subcategory: 'sub-heavy' },     // 93% sub, 53.8Hz
+  { file: 'real/nord_kick_deep_68.wav',   category: 'kick', subcategory: 'deep-sub' },      // 68.7% sub, 32.3Hz
+  { file: 'real/nord_kick_punchy_67.wav', category: 'kick', subcategory: 'punchy' },        // 67.6% sub, 43.1Hz
+  { file: 'real/nord_kick_warm_45.wav',   category: 'kick', subcategory: 'warm' },          // 45.2% sub, 43.1Hz
+  { file: 'real/909_BD_04.wav',           category: 'kick', subcategory: '909-classic' },   // 13.4% sub, 75.4Hz
+  { file: 'real/909_BD_02.wav',           category: 'kick', subcategory: '909-punch' },
+  { file: 'real/909_BD_05.wav',           category: 'kick', subcategory: '909-bright' },
+  { file: 'real/909_BD_06.wav',           category: 'kick', subcategory: '909-dark' },
+  { file: 'real/909_BD_07.wav',           category: 'kick', subcategory: '909-mid' },
+  { file: 'real/nord_snare_Snare1.wav',   category: 'clap', subcategory: 'nord-snare' },
+  { file: 'real/nord_snare_Snare10.wav',  category: 'clap', subcategory: 'nord-snare-bright' },
+  { file: 'real/nord_snare_Snare11.wav',  category: 'clap', subcategory: 'nord-snare-short' },
+  { file: 'real/nord_perc_Perc1.wav',     category: 'perc', subcategory: 'nord-perc-1' },
+  { file: 'real/nord_perc_Perc2.wav',     category: 'perc', subcategory: 'nord-perc-2' },
+  { file: 'real/nord_perc_Perc3.wav',     category: 'perc', subcategory: 'nord-perc-3' },
 ];
 
 export class SampleBank {

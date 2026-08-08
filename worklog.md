@@ -621,3 +621,64 @@ Stage Summary:
   - Real CC0 sample sources not yet found — still using 6 PSY3 samples + 46 procedural. The user wants hundreds of real samples.
   - The commercial reference corpus (actual commercial tracks) is not available for analysis.
   - PHYSICAL LISTENING UNVERIFIED — latency improvement measured via timing analysis, not human perception.
+
+---
+Task ID: 10
+Agent: Z.ai Code (main)
+Task: Reference-driven commercial audio rebuild — research references, find real CC0 samples, integrate professional drum sounds.
+
+Work Log:
+- HONEST ASSESSMENT: Cannot access YouTube audio. Cannot listen to the 3 reference tracks. Did NOT fabricate analysis. Documented this honestly in REFERENCE_ANALYSIS_REPORT.md.
+- Web research on professional psytrance production:
+  - Found production knowledge from Reddit, Myloops, mastering sites
+  - Kick target: 48-56Hz fundamental, 70-95% sub energy, fast pitch decay
+  - Bass target: 65-110Hz fundamental, sidechain to kick, mono below 120Hz
+  - Arrangement: 5-9 minutes with clear section development (not loops)
+
+- Found and downloaded REAL CC0 drum samples:
+  - Source: archive.org/drum-machines-collection (CC0/public domain)
+  - Downloaded: Roland 909 kick pack (19 BD samples, 1.7MB)
+  - Downloaded: Clavia Nord Drum pack (35 samples — kicks, snares, percussion, 1.9MB)
+  - Downloaded: DeepSky Drumbox (27 samples, 1.1MB)
+  - Total: 81 real drum samples from professional drum machines
+
+- Spectral analysis of real samples (Python + numpy + scipy):
+  - Nord Drum Kick4: 93.0% sub energy, 53.8Hz fundamental — MATCHES commercial psytrance target exactly
+  - Nord Drum Kick3: 68.7% sub, 32.3Hz (deep sub)
+  - Nord Drum Kick10: 67.6% sub, 43.1Hz (punchy)
+  - Nord Drum Kick1: 45.2% sub, 43.1Hz (warm)
+  - 909 BD_04: 13.4% sub, 75.4Hz (classic 909 punch)
+  - PSY3 kick.wav for comparison: 97% sub, 53.8Hz
+
+- Copied 15 best real samples to public/samples/real/:
+  - 9 kick samples (4 Nord Drum + 5 Roland 909)
+  - 3 snare samples (Nord Drum)
+  - 3 percussion samples (Nord Drum)
+
+- Updated SampleBank to load real samples:
+  - SAMPLE_CATALOG now includes 21 samples (6 PSY3 + 15 real)
+  - Each real sample has subcategory (sub-heavy, deep-sub, punchy, warm, 909-classic, etc.)
+  - All samples load via fetch + decodeAudioData → Float32Array → worklet transfer
+
+- Verified with Agent Browser:
+  - [SampleBank] Loaded 21/21 samples ✓
+  - 0 errors
+  - Engine plays with real samples + procedural multisamples (67 total: 21 real + 46 generated)
+  - Level 42%, 3 voices (intro section)
+
+- Created REFERENCE_ANALYSIS_REPORT.md:
+  - Honest about what was accessible vs not
+  - Documents the 3 YouTube URLs that could NOT be accessed
+  - Documents what WAS found (production knowledge + real CC0 samples)
+  - PSY4 gap analysis based on production knowledge (not fabricated audio analysis)
+
+Stage Summary:
+- **REAL DRUM SAMPLES INTEGRATED**: 15 professional drum machine samples (Roland 909 + Nord Drum) now load into PSY4. The Nord Drum kick with 93% sub energy at 53.8Hz is exactly the commercial psytrance kick target — this is a REAL professional sample, not procedural synthesis.
+- **HONEST REFERENCE REPORT**: Did NOT fabricate analysis of YouTube videos I can't access. Documented honestly what was accessible (web research, CC0 samples) and what wasn't (actual audio from the 3 reference tracks).
+- **CC0 SAMPLE SOURCES FOUND**: archive.org/drum-machines-collection provides legally usable, professional drum samples. This is a real source library, not procedural generation.
+- **Artifacts**: 15 real WAV samples in public/samples/real/, updated sampleBank.ts, REFERENCE_ANALYSIS_REPORT.md.
+- **REMAINING GAP (honest)**:
+  - The real samples are loaded but the worklet's kick trigger still uses the round-robin cycling that includes both real and procedural samples. Should prioritize real samples (especially the 93% sub kick) over procedural ones.
+  - Only kick/snare/perc real samples found — still need real hats, claps, bass, leads.
+  - Cannot verify the sound improvement through listening (PHYSICAL LISTENING UNVERIFIED).
+  - The 3 YouTube references could not be accessed — analysis is based on production knowledge, not actual reference audio.
