@@ -1771,155 +1771,107 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     }
 
     // Render audio sample by sample
-    // Count active voices once per block (not per sample)
+    // OPTIMIZATION: Build a single flat array of active voices ONCE per block
+    // (was: 14 separate loops per sample = 14 * 128 = 1792 iterations/block)
+    // Now: 1 pass to collect active voices, 1 pass per sample
+    const activeVoices = [];
     let activeCount = 0;
-    for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool]) {
-      for (const v of pool) { if (v.active) activeCount++; }
-    }
+
+    // Collect all active synth voices (mono render)
+    for (const v of this.kickPool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: false}); activeCount++; } }
+    for (const v of this.hatPool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: false}); activeCount++; } }
+    for (const v of this.clapPool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: false}); activeCount++; } }
+    for (const v of this.percPool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: false}); activeCount++; } }
+    for (const v of this.shakerPool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: false}); activeCount++; } }
+    for (const v of this.bassPool) { if (v.active) { activeVoices.push({v, bus: 1, stereo: false}); activeCount++; } }
+    for (const v of this.leadPool) { if (v.active) { activeVoices.push({v, bus: 2, stereo: 'haas'}); activeCount++; } }
+    for (const v of this.acidPool) { if (v.active) { activeVoices.push({v, bus: 2, stereo: false}); activeCount++; } }
+    for (const v of this.padPool) { if (v.active) { activeVoices.push({v, bus: 3, stereo: 'lfo'}); activeCount++; } }
+    for (const v of this.texturePool) { if (v.active) { activeVoices.push({v, bus: 3, stereo: 'pan'}); activeCount++; } }
+    for (const v of this.fxPool) { if (v.active) { activeVoices.push({v, bus: 4, stereo: false}); activeCount++; } }
+
+    // Collect active sample voices (stereo render)
+    for (const v of this.kickSamplePool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: 'sample'}); activeCount++; } }
+    for (const v of this.hatSamplePool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: 'sample'}); activeCount++; } }
+    for (const v of this.clapSamplePool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: 'sample'}); activeCount++; } }
+
     this.activeVoiceCount = activeCount;
 
+    // Lead Haas delay buffer
+    if (!this.leadDelayL) this.leadDelayL = new Float32Array(18);
+    if (!this.leadDelayIdx) this.leadDelayIdx = 0;
+
     // Stereo buses: L and R per group
-    // Kick/bass/sub stay mono (center), hats/clap/perc/lead/pad/texture/FX have stereo width
     for (let i = 0; i < L.length; i++) {
       this.currentSample++;
 
-      // Sidechain envelope — REAL envelope with fast attack + musical release
-      // When kick fires, duckEnv drops immediately, then recovers smoothly.
-      // This creates the "pumping" groove that is THE defining characteristic of psytrance.
+      // Sidechain envelope recovery
       if (this.duckEnv < 1) {
-        // Exponential recovery — fast at first, then gradual
-        // FIX: was 0.08 (80ms) — too fast, bass plays on offbeat (117ms after kick)
-        // so the duck recovered before the bass played, making duck a DEAD parameter.
-        // 250ms release keeps the bass ducked through the offbeat.
-        this.duckEnv += (1 - this.duckEnv) * (dt / 0.25);  // 250ms time constant
+        this.duckEnv += (1 - this.duckEnv) * (dt / 0.25);
       }
 
-      // Mix all active voices into stereo buses
+      // Mix all active voices into stereo buses (SINGLE LOOP, not 14)
       let drumBusL = 0, drumBusR = 0;
       let bassBusL = 0, bassBusR = 0;
       let musicBusL = 0, musicBusR = 0;
       let atmosBusL = 0, atmosBusR = 0;
       let fxBusL = 0, fxBusR = 0;
 
-      // ── SAMPLE-BASED VOICES (stereo via pan) ──
-      // Kick sample → drum bus (mono — kick stays center for phase coherence)
-      for (const v of this.kickSamplePool) {
-        if (v.active) {
-          const [sl, sr2, done] = v.renderStereo(currentAudioTime + i * dt, sr);
-          drumBusL += sl; drumBusR += sr2;
-        }
-      }
-      // Hat samples → drum bus (stereo with pan variation)
-      for (const v of this.hatSamplePool) {
-        if (v.active) {
-          const [sl, sr2, done] = v.renderStereo(currentAudioTime + i * dt, sr);
-          drumBusL += sl; drumBusR += sr2;
-        }
-      }
-      // Clap samples → drum bus (stereo)
-      for (const v of this.clapSamplePool) {
-        if (v.active) {
-          const [sl, sr2, done] = v.renderStereo(currentAudioTime + i * dt, sr);
-          drumBusL += sl; drumBusR += sr2;
-        }
-      }
+      const sampleTime = currentAudioTime + i * dt;
 
-      // ── SYNTH VOICES (mono → route to both L and R) ──
-      // Kick synth → drum bus (mono)
-      for (const v of this.kickPool) {
-        if (v.active) {
-          const [s] = v.render(currentAudioTime + i * dt, sr);
-          drumBusL += s; drumBusR += s;
-        }
-      }
-      // Hat synth → drum bus (mono for now)
-      for (const v of this.hatPool) {
-        if (v.active) {
-          const [s] = v.render(currentAudioTime + i * dt, sr);
-          drumBusL += s; drumBusR += s;
-        }
-      }
-      // Clap synth → drum bus (mono)
-      for (const v of this.clapPool) {
-        if (v.active) {
-          const [s] = v.render(currentAudioTime + i * dt, sr);
-          drumBusL += s; drumBusR += s;
-        }
-      }
-      // Perc → drum bus (mono — pan applied later if needed)
-      for (const v of this.percPool) {
-        if (v.active) {
-          const [s] = v.render(currentAudioTime + i * dt, sr);
-          drumBusL += s; drumBusR += s;
-        }
-      }
-      // Shaker → drum bus (mono)
-      for (const v of this.shakerPool) {
-        if (v.active) {
-          const [s] = v.render(currentAudioTime + i * dt, sr);
-          drumBusL += s; drumBusR += s;
-        }
-      }
+      for (let vi = 0; vi < activeVoices.length; vi++) {
+        const entry = activeVoices[vi];
+        const v = entry.v;
+        const bus = entry.bus;
 
-      // Bass → bass bus (mono — sidechain ducked by kick)
-      for (const v of this.bassPool) {
-        if (v.active) {
-          const [s] = v.render(currentAudioTime + i * dt, sr);
-          const ducked = s * this.duckEnv;  // ONLY bass gets sidechain
-          bassBusL += ducked; bassBusR += ducked;
-        }
-      }
-
-      // Lead → music bus (STEREO — Haas effect for width)
-      // 0.4ms delay on R channel creates stereo width without phase issues
-      for (const v of this.leadPool) {
-        if (v.active) {
-          const [s] = v.render(currentAudioTime + i * dt, sr);
-          musicBusL += s;
-          // Haas: R gets a 0.4ms delayed version (18 samples at 44100)
-          // This creates wide stereo without sounding like echo
-          this.leadDelayL = this.leadDelayL || new Float32Array(18);
-          this.leadDelayIdx = this.leadDelayIdx || 0;
-          const delayed = this.leadDelayL[this.leadDelayIdx];
-          this.leadDelayL[this.leadDelayIdx] = s;
-          this.leadDelayIdx = (this.leadDelayIdx + 1) % 18;
-          musicBusR += delayed;
-        }
-      }
-      // Acid → music bus (mono — acid stays centered for focus)
-      for (const v of this.acidPool) {
-        if (v.active) {
-          const [s] = v.render(currentAudioTime + i * dt, sr);
-          musicBusL += s; musicBusR += s;
-        }
-      }
-
-      // Pad → atmos bus (STEREO — detuned dual for natural width)
-      for (const v of this.padPool) {
-        if (v.active) {
-          const [s] = v.render(currentAudioTime + i * dt, sr);
-          // Slight amplitude difference L vs R for stereo interest
-          const lfo = Math.sin(this.currentSample * 0.0008);
-          atmosBusL += s * (0.85 + lfo * 0.15);
-          atmosBusR += s * (0.85 - lfo * 0.15);
-        }
-      }
-      // Texture → atmos bus (STEREO — panning movement)
-      for (const v of this.texturePool) {
-        if (v.active) {
-          const [s] = v.render(currentAudioTime + i * dt, sr);
-          // Slow pan movement for psychedelic texture
-          const pan = Math.sin(this.currentSample * 0.0005);
-          atmosBusL += s * (0.5 - pan * 0.3);
-          atmosBusR += s * (0.5 + pan * 0.3);
-        }
-      }
-
-      // FX → fx bus (mono)
-      for (const v of this.fxPool) {
-        if (v.active) {
-          const [s] = v.render(currentAudioTime + i * dt, sr);
-          fxBusL += s; fxBusR += s;
+        if (entry.stereo === 'sample') {
+          // Sample voice — stereo render
+          const [sl, sr2] = v.renderStereo(sampleTime, sr);
+          switch (bus) {
+            case 0: drumBusL += sl; drumBusR += sr2; break;
+            case 1: bassBusL += sl; bassBusR += sr2; break;
+            case 2: musicBusL += sl; musicBusR += sr2; break;
+            case 3: atmosBusL += sl; atmosBusR += sr2; break;
+            case 4: fxBusL += sl; fxBusR += sr2; break;
+          }
+        } else {
+          // Synth voice — mono render
+          const [s] = v.render(sampleTime, sr);
+          switch (bus) {
+            case 0: drumBusL += s; drumBusR += s; break;
+            case 1: {
+              const ducked = s * this.duckEnv;
+              bassBusL += ducked; bassBusR += ducked;
+              break;
+            }
+            case 2: {
+              if (entry.stereo === 'haas') {
+                musicBusL += s;
+                const delayed = this.leadDelayL[this.leadDelayIdx];
+                this.leadDelayL[this.leadDelayIdx] = s;
+                this.leadDelayIdx = (this.leadDelayIdx + 1) % 18;
+                musicBusR += delayed;
+              } else {
+                musicBusL += s; musicBusR += s;
+              }
+              break;
+            }
+            case 3: {
+              if (entry.stereo === 'lfo') {
+                const lfo = Math.sin(this.currentSample * 0.0008);
+                atmosBusL += s * (0.85 + lfo * 0.15);
+                atmosBusR += s * (0.85 - lfo * 0.15);
+              } else if (entry.stereo === 'pan') {
+                const pan = Math.sin(this.currentSample * 0.0005);
+                atmosBusL += s * (0.5 - pan * 0.3);
+                atmosBusR += s * (0.5 + pan * 0.3);
+              } else {
+                atmosBusL += s; atmosBusR += s;
+              }
+              break;
+            }
+            case 4: fxBusL += s; fxBusR += s; break;
+          }
         }
       }
 

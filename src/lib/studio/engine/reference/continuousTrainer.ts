@@ -203,16 +203,16 @@ export class ContinuousTrainer {
       const dna = getWorldDNA(worldId);
       if (!dna) return;
 
-      // 1. Render with current params
+      // 1. Render with current params (full mix for overall score)
       const currentRender = render(seed, worldId, renderDuration, {
         paramOverrides: registryToOverrides(this.registry),
       });
 
-      // 2. Analyze
+      // 2. Analyze full mix
       const analysis = analyzeAudio(currentRender.samplesL, currentRender.samplesR, SR);
       const metrics = this.analysisToMetrics(analysis, worldId);
 
-      // 3. Score against reference
+      // 3. Score against reference (full mix score)
       const scoreResult = computeReferenceScore(metrics, referenceProfile, dna.bpmTarget);
       const oldScore = scoreResult.total;
 
