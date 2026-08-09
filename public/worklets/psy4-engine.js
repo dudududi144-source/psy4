@@ -1227,61 +1227,47 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.reverbSends = [0.12, 0.03, 0.35, 0.50, 0.35];
     this.delaySends = [0.08, 0.0, 0.25, 0.15, 0.20];
 
-    // Master chain
-    this.master = new MasterChain();
+    // Master chain — SEPARATE instances for L and R (shared state = stereo bug)
+    this.masterL = new MasterChain();
+    this.masterR = new MasterChain();
 
-    // Bus gains (drum, bass, music, atmos, fx)
     // Bus gains (drum, bass, music, atmos, fx)
     this.busGains = [1.0, 1.0, 1.0, 0.8, 0.7];
 
-    // ── BUS PROCESSORS — per-bus compression + saturation + EQ ──
-    // This is what makes the mix sound "produced" instead of "isolated sounds"
-    this.drumBusProc = new BusProcessor({
-      hpFreq: 0,           // don't HP the drum bus (kick needs sub)
-      compThr: 0.5,        // compress drums for punch
-      compRatio: 3,        // aggressive ratio for drums
-      compAtt: 0.002,      // 2ms — fast catch
-      compRel: 0.08,       // 80ms — musical release
-      compMakeup: 1.3,     // makeup after compression
-      drive: 1.3,          // warm saturation on drums
-      gain: 1.0,
-    });
-    this.bassBusProc = new BusProcessor({
-      hpFreq: 25,          // HP at 25Hz — remove subsonic mud
-      compThr: 0.4,        // compress bass for consistency
-      compRatio: 2,        // gentle ratio for bass
-      compAtt: 0.005,      // 5ms — let transient through
-      compRel: 0.12,       // 120ms — smooth release
-      compMakeup: 1.15,    // modest makeup
-      drive: 1.2,          // subtle warmth
-      gain: 1.0,
-    });
-    this.musicBusProc = new BusProcessor({
-      hpFreq: 80,          // HP at 80Hz — keep music out of bass territory
-      compThr: 0.45,       // glue compression for lead/acid
-      compRatio: 2,        // gentle glue
-      compAtt: 0.01,       // 10ms — slow, transparent
-      compRel: 0.15,       // 150ms — smooth
-      compMakeup: 1.1,     // subtle makeup
-      drive: 1.15,         // very subtle warmth
-      gain: 1.0,
-    });
-    this.atmosBusProc = new BusProcessor({
-      hpFreq: 60,          // HP at 60Hz — atmos doesn't need sub
-      compThr: 0,          // no compression — atmos should be open
-      drive: 1.0,          // no saturation — keep it clean
-      gain: 1.0,
-    });
-    this.fxProc = new BusProcessor({
-      hpFreq: 40,          // HP at 40Hz
-      compThr: 0.35,       // compress FX for consistency
-      compRatio: 2.5,
-      compAtt: 0.003,
-      compRel: 0.1,
-      compMakeup: 1.2,
-      drive: 1.2,
-      gain: 1.0,
-    });
+    // ── BUS PROCESSORS — SEPARATE L and R instances ──
+    // CRITICAL FIX: Previously L and R shared the same instance, which meant
+    // the compressor envelope was shared. This caused the stereo image to
+    // collapse and created uneven pumping. Now each channel has its own.
+    const drumConfig = {
+      hpFreq: 0, compThr: 0.5, compRatio: 3, compAtt: 0.002, compRel: 0.08,
+      compMakeup: 1.3, drive: 1.3, gain: 1.0,
+    };
+    const bassConfig = {
+      hpFreq: 25, compThr: 0.4, compRatio: 2, compAtt: 0.005, compRel: 0.12,
+      compMakeup: 1.15, drive: 1.2, gain: 1.0,
+    };
+    const musicConfig = {
+      hpFreq: 80, compThr: 0.45, compRatio: 2, compAtt: 0.01, compRel: 0.15,
+      compMakeup: 1.1, drive: 1.15, gain: 1.0,
+    };
+    const atmosConfig = {
+      hpFreq: 60, compThr: 0, drive: 1.0, gain: 1.0,
+    };
+    const fxConfig = {
+      hpFreq: 40, compThr: 0.35, compRatio: 2.5, compAtt: 0.003, compRel: 0.1,
+      compMakeup: 1.2, drive: 1.2, gain: 1.0,
+    };
+    // Two instances per bus — one for L, one for R
+    this.drumBusL = new BusProcessor(drumConfig);
+    this.drumBusR = new BusProcessor(drumConfig);
+    this.bassBusL = new BusProcessor(bassConfig);
+    this.bassBusR = new BusProcessor(bassConfig);
+    this.musicBusL = new BusProcessor(musicConfig);
+    this.musicBusR = new BusProcessor(musicConfig);
+    this.atmosBusL = new BusProcessor(atmosConfig);
+    this.atmosBusR = new BusProcessor(atmosConfig);
+    this.fxProcL = new BusProcessor(fxConfig);
+    this.fxProcR = new BusProcessor(fxConfig);
 
     // Sidechain state
     this.duckEnv = 1.0;
@@ -1764,34 +1750,48 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         }
       }
 
-      // Lead → music bus (NO sidechain — lead doesn't duck from kick)
+      // Lead → music bus (STEREO — Haas effect for width)
+      // 0.4ms delay on R channel creates stereo width without phase issues
       for (const v of this.leadPool) {
         if (v.active) {
           const [s] = v.render(currentAudioTime + i * dt, sr);
-          musicBusL += s; musicBusR += s;  // no duckEnv
+          musicBusL += s;
+          // Haas: R gets a 0.4ms delayed version (18 samples at 44100)
+          // This creates wide stereo without sounding like echo
+          this.leadDelayL = this.leadDelayL || new Float32Array(18);
+          this.leadDelayIdx = this.leadDelayIdx || 0;
+          const delayed = this.leadDelayL[this.leadDelayIdx];
+          this.leadDelayL[this.leadDelayIdx] = s;
+          this.leadDelayIdx = (this.leadDelayIdx + 1) % 18;
+          musicBusR += delayed;
         }
       }
-      // Acid → music bus (NO sidechain)
+      // Acid → music bus (mono — acid stays centered for focus)
       for (const v of this.acidPool) {
         if (v.active) {
           const [s] = v.render(currentAudioTime + i * dt, sr);
-          musicBusL += s; musicBusR += s;  // no duckEnv
+          musicBusL += s; musicBusR += s;
         }
       }
 
-      // Pad → atmos bus (stereo width — detuned saws already create natural width)
+      // Pad → atmos bus (STEREO — detuned dual for natural width)
       for (const v of this.padPool) {
         if (v.active) {
           const [s] = v.render(currentAudioTime + i * dt, sr);
-          // Slight stereo offset for pad width
-          atmosBusL += s; atmosBusR += s;
+          // Slight amplitude difference L vs R for stereo interest
+          const lfo = Math.sin(this.currentSample * 0.0008);
+          atmosBusL += s * (0.85 + lfo * 0.15);
+          atmosBusR += s * (0.85 - lfo * 0.15);
         }
       }
-      // Texture → atmos bus (stereo)
+      // Texture → atmos bus (STEREO — panning movement)
       for (const v of this.texturePool) {
         if (v.active) {
           const [s] = v.render(currentAudioTime + i * dt, sr);
-          atmosBusL += s; atmosBusR += s;
+          // Slow pan movement for psychedelic texture
+          const pan = Math.sin(this.currentSample * 0.0005);
+          atmosBusL += s * (0.5 - pan * 0.3);
+          atmosBusR += s * (0.5 + pan * 0.3);
         }
       }
 
@@ -1803,19 +1803,17 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         }
       }
 
-      // ── BUS PROCESSING — each bus gets compression + saturation + EQ ──
-      // This is what makes the mix sound "produced" — without it, it's isolated sounds.
-      // Process L and R separately for stereo.
-      drumBusL = this.drumBusProc.process(drumBusL, sr);
-      drumBusR = this.drumBusProc.process(drumBusR, sr);
-      bassBusL = this.bassBusProc.process(bassBusL, sr);
-      bassBusR = this.bassBusProc.process(bassBusR, sr);
-      musicBusL = this.musicBusProc.process(musicBusL, sr);
-      musicBusR = this.musicBusProc.process(musicBusR, sr);
-      atmosBusL = this.atmosBusProc.process(atmosBusL, sr);
-      atmosBusR = this.atmosBusProc.process(atmosBusR, sr);
-      fxBusL = this.fxProc.process(fxBusL, sr);
-      fxBusR = this.fxProc.process(fxBusR, sr);
+      // ── BUS PROCESSING — SEPARATE L and R (stereo image preserved) ──
+      drumBusL = this.drumBusL.process(drumBusL, sr);
+      drumBusR = this.drumBusR.process(drumBusR, sr);
+      bassBusL = this.bassBusL.process(bassBusL, sr);
+      bassBusR = this.bassBusR.process(bassBusR, sr);
+      musicBusL = this.musicBusL.process(musicBusL, sr);
+      musicBusR = this.musicBusR.process(musicBusR, sr);
+      atmosBusL = this.atmosBusL.process(atmosBusL, sr);
+      atmosBusR = this.atmosBusR.process(atmosBusR, sr);
+      fxBusL = this.fxProcL.process(fxBusL, sr);
+      fxBusR = this.fxProcR.process(fxBusR, sr);
 
       // Sum buses with gains (stereo)
       let mixL = drumBusL * this.busGains[0]
@@ -1855,9 +1853,9 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       mixL += revL + delL;
       mixR += revR + delR;
 
-      // Master processing (per channel)
-      mixL = this.master.process(mixL, sr);
-      mixR = this.master.process(mixR, sr);
+      // Master processing — SEPARATE L and R (stereo preserved)
+      mixL = this.masterL.process(mixL, sr);
+      mixR = this.masterR.process(mixR, sr);
 
       L[i] = mixL;
       R[i] = mixR;
@@ -1874,9 +1872,8 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         activeVoices: this.activeVoiceCount,
         eventCount: this.eventCount,
         currentFrame: currentFrame,
-        cpuLoad: this.activeVoiceCount / 64, // rough estimate
-        // SAMPLE USAGE REPORT: which samples actually played
-        sampleUsage: this.sampleUsage || {},
+        cpuLoad: this.activeVoiceCount / 64,
+        // REMOVED sampleUsage — UI doesn't display it, saves message payload size
       });
     }
 

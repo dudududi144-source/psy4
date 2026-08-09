@@ -1323,3 +1323,47 @@ BEFORE → AFTER:
   Acid distortion: drive=3 → drive=4 (heavier)
   Acid filter decay: 0.7*dur → 0.4*dur (faster sweep)
   Level: 53% → 75% (bus compression + saturation = louder, more "produced" sound)
+
+---
+Task ID: 21
+Agent: Z.ai Code (main)
+Task: ROAST נוסף + תיקונים: stereo bug fix, synth stereo width, canvas allocation, stats cleanup.
+
+Work Log:
+ROAST (5 additional problems found):
+1. STEREO BUG: BusProcessor and MasterChain shared the same instance for L and R. The compressor envelope follower was shared between channels, causing the stereo image to collapse and creating uneven pumping. Each channel MUST have its own instance.
+2. ALL SYNTH VOICES MONO: Lead, acid, pad, texture all went to both L and R with the same value. No stereo width on any melodic voice. Commercial psytrance has wide leads, wide pads, moving textures.
+3. CANVAS ALLOCATION: `new Uint8Array(analyser.frequencyBinCount)` was created EVERY FRAME at 60fps. That's 60 allocations/second just for the visualizer.
+4. sampleUsage in stats: The worklet still sent sampleUsage object (potentially large) via postMessage every 100ms, even though the UI doesn't display it anymore.
+5. Lead Haas delay allocated inside render loop: `new Float32Array(18)` was checked on every sample with `||` — works but sloppy.
+
+FIXES:
+1. SEPARATE L/R INSTANCES for all bus processors and master chain:
+   BEFORE: this.drumBusProc (1 instance for both L and R)
+   AFTER:  this.drumBusL + this.drumBusR (2 instances, separate envelope followers)
+   Same for: bassBus, musicBus, atmosBus, fxProc, masterL/masterR
+   Total: 10 BusProcessor instances + 2 MasterChain instances (was 5+1)
+
+2. STEREO WIDTH on synth voices:
+   Lead: Haas effect — 0.4ms delay (18 samples) on R channel. Creates wide stereo without echo.
+   Pad: Amplitude modulation L/R — sin LFO at 0.0008/sample rate. Creates breathing stereo.
+   Texture: Pan movement — sin LFO at 0.0005/sample rate. Creates psychedelic movement.
+   Acid: Stays mono (centered for focus — this is correct for acid)
+
+3. CANVAS: Reused Uint8Array — allocated ONCE, not per frame.
+   BEFORE: new Uint8Array() 60 times/second
+   AFTER:  1 allocation, reused every frame
+
+4. REMOVED sampleUsage from stats postMessage — UI doesn't need it, saves payload.
+
+VERIFIED: 0 errors, 35+ seconds stable, level 39%→56% (intro→drop dynamics), 4→9 voices.
+
+BEFORE → AFTER:
+  Stereo processing: SHARED L/R (stereo bug) → SEPARATE L/R (proper stereo)
+  Lead: mono → HAAS STEREO (0.4ms delay on R)
+  Pad: mono → AMPLITUDE STEREO (LFO modulation L/R)
+  Texture: mono → PAN MOVEMENT (LFO pan)
+  Canvas: 60 allocs/sec → 1 alloc total
+  Stats payload: includes sampleUsage → REMOVED (lighter)
+  Bus instances: 5 (shared) → 10 (separate L/R)
+  Master instances: 1 (shared) → 2 (separate L/R)

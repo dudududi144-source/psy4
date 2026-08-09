@@ -66,7 +66,7 @@ export default function LivePage() {
     return () => clearInterval(interval);
   }, [playing]);
 
-  // visualizer
+  // visualizer — REUSED buffer (no allocation per frame)
   useEffect(() => {
     if (!playing || !canvasRef.current) return;
     const canvas = canvasRef.current;
@@ -76,8 +76,10 @@ export default function LivePage() {
     const analyser = e?.getAnalyser();
     if (!analyser) return;
 
+    // Allocate ONCE — not per frame
+    const data = new Uint8Array(analyser.frequencyBinCount);
+
     const draw = () => {
-      const data = new Uint8Array(analyser.frequencyBinCount);
       analyser.getByteFrequencyData(data);
       const w = canvas.width, h = canvas.height;
       ctx.fillStyle = 'rgba(10, 5, 20, 0.3)';
