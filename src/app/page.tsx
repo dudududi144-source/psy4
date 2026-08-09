@@ -329,48 +329,77 @@ export default function ReferenceTrainingPage() {
     setSelfMetrics(null);
   }, []);
 
-  // ─── Training ────────────────────────────────────────────────────────────
+  // ─── Continuous training (client-side, no server needed) ────────────────
+  const trainerRef = useRef<any>(null);
+  const [learningState, setLearningState] = useState<any>(null);
+  const [learning, setLearning] = useState(false);
 
-  const runTraining = useCallback(async () => {
+  const startLearning = useCallback(async () => {
     if (!refProfile) {
       toast.error('No reference profile — connect to a stream first');
       return;
     }
-    if (perfStable === false) {
-      toast.error('Engine not stable — fix performance issues before training');
-      return;
-    }
-
-    setTraining(true);
-    setTrainingResult(null);
 
     try {
-      const response = await fetch('/api/reference/train', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          worldId,
-          seed: 1234,
-          duration: 12,
-          currentParams: {},
-          referenceProfile: refProfile,
-          maxIterations: 6,
-          maxChangesPerIteration: 2,
-        }),
-      });
-      const data = await response.json();
-      if (data.ok) {
-        setTrainingResult(data);
-        toast.success(`Training complete: ${data.initialScore} → ${data.finalScore}`);
-      } else {
-        toast.error(`Training failed: ${data.error}`);
+      const { ContinuousTrainer } = await import('@/lib/studio/engine/reference/continuousTrainer');
+
+      // Stop existing trainer
+      if (trainerRef.current) {
+        trainerRef.current.stop();
       }
+
+      const trainer = new ContinuousTrainer({
+        worldId,
+        seed: 1234,
+        renderDuration: 8,
+        iterationIntervalMs: 12000,  // 12 seconds between iterations
+        maxChangesPerIteration: 2,
+        autoApplyToEngine: true,
+        saveToLocalStorage: true,
+      });
+
+      // If engine is running, connect trainer to engine
+      if (engineRef.current) {
+        trainer.setEngine({
+          setWorld: (params: any) => {
+            engineRef.current?.setWorld?.(worldId);
+            // Also send params to the worklet
+            if (engineRef.current?.engineNode) {
+              engineRef.current.engineNode.setWorld(params);
+            }
+          },
+        });
+      }
+
+      trainer.onIteration((iter) => {
+        setLearningState({ ...trainer.getState() });
+      });
+
+      trainer.onStateChange((state) => {
+        setLearningState({ ...state });
+      });
+
+      trainer.onParamsApplied((params) => {
+        console.log('[Trainer] Applied params to engine:', params);
+      });
+
+      trainer.start(refProfile);
+      trainerRef.current = trainer;
+      setLearning(true);
+      toast.success('Continuous learning started — runs every 12s');
     } catch (err) {
-      toast.error(`Training error: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setTraining(false);
+      toast.error(`Learning error: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [refProfile, worldId, perfStable]);
+  }, [refProfile, worldId]);
+
+  const stopLearning = useCallback(() => {
+    if (trainerRef.current) {
+      trainerRef.current.stop();
+      trainerRef.current = null;
+    }
+    setLearning(false);
+    toast.info('Learning stopped — params saved to localStorage');
+  }, []);
 
   // ─── Cleanup ─────────────────────────────────────────────────────────────
 
@@ -379,6 +408,7 @@ export default function ReferenceTrainingPage() {
       if (listenerRef.current) listenerRef.current.disconnect();
       if (selfAnalyzerRef.current) selfAnalyzerRef.current.detach();
       if (engineRef.current) engineRef.current.stop();
+      if (trainerRef.current) trainerRef.current.stop();
     };
   }, []);
 
@@ -596,73 +626,125 @@ export default function ReferenceTrainingPage() {
           </Card>
         )}
 
-        {/* Training control + results (train mode) */}
+        {/* Continuous Learning (train mode) */}
         {mode === 'train' && (
           <>
             <Card className="border-slate-800 bg-slate-900/60">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-base">
                   <Brain className="w-4 h-4 text-emerald-400" />
-                  TRAINING LOOP
+                  CONTINUOUS LEARNING
                 </CardTitle>
                 <CardDescription className="text-xs">
-                  GENERATE → ANALYZE → COMPARE → MODIFY → ACCEPT/REJECT
+                  Runs entirely in your browser — no server needed. Learns every 12 seconds.
                 </CardDescription>
               </CardHeader>
-              <CardContent>
-                <Button
-                  onClick={runTraining}
-                  disabled={training || !refProfile}
-                  className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  {training ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Zap className="w-4 h-4 mr-1" />}
-                  {training ? 'TRAINING...' : 'RUN TRAINING (6 ITERATIONS)'}
-                </Button>
+              <CardContent className="space-y-3">
+                <div className="flex items-center gap-3">
+                  {!learning ? (
+                    <Button
+                      onClick={startLearning}
+                      disabled={!refProfile}
+                      className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      <Zap className="w-4 h-4 mr-1" />
+                      START LEARNING
+                    </Button>
+                  ) : (
+                    <Button onClick={stopLearning} variant="destructive">
+                      <Square className="w-4 h-4 mr-1" />
+                      STOP LEARNING
+                    </Button>
+                  )}
+                  {learning && (
+                    <Badge className="bg-emerald-600 text-white animate-pulse">
+                      <span className="w-2 h-2 rounded-full bg-white mr-1 animate-pulse" />
+                      LEARNING
+                    </Badge>
+                  )}
+                </div>
                 {!refProfile && (
-                  <p className="text-xs text-amber-400 mt-2 font-mono">
-                    ⚠ Connect reference stream and wait for profile to build before training
+                  <p className="text-xs text-amber-400 font-mono">
+                    ⚠ Connect reference stream first (LISTEN mode) to build a reference profile
                   </p>
                 )}
-                {perfStable === false && (
-                  <p className="text-xs text-red-400 mt-2 font-mono">
-                    ⚠ Engine unstable — do not train until performance is stable
+                {refProfile && !learning && (
+                  <p className="text-xs text-slate-400 font-mono">
+                    ✓ Reference profile ready ({refProfile.windowCount} windows). Click START to begin continuous learning.
                   </p>
+                )}
+                {learning && learningState && (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
+                    <div className="bg-slate-950 border border-slate-800 rounded p-2 text-center">
+                      <div className="text-[10px] text-slate-500 uppercase font-mono">SCORE</div>
+                      <div className="text-xl font-bold text-cyan-400">{learningState.currentScore?.toFixed(1) || '—'}</div>
+                    </div>
+                    <div className="bg-slate-950 border border-slate-800 rounded p-2 text-center">
+                      <div className="text-[10px] text-slate-500 uppercase font-mono">BEST</div>
+                      <div className="text-xl font-bold text-emerald-400">{learningState.bestScore?.toFixed(1) || '—'}</div>
+                    </div>
+                    <div className="bg-slate-950 border border-slate-800 rounded p-2 text-center">
+                      <div className="text-[10px] text-slate-500 uppercase font-mono">ACCEPTED</div>
+                      <div className="text-xl font-bold text-emerald-400">{learningState.acceptedCount || 0}</div>
+                    </div>
+                    <div className="bg-slate-950 border border-slate-800 rounded p-2 text-center">
+                      <div className="text-[10px] text-slate-500 uppercase font-mono">TOTAL</div>
+                      <div className="text-xl font-bold text-slate-300">{learningState.totalIterations || 0}</div>
+                    </div>
+                  </div>
                 )}
               </CardContent>
             </Card>
 
-            {trainingResult && (
+            {/* Live iterations */}
+            {learning && learningState && learningState.iterations && learningState.iterations.length > 0 && (
               <Card className="border-slate-800 bg-slate-900/60">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
                     <Target className="w-4 h-4 text-fuchsia-400" />
-                    TRAINING RESULTS
+                    LIVE ITERATIONS (last {Math.min(learningState.iterations.length, 20)})
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid grid-cols-3 gap-3">
-                    <ScoreBox label="INITIAL" value={trainingResult.initialScore} color="amber" />
-                    <ScoreBox label="FINAL" value={trainingResult.finalScore} color="cyan" />
-                    <ScoreBox label="BEST" value={trainingResult.bestScore} color="emerald" />
+                <CardContent>
+                  <div className="space-y-2 max-h-96 overflow-y-auto">
+                    {[...learningState.iterations].reverse().slice(0, 20).map((iter: any) => (
+                      <IterationCard key={iter.iteration} iter={iter} />
+                    ))}
                   </div>
+                </CardContent>
+              </Card>
+            )}
 
-                  <div>
-                    <h4 className="text-sm font-mono text-slate-400 mb-2">ITERATIONS</h4>
-                    <div className="space-y-2 max-h-96 overflow-y-auto">
-                      {trainingResult.iterations.map(iter => (
-                        <IterationCard key={iter.iteration} iter={iter} />
+            {/* Learned knowledge */}
+            {learningState && learningState.learnedKnowledge && Object.keys(learningState.learnedKnowledge).length > 0 && (
+              <Card className="border-slate-800 bg-slate-900/60">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    LEARNED KNOWLEDGE (saved to localStorage)
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-slate-700">
+                        <TableHead className="text-slate-400 font-mono text-xs">PARAMETER</TableHead>
+                        <TableHead className="text-slate-400 font-mono text-xs">VALUE</TableHead>
+                        <TableHead className="text-slate-400 font-mono text-xs">SCORE WHEN LEARNED</TableHead>
+                        <TableHead className="text-slate-400 font-mono text-xs">ATTEMPTS</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {Object.entries(learningState.learnedKnowledge).map(([name, data]: [string, any]) => (
+                        <TableRow key={name} className="border-slate-800">
+                          <TableCell className="font-mono text-xs text-cyan-300">{name}</TableCell>
+                          <TableCell className="font-mono text-xs text-slate-200">{data.value.toFixed(3)}</TableCell>
+                          <TableCell className="font-mono text-xs text-emerald-300">{data.score.toFixed(1)}</TableCell>
+                          <TableCell className="font-mono text-xs text-slate-400">{data.attempts}</TableCell>
+                        </TableRow>
                       ))}
-                    </div>
-                  </div>
-
-                  {trainingResult.referenceScoreBreakdown && (
-                    <div>
-                      <h4 className="text-sm font-mono text-slate-400 mb-2">REFERENCE SCORE BREAKDOWN</h4>
-                      <pre className="text-xs font-mono text-slate-300 bg-slate-950 p-3 rounded border border-slate-800">
-                        {trainingResult.referenceScoreBreakdown.join('\n')}
-                      </pre>
-                    </div>
-                  )}
+                    </TableBody>
+                  </Table>
                 </CardContent>
               </Card>
             )}
