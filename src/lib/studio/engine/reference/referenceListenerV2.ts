@@ -269,7 +269,7 @@ export class ReferenceListenerV2 {
       }
 
       // Extract features from the decoded buffer
-      const metrics = this.extractFeaturesFromBuffer(audioBuffer);
+      const metrics = await this.extractFeaturesFromBuffer(audioBuffer);
       this.metricsHistory.push(metrics);
 
       // Trim history
@@ -294,7 +294,7 @@ export class ReferenceListenerV2 {
    * Extract features from a decoded AudioBuffer.
    * This is the REAL analysis — using the actual PCM data.
    */
-  private extractFeaturesFromBuffer(buffer: AudioBuffer): ReferenceMetrics {
+  private async extractFeaturesFromBuffer(buffer: AudioBuffer): Promise<ReferenceMetrics> {
     const sr = buffer.sampleRate;
     const numChannels = buffer.numberOfChannels;
     const length = buffer.length;
@@ -472,6 +472,34 @@ export class ReferenceListenerV2 {
       (duration > 5 ? 0.2 : 0)
     );
 
+    // ── Musical understanding (key, bass note, style detection) ──
+    let detectedKey: { root: number; rootName: string; scale: string; confidence: number } | undefined;
+    let detectedBassNote: { note: number; freq: number; confidence: number } | undefined;
+    let detectedStyle: { style: string; confidence: number } | undefined;
+
+    try {
+      // Dynamic import for musical understanding (optional, won't block)
+      const mu = await import('./musicalUnderstanding');
+      const chromagram = mu.computeChromagram(avgMag, sr, fftSize);
+      const key = mu.detectKey(chromagram);
+      detectedKey = {
+        root: key.root,
+        rootName: key.rootName,
+        scale: key.scale,
+        confidence: key.confidence,
+      };
+
+      const bass = mu.detectBassNote(avgMag, sr, fftSize);
+      if (bass) {
+        detectedBassNote = bass;
+      }
+
+      const style = mu.classifyStyle(bpm, spectralCentroid, subEnergy, highEnergy);
+      detectedStyle = style;
+    } catch (e) {
+      // Musical understanding is optional
+    }
+
     return {
       bpm,
       bpmConfidence: bpm > 0 ? 0.8 : 0,
@@ -482,6 +510,9 @@ export class ReferenceListenerV2 {
       stereoWidth, kickDecayMs, bassDecayMs,
       rhythmicRegularity, repetitionScore,
       energy, overallConfidence,
+      detectedKey,
+      detectedBassNote,
+      detectedStyle,
       timestamp: Date.now(),
       sourceStream: this.stream?.id || 'unknown',
     };

@@ -63,6 +63,11 @@ export interface ReferenceMetrics {
   energy: number;              // 0..1
   overallConfidence: number;   // 0..1
 
+  // Musical understanding (new)
+  detectedKey?: { root: number; rootName: string; scale: string; confidence: number };
+  detectedBassNote?: { note: number; freq: number; confidence: number };
+  detectedStyle?: { style: string; confidence: number };
+
   timestamp: number;
   sourceStream: string;
 }

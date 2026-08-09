@@ -203,18 +203,24 @@ export default function ReferenceTrainingPage() {
         // This is how the engine "follows" the radio — same key, scale, BPM
         if (engineRef.current && m.bpm > 0) {
           try {
-            // Use the detected BPM directly — the engine will adapt
             if (engineRef.current.applyMusicalUnderstanding) {
+              // Use detected key if available, else default
+              const keyRoot = m.detectedKey?.root ?? 1;
+              const keyScale = m.detectedKey?.scale ?? 'phrygian';
+              const keyConf = m.detectedKey?.confidence ?? 0;
+              const styleName = m.detectedStyle?.style ?? 'dark-psy';
+              const styleConf = m.detectedStyle?.confidence ?? 0;
+
               engineRef.current.applyMusicalUnderstanding({
                 key: {
-                  root: 1,  // C# — will be enhanced with chromagram detection
-                  scale: 'phrygian',
-                  confidence: m.overallConfidence,
+                  root: keyRoot,
+                  scale: keyScale,
+                  confidence: keyConf,
                 },
                 bpm: m.bpm,
                 bpmConfidence: m.bpmConfidence,
-                style: 'dark-psy',
-                styleConfidence: m.overallConfidence,
+                style: styleName,
+                styleConfidence: styleConf,
               });
             }
           } catch (e) {

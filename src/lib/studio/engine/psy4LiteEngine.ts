@@ -70,6 +70,16 @@ export class Psy4LiteEngine {
   private noiseBuffer: AudioBuffer | null = null;
   private noiseLoop: AudioBufferSourceNode | null = null;
 
+  // FX (reverb + delay)
+  private reverbNode: ConvolverNode | null = null;
+  private reverbSend: GainNode | null = null;
+  private reverbReturn: GainNode | null = null;
+  private delayNodeL: DelayNode | null = null;
+  private delayNodeR: DelayNode | null = null;
+  private delaySend: GainNode | null = null;
+  private delayFb: GainNode | null = null;
+  private delayReturn: GainNode | null = null;
+
   private timer: ReturnType<typeof setTimeout> | null = null;
   private step = 0;
   private bar = 0;
@@ -144,6 +154,47 @@ export class Psy4LiteEngine {
     limiter.connect(this.master);
     this.master.connect(this.analyser);
     this.analyser.connect(c.destination);
+
+    // ── REVERB (ConvolverNode — browser-optimized, no worklet needed) ──
+    this.reverbNode = c.createConvolver();
+    // Generate impulse response for reverb (1.5s decay)
+    const reverbLength = Math.floor(c.sampleRate * 1.5);
+    const impulse = c.createBuffer(2, reverbLength, c.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = impulse.getChannelData(ch);
+      for (let i = 0; i < reverbLength; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (c.sampleRate * 0.4));
+      }
+    }
+    this.reverbNode.buffer = impulse;
+    this.reverbSend = c.createGain();
+    this.reverbSend.gain.value = 0.15;
+    this.reverbReturn = c.createGain();
+    this.reverbReturn.gain.value = 0.3;
+    this.reverbSend.connect(this.reverbNode);
+    this.reverbNode.connect(this.reverbReturn);
+    this.reverbReturn.connect(this.master);
+
+    // ── DELAY (ping-pong) ──
+    this.delayNodeL = c.createDelay(0.5);
+    this.delayNodeR = c.createDelay(0.5);
+    this.delayNodeL.delayTime.value = 0.375;  // 3/8 at 120bpm
+    this.delayNodeR.delayTime.value = 0.281;
+    this.delaySend = c.createGain();
+    this.delaySend.gain.value = 0.1;
+    this.delayFb = c.createGain();
+    this.delayFb.gain.value = 0.35;
+    this.delayReturn = c.createGain();
+    this.delayReturn.gain.value = 0.4;
+
+    // Ping-pong: L → R → L
+    this.delayNodeL.connect(this.delayNodeR);
+    this.delayNodeR.connect(this.delayFb);
+    this.delayFb.connect(this.delayNodeL);
+    this.delaySend.connect(this.delayNodeL);
+    this.delayNodeL.connect(this.delayReturn);
+    this.delayNodeR.connect(this.delayReturn);
+    this.delayReturn.connect(this.master);
   }
 
   start(worldId?: string): void {
@@ -277,12 +328,25 @@ export class Psy4LiteEngine {
       this.triggerBass(time, note, w.bassCutoff);
     }
 
-    // Lead — in drops, using DETECTED key
-    if (section.lead && step % 2 === 0 && Math.random() < 0.4) {
+    // Lead — AABA motif (not random!)
+    // AABA: bars 0-1 = A (main motif), bar 2 = B (contrast), bar 3 = A' (return)
+    if (section.lead && step % 2 === 0) {
       const key = this.musicalKey;
-      // Lead motif: use scale degrees that create psytrance feel
-      const leadDegrees = [0, 3, 5, 7, 8, 10, 12];
-      const deg = leadDegrees[Math.floor(Math.random() * leadDegrees.length)];
+      const phraseBar = bar % 4;  // 4-bar AABA phrase
+
+      // A section: main motif (ascending then descending)
+      // B section: contrast (higher octave, different degrees)
+      let degrees: number[];
+      if (phraseBar === 2) {
+        // B section — contrast, higher
+        degrees = [7, 10, 12, 10, 7, 5, 3, 0];
+      } else {
+        // A section — main motif
+        degrees = [0, 2, 3, 5, 3, 2, 0, -2];
+      }
+
+      const motifIdx = Math.floor(step / 2) % degrees.length;
+      const deg = degrees[motifIdx];
       const note = scaleNote(key.root + 12, key.scale, deg);
       this.triggerLead(time, note, w.leadCutoff);
     }
@@ -408,6 +472,11 @@ export class Psy4LiteEngine {
     o2.connect(fl);
     fl.connect(g);
     g.connect(this.sum!);
+
+    // Send lead to reverb + delay for depth
+    if (this.reverbSend) g.connect(this.reverbSend);
+    if (this.delaySend) g.connect(this.delaySend);
+
     o1.start(time);
     o2.start(time);
     o1.stop(time + dur + 0.02);
