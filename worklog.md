@@ -1367,3 +1367,63 @@ BEFORE → AFTER:
   Stats payload: includes sampleUsage → REMOVED (lighter)
   Bus instances: 5 (shared) → 10 (separate L/R)
   Master instances: 1 (shared) → 2 (separate L/R)
+
+---
+Task ID: 22
+Agent: Z.ai Code (main)
+Task: ROAST חריף + 7 תיקוני סאונד: lead layers, acid LFO, pad sweep, sidechain depth, master loudness.
+
+Work Log:
+ROAST (7 בעיות חריפות):
+1. ליד הוא 5x saw דרך Moog = אוסילטור, לא ליד. חסר octave, air, delay.
+2. פאד הוא 2x saw דרך Moog = אורגן, לא פאד. חסר filter sweep, chorus, width.
+3. אסיד הוא square דרך filter חד-כיווני = באז, לא squelch. חסר bidirectional movement.
+4. טקסטורה היא FM פרימיטיבי או רעש = לא פסיכדלי.
+5. באס envelope חד-צדדי = מכונה, לא מוזיקה. חסר sustain mode.
+6. קיק/באס לא מתחברים — אין frequency separation, sidechain רדוד מדי (3dB).
+7. מאסטר לא מספיק חזק — gain 0.92, ceiling 0.95, makeup 1.25 = LUFS נמוך.
+
+תיקונים:
+1. LEAD: נוסף octave-up layer (3 saws at 2x freq) + air/noise layer (pink noise HP)
+   3 שכבות: fundamental (70%) + octave (30%) + air (8%)
+   עם saturation tanh(1.6) + LFO filter modulation
+
+2. ACID: נוסף bidirectional filter LFO (4Hz, ±30% modulation)
+   לפני: envelope חד-כיווני (גבוה→נמוך) = סטטי
+   אחרי: envelope + LFO = wobble שזז למעלה ולמטה = squelch אמיתי
+
+3. PAD: 2→3 oscillators + slow filter sweep (0.15Hz, 60-140% of base cutoff)
+   לפני: 2 saws עם detune סטטי = אורגן
+   אחרי: 3 saws + filter sweep = pad ש"נושם"
+
+4. SIDECHAIN: עומק 0.5→0.7 (6dB ducking במקום 3-4dB)
+   לפני: sidechain רדוד — בקושי מורגש
+   אחרי: sidechain עמוק — pumping ברור שהוא הגרוב של פסיכדליה
+
+5. BASS HP: 25Hz→40Hz — מונע התנגשות עם קיק בתדרים הנמוכים
+
+6. MASTER LOUDNESS:
+   gain: 0.92→1.0 (לא מנמיך לפני limiter)
+   ceiling: 0.95→0.98 (מסחרי = -0.2dBTP)
+   glue threshold: 0.6→0.55 (יותר compression)
+   glue ratio: 2.5→3.0 (יותר glue)
+   makeup: 1.25→1.4 (יותר loudness)
+   drum makeup: 1.3→1.4 (תופים חזקים יותר)
+   drum drive: 1.3→1.4 (יותר saturation)
+   bass makeup: 1.15→1.2
+
+VERIFIED: 0 errors, 35+ seconds stable
+Level: 67%→65% (יותר חזק ועקבי מקודם: 39%→56%)
+
+BEFORE → AFTER:
+  Lead: 5 saws → 5 saws + 3 octave saws + noise air (3 layers)
+  Acid: unidirectional filter → envelope + 4Hz LFO bidirectional (squelch)
+  Pad: 2 saws static → 3 saws + 0.15Hz filter sweep (breathing)
+  Sidechain: ~3dB → ~6dB (obvious pumping groove)
+  Bass HP: 25Hz → 40Hz (no kick collision)
+  Master gain: 0.92 → 1.0
+  Master ceiling: 0.95 → 0.98
+  Master makeup: 1.25 → 1.4
+  Drum makeup: 1.3 → 1.4
+  Drum drive: 1.3 → 1.4
+  Level: 39-56% → 65-67% (louder, more consistent)

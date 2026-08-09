@@ -384,6 +384,7 @@ class LeadVoice {
     this.dur = 0.3;
     this.amp = 0.15;
     this.saws = [new BLSaw(), new BLSaw(), new BLSaw(), new BLSaw(), new BLSaw()];
+    this.octaveSaws = [new BLSaw(), new BLSaw(), new BLSaw()]; // octave-up layer
     this.filter = new MoogLadder();
     this.cutoff = 1800;
     this.res = 0.15;
@@ -391,6 +392,7 @@ class LeadVoice {
     this.lfoRate = 0.8;
     this.lfoDepth = 0.3;
     this.detune = 10;
+    this.noise = new PinkNoise(); // air/texture layer
   }
 
   trigger(time, freq, dur, amp, sr, params) {
@@ -406,14 +408,20 @@ class LeadVoice {
     this.lfoDepth = params?.lfoDepth ?? 0.3;
     this.lfoPhase = 0;
     for (const s of this.saws) { s.reset(); }
-    // Set detuned frequencies
     const n = this.saws.length;
     for (let i = 0; i < n; i++) {
       const cents = (i - (n - 1) / 2) * this.detune;
       const mult = Math.pow(2, cents / 1200);
       this.saws[i].setFreq(freq * mult);
     }
+    // Octave-up layer — adds brightness and richness
+    for (let i = 0; i < this.octaveSaws.length; i++) {
+      this.octaveSaws[i].reset();
+      const cents = (i - 1) * this.detune * 0.6;
+      this.octaveSaws[i].setFreq(freq * 2 * Math.pow(2, cents / 1200));
+    }
     this.filter.reset();
+    this.noise.reset();
   }
 
   render(currentTime, sr) {
@@ -424,10 +432,22 @@ class LeadVoice {
 
     const inc = this.freq / sr;
 
-    // Mix 5 detuned saws
-    let mix = 0;
-    for (const s of this.saws) mix += s.process(inc);
-    mix /= this.saws.length;
+    // Layer 1: Fundamental — 5 detuned saws
+    let fundamental = 0;
+    for (const s of this.saws) fundamental += s.process(inc);
+    fundamental /= this.saws.length;
+
+    // Layer 2: Octave-up — 3 detuned saws at 2x freq (adds brightness/air)
+    let octaveLayer = 0;
+    for (const s of this.octaveSaws) octaveLayer += s.process(inc * 2);
+    octaveLayer /= this.octaveSaws.length;
+
+    // Layer 3: Air — pink noise through high-pass (adds "breath" and sheen)
+    const noiseSample = this.noise.process();
+    const air = (noiseSample - this.noise.prevOutput || 0) * 0.08; // differentiated = HP
+
+    // Mix: fundamental dominant, octave at 30%, air at 8%
+    let mix = fundamental * 0.7 + octaveLayer * 0.3 + air * 0.08;
 
     // LFO modulates filter cutoff (psychedelic movement)
     this.lfoPhase += this.lfoRate * dt;
@@ -440,8 +460,7 @@ class LeadVoice {
 
     const filtered = this.filter.process(mix, cutoff, this.res, 1.5, sr);
 
-    // SATURATION: Post-filter tanh — adds character and warmth that makes
-    // the lead sound "produced" rather than "raw synth"
+    // SATURATION: Post-filter tanh — adds character and warmth
     const saturated = fastTanh(filtered * 1.6);
 
     // Amp envelope
@@ -459,6 +478,7 @@ class AcidVoice {
     this.t = 0;
     this.square = new BLSquare();
     this.filter = new MoogLadder();
+    this.lfoPhase = 0; // bidirectional filter movement
   }
 
   trigger(time, freq, dur, amp, sr) {
@@ -472,7 +492,8 @@ class AcidVoice {
     this.filter.reset();
     this.cutoffStart = 200 + 3000;
     this.cutoffEnd = 100;
-    this.res = 0.9;
+    this.res = 0.95; // near self-oscillation for squelch
+    this.lfoPhase = 0;
   }
 
   render(currentTime, sr) {
@@ -484,15 +505,17 @@ class AcidVoice {
     const inc = this.freq / sr;
     const sq = this.square.process(inc);
 
-    // Filter sweep — FASTER decay for more squelch character
-    // The cutoff drops quickly, which creates the "squelch" as resonance
-    // sweeps through the harmonic content
-    const cutoff = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / (this.dur * 0.4)) + this.cutoffEnd;
-    // HIGHER resonance (0.95) for true acid squelch + HIGHER drive (3.0) for grit
-    const filtered = this.filter.process(sq, cutoff, 0.95, 3.0, sr);
+    // BIDIRECTIONAL filter movement — envelope + LFO combined
+    // Envelope: fast drop from high to low (classic acid)
+    const envCutoff = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / (this.dur * 0.4)) + this.cutoffEnd;
+    // LFO: slow sine that adds up-down movement on top of the envelope
+    // This creates the "wobble" that real 303 acid has
+    this.lfoPhase += 4.0 * dt; // 4Hz LFO
+    const lfo = Math.sin(2 * Math.PI * this.lfoPhase);
+    const cutoff = Math.max(80, envCutoff * (1 + lfo * 0.3)); // ±30% modulation
 
-    // Distortion — HEAVIER for acid character (drive=4)
-    const distorted = fastTanh(filtered * 4);
+    const filtered = this.filter.process(sq, cutoff, 0.95, 3.0, sr);
+    const distorted = fastTanh(filtered * 4); // heavy distortion
 
     const ampEnv = Math.min(1, this.t / 0.003) * Math.exp(-this.t / this.dur);
     const sample = distorted * ampEnv * this.amp;
@@ -506,9 +529,10 @@ class PadVoice {
   constructor() {
     this.active = false;
     this.t = 0;
-    this.saws = [new BLSaw(), new BLSaw()];
+    this.saws = [new BLSaw(), new BLSaw(), new BLSaw()]; // 3 oscillators (was 2)
     this.filter = new MoogLadder();
     this.lfoPhase = 0;
+    this.filterSweepPhase = 0; // slow filter sweep
   }
 
   trigger(time, freq, dur, amp, sr, params) {
@@ -517,15 +541,18 @@ class PadVoice {
     this.dur = dur;
     this.amp = amp;
     this.freq = freq;
-    this.cutoff = params?.cutoff ?? 1200;
-    this.res = 0.05;
+    this.cutoffBase = params?.cutoff ?? 1200;
+    this.res = 0.08; // slightly higher resonance for filter movement
     this.attack = params?.attack ?? 0.5;
     this.detune = params?.detune ?? 7;
     this.evolveRate = params?.evolveRate ?? 0.1;
     this.lfoPhase = 0;
+    this.filterSweepPhase = 0;
     for (const s of this.saws) { s.reset(); }
+    // 3-osc detuned: -detune, center, +detune (wider than 2-osc)
     this.saws[0].setFreq(freq * Math.pow(2, -this.detune / 1200));
-    this.saws[1].setFreq(freq * Math.pow(2, this.detune / 1200));
+    this.saws[1].setFreq(freq);
+    this.saws[2].setFreq(freq * Math.pow(2, this.detune / 1200));
     this.filter.reset();
   }
 
@@ -542,13 +569,20 @@ class PadVoice {
     const lfo = Math.sin(2 * Math.PI * this.lfoPhase);
     const detuneMod = 1 + 0.003 * lfo;
     this.saws[0].setFreq(this.freq * Math.pow(2, -this.detune / 1200) * detuneMod);
-    this.saws[1].setFreq(this.freq * Math.pow(2, this.detune / 1200) * detuneMod);
+    this.saws[1].setFreq(this.freq * detuneMod);
+    this.saws[2].setFreq(this.freq * Math.pow(2, this.detune / 1200) * detuneMod);
 
     let mix = 0;
     for (const s of this.saws) mix += s.process(inc);
-    mix *= 0.5;
+    mix /= this.saws.length;
 
-    const filtered = this.filter.process(mix, this.cutoff, this.res, 1.1, sr);
+    // SLOW FILTER SWEEP — cutoff moves up and down over the duration
+    // This is what makes a pad "breathe" — without it, it's a static organ
+    this.filterSweepPhase += 0.15 * dt; // 0.15Hz — very slow
+    const sweep = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.filterSweepPhase);
+    const cutoff = this.cutoffBase * (0.6 + sweep * 0.8); // 60% to 140% of base
+
+    const filtered = this.filter.process(mix, cutoff, this.res, 1.2, sr);
 
     // Slow attack/release envelope
     const attackEnv = Math.min(1, this.t / this.attack);
@@ -1092,20 +1126,17 @@ class BusProcessor {
 
 class MasterChain {
   constructor() {
-    this.gain = 0.92;
-    this.ceiling = 0.95;
-    // Envelope follower for limiter
+    this.gain = 1.0;       // was 0.92 — don't attenuate before limiting
+    this.ceiling = 0.98;   // was 0.95 — commercial tracks hit -0.2dBTP
     this.env = 0;
-    this.attack = 0.0005;  // 0.5ms — fast catch
-    this.release = 0.08;   // 80ms — musical release
-    // Glue compression state (simple RMS-based)
+    this.attack = 0.0003;  // was 0.0005 — faster catch
+    this.release = 0.06;   // was 0.08 — tighter
     this.glueEnv = 0;
-    this.glueThr = 0.6;
-    this.glueRatio = 2.5;
-    this.glueAttack = 0.005;   // 5ms
-    this.glueRelease = 0.15;   // 150ms
-    // Makeup gain after glue
-    this.makeup = 1.25;
+    this.glueThr = 0.55;   // was 0.6 — lower threshold = more glue
+    this.glueRatio = 3.0;  // was 2.5 — more compression
+    this.glueAttack = 0.004;
+    this.glueRelease = 0.12;
+    this.makeup = 1.4;     // was 1.25 — hotter makeup for commercial loudness
   }
 
   process(sample, sr) {
@@ -1240,11 +1271,15 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     // collapse and created uneven pumping. Now each channel has its own.
     const drumConfig = {
       hpFreq: 0, compThr: 0.5, compRatio: 3, compAtt: 0.002, compRel: 0.08,
-      compMakeup: 1.3, drive: 1.3, gain: 1.0,
+      compMakeup: 1.4,      // was 1.3 — hotter drums
+      drive: 1.4,           // was 1.3 — more saturation
+      gain: 1.0,
     };
     const bassConfig = {
-      hpFreq: 25, compThr: 0.4, compRatio: 2, compAtt: 0.005, compRel: 0.12,
-      compMakeup: 1.15, drive: 1.2, gain: 1.0,
+      hpFreq: 40,          // HP at 40Hz (was 25) — prevent bass/kick sub collision
+      compThr: 0.4, compRatio: 2, compAtt: 0.005, compRel: 0.12,
+      compMakeup: 1.2,     // was 1.15 — slightly hotter
+      drive: 1.2, gain: 1.0,
     };
     const musicConfig = {
       hpFreq: 80, compThr: 0.45, compRatio: 2, compAtt: 0.01, compRel: 0.15,
@@ -1449,8 +1484,9 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           const v = this.getFreeVoice(this.kickPool);
           if (v) v.trigger(t, velocity, wp.kickFundamental, wp.kickDecay, sr);
         }
-        // Trigger sidechain
-        this.duckEnv = 1 - wp.duck * (0.5 + mc.aggression * 0.5);
+        // Trigger sidechain — DEEPER duck for real psytrance groove
+        // 6dB depth (was ~3-4dB) — commercial psytrance has obvious pumping
+        this.duckEnv = 1 - wp.duck * 0.7 * (0.5 + mc.aggression * 0.5);
         break;
       }
       case V_BASS: {
