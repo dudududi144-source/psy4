@@ -65,21 +65,21 @@ export class ReferenceListenerV2 {
 
     try {
       // Create AudioContext for decodeAudioData.
-      // We need to resume it — decodeAudioData requires a running context.
-      // This is SEPARATE from the engine's AudioContext (no conflict).
       const Ctx = window.AudioContext || (window as any).webkitAudioContext;
       this.audioCtx = new Ctx({ sampleRate: SAMPLE_RATE });
       if (this.audioCtx.state === 'suspended') {
         await this.audioCtx.resume();
       }
 
-      // Start fetching the stream via same-origin proxy
+      // Start fetching the stream.
+      // Try proxy first, fall back to direct URL for HTTPS streams.
       this.fetchController = new AbortController();
       this.connected = true;
 
-      // Use proxy (window mode — returns ~20s chunks for analysis)
-      const proxyUrl = `/api/reference/proxy?stream=${encodeURIComponent(stream.id)}`;
-      this.startStreamingFetch(proxyUrl);
+      const fetchUrl = stream.url.startsWith('https')
+        ? stream.url  // HTTPS streams can be fetched directly (CORS-friendly)
+        : `/api/reference/proxy?stream=${encodeURIComponent(stream.id)}`;  // HTTP needs proxy
+      this.startStreamingFetch(fetchUrl);
 
       return true;
     } catch (err) {

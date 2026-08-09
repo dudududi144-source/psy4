@@ -148,21 +148,34 @@ export default function ReferenceTrainingPage() {
   const refAudioRef = useRef<HTMLAudioElement | null>(null);
   const [refAudioPlaying, setRefAudioPlaying] = useState(false);
 
-  // Load available streams
+  // Load available streams — try API first, fall back to static JSON
   useEffect(() => {
     fetch('/api/reference/streams')
       .then(r => r.json())
       .then(data => {
         if (data.ok && data.streams) {
           setStreams(data.streams);
-          // Auto-select best stream for default world
           const matching = data.streams.filter((s: RadioStream) =>
             s.worldMapping.includes(worldId));
           const httpsMatch = matching.find((s: RadioStream) => s.url.startsWith('https'));
           setSelectedStreamId(httpsMatch?.id || matching[0]?.id || data.streams[0].id);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        // Fallback to static JSON (for static hosting)
+        fetch('/api/streams.json')
+          .then(r => r.json())
+          .then(data => {
+            if (data.ok && data.streams) {
+              setStreams(data.streams);
+              const matching = data.streams.filter((s: RadioStream) =>
+                s.worldMapping.includes(worldId));
+              const httpsMatch = matching.find((s: RadioStream) => s.url.startsWith('https'));
+              setSelectedStreamId(httpsMatch?.id || matching[0]?.id || data.streams[0].id);
+            }
+          })
+          .catch(() => {});
+      });
   }, []);
 
   // ─── Reference listener control ──────────────────────────────────────────
@@ -233,16 +246,22 @@ export default function ReferenceTrainingPage() {
     const stream = streams.find(s => s.id === selectedStreamId);
     if (!stream) return;
     try {
-      // Always use the proxy with continuous=1 for playback
-      // This solves CORS + mixed content + provides continuous stream
-      const proxyUrl = `/api/reference/proxy?stream=${encodeURIComponent(stream.id)}&continuous=1`;
       if (!refAudioRef.current) {
         refAudioRef.current = new Audio();
         refAudioRef.current.crossOrigin = 'anonymous';
         refAudioRef.current.volume = 0.6;
       }
-      refAudioRef.current.src = proxyUrl;
-      await refAudioRef.current.play();
+      // Try proxy first, fall back to direct URL
+      const tryPlay = async (url: string) => {
+        refAudioRef.current!.src = url;
+        await refAudioRef.current!.play();
+      };
+      try {
+        await tryPlay(`/api/reference/proxy?stream=${encodeURIComponent(stream.id)}&continuous=1`);
+      } catch {
+        // Proxy failed — try direct URL (works for HTTPS streams)
+        await tryPlay(stream.url);
+      }
       setRefAudioPlaying(true);
       toast.success(`Playing: ${stream.name}`);
     } catch (err) {
