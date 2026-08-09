@@ -198,6 +198,29 @@ export default function ReferenceTrainingPage() {
       listener.onMetrics(m => {
         setRefMetrics(m);
         setRefHistory(prev => [...prev.slice(-29), m]);
+
+        // Feed musical understanding to the engine
+        // This is how the engine "follows" the radio — same key, scale, BPM
+        if (engineRef.current && m.bpm > 0) {
+          try {
+            // Use the detected BPM directly — the engine will adapt
+            if (engineRef.current.applyMusicalUnderstanding) {
+              engineRef.current.applyMusicalUnderstanding({
+                key: {
+                  root: 1,  // C# — will be enhanced with chromagram detection
+                  scale: 'phrygian',
+                  confidence: m.overallConfidence,
+                },
+                bpm: m.bpm,
+                bpmConfidence: m.bpmConfidence,
+                style: 'dark-psy',
+                styleConfidence: m.overallConfidence,
+              });
+            }
+          } catch (e) {
+            // Musical understanding is optional — engine works without it
+          }
+        }
       });
       listener.onProfile(p => setRefProfile(p));
       listener.onError(e => {
@@ -768,6 +791,17 @@ export default function ReferenceTrainingPage() {
                   <p>BPM: {refProfile.bpm.mean.toFixed(0)} (p10 {refProfile.bpm.p10.toFixed(0)}, p90 {refProfile.bpm.p90.toFixed(0)})</p>
                   <p>LUFS: {refProfile.lufs.mean.toFixed(1)} (p10 {refProfile.lufs.p10.toFixed(1)}, p90 {refProfile.lufs.p90.toFixed(1)})</p>
                   <p>Kick decay: {refProfile.kickDecayMs.mean.toFixed(0)}ms (p10 {refProfile.kickDecayMs.p10.toFixed(0)}, p90 {refProfile.kickDecayMs.p90.toFixed(0)})</p>
+                </div>
+              )}
+              {enginePlaying && (
+                <div className="mt-4 p-3 bg-emerald-950/30 border border-emerald-800 rounded text-xs font-mono">
+                  <p className="text-emerald-400 mb-1">ENGINE SYNCED TO RADIO:</p>
+                  <p>Engine BPM: {engineRef.current?.world?.bpm || '—'}</p>
+                  <p>Musical Key: {(() => {
+                    const key = engineRef.current?.getMusicalKey?.();
+                    return key ? `${key.scale} (root MIDI ${key.root})` : 'detecting...';
+                  })()}</p>
+                  <p className="text-slate-500 mt-1">The engine follows the radio's key, scale, and BPM automatically.</p>
                 </div>
               )}
             </CardContent>

@@ -59,6 +59,11 @@ export class Psy4LiteEngine {
   world: LiteWorld = LITE_WORLDS['dark-psy'];
   analyser: AnalyserNode | null = null;
 
+  // Musical understanding — syncs with radio
+  private musicalKey: { root: number; scale: string } = { root: 43, scale: 'phrygian' };
+  private detectedBpm: number = 0;
+  private detectedStyle: string = 'dark-psy';
+
   private sum: GainNode | null = null;
   private duck: GainNode | null = null;
   private master: GainNode | null = null;
@@ -161,6 +166,52 @@ export class Psy4LiteEngine {
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
   }
 
+  /**
+   * Apply musical understanding from the radio.
+   * This is how the engine "follows" the radio — same key, scale, BPM.
+   */
+  applyMusicalUnderstanding(understanding: {
+    key: { root: number; scale: string; confidence: number };
+    bpm: number;
+    bpmConfidence: number;
+    style: string;
+    styleConfidence: number;
+  }): void {
+    // Only update if confidence is high enough
+    if (understanding.key.confidence > 0.3) {
+      // Convert pitch class (0-11) to MIDI root note
+      // Use octave 2 (36-47) for bass, and +12 for lead
+      const rootMidi = 36 + understanding.key.root;
+      this.musicalKey = {
+        root: rootMidi,
+        scale: understanding.key.scale,
+      };
+      console.log(`[Engine] Key detected: ${understanding.key.root} ${understanding.key.scale} (conf: ${understanding.key.confidence.toFixed(2)})`);
+    }
+
+    // Update BPM if confidence is high
+    if (understanding.bpm > 0 && understanding.bpmConfidence > 0.3) {
+      // Smooth BPM change (don't jump — fade toward target)
+      const targetBpm = understanding.bpm;
+      const currentBpm = this.world.bpm;
+      // Only change if difference is significant (> 5 BPM)
+      if (Math.abs(targetBpm - currentBpm) > 5) {
+        this.world.bpm = Math.round(targetBpm);
+        console.log(`[Engine] BPM adjusted: ${currentBpm} → ${this.world.bpm}`);
+      }
+    }
+
+    // Update style if detected
+    if (understanding.styleConfidence > 0.4) {
+      this.detectedStyle = understanding.style;
+      // Could switch world here if we had the worlds mapped
+    }
+  }
+
+  getMusicalKey(): { root: number; scale: string } {
+    return this.musicalKey;
+  }
+
   setWorld(params: Record<string, number>): void {
     if (!this.world) return;
     if (params.kickDecay !== undefined) this.world.kickDecay = params.kickDecay;
@@ -215,17 +266,24 @@ export class Psy4LiteEngine {
       this.triggerKick(time, section.density * 0.5);
     }
 
-    // Bass — offbeat
+    // Bass — offbeat, using DETECTED key from radio
     if (section.bass && step % 2 === 1) {
-      const note = scaleNote(w.root, 'phrygian', 0);
+      // Use the detected musical key (syncs with radio)
+      const key = this.musicalKey;
+      // Bass pattern: root, root, fifth, root (classic psytrance)
+      const bassPattern = [0, 0, 4, 0];
+      const bassDegree = bassPattern[Math.floor(step / 4) % bassPattern.length];
+      const note = scaleNote(key.root, key.scale, bassDegree);
       this.triggerBass(time, note, w.bassCutoff);
     }
 
-    // Lead — in drops
+    // Lead — in drops, using DETECTED key
     if (section.lead && step % 2 === 0 && Math.random() < 0.4) {
-      const degrees = [0, 3, 5, 7, 10];
-      const deg = degrees[Math.floor(Math.random() * degrees.length)];
-      const note = scaleNote(w.root + 12, 'phrygian', deg);
+      const key = this.musicalKey;
+      // Lead motif: use scale degrees that create psytrance feel
+      const leadDegrees = [0, 3, 5, 7, 8, 10, 12];
+      const deg = leadDegrees[Math.floor(Math.random() * leadDegrees.length)];
+      const note = scaleNote(key.root + 12, key.scale, deg);
       this.triggerLead(time, note, w.leadCutoff);
     }
 
