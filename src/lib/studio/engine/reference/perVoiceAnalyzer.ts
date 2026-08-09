@@ -16,12 +16,8 @@
  *   - PAD/ATMOS: 200-800 Hz band
  */
 
-import { render, SR } from '@/lib/studio/engine/forensic/offlineRenderer';
+import { renderLite, SR } from '@/lib/studio/engine/forensic/liteRenderer';
 import { analyzeAudio } from '@/lib/studio/engine/forensic/audioAnalyzer';
-import {
-  V_KICK, V_BASS, V_LEAD, V_ACID, V_PAD,
-  V_HAT, V_CLAP, V_PERC, V_SHAKER, V_TEXTURE,
-} from '@/lib/studio/engine/forensic/voices';
 import type { ReferenceProfile } from '@/lib/studio/engine/reference/referenceListener';
 
 export interface VoiceAnalysis {
@@ -48,12 +44,12 @@ export interface PerVoiceReport {
 }
 
 const VOICE_CONFIGS = [
-  { name: 'kick', id: V_KICK, bandLo: 40, bandHi: 120 },
-  { name: 'bass', id: V_BASS, bandLo: 80, bandHi: 250 },
-  { name: 'lead', id: V_LEAD, bandLo: 500, bandHi: 4000 },
-  { name: 'hat', id: V_HAT, bandLo: 4000, bandHi: 12000 },
-  { name: 'pad', id: V_PAD, bandLo: 200, bandHi: 800 },
-  { name: 'acid', id: V_ACID, bandLo: 200, bandHi: 3000 },
+  { name: "kick", bandLo: 40, bandHi: 120 },
+  { name: "bass", bandLo: 80, bandHi: 250 },
+  { name: "lead", bandLo: 500, bandHi: 4000 },
+  { name: "hat", bandLo: 4000, bandHi: 12000 },
+  { name: "pad", bandLo: 200, bandHi: 800 },
+  { name: "acid", bandLo: 200, bandHi: 3000 },
 ];
 
 /**
@@ -73,9 +69,9 @@ export function analyzePerVoice(
 
   for (const config of VOICE_CONFIGS) {
     try {
-      const r = render(seed, worldId, duration, {
+      const r = renderLite(worldId, duration, {
         paramOverrides,
-        onlyVoices: [config.id],
+        onlyVoices: [config.name],
       });
       const analysis = analyzeAudio(r.samplesL, r.samplesR, SR);
 

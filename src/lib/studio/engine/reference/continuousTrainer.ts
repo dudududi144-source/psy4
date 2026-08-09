@@ -15,7 +15,7 @@
  * The learned params are saved to localStorage for future sessions.
  */
 
-import { render, downmixToMono, SR, encodeWav } from '@/lib/studio/engine/forensic/offlineRenderer';
+import { renderLite, downmixToMono as downmixLite, SR, encodeWav } from '@/lib/studio/engine/forensic/liteRenderer';
 import { analyzeAudio } from '@/lib/studio/engine/forensic/audioAnalyzer';
 import { computeReferenceScore } from '@/lib/studio/engine/reference/referenceScore';
 import { analyzePerVoice, comparePerVoiceToReference } from '@/lib/studio/engine/reference/perVoiceAnalyzer';
@@ -24,7 +24,7 @@ import {
   type OptimizableParameter, type ParameterChange,
 } from '@/lib/studio/engine/reference/parameterRegistry';
 import { getWorldDNA } from '@/lib/studio/engine/reference/worldDNA';
-import { FORENSIC_WORLDS } from '@/lib/studio/engine/forensic/worlds';
+import { LITE_WORLDS } from '@/lib/studio/engine/forensic/liteRenderer';
 import type { ReferenceProfile, ReferenceMetrics } from '@/lib/studio/engine/reference/referenceListener';
 
 export interface LearningIteration {
@@ -360,7 +360,7 @@ export class ContinuousTrainer {
       const currentOverrides = registryToOverrides(this.registry);
 
       // 1. Render full mix for overall score
-      const currentRender = render(seed, worldId, renderDuration, {
+      const currentRender = renderLite(worldId, renderDuration, {
         paramOverrides: currentOverrides,
       });
 
@@ -430,7 +430,7 @@ export class ContinuousTrainer {
 
       // 5. Render with new params
       const newRegistry = applyChanges(this.registry, changes);
-      const newRender = render(seed, worldId, renderDuration, {
+      const newRender = renderLite(worldId, renderDuration, {
         paramOverrides: registryToOverrides(newRegistry),
       });
       const newAnalysis = analyzeAudio(newRender.samplesL, newRender.samplesR, SR);
@@ -693,7 +693,7 @@ export class ContinuousTrainer {
     const dur = analysis.duration || 1;
 
     return {
-      bpm: FORENSIC_WORLDS[worldId]?.bpm || 142,
+      bpm: LITE_WORLDS[worldId]?.bpm || 142,
       bpmConfidence: 0.9,
       rms: d.rms,
       peak: d.peak,

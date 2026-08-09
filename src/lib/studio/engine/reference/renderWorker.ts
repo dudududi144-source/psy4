@@ -11,13 +11,13 @@
 
 /// <reference lib="webworker" />
 
-import { render, SR } from '../forensic/offlineRenderer';
+// CRITICAL FIX: Use liteRenderer (matches live engine) instead of offlineRenderer (different DSP)
+import { renderLite, SR } from '../forensic/liteRenderer';
 import { analyzeAudio } from '../forensic/audioAnalyzer';
-import { analyzePerVoice, comparePerVoiceToReference } from './perVoiceAnalyzer';
 import { computeReferenceScore } from './referenceScore';
 import { getWorldDNA } from './worldDNA';
 import { createParameterRegistry, applyChanges, registryToOverrides, adjustParameter, type ParameterChange } from './parameterRegistry';
-import { FORENSIC_WORLDS } from '../forensic/worlds';
+import { LITE_WORLDS } from '../forensic/liteRenderer';
 import type { ReferenceProfile, ReferenceMetrics } from './referenceListener';
 
 export interface RenderRequest {
@@ -86,7 +86,7 @@ function analysisToMetrics(analysis: ReturnType<typeof analyzeAudio>, worldId: s
   const tr = analysis.transients;
   const dur = analysis.duration || 1;
   return {
-    bpm: FORENSIC_WORLDS[worldId]?.bpm || 142,
+    bpm: LITE_WORLDS[worldId]?.bpm || 142,
     bpmConfidence: 0.9,
     rms: d.rms, peak: d.peak, lufs: d.lufs, crestFactor: d.crest,
     subEnergy: le.subRms,
@@ -124,7 +124,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
 
   if (req.type === 'render') {
     try {
-      const result = render(req.seed, req.worldId, req.duration, {
+      const result = renderLite(req.worldId, req.duration, {
         paramOverrides: req.paramOverrides,
       });
       const response: RenderResponse = {
@@ -186,8 +186,8 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
 
       const overrides = registryToOverrides(currentRegistry);
 
-      // Render current
-      const currentRender = render(seed, worldId, duration, { paramOverrides: overrides });
+      // Render current (using liteRenderer — matches live engine)
+      const currentRender = renderLite(worldId, duration, { paramOverrides: overrides });
       const currentAnalysis = analyzeAudio(currentRender.samplesL, currentRender.samplesR, SR);
       const currentMetrics = analysisToMetrics(currentAnalysis, worldId);
       const scoreResult = computeReferenceScore(currentMetrics, referenceProfile, dna.bpmTarget);
@@ -323,7 +323,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
 
       // Render with new params
       const newRegistry = applyChanges(currentRegistry, changes);
-      const newRender = render(seed, worldId, duration, { paramOverrides: registryToOverrides(newRegistry) });
+      const newRender = renderLite(worldId, duration, { paramOverrides: registryToOverrides(newRegistry) });
       const newAnalysis = analyzeAudio(newRender.samplesL, newRender.samplesR, SR);
       const newMetrics = analysisToMetrics(newAnalysis, worldId);
       const newScoreResult = computeReferenceScore(newMetrics, referenceProfile, dna.bpmTarget);
