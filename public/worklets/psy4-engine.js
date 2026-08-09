@@ -1202,17 +1202,17 @@ class BusProcessor {
 
 class MasterChain {
   constructor() {
-    this.gain = 1.0;       // was 0.92 — don't attenuate before limiting
-    this.ceiling = 0.98;   // was 0.95 — commercial tracks hit -0.2dBTP
+    this.gain = 1.0;
+    this.ceiling = 0.98;
     this.env = 0;
-    this.attack = 0.0003;  // was 0.0005 — faster catch
-    this.release = 0.06;   // was 0.08 — tighter
+    this.attack = 0.0003;
+    this.release = 0.06;
     this.glueEnv = 0;
-    this.glueThr = 0.55;   // was 0.6 — lower threshold = more glue
-    this.glueRatio = 3.0;  // was 2.5 — more compression
+    this.glueThr = 0.5;    // was 0.55 — lower threshold = more compression = louder
+    this.glueRatio = 3.5;  // was 3.0 — more ratio = more loudness
     this.glueAttack = 0.004;
     this.glueRelease = 0.12;
-    this.makeup = 1.4;     // was 1.25 — hotter makeup for commercial loudness
+    this.makeup = 1.5;     // was 1.4 — hotter for -14 LUFS target
   }
 
   process(sample, sr) {
@@ -1339,7 +1339,9 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.masterR = new MasterChain();
 
     // Bus gains (drum, bass, music, atmos, fx)
-    this.busGains = [1.0, 1.0, 1.0, 0.8, 0.7];
+    // REBALANCED: bass louder (was 1.0 → 1.15), music slightly lower (was 1.0 → 0.9)
+    // This fixes the "too bright" problem — more bass/mid, less high
+    this.busGains = [0.95, 1.15, 0.9, 0.7, 0.65];
 
     // ── BUS PROCESSORS — SEPARATE L and R instances ──
     // CRITICAL FIX: Previously L and R shared the same instance, which meant

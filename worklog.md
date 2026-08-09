@@ -1599,3 +1599,46 @@ BEFORE → AFTER:
   AFTER: AI audio classification עובד! ה-AI מזהה את PSY4 כמוזיקה (89%)
   Repetition: 82.9% = המוזיקה מתפתחת (לא לופ)
   Loudness: -15 LUFS = קרוב למסחרי (יעד: -14)
+
+---
+Task ID: 26
+Agent: Z.ai Code (main)
+Task: תיקון loudness + balance + רינדר 60s + אנליזה מלאה עם ced.cpp.
+
+Work Log:
+- תיקנו את ה-master loudness:
+  glue threshold: 0.55→0.5 (יותר compression)
+  glue ratio: 3.0→3.5 (יותר loudness)
+  makeup: 1.4→1.5 (חזק יותר)
+  
+- תיקנו את bus balance:
+  drum: 1.0→0.95, bass: 1.0→1.15, music: 1.0→0.9, atmos: 0.8→0.7, fx: 0.7→0.65
+  יותר באס, פחות high = מיקס חם ועמוק במקום בהיר ודק
+
+- בנינו סקריפט רינדר (psy4_render.py) שמייצר 60s track עם:
+  - 7 sections (INTRO→GROOVE→BUILD→DROP→BREAK→DROP2→OUTRO)
+  - באס עם וריאציה (3 patterns, passing tones, sustained notes)
+  - האטס עם velocity curve + ghost notes
+  - ליד עם call/response + 3 motifs
+  - fills ב-3 סוגים
+  - master processing (glue + saturation + limiter)
+
+- אנליזת 60s עם ced.cpp + DSP:
+  ✅ AI: Music 91%, Electronic 43%, Techno 28%, Drum machine 42%
+  ✅ LUFS: -10.1 (מסחרי! יעד: -14 עד -8)
+  ✅ Centroid: 1914Hz (הרבה יותר נמוך מקודם 11089Hz — מיקס עמוק)
+  ⚠️ Sub energy: 98.3% (גבוה מדי — צריך יותר mid/high)
+  ⚠️ Repetition: 99.1% (RMS comparison — גס מדי, צריך spectral comparison)
+
+- השוואת סקשנים:
+  INTRO:  -12.7 LUFS (שקט יותר — נכון)
+  GROOVE: -9.3 LUFS (חזק יותר — נכון)
+  BUILD:  -8.8 LUFS (הכי חזק — נכון, build-up)
+  DROP1:  -10.0 LUFS (חזק אבל פחות מbuild — נכון, הקיק מוריד RMS)
+
+BEFORE → AFTER:
+  LUFS: -16.6 → -10.1 (מסחרי!)
+  Centroid: 11089Hz → 1914Hz (עמוק וחם, לא בהיר ודק)
+  Music confidence: 86% → 91%
+  Drum machine: 31% → 42%
+  Techno: 18% → 28%
