@@ -48,3 +48,7 @@ upload/
 # temp
 /tmp/
 *.tmp
+
+# Cloudflare Pages build output
+.vercel/
+.wrangler/

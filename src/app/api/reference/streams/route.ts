@@ -7,7 +7,7 @@
 import { NextResponse } from 'next/server';
 import { ALL_STREAMS } from '@/lib/studio/engine/reference/radioStreams';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 export async function GET() {
   return NextResponse.json({

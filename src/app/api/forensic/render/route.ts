@@ -15,7 +15,7 @@ import {
   V_RISER, V_IMPACT, V_SWEEP, V_DOWNLIFTER,
 } from '@/lib/studio/engine/forensic/voices';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 

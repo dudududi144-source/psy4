@@ -14,7 +14,7 @@
 
 import { NextRequest } from 'next/server';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
 const STREAM_URLS: Record<string, string> = {

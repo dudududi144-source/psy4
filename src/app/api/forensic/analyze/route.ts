@@ -12,7 +12,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runForensicAnalysis } from '@/lib/studio/engine/forensic/forensicRunner';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
 

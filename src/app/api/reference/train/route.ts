@@ -46,7 +46,7 @@ import type { ReferenceProfile } from '@/lib/studio/engine/reference/referenceLi
 import type { ReferenceMetrics } from '@/lib/studio/engine/reference/referenceListener';
 import { FORENSIC_WORLDS } from '@/lib/studio/engine/forensic/worlds';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
 
