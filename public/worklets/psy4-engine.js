@@ -1567,12 +1567,14 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_BASS: {
-        // PURE SYNTH BASS — square wave (Astrix style) with short 120ms decay
-        // Removed bass_A.wav (PSY3 sample — not a sound quality reference)
-        // The square wave + Moog filter + short envelope IS the commercial bass sound
+        // PURE SYNTH BASS — uses WORLD-SPECIFIC parameters (not hardcoded!)
+        // BEFORE: cutoffStart: 800, cutoffEnd: 200, resonance: 2 (same for all worlds)
+        // AFTER: uses wp.bassCutoff, wp.bassResonance from world params
         const v = this.getFreeVoice(this.bassPool);
         if (v) v.trigger(t, note, duration, velocity, false, sr, {
-          cutoffStart: 800, cutoffEnd: 200, resonance: 2,
+          cutoffStart: Math.min(2000, wp.bassCutoff * 4),  // world-specific
+          cutoffEnd: wp.bassCutoff,                         // world-specific
+          resonance: wp.bassResonance,                      // world-specific
         });
         break;
       }
