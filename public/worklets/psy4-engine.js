@@ -1206,16 +1206,16 @@ class BusProcessor {
 class MasterChain {
   constructor() {
     this.gain = 1.0;
-    this.ceiling = 0.98;
+    this.ceiling = 0.90;     // was 0.98 — leave headroom, prevent clipping
     this.env = 0;
     this.attack = 0.0003;
     this.release = 0.06;
     this.glueEnv = 0;
-    this.glueThr = 0.5;    // was 0.55 — lower threshold = more compression = louder
-    this.glueRatio = 3.5;  // was 3.0 — more ratio = more loudness
+    this.glueThr = 0.60;     // was 0.50 — less compression, more dynamics
+    this.glueRatio = 2.5;    // was 3.5 — gentler ratio
     this.glueAttack = 0.004;
     this.glueRelease = 0.12;
-    this.makeup = 1.5;     // was 1.4 — hotter for -14 LUFS target
+    this.makeup = 1.0;       // was 1.5 — no makeup gain (was causing -0.7 LUFS)
   }
 
   process(sample, sr) {

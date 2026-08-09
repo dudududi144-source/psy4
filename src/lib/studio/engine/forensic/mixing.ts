@@ -70,16 +70,16 @@ export class BusProcessor {
 
 export class MasterChain {
   gain = 1.0;
-  ceiling = 0.98;
+  ceiling = 0.90;       // was 0.98 — leave headroom
   env = 0;
   attack = 0.0003;
   release = 0.06;
   glueEnv = 0;
-  glueThr = 0.5;
-  glueRatio = 3.5;
+  glueThr = 0.60;       // was 0.50 — less compression
+  glueRatio = 2.5;      // was 3.5 — gentler
   glueAttack = 0.004;
   glueRelease = 0.12;
-  makeup = 1.5;
+  makeup = 1.0;         // was 1.5 — was causing over-compression
 
   process(sample: number, sr: number): number {
     // Guard: prevent NaN/Infinity from propagating

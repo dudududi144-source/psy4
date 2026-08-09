@@ -236,13 +236,22 @@ export default function ReferenceTrainingPage() {
       setEnginePlaying(true);
 
       // Attach self-analyzer after engine starts
-      setTimeout(() => {
-        if (engineRef.current?.ctx && engineRef.current?.engineNode?.outputNode) {
-          const analyzer = new SelfAnalyzer();
-          analyzer.attach(engineRef.current.engineNode.outputNode, engineRef.current.ctx);
-          analyzer.onMetrics(m => setSelfMetrics(m));
-          analyzer.start();
-          selfAnalyzerRef.current = analyzer;
+      // Use getAnalyser() which is always available (both legacy + worklet modes)
+      setTimeout(async () => {
+        try {
+          if (engineRef.current?.ctx) {
+            const analyser = engineRef.current.getAnalyser();
+            if (analyser) {
+              const { SelfAnalyzer } = await import('@/lib/studio/engine/reference/selfAnalyzer');
+              const analyzer = new SelfAnalyzer();
+              analyzer.attach(analyser, engineRef.current.ctx);
+              analyzer.onMetrics(m => setSelfMetrics(m));
+              analyzer.start();
+              selfAnalyzerRef.current = analyzer;
+            }
+          }
+        } catch (err) {
+          console.warn('[SelfAnalyzer] attach failed:', err);
         }
       }, 2000);
 

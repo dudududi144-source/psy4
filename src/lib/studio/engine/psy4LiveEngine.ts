@@ -441,7 +441,7 @@ export class Psy4LiveEngine {
     this.saturation = new MasterSaturation(c, 1.15, 0.15);
     this.truePeak = new TruePeakLimiter(c, 0.94);
     
-    this.master = c.createGain(); this.master.gain.value = 0.88;
+    this.master = c.createGain(); this.master.gain.value = 0.70;  // was 0.88 — too hot
 
     // Chain: sum → duck → HP → multiband → glue → saturation → truePeak → EQ → master → destination
     this.sum.connect(this.duck);

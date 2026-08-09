@@ -547,41 +547,40 @@ export class ReferenceListenerV2 {
   }
 
   private estimateBPM(samples: Float32Array, sr: number): number {
-    // Low-band energy envelope via simple lowpass (moving average)
-    const lpWindow = Math.floor(sr * 0.005); // 5ms lowpass for kick band
-    const hopSize = Math.floor(sr * 0.01);   // 10ms hops
-    const frameSize = Math.floor(sr * 0.05);  // 50ms frames
-
-    // Simple lowpass: moving average
+    // FIXED: proper one-pole lowpass to isolate kick band, then energy envelope + autocorrelation.
+    // Previous version had a NaN bug (runningSum could go negative → sqrt(negative) = NaN).
+    const cutoff = 150; // Hz — isolate kick/bass band
+    const a = 1 - Math.exp(-2 * Math.PI * cutoff / sr);
     const lowpassed = new Float32Array(samples.length);
-    let runningSum = 0;
+    let lpState = 0;
     for (let i = 0; i < samples.length; i++) {
-      runningSum += samples[i] * samples[i]; // power
-      if (i >= lpWindow) runningSum -= samples[i - lpWindow] * samples[i - lpWindow];
-      lowpassed[i] = Math.sqrt(runningSum / lpWindow);
+      lpState += a * (samples[i] - lpState);
+      lowpassed[i] = lpState;
     }
 
+    // Energy envelope: RMS in 50ms windows, 10ms hop
+    const hopSize = Math.floor(sr * 0.01);
+    const frameSize = Math.floor(sr * 0.05);
     const energies: number[] = [];
-    for (let i = 0; i < lowpassed.length - frameSize; i += hopSize) {
-      let sum = 0;
+    for (let i = 0; i + frameSize < lowpassed.length; i += hopSize) {
+      let sumSq = 0;
       for (let j = 0; j < frameSize; j++) {
-        sum += lowpassed[i + j];
+        sumSq += lowpassed[i + j] * lowpassed[i + j];
       }
-      energies.push(sum / frameSize);
+      energies.push(Math.sqrt(sumSq / frameSize));
     }
 
     if (energies.length < 20) return 0;
 
-    // Normalize
-    const mean = energies.reduce((a, b) => a + b, 0) / energies.length;
-    if (mean < 0.001) return 0; // signal too quiet
+    // Normalize (remove DC)
+    const mean = energies.reduce((x, y) => x + y, 0) / energies.length;
+    if (mean < 0.0001 || !isFinite(mean)) return 0;
     const normalized = energies.map(e => e - mean);
 
     // Autocorrelation — search for tempo
     const hopSec = 0.01;
-    // Psytrance: 120-160 BPM → 0.375-0.5s period → 37-50 lags at 10ms
-    const minLag = Math.floor(0.3 / hopSec);  // 30 lags = 200 BPM
-    const maxLag = Math.floor(1.0 / hopSec);  // 100 lags = 60 BPM
+    const minLag = Math.floor(0.3 / hopSec);  // 200 BPM
+    const maxLag = Math.floor(1.0 / hopSec);  // 60 BPM
     const maxLagClamped = Math.min(maxLag, Math.floor(energies.length / 2));
 
     let bestLag = 0, bestCorr = -Infinity;
@@ -592,13 +591,14 @@ export class ReferenceListenerV2 {
         count++;
       }
       corr = count > 0 ? corr / count : 0;
+      if (!isFinite(corr)) continue;
       if (corr > bestCorr) {
         bestCorr = corr;
         bestLag = lag;
       }
     }
 
-    if (bestLag === 0 || bestCorr < 0.005) return 0;
+    if (bestLag === 0 || bestCorr < 0.001 || !isFinite(bestCorr)) return 0;
 
     const periodSec = bestLag * hopSec;
     let bpm = 60 / periodSec;
@@ -610,27 +610,35 @@ export class ReferenceListenerV2 {
   }
 
   private estimateDecay(samples: Float32Array, sr: number): number {
-    // Find the LOUDEST transient (not just the first) — this is the kick
-    const threshold = 0.3; // higher threshold for kick detection
+    // FIXED: use RMS window tracking instead of raw sample abs().
+    // Previous version returned ~5ms because it triggered on the first zero-crossing
+    // of the sine wave (abs crosses 0 every cycle).
+    // Find the loudest peak, then track RMS in short windows until it drops to 10%.
     let peakIdx = -1;
     let peakVal = 0;
-    // Search in the first half of the buffer
     const searchEnd = Math.min(samples.length, sr * 10);
     for (let i = Math.floor(sr * 0.1); i < searchEnd - 1; i++) {
       const abs = Math.abs(samples[i]);
-      if (abs > threshold &&
-          abs > Math.abs(samples[i - 1]) &&
-          abs > Math.abs(samples[i + 1]) &&
-          abs > peakVal) {
+      if (abs > peakVal) {
         peakVal = abs;
         peakIdx = i;
       }
     }
-    if (peakIdx < 0) return 0.1; // default 100ms
-    const targetVal = peakVal * 0.1;
-    for (let i = peakIdx; i < samples.length; i++) {
-      if (Math.abs(samples[i]) <= targetVal) {
-        return Math.max(0.01, (i - peakIdx) / sr);
+    if (peakIdx < 0 || peakVal < 0.05) return 0.1;
+
+    // Track RMS in 5ms windows after the peak
+    const windowSize = Math.floor(sr * 0.005);
+    const targetRms = peakVal * 0.1;
+    for (let w = 0; w + windowSize < samples.length - peakIdx; w += windowSize) {
+      let sumSq = 0;
+      for (let j = 0; j < windowSize; j++) {
+        const s = samples[peakIdx + w + j];
+        sumSq += s * s;
+      }
+      const rms = Math.sqrt(sumSq / windowSize);
+      // Skip the first 3ms (attack phase)
+      if (w > sr * 0.003 && rms <= targetRms) {
+        return Math.max(0.01, (w + windowSize) / sr);
       }
     }
     return 0.2;
