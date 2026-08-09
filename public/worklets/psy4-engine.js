@@ -36,10 +36,10 @@
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
-const MAX_VOICES = 64;        // max simultaneous voice instances
+const MAX_VOICES = 32;        // was 64 — reduced to match pool size
 const EVENT_SIZE = 6;         // floats per event: [time, voice, note, vel, dur, param]
-const MAX_EVENTS = 2048;      // ring buffer capacity (events)
-const TANH_TABLE_SIZE = 2048;
+const MAX_EVENTS = 1024;      // was 2048 — reduced (1024 is plenty for 100ms lookahead)
+const TANH_TABLE_SIZE = 1024; // was 2048 — half size, still accurate enough
 
 // Voice IDs
 const V_KICK = 0, V_BASS = 1, V_LEAD = 2, V_ACID = 3, V_PAD = 4;
@@ -1080,7 +1080,9 @@ class SchroederReverb {
 
 class StereoDelay {
   constructor() {
-    this.bufferSize = 44100 * 2; // 2 seconds max
+    // REDUCED from 2s to 0.5s — saves 1.3MB memory
+    // 0.5s is plenty for psytrance delay (3/8 at 140bpm = 0.32s)
+    this.bufferSize = 44100 / 2; // 0.5 seconds max (was 2 seconds)
     this.leftBuf = new Float32Array(this.bufferSize);
     this.rightBuf = new Float32Array(this.bufferSize);
     this.leftIdx = 0;
@@ -1282,6 +1284,8 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.eventCount = 0;
 
     // Voice pools (preallocated — no per-hit allocation)
+    // REDUCED from 92 to 32 voices — saves memory, faster iteration
+    // psy5 uses 8 voices total and sounds fine. We use 32 for safety.
     this.kickPool = [];
     this.bassPool = [];
     this.leadPool = [];
@@ -1293,28 +1297,23 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.shakerPool = [];
     this.texturePool = [];
     this.fxPool = [];
-    for (let i = 0; i < 8; i++) this.kickPool.push(new KickVoice());
-    for (let i = 0; i < 4; i++) this.bassPool.push(new BassVoice());
-    for (let i = 0; i < 8; i++) this.leadPool.push(new LeadVoice());
-    for (let i = 0; i < 4; i++) this.acidPool.push(new AcidVoice());
-    for (let i = 0; i < 4; i++) this.padPool.push(new PadVoice());
-    for (let i = 0; i < 8; i++) this.hatPool.push(new HatVoice());
-    for (let i = 0; i < 4; i++) this.clapPool.push(new ClapVoice());
-    for (let i = 0; i < 8; i++) this.percPool.push(new PercVoice());
-    for (let i = 0; i < 4; i++) this.shakerPool.push(new ShakerVoice());
-    for (let i = 0; i < 4; i++) this.texturePool.push(new TextureVoice());
-    for (let i = 0; i < 8; i++) this.fxPool.push(new FXVoice());
+    for (let i = 0; i < 4; i++) this.kickPool.push(new KickVoice());    // was 8
+    for (let i = 0; i < 2; i++) this.bassPool.push(new BassVoice());    // was 4
+    for (let i = 0; i < 4; i++) this.leadPool.push(new LeadVoice());    // was 8
+    for (let i = 0; i < 2; i++) this.acidPool.push(new AcidVoice());    // was 4
+    for (let i = 0; i < 2; i++) this.padPool.push(new PadVoice());      // was 4
+    for (let i = 0; i < 4; i++) this.hatPool.push(new HatVoice());      // was 8
+    for (let i = 0; i < 2; i++) this.clapPool.push(new ClapVoice());    // was 4
+    for (let i = 0; i < 4; i++) this.percPool.push(new PercVoice());    // was 8
+    for (let i = 0; i < 2; i++) this.shakerPool.push(new ShakerVoice());// was 4
+    for (let i = 0; i < 2; i++) this.texturePool.push(new TextureVoice());// was 4
+    for (let i = 0; i < 4; i++) this.fxPool.push(new FXVoice());        // was 8
+    // Total: 32 voices (was 64+28=92)
 
-    // ── SAMPLE VOICE POOLS (for real PSY3 sample playback) ──
-    // Separate pools for sample-based voices (kick sample, hat sample, clap sample)
-    // These play the actual PSY3 WAV data for professional sound quality.
+    // Sample voice pools — DISABLED (no samples loaded, saves 28 voices)
     this.kickSamplePool = [];
     this.hatSamplePool = [];
     this.clapSamplePool = [];
-    // Increased pool size — bass, lead, and perc also use kickSamplePool now
-    for (let i = 0; i < 16; i++) this.kickSamplePool.push(new SampleVoice());
-    for (let i = 0; i < 8; i++) this.hatSamplePool.push(new SampleVoice());
-    for (let i = 0; i < 4; i++) this.clapSamplePool.push(new SampleVoice());
 
     // Sample bank (loaded from main thread via ArrayBuffer transfer)
     this.samples = {};  // { name: { data, sampleRate, category } }

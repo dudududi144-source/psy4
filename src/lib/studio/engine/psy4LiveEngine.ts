@@ -481,34 +481,14 @@ export class Psy4LiveEngine {
         this.sendWorldParamsToEngine();
         this.sendMacrosToEngine();
 
-        // ── LOAD PSY3 SAMPLES into the worklet ──
-        // This is the key sound quality upgrade: the worklet plays the REAL
-        // kick.wav, hat_closed.wav, hat_open.wav, clap.wav samples instead of
-        // pure synth DSP. Samples are transferred as Float32Array (zero-copy).
-        this.sampleBank = new SampleBank(c);
-        const loaded = await this.sampleBank.loadAll();
-        if (loaded) {
-          const payload = this.sampleBank.toWorkletPayload();
-          this.engineNode!.loadSamples(payload);
-          this.samplesLoaded = true;
-          console.log('[PSY4] PSY3 samples loaded into worklet');
-        }
-
-        // ── GENERATE MULTISAMPLE BANK (procedural variety) ──
-        // Generate 40+ kick/bass/lead/hat/clap variants with different characters
-        // (deep, punchy, dark, bright, aggressive, warm). All procedurally
-        // generated — no copyright issues. Gives SampleSelector real choices.
-        const { generateMultisampleBank } = await import('./multisampleGenerator');
-        const { SampleSelector } = await import('./sampleSelector');
-        const multisamples = generateMultisampleBank();
-        this.sampleSelector = new SampleSelector(multisamples);
-        // Transfer multisamples to worklet too
-        const multiPayload = multisamples.map(s => ({
-          name: s.name, category: s.category, subcategory: s.subcategory,
-          sampleRate: s.sampleRate, data: s.data,
-        }));
-        this.engineNode!.loadSamples(multiPayload);
-        console.log(`[PSY4] Multisample bank generated: ${multisamples.length} samples (${this.sampleSelector.getStats().byCategory.kick || 0} kicks, ${this.sampleSelector.getStats().byCategory.bass || 0} bass, ${this.sampleSelector.getStats().byCategory.lead || 0} leads, ${this.sampleSelector.getStats().byCategory.hat || 0} hats, ${this.sampleSelector.getStats().byCategory.clap || 0} claps)`);
+        // ── SAMPLE LOADING DISABLED ──
+        // PSY4 was loading 142 samples (21MB) into memory, causing crashes.
+        // PSY5/PSY7 use pure synthesis — 0 samples, 0 loading time.
+        // The worklet's synth voices (KickVoice, BassVoice, etc.) already
+        // produce high-quality sound. No need for sample playback.
+        // This saves 21MB RAM + 2-3s load time + eliminates GC pressure.
+        this.samplesLoaded = false;
+        console.log('[PSY4] Using pure synthesis (no samples) — low memory mode');
 
         console.log('[PSY4] Engine worklet active — synthesis in audio thread');
       }
