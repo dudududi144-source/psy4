@@ -18,6 +18,7 @@
 import { render, downmixToMono, SR, encodeWav } from '@/lib/studio/engine/forensic/offlineRenderer';
 import { analyzeAudio } from '@/lib/studio/engine/forensic/audioAnalyzer';
 import { computeReferenceScore } from '@/lib/studio/engine/reference/referenceScore';
+import { analyzePerVoice, comparePerVoiceToReference } from '@/lib/studio/engine/reference/perVoiceAnalyzer';
 import {
   createParameterRegistry, adjustParameter, applyChanges, registryToOverrides,
   type OptimizableParameter, type ParameterChange,
@@ -50,6 +51,20 @@ export interface LearningState {
   rejectedCount: number;
   totalIterations: number;
   learnedKnowledge: Record<string, { value: number; score: number; attempts: number }>;
+  // Per-voice scores (from perVoiceAnalyzer)
+  perVoiceScores?: {
+    kick: number;
+    bass: number;
+    lead: number;
+    spectral: number;
+  };
+  // Per-voice analysis details
+  voiceAnalysis?: {
+    kick: { lufs: number; decayMs: number; active: boolean };
+    bass: { lufs: number; bandEnergy: number; active: boolean };
+    lead: { lufs: number; centroidHz: number; active: boolean };
+    hat: { lufs: number; active: boolean };
+  };
 }
 
 export type LearningMode = 'idle' | 'listening' | 'learning' | 'mastering';
@@ -203,28 +218,59 @@ export class ContinuousTrainer {
       const dna = getWorldDNA(worldId);
       if (!dna) return;
 
-      // 1. Render with current params (full mix for overall score)
+      const currentOverrides = registryToOverrides(this.registry);
+
+      // 1. Render full mix for overall score
       const currentRender = render(seed, worldId, renderDuration, {
-        paramOverrides: registryToOverrides(this.registry),
+        paramOverrides: currentOverrides,
       });
 
       // 2. Analyze full mix
       const analysis = analyzeAudio(currentRender.samplesL, currentRender.samplesR, SR);
       const metrics = this.analysisToMetrics(analysis, worldId);
 
-      // 3. Score against reference (full mix score)
+      // 3. Full mix score against reference
       const scoreResult = computeReferenceScore(metrics, referenceProfile, dna.bpmTarget);
-      const oldScore = scoreResult.total;
+
+      // 4. Per-voice analysis (isolates each voice for targeted learning)
+      let perVoiceComparison: ReturnType<typeof comparePerVoiceToReference> | null = null;
+      try {
+        const perVoiceReport = analyzePerVoice(seed, worldId, renderDuration, currentOverrides);
+        perVoiceComparison = comparePerVoiceToReference(perVoiceReport, referenceProfile);
+
+        // Update state with per-voice scores
+        this.state.perVoiceScores = {
+          kick: perVoiceComparison.kickScore,
+          bass: perVoiceComparison.bassScore,
+          lead: perVoiceComparison.leadScore,
+          spectral: perVoiceComparison.spectralScore,
+        };
+        this.state.voiceAnalysis = {
+          kick: { lufs: perVoiceReport.kick.lufs, decayMs: perVoiceReport.kick.decayMs, active: perVoiceReport.kick.active },
+          bass: { lufs: perVoiceReport.bass.lufs, bandEnergy: perVoiceReport.bass.bandEnergy, active: perVoiceReport.bass.active },
+          lead: { lufs: perVoiceReport.lead.lufs, centroidHz: perVoiceReport.lead.centroidHz, active: perVoiceReport.lead.active },
+          hat: { lufs: perVoiceReport.hat.lufs, active: perVoiceReport.hat.active },
+        };
+      } catch (e) {
+        // per-voice analysis can fail on some worlds — continue with full-mix only
+      }
+
+      // 5. Combined score: 60% full-mix + 40% per-voice (if available)
+      const oldScore = perVoiceComparison
+        ? Math.round(scoreResult.total * 0.6 + perVoiceComparison.totalScore * 0.4)
+        : scoreResult.total;
 
       // Update current score
       this.state.currentScore = oldScore;
       if (oldScore > this.state.bestScore) {
         this.state.bestScore = oldScore;
-        this.state.bestParams = registryToOverrides(this.registry);
+        this.state.bestParams = { ...currentOverrides };
       }
 
-      // 4. Propose changes based on top problems
-      const changes = this.proposeChanges(scoreResult, referenceProfile);
+      // 6. Propose changes — use per-voice errors if available, else full-mix problems
+      const changes = perVoiceComparison && perVoiceComparison.errors.length > 0
+        ? this.proposeChangesFromPerVoice(perVoiceComparison, referenceProfile)
+        : this.proposeChanges(scoreResult, referenceProfile);
 
       if (changes.length === 0) {
         // Random exploration
@@ -326,6 +372,83 @@ export class ContinuousTrainer {
     } catch (err) {
       console.error('[Trainer] iteration error:', err);
     }
+  }
+
+  /** Propose changes based on per-voice analysis errors. */
+  private proposeChangesFromPerVoice(
+    perVoice: ReturnType<typeof comparePerVoiceToReference>,
+    referenceProfile: ReferenceProfile,
+  ): ParameterChange[] {
+    const changes: ParameterChange[] = [];
+    const usedParams = new Set<string>();
+
+    const isTried = (name: string, dir: number) =>
+      this.triedChanges.has(`${name}:${dir > 0 ? '+' : '-'}`);
+
+    // Sort errors by magnitude (biggest error first)
+    const sortedErrors = [...perVoice.errors].sort((a, b) => Math.abs(b.error) - Math.abs(a.error));
+
+    for (const err of sortedErrors.slice(0, this.config.maxChangesPerIteration)) {
+      let paramName: string | null = null;
+      let delta = 0;
+
+      // Map per-voice errors to parameter changes
+      if (err.voice === 'kick' && err.metric === 'decay') {
+        const param = this.registry.find(p => p.name === 'kickDecay');
+        if (param && !usedParams.has('kickDecay')) {
+          paramName = 'kickDecay';
+          const refDecaySec = err.refValue / 1000;
+          const direction = refDecaySec > param.current ? 1 : -1;
+          if (isTried('kickDecay', direction)) {
+            if (isTried('kickDecay', -direction)) { paramName = null; }
+            else { delta = -direction * param.step * 2; }
+          } else {
+            delta = (refDecaySec - param.current) * 0.5;
+          }
+          if (paramName) usedParams.add('kickDecay');
+        }
+      } else if (err.voice === 'bass' && err.metric === 'energy') {
+        const param = this.registry.find(p => p.name === 'bassCutoff');
+        if (param && !usedParams.has('bassCutoff')) {
+          paramName = 'bassCutoff';
+          // If our bass energy is too low, raise cutoff for more brightness
+          const direction = err.error < 0 ? 1 : -1;
+          if (isTried('bassCutoff', direction)) {
+            if (isTried('bassCutoff', -direction)) { paramName = null; }
+            else { delta = -direction * param.step * 2; }
+          } else { delta = direction * 80; }
+          if (paramName) usedParams.add('bassCutoff');
+        }
+      } else if (err.voice === 'lead' && err.metric === 'centroid') {
+        const param = this.registry.find(p => p.name === 'leadCutoff');
+        if (param && !usedParams.has('leadCutoff')) {
+          paramName = 'leadCutoff';
+          const direction = err.error < 0 ? 1 : -1;
+          if (isTried('leadCutoff', direction)) {
+            if (isTried('leadCutoff', -direction)) { paramName = null; }
+            else { delta = -direction * param.step * 2; }
+          } else { delta = direction * 500; }
+          if (paramName) usedParams.add('leadCutoff');
+        }
+      }
+
+      if (paramName) {
+        const param = this.registry.find(p => p.name === paramName);
+        if (param) {
+          const newValue = adjustParameter(param, delta);
+          if (newValue !== param.current) {
+            changes.push({
+              name: paramName,
+              oldValue: param.current,
+              newValue,
+              delta: newValue - param.current,
+            });
+          }
+        }
+      }
+    }
+
+    return changes;
   }
 
   /** Propose parameter changes based on score problems. */

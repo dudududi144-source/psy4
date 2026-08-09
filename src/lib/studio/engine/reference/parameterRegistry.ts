@@ -89,6 +89,42 @@ export function createParameterRegistry(worldDefaults: {
       importance: 0.65,
       description: 'Sidechain duck depth — controls groove pumping',
     },
+    // ── LEVEL PARAMETERS (new — allow per-voice balance control) ──
+    {
+      name: 'kickLevel',
+      min: 0.2, max: 1.5, step: 0.05,
+      current: 1.0,
+      importance: 0.8,
+      description: 'Kick bus gain — controls kick volume relative to other voices',
+    },
+    {
+      name: 'bassLevel',
+      min: 0.2, max: 1.5, step: 0.05,
+      current: 1.0,
+      importance: 0.85,
+      description: 'Bass bus gain — controls bass volume (was hardcoded, now optimizable)',
+    },
+    {
+      name: 'leadLevel',
+      min: 0.1, max: 1.5, step: 0.05,
+      current: 1.0,
+      importance: 0.75,
+      description: 'Lead bus gain — controls lead volume',
+    },
+    {
+      name: 'hatLevel',
+      min: 0.1, max: 1.5, step: 0.05,
+      current: 1.0,
+      importance: 0.6,
+      description: 'Hat/percussion bus gain — controls high-frequency content',
+    },
+    {
+      name: 'masterLevel',
+      min: 0.3, max: 1.2, step: 0.05,
+      current: 0.85,
+      importance: 0.7,
+      description: 'Master output gain — controls overall loudness',
+    },
   ];
 }
 

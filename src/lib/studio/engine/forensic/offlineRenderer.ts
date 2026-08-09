@@ -369,10 +369,17 @@ export function render(
   let reverbSends = [0.08, 0.02, 0.25, 0.40, 0.30];
   let delaySends = [0.05, 0.0, 0.20, 0.10, 0.15];
 
-  // Bus gains — REBALANCED for proper mix
-  // was [0.85, 1.0, 1.0, 0.85, 0.65] — kick was 47x louder than bass
-  // Now: drums reduced, bass boosted, music boosted so all voices are audible
-  const busGains = [0.45, 1.8, 1.5, 0.85, 0.65];
+  // Bus gains — REBALANCED + now optimizable via level parameters
+  // Base gains provide good balance; level params scale them
+  const baseBusGains = [0.45, 1.8, 1.5, 0.85, 0.65];
+  const busGains = [
+    baseBusGains[0] * (world.kickLevel ?? 1.0),   // drum bus (kick, hat, clap, perc)
+    baseBusGains[1] * (world.bassLevel ?? 1.0),   // bass bus
+    baseBusGains[2] * (world.leadLevel ?? 1.0),   // music bus (lead, acid)
+    baseBusGains[3],                                // atmos bus (pad, texture)
+    baseBusGains[4],                                // fx bus
+  ];
+  const masterLevel = world.masterLevel ?? 0.85;
 
   // Sidechain
   let duckEnv = 1.0;
@@ -635,6 +642,10 @@ export function render(
     // Guard against NaN/Infinity from feedback loops (reverb, delay, filter resonance)
     if (!isFinite(mixL)) mixL = 0;
     if (!isFinite(mixR)) mixR = 0;
+
+    // Apply master level (optimizable)
+    mixL *= masterLevel;
+    mixR *= masterLevel;
 
     // Master chain (separate L/R)
     mixL = masterL.process(mixL, sr);

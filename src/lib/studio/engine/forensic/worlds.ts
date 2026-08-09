@@ -36,6 +36,12 @@ export interface Psy4World {
   hatPattern: string;
   percPattern: string;
   darkness: number;
+  // Optimizable level parameters (new — allow per-voice balance control)
+  kickLevel?: number;
+  bassLevel?: number;
+  leadLevel?: number;
+  hatLevel?: number;
+  masterLevel?: number;
 }
 
 export const FORENSIC_WORLDS: Record<string, Psy4World> = {
