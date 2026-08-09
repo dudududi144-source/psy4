@@ -1460,14 +1460,11 @@ export class Psy4LiveEngine {
       this.sectionIdx = 0;
       this.nextSection();
       this.si = 0;
-      // REDUCED LATENCY: 50ms initial lookahead (was 150ms)
-      // The worklet handles sample-accurate timing, so we only need enough
-      // lookahead to batch a few events. 50ms = ~2 beats at 140bpm.
-      this.next = this.ctx!.currentTime + 0.05;
-      // 25ms timer for tighter response (was 50ms)
-      // The worklet process() runs at audio rate, so the timer only
-      // needs to keep the event queue fed.
-      this.timer = setInterval(() => this.tick(), 25);
+      // LATENCY FIX: 30ms initial lookahead (was 50ms) — play button responds faster
+      this.next = this.ctx!.currentTime + 0.03;
+      // Use setTimeout (recursive) instead of setInterval — more accurate, no drift
+      // setInterval can accumulate errors; setTimeout reschedules after each tick
+      this.scheduleNextTick();
     } else {
       // ── LEGACY MODE (fallback) ──
       // Web Audio node creation per hit (original behavior)
@@ -1476,14 +1473,23 @@ export class Psy4LiveEngine {
       this.sectionIdx = 0;
       this.nextSection();
       this.si = 0;
-      this.next = this.ctx!.currentTime + 0.1;
-      this.timer = setInterval(() => this.tick(), 25);
+      this.next = this.ctx!.currentTime + 0.05;
+      this.scheduleNextTick();
     }
+  }
+
+  /** Schedule the next tick using setTimeout (more accurate than setInterval). */
+  private scheduleNextTick(): void {
+    if (!this.playing) return;
+    this.timer = setTimeout(() => {
+      this.tick();
+      this.scheduleNextTick();
+    }, 15); // 15ms cadence (was 25ms) — tighter scheduling
   }
 
   stop() {
     this.playing = false;
-    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     if (this.useWorkletEngine && this.engineNode) {
       this.engineNode.stop();
     }
@@ -1624,12 +1630,10 @@ export class Psy4LiveEngine {
 
   private tick() {
     if (!this.playing || !this.ctx || !this.sec) return;
-    // REDUCED LOOKAHEAD for lower latency:
-    // Worklet mode: 0.1s (was 0.3s) — enough to batch ~4 events at 140bpm
-    // Legacy mode: 0.15s (unchanged)
+    // LATENCY FIX: reduced lookahead from 0.1s to 0.06s for faster response
     // The worklet handles sample-accurate timing, so lookahead only affects
     // how far ahead we generate events, not when they play.
-    const lookahead = this.useWorkletEngine ? 0.1 : 0.15;
+    const lookahead = this.useWorkletEngine ? 0.06 : 0.1;
     while (this.next < this.ctx.currentTime + lookahead) {
       this.step(this.si, this.next);
       this.si++;

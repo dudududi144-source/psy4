@@ -158,6 +158,10 @@ export class ContinuousTrainer {
     this.engineRef = engine;
   }
 
+  private worker: Worker | null = null;
+  private pendingRequestId = 0;
+  private waitingForWorker = false;
+
   /** Start continuous learning. */
   start(referenceProfile: ReferenceProfile): void {
     if (this.running) return;
@@ -165,7 +169,22 @@ export class ContinuousTrainer {
     this.state.running = true;
     this.onStateChangeCallback?.(this.state);
 
-    // Run first iteration immediately
+    // Initialize Web Worker for off-main-thread rendering
+    try {
+      this.worker = new Worker(new URL('./renderWorker.ts', import.meta.url));
+      this.worker.onmessage = (e: MessageEvent) => {
+        this.handleWorkerResponse(e.data, referenceProfile);
+      };
+      this.worker.onerror = (err) => {
+        console.warn('[Trainer] Worker error, falling back to main thread:', err);
+        this.worker = null;
+      };
+    } catch {
+      console.warn('[Trainer] Could not create Worker, using main thread');
+      this.worker = null;
+    }
+
+    // Run first iteration
     this.runIteration(referenceProfile);
 
     // Schedule periodic iterations
@@ -182,6 +201,11 @@ export class ContinuousTrainer {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+    }
+    this.waitingForWorker = false;
     this.onStateChangeCallback?.(this.state);
   }
 
@@ -209,9 +233,124 @@ export class ContinuousTrainer {
     this.onParamsAppliedCallback = cb;
   }
 
-  /** Run a single learning iteration. */
+  /** Run a single learning iteration — sends work to Worker if available. */
   private runIteration(referenceProfile: ReferenceProfile): void {
     if (!this.running) return;
+    if (this.waitingForWorker) return; // don't stack requests
+
+    const { worldId, seed, renderDuration } = this.config;
+    const dna = getWorldDNA(worldId);
+    if (!dna) return;
+
+    const currentOverrides = registryToOverrides(this.registry);
+
+    // If Worker is available, send the work there (non-blocking!)
+    if (this.worker) {
+      this.waitingForWorker = true;
+      this.pendingRequestId++;
+      this.worker.postMessage({
+        type: 'train',
+        id: this.pendingRequestId,
+        seed,
+        worldId,
+        duration: renderDuration,
+        currentParams: currentOverrides,
+        referenceProfile,
+        maxChangesPerIteration: this.config.maxChangesPerIteration,
+      });
+      // The Worker will call handleWorkerResponse when done.
+      // The main thread is FREE — engine keeps playing!
+      return;
+    }
+
+    // Fallback: run on main thread (will block briefly)
+    this.runIterationMainThread(referenceProfile);
+  }
+
+  /** Handle response from Worker. */
+  private handleWorkerResponse(data: any, referenceProfile: ReferenceProfile): void {
+    this.waitingForWorker = false;
+    if (!this.running) return;
+
+    if (data.error) {
+      console.warn('[Trainer] Worker error:', data.error);
+      return;
+    }
+
+    if (data.type !== 'train') return;
+
+    const { oldScore, newScore, changes, accepted, perVoiceScores, voiceAnalysis } = data;
+
+    // Update state
+    this.state.currentScore = newScore;
+    if (perVoiceScores) this.state.perVoiceScores = perVoiceScores;
+    if (voiceAnalysis) this.state.voiceAnalysis = voiceAnalysis;
+
+    if (accepted) {
+      // Apply changes to local registry
+      this.registry = applyChanges(this.registry, changes);
+      this.state.acceptedCount++;
+      if (newScore > this.state.bestScore) {
+        this.state.bestScore = newScore;
+        this.state.bestParams = registryToOverrides(this.registry);
+      }
+
+      // Apply to live engine
+      if (this.config.autoApplyToEngine && this.engineRef) {
+        const overrides = registryToOverrides(this.registry);
+        this.engineRef.setWorld(overrides);
+        this.onParamsAppliedCallback?.(overrides);
+      }
+
+      // Save to localStorage
+      if (this.config.saveToLocalStorage) {
+        this.saveParams();
+      }
+
+      // Update learned knowledge
+      for (const c of changes) {
+        if (!this.state.learnedKnowledge[c.name]) {
+          this.state.learnedKnowledge[c.name] = { value: c.newValue, score: newScore, attempts: 1 };
+        } else {
+          this.state.learnedKnowledge[c.name].value = c.newValue;
+          this.state.learnedKnowledge[c.name].score = newScore;
+          this.state.learnedKnowledge[c.name].attempts++;
+        }
+      }
+    } else {
+      this.state.rejectedCount++;
+      for (const c of changes) {
+        this.triedChanges.add(`${c.name}:${c.delta > 0 ? '+' : '-'}`);
+      }
+    }
+
+    this.state.totalIterations++;
+
+    const iteration: LearningIteration = {
+      iteration: this.state.totalIterations,
+      timestamp: Date.now(),
+      changes,
+      oldScore,
+      newScore,
+      scoreDelta: newScore - oldScore,
+      accepted,
+      reason: accepted
+        ? `score improved by ${(newScore - oldScore).toFixed(1)}`
+        : `score dropped by ${Math.abs(newScore - oldScore).toFixed(1)}`,
+      topProblem: changes[0]?.name || 'none',
+    };
+
+    this.state.iterations.push(iteration);
+    if (this.state.iterations.length > 100) {
+      this.state.iterations = this.state.iterations.slice(-100);
+    }
+
+    this.onIterationCallback?.(iteration);
+    this.onStateChangeCallback?.(this.state);
+  }
+
+  /** Run iteration on main thread (fallback when Worker unavailable). */
+  private runIterationMainThread(referenceProfile: ReferenceProfile): void {
 
     try {
       const { worldId, seed, renderDuration } = this.config;
