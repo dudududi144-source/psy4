@@ -64,19 +64,22 @@ export class ReferenceListenerV2 {
     this.metricsHistory = [];
 
     try {
-      // Create AudioContext for decodeAudioData
+      // Create AudioContext for decodeAudioData.
+      // We need to resume it — decodeAudioData requires a running context.
+      // This is SEPARATE from the engine's AudioContext (no conflict).
       const Ctx = window.AudioContext || (window as any).webkitAudioContext;
       this.audioCtx = new Ctx({ sampleRate: SAMPLE_RATE });
       if (this.audioCtx.state === 'suspended') {
         await this.audioCtx.resume();
       }
 
-      // Start fetching the stream
+      // Start fetching the stream via same-origin proxy
       this.fetchController = new AbortController();
       this.connected = true;
 
-      // Begin streaming fetch (runs in background)
-      this.startStreamingFetch(stream.url);
+      // Use proxy (window mode — returns ~20s chunks for analysis)
+      const proxyUrl = `/api/reference/proxy?stream=${encodeURIComponent(stream.id)}`;
+      this.startStreamingFetch(proxyUrl);
 
       return true;
     } catch (err) {
@@ -258,12 +261,10 @@ export class ReferenceListenerV2 {
       const audioData = combined.buffer.slice(0, offset);
 
       // Decode the MP3/AAC data to an AudioBuffer
-      // This is the key: decodeAudioData gives us a non-tainted AudioBuffer
       let audioBuffer: AudioBuffer;
       try {
         audioBuffer = await this.audioCtx.decodeAudioData(audioData);
       } catch (decodeErr) {
-        // decodeAudioData can fail on partial frames — try with a smaller chunk
         return;
       }
 

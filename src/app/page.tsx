@@ -145,6 +145,8 @@ export default function ReferenceTrainingPage() {
   const listenerRef = useRef<any>(null);
   const selfAnalyzerRef = useRef<any>(null);
   const engineRef = useRef<any>(null);
+  const refAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [refAudioPlaying, setRefAudioPlaying] = useState(false);
 
   // Load available streams
   useEffect(() => {
@@ -209,11 +211,45 @@ export default function ReferenceTrainingPage() {
       await listenerRef.current.disconnect();
       listenerRef.current = null;
     }
+    // Also stop reference audio playback if active
+    if (refAudioRef.current) {
+      refAudioRef.current.pause();
+      refAudioRef.current = null;
+      setRefAudioPlaying(false);
+    }
     setRefConnected(false);
     setRefMetrics(null);
     setRefProfile(null);
     setRefHistory([]);
   }, []);
+
+  // ─── Reference audio playback (so user can HEAR the radio) ─────────────
+  const toggleRefAudio = useCallback(async () => {
+    if (refAudioPlaying && refAudioRef.current) {
+      refAudioRef.current.pause();
+      setRefAudioPlaying(false);
+      return;
+    }
+    const stream = streams.find(s => s.id === selectedStreamId);
+    if (!stream) return;
+    try {
+      // Always use the proxy with continuous=1 for playback
+      // This solves CORS + mixed content + provides continuous stream
+      const proxyUrl = `/api/reference/proxy?stream=${encodeURIComponent(stream.id)}&continuous=1`;
+      if (!refAudioRef.current) {
+        refAudioRef.current = new Audio();
+        refAudioRef.current.crossOrigin = 'anonymous';
+        refAudioRef.current.volume = 0.6;
+      }
+      refAudioRef.current.src = proxyUrl;
+      await refAudioRef.current.play();
+      setRefAudioPlaying(true);
+      toast.success(`Playing: ${stream.name}`);
+    } catch (err) {
+      toast.error(`Playback failed: ${err instanceof Error ? err.message : String(err)}`);
+      setRefAudioPlaying(false);
+    }
+  }, [refAudioPlaying, selectedStreamId, streams]);
 
   // ─── Engine playback + self-analysis ─────────────────────────────────────
 
@@ -443,6 +479,16 @@ export default function ReferenceTrainingPage() {
               ) : (
                 <Button onClick={disconnectReference} variant="destructive">
                   <WifiOff className="w-4 h-4 mr-1" /> DISCONNECT
+                </Button>
+              )}
+              {refConnected && (
+                <Button
+                  onClick={toggleRefAudio}
+                  variant={refAudioPlaying ? 'secondary' : 'outline'}
+                  className={refAudioPlaying ? 'bg-amber-600 hover:bg-amber-700 text-white' : 'border-amber-600 text-amber-400 hover:bg-amber-950'}
+                >
+                  {refAudioPlaying ? <Volume2 className="w-4 h-4 mr-1" /> : <VolumeX className="w-4 h-4 mr-1" />}
+                  {refAudioPlaying ? 'STOP AUDIO' : 'PLAY REFERENCE'}
                 </Button>
               )}
             </div>
