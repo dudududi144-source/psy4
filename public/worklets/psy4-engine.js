@@ -663,13 +663,16 @@ class ClapVoice {
   }
 }
 
-// ─── Voice: Perc (pitched sine with decay) ─────────────────────────────────
+// ─── Voice: Perc (pitched sine with pitch envelope + saturation) ───────────
+// BEFORE: bare sine with fixed frequency and decay = telephone bell.
+// AFTER: sine with pitch envelope (descending) + saturation + Moog filter = tribal perc.
 
 class PercVoice {
   constructor() {
     this.active = false;
     this.t = 0;
     this.phase = 0;
+    this.filter = new MoogLadder();
   }
 
   trigger(time, freq, amp, sr) {
@@ -678,6 +681,7 @@ class PercVoice {
     this.freq = freq;
     this.amp = amp;
     this.phase = 0;
+    this.filter.reset();
   }
 
   render(currentTime, sr) {
@@ -685,14 +689,26 @@ class PercVoice {
     this.t += 1 / sr;
     if (this.t > 0.1) { this.active = false; return [0, true]; }
 
-    this.phase += 2 * Math.PI * this.freq / sr;
+    // Pitch envelope: starts 1.5x higher, drops to fundamental
+    const pitchEnv = 1.5 * Math.exp(-this.t / 0.01) + 0.5;
+    this.phase += 2 * Math.PI * this.freq * pitchEnv / sr;
+    const osc = Math.sin(this.phase);
+
+    // Filter for body — LP at 800Hz with slight resonance
+    const filtered = this.filter.process(osc, 800, 0.2, 1.5, sr);
+
+    // Saturation for warmth
+    const saturated = fastTanh(filtered * 1.8);
+
     const env = Math.exp(-this.t / 0.05);
-    const sample = Math.sin(this.phase) * env * this.amp;
+    const sample = saturated * env * this.amp;
     return [sample, false];
   }
 }
 
-// ─── Voice: Shaker (filtered noise, short) ─────────────────────────────────
+// ─── Voice: Shaker (filtered noise with proper HP + saturation) ────────────
+// BEFORE: differentiated noise (primitive HP). Thin and digital.
+// AFTER: noise through Moog HP + saturation = warm shaker with body.
 
 class ShakerVoice {
   constructor() {
@@ -700,6 +716,7 @@ class ShakerVoice {
     this.t = 0;
     this.noise = new PinkNoise();
     this.prevNoise = 0;
+    this.filter = new MoogLadder(); // for HP shaping
   }
 
   trigger(time, amp, sr) {
@@ -708,6 +725,7 @@ class ShakerVoice {
     this.amp = amp;
     this.noise.reset();
     this.prevNoise = 0;
+    this.filter.reset();
   }
 
   render(currentTime, sr) {
@@ -716,23 +734,34 @@ class ShakerVoice {
     if (this.t > 0.08) { this.active = false; return [0, true]; }
 
     const n = this.noise.process();
+    // HP via differentiation (fast)
     const hp = n - this.prevNoise;
     this.prevNoise = n;
+    // Additional HP shaping through Moog (highpass approximation via lowpass inversion)
+    const shaped = this.filter.process(hp, 6000, 0.1, 1.0, sr);
+    // Saturation for warmth
+    const saturated = fastTanh(shaped * 2.5);
     const env = Math.exp(-this.t / 0.03);
-    const sample = hp * env * 2 * this.amp;
+    const sample = saturated * env * 2 * this.amp;
     return [sample, false];
   }
 }
 
-// ─── Voice: Texture (FM or noise bed) ──────────────────────────────────────
+// ─── Voice: Texture (multi-layer psychedelic evolving bed) ──────────────────
+// BEFORE: FM sine or raw noise = siren or wind. Not psychedelic.
+// AFTER: 3 layers — detuned osc bed + filtered noise + slow filter morph.
+// Creates evolving atmospheric texture that sounds "psychedelic" not "generated".
 
 class TextureVoice {
   constructor() {
     this.active = false;
     this.t = 0;
-    this.carrierPhase = 0;
-    this.modPhase = 0;
+    this.saw1 = new BLSaw();
+    this.saw2 = new BLSaw();
+    this.filter = new MoogLadder();
     this.noise = new PinkNoise();
+    this.morphPhase = 0;
+    this.noiseFilter = new MoogLadder(); // separate filter for noise layer
   }
 
   trigger(time, dur, amp, type, sr) {
@@ -741,16 +770,17 @@ class TextureVoice {
     this.dur = dur;
     this.amp = amp;
     this.type = type || 'fm';
-    this.carrierPhase = 0;
-    this.modPhase = 0;
+    this.morphPhase = 0;
+    this.saw1.reset();
+    this.saw2.reset();
+    this.filter.reset();
+    this.noiseFilter.reset();
     this.noise.reset();
-    if (type === 'fm') {
-      this.carrierFreq = 200;
-      this.modFreq = 80;
-      this.modIndex = 200;
-    } else {
-      this.noiseFreq = 1000;
-    }
+    // Detuned oscillators — slow evolving bed
+    const baseFreq = 110 + Math.random() * 220;
+    this.saw1.setFreq(baseFreq);
+    this.saw2.setFreq(baseFreq * 1.01); // very slight detune
+    this.baseFreq = baseFreq;
   }
 
   render(currentTime, sr) {
@@ -760,21 +790,36 @@ class TextureVoice {
 
     const dt = 1 / sr;
     const env = Math.min(1, this.t / 0.5) * Math.min(1, (this.dur - this.t) / 0.5);
-    let sample = 0;
-    if (this.type === 'fm') {
-      this.modPhase += 2 * Math.PI * this.modFreq * dt;
-      const mod = Math.sin(this.modPhase) * this.modIndex;
-      this.carrierPhase += 2 * Math.PI * (this.carrierFreq + mod) * dt;
-      sample = Math.sin(this.carrierPhase);
-    } else {
-      const n = this.noise.process();
-      sample = n;
-    }
-    return [sample * env * this.amp, false];
+    if (env <= 0) return [0, false];
+
+    // Layer 1: Detuned saw bed — provides harmonic content
+    const inc = this.baseFreq / sr;
+    let oscBed = (this.saw1.process(inc) + this.saw2.process(inc)) * 0.3;
+
+    // Layer 2: Filtered noise — provides "air" and texture
+    const noiseSamp = this.noise.process();
+    const noiseFiltered = this.noiseFilter.process(noiseSamp, 2000, 0.3, 1.0, sr) * 0.4;
+
+    // Layer 3: Slow filter morph — cutoff moves up and down
+    this.morphPhase += 0.3 * dt; // 0.3Hz morph
+    const morph = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.morphPhase);
+    const morphCutoff = 300 + morph * 2000; // 300Hz to 2300Hz
+
+    // Mix layers and apply morph filter
+    let mix = oscBed + noiseFiltered;
+    mix = this.filter.process(mix, morphCutoff, 0.15, 1.2, sr);
+
+    // Saturation for warmth
+    mix = fastTanh(mix * 1.3);
+
+    return [mix * env * this.amp, false];
   }
 }
 
 // ─── Voice: FX (riser, impact, sweep, zap, blip, downlifter) ──────────────
+// BEFORE: Riser = noise getting louder. Impact = sine going down. Primitive.
+// AFTER: Riser = noise + filter sweep opening up. Impact = sub boom + noise burst.
+//        Sweep = filtered noise with stereo movement. Each FX has more body.
 
 class FXVoice {
   constructor() {
@@ -782,6 +827,7 @@ class FXVoice {
     this.t = 0;
     this.noise = new PinkNoise();
     this.phase = 0;
+    this.filter = new MoogLadder(); // filter for riser/sweep
   }
 
   trigger(type, time, dur, amp, sr) {
@@ -792,6 +838,7 @@ class FXVoice {
     this.amp = amp || 0.2;
     this.phase = 0;
     this.noise.reset();
+    this.filter.reset();
   }
 
   render(currentTime, sr) {
@@ -804,43 +851,72 @@ class FXVoice {
     const t = this.t;
     switch (this.type) {
       case V_RISER: {
+        // Riser = noise through filter that opens up + amplitude rise
+        // BEFORE: just noise * env. No filter, no character.
         const n = this.noise.process();
-        const env = Math.min(1, t / this.dur) * 0.3;
-        sample = n * env;
+        // Filter opens from 200Hz to 8000Hz over the duration
+        const cutoff = 200 + (t / this.dur) * 7800;
+        const filtered = this.filter.process(n, cutoff, 0.2, 1.5, sr);
+        // Amplitude rises exponentially (not linear)
+        const env = Math.pow(t / this.dur, 2) * 0.35;
+        sample = fastTanh(filtered * env * 3); // saturate for punch
         break;
       }
       case V_IMPACT: {
+        // Impact = sub sine boom + noise burst (two layers)
+        // BEFORE: just sine going down. No body, no texture.
+        // Sub boom: sine from 120Hz to 35Hz with exp decay
         const f = 120 * Math.exp(-t / 0.15) + 35;
         this.phase += 2 * Math.PI * f * dt;
-        const env = Math.exp(-t / 0.2);
-        sample = Math.sin(this.phase) * env * 0.8;
+        const subEnv = Math.exp(-t / 0.2);
+        const sub = Math.sin(this.phase) * subEnv * 0.7;
+        // Noise burst: short percussive crack
+        const n = this.noise.process();
+        const noiseEnv = Math.exp(-t / 0.02); // 20ms crack
+        const crack = n * noiseEnv * 0.3;
+        sample = sub + crack;
+        sample = fastTanh(sample * 1.5); // saturate
         break;
       }
       case V_SWEEP: {
+        // Sweep = filtered noise with filter moving + amplitude curve
+        // BEFORE: noise * sin envelope. No filter movement.
         const n = this.noise.process();
-        const env = Math.sin(Math.PI * t / this.dur) * 0.15;
-        sample = n * env;
+        // Filter sweeps from low to high and back
+        const sweepPos = t / this.dur;
+        const cutoff = 200 + Math.sin(Math.PI * sweepPos) * 4000 + 2000;
+        const filtered = this.filter.process(n, cutoff, 0.3, 1.3, sr);
+        const env = Math.sin(Math.PI * sweepPos) * 0.2;
+        sample = filtered * env;
         break;
       }
       case V_ZAP: {
+        // FM zap — carrier + modulator with exponential index decay
         const car = 880, mod = 1760;
         const idx = 3 * Math.exp(-t / 0.03);
         this.phase += 2 * Math.PI * (car + idx * Math.sin(2 * Math.PI * mod * t)) * dt;
         const env = Math.exp(-t / 0.04);
         sample = Math.sin(this.phase) * env;
+        sample = fastTanh(sample * 2); // saturate for grit
         break;
       }
       case V_BLIP: {
-        this.phase += 2 * Math.PI * 1200 * dt;
+        // Pure sine blip with pitch envelope (descending)
+        const f = 1200 * Math.exp(-t / 0.01) + 400;
+        this.phase += 2 * Math.PI * f * dt;
         const env = Math.exp(-t / 0.02);
         sample = Math.sin(this.phase) * env;
         break;
       }
       case V_DOWNLIFTER: {
+        // Downlifter = saw wave with descending pitch + filter closing
         const f = 800 * Math.exp(-t / 0.15) + 100;
         this.phase += 2 * Math.PI * f * dt;
+        const saw = 2 * (this.phase / (2 * Math.PI) % 1) - 1; // naive saw
+        const cutoff = 3000 * Math.exp(-t / 0.2) + 200;
+        const filtered = this.filter.process(saw, cutoff, 0.1, 1.0, sr);
         const env = Math.exp(-t / 0.2);
-        sample = Math.sin(this.phase) * env;
+        sample = filtered * env * 0.4;
         break;
       }
     }

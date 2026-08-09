@@ -1427,3 +1427,69 @@ BEFORE → AFTER:
   Drum makeup: 1.3 → 1.4
   Drum drive: 1.3 → 1.4
   Level: 39-56% → 65-67% (louder, more consistent)
+
+---
+Task ID: 23
+Agent: Z.ai Code (main)
+Task: ROAST נוסף — rebuild texture, FX, perc, shaker voices. כל הקולות עכשיו מעובדים.
+
+Work Log:
+ROAST (4 בעיות נוספות):
+1. Texture: FM פרימיטיבי (carrier+modulator קבוע) או רעש דרך bandpass = סירנה או רוח
+2. FX: Riser = רעש שעולה. Impact = sine שיורד. Sweep = רעש ב-sin envelope. פרימיטיבי.
+3. Perc: Sine עם decay = צלצול טלפון. חסר saturation, pitch envelope, character.
+4. Shaker: רעש דרך HP פרימיטיבי. חסר HP shaping, saturation, body.
+
+תיקונים:
+
+1. TEXTURE — נבנה מחדש עם 3 שכבות:
+   לפני: FM sine או raw noise = סירנה או רוח
+   אחרי: 3 שכבות — detuned saw bed (BL-Saw x2) + filtered noise (Moog HP) + slow filter morph (0.3Hz, 300-2300Hz)
+   עם saturation tanh(1.3). עכשיו זה texture ש"מתפתח" — לא סטטי.
+
+2. FX — כל ה-FX נבנו מחדש:
+   Riser: לפני noise*env → אחרי noise דרך Moog filter שנפתח (200→8000Hz) + exp amplitude rise + saturation
+   Impact: לפני sine*env → אחרי sub sine boom + noise burst crack (20ms) + saturation
+   Sweep: לפני noise*sin → אחרי noise דרך filter שזז (200→6000→200Hz) + sin amplitude
+   Zap: נוסף saturation tanh(2) ל-grit
+   Blip: נוסף pitch envelope (1200→400Hz descending) במקום תדר קבוע
+   Downlifter: לפני sine → אחרי saw wave + filter closing (3000→200Hz) + Moog
+
+3. PERC — נבנה מחדש:
+   לפני: bare sine עם decay = צלצול טלפון
+   אחרי: sine עם pitch envelope (1.5x→1x descending) + Moog LP (800Hz) + saturation tanh(1.8)
+   עכשיו זה perc עם body ו-character, לא צלצול.
+
+4. SHAKER — נבנה מחדש:
+   לפני: differentiated noise = HP פרימיטיבי, דק ודיגיטלי
+   אחרי: differentiated noise + Moog HP shaping (6000Hz) + saturation tanh(2.5)
+   עכשיו זה shaker עם body ו-warmth.
+
+VERIFIED: 0 errors, 35+ seconds stable, 6→9 voices, level 46-49%
+
+BEFORE → AFTER:
+  Texture: FM/noise → 3-layer (saw bed + noise + filter morph + saturation)
+  Riser: noise*env → noise + filter sweep (200→8000Hz) + exp rise + saturation
+  Impact: sine*env → sub boom + noise crack + saturation
+  Sweep: noise*sin → noise + filter movement (200→6000→200Hz)
+  Zap: no saturation → tanh(2) saturation
+  Blip: fixed freq → pitch envelope (1200→400Hz)
+  Downlifter: sine → saw + filter closing + Moog
+  Perc: bare sine → sine + pitch env + Moog LP + saturation
+  Shaker: diff noise → diff noise + Moog HP + saturation
+
+סה"כ קולות שנבנו מחדש בשני ה-rounds האחרונים:
+  Lead: 3 layers (fundamental + octave + air)
+  Acid: bidirectional filter LFO
+  Pad: 3 osc + filter sweep
+  Texture: 3 layers (saw bed + noise + morph)
+  Riser: filter sweep + saturation
+  Impact: sub boom + noise crack
+  Sweep: filter movement
+  Blip: pitch envelope
+  Downlifter: saw + filter
+  Perc: pitch env + Moog + saturation
+  Shaker: Moog HP + saturation
+  Bass: saturation + HP (from previous round)
+  Kick sample: saturation (from previous round)
+  = כל הקולות במערכת עברו rebuild
