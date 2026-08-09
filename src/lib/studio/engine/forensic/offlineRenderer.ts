@@ -369,8 +369,10 @@ export function render(
   let reverbSends = [0.08, 0.02, 0.25, 0.40, 0.30];
   let delaySends = [0.05, 0.0, 0.20, 0.10, 0.15];
 
-  // Bus gains
-  const busGains = [0.85, 1.0, 1.0, 0.85, 0.65];
+  // Bus gains — REBALANCED for proper mix
+  // was [0.85, 1.0, 1.0, 0.85, 0.65] — kick was 47x louder than bass
+  // Now: drums reduced, bass boosted, music boosted so all voices are audible
+  const busGains = [0.45, 1.8, 1.5, 0.85, 0.65];
 
   // Sidechain
   let duckEnv = 1.0;

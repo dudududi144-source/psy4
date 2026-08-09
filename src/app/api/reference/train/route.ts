@@ -1,36 +1,23 @@
 /**
  * POST /api/reference/train
  *
- * Runs a training iteration using the OFFLINE renderer (deterministic).
+ * Runs a REAL training loop that actually learns.
  *
- * This is the server-side training loop that:
- *   1. Renders with current params (deterministic)
- *   2. Analyzes the render
- *   3. Compares to the provided reference profile
- *   4. Proposes 1-3 parameter changes
- *   5. Renders with new params
- *   6. Compares scores
- *   7. Accepts or rejects
+ * The loop:
+ *   1. Render with current params → analyze → compute score
+ *   2. Identify the WEAKEST metric (biggest error)
+ *   3. Propose a change to fix that weakness
+ *   4. Render with new params → analyze → compute new score
+ *   5. If score improved → ACCEPT (keep new params)
+ *      If score worse → REJECT (revert), try OPPOSITE direction next time
+ *   6. Repeat — each iteration builds on the last
  *
- * The reference profile is provided by the client (captured from the live
- * radio stream via ReferenceListener).
- *
- * Body: {
- *   worldId: string,
- *   seed: number,
- *   duration: number,
- *   currentParams: Record<string, number>,
- *   referenceProfile: ReferenceProfile,
- *   maxIterations: number,
- *   maxChangesPerIteration: number,
- * }
- *
- * Returns: {
- *   ok: boolean,
- *   iterations: TrainingIteration[],
- *   finalScore: number,
- *   bestParams: Record<string, number>,
- * }
+ * Key fixes vs old version:
+ *   - Recomputes score EVERY iteration (was using initial score)
+ *   - Tracks tried directions to avoid repeating rejected changes
+ *   - Tries opposite direction if a change is rejected
+ *   - Correct score delta calculation
+ *   - More iterations (default 12)
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -39,7 +26,7 @@ import { analyzeAudio } from '@/lib/studio/engine/forensic/audioAnalyzer';
 import { computeReferenceScore } from '@/lib/studio/engine/reference/referenceScore';
 import {
   createParameterRegistry, adjustParameter, applyChanges, registryToOverrides,
-  type ParameterChange,
+  type OptimizableParameter, type ParameterChange,
 } from '@/lib/studio/engine/reference/parameterRegistry';
 import { getWorldDNA } from '@/lib/studio/engine/reference/worldDNA';
 import type { ReferenceProfile } from '@/lib/studio/engine/reference/referenceListener';
@@ -56,6 +43,7 @@ function analysisToReferenceMetrics(analysis: ReturnType<typeof analyzeAudio>, w
   const d = analysis.dynamics;
   const le = analysis.lowEnd;
   const tr = analysis.transients;
+  const duration = analysis.duration || 1;
 
   return {
     bpm: FORENSIC_WORLDS[worldId]?.bpm || 142,
@@ -72,10 +60,10 @@ function analysisToReferenceMetrics(analysis: ReturnType<typeof analyzeAudio>, w
     spectralCentroid: sp.centroidHz,
     spectralFlatness: sp.flatness,
     spectralRolloff: sp.rolloff,
-    transientDensity: tr.count / (analysis.duration || 1),
-    kickDensity: tr.count / (analysis.duration || 1) * 0.3,
-    hatDensity: tr.count / (analysis.duration || 1) * 0.4,
-    percussionDensity: tr.count / (analysis.duration || 1),
+    transientDensity: tr.count / duration,
+    kickDensity: tr.count / duration * 0.3,
+    hatDensity: tr.count / duration * 0.4,
+    percussionDensity: tr.count / duration,
     stereoWidth: 0.35,
     kickDecayMs: le.kickDecay * 1000,
     bassDecayMs: le.bassDecay * 1000,
@@ -97,7 +85,7 @@ export async function POST(request: NextRequest) {
       duration = 12,
       currentParams = {},
       referenceProfile,
-      maxIterations = 6,
+      maxIterations = 12,
       maxChangesPerIteration = 2,
     } = body;
 
@@ -131,33 +119,52 @@ export async function POST(request: NextRequest) {
     let registry = createParameterRegistry(defaults);
 
     const iterations = [];
-    let bestScore = 0;
-    let bestParams = registryToOverrides(registry);
 
-    // Initial render + score
+    // ── Initial render + score ──
     const initialRender = render(seed, worldId, duration, {
       paramOverrides: registryToOverrides(registry),
     });
     const initialAnalysis = analyzeAudio(initialRender.samplesL, initialRender.samplesR, SR);
     const initialMetrics = analysisToReferenceMetrics(initialAnalysis, worldId);
-    const initialScore = computeReferenceScore(initialMetrics, referenceProfile, dna.bpmTarget);
-    let currentScore = initialScore.total;
-    bestScore = currentScore;
-    bestParams = registryToOverrides(registry);
+    const initialScoreResult = computeReferenceScore(initialMetrics, referenceProfile, dna.bpmTarget);
+    let currentScore = initialScoreResult.total;
+    let bestScore = currentScore;
+    let bestParams = registryToOverrides(registry);
+    let lastMetrics = initialMetrics;
+
+    // Track tried changes to avoid repeating rejected ones
+    const triedChanges = new Set<string>();
 
     for (let iter = 1; iter <= maxIterations; iter++) {
-      // Identify top problems
-      const problems = initialScore.topProblems; // use the latest score's problems
-      const scoreResult = currentScore === initialScore.total
-        ? initialScore
-        : computeReferenceScore(initialMetrics, referenceProfile, dna.bpmTarget);
+      // ── CRITICAL FIX: Recompute score with CURRENT params every iteration ──
+      const currentRender = render(seed, worldId, duration, {
+        paramOverrides: registryToOverrides(registry),
+      });
+      const currentAnalysis = analyzeAudio(currentRender.samplesL, currentRender.samplesR, SR);
+      const currentMetrics = analysisToReferenceMetrics(currentAnalysis, worldId);
+      const currentScoreResult = computeReferenceScore(currentMetrics, referenceProfile, dna.bpmTarget);
+      const oldScore = currentScoreResult.total;
 
-      // Propose changes based on top problems
+      // ── Identify top problems (from CURRENT score, not initial) ──
+      const topProblems = currentScoreResult.topProblems;
+
+      // ── Propose changes based on the weakest metrics ──
       const changes: ParameterChange[] = [];
       const usedParams = new Set<string>();
-      for (const problem of scoreResult.topProblems.slice(0, maxChangesPerIteration)) {
+
+      for (const problem of topProblems.slice(0, maxChangesPerIteration)) {
         let paramName: string | null = null;
         let delta = 0;
+
+        // Helper: check if a direction was already tried and rejected
+        const isTried = (name: string, dir: number) => {
+          const key = `${name}:${dir > 0 ? '+' : '-'}`;
+          return triedChanges.has(key);
+        };
+        // Mark a direction as tried
+        const markTried = (name: string, dir: number) => {
+          triedChanges.add(`${name}:${dir > 0 ? '+' : '-'}`);
+        };
 
         switch (problem.name) {
           case 'Kick Decay': {
@@ -165,8 +172,18 @@ export async function POST(request: NextRequest) {
             if (param && !usedParams.has('kickDecay')) {
               paramName = 'kickDecay';
               const refDecaySec = referenceProfile.kickDecayMs.mean / 1000;
-              delta = (refDecaySec - param.current) * 0.5;
-              usedParams.add('kickDecay');
+              const direction = refDecaySec > param.current ? 1 : -1;
+              // If primary direction tried, try opposite with smaller step
+              if (isTried('kickDecay', direction)) {
+                if (isTried('kickDecay', -direction)) {
+                  paramName = null; // both directions tried, skip
+                } else {
+                  delta = -direction * param.step * 2; // opposite, 2 steps
+                }
+              } else {
+                delta = (refDecaySec - param.current) * 0.5; // move 50% toward target
+              }
+              if (paramName) usedParams.add('kickDecay');
             }
             break;
           }
@@ -174,8 +191,17 @@ export async function POST(request: NextRequest) {
             const param = registry.find(p => p.name === 'bassCutoff');
             if (param && !usedParams.has('bassCutoff')) {
               paramName = 'bassCutoff';
-              delta = problem.error > 0 ? -50 : 50;
-              usedParams.add('bassCutoff');
+              const direction = problem.error > 0 ? -1 : 1; // too long → lower cutoff
+              if (isTried('bassCutoff', direction)) {
+                if (isTried('bassCutoff', -direction)) {
+                  paramName = null;
+                } else {
+                  delta = -direction * param.step * 2;
+                }
+              } else {
+                delta = direction * 60; // 60Hz steps (bigger for measurable effect)
+              }
+              if (paramName) usedParams.add('bassCutoff');
             }
             break;
           }
@@ -183,38 +209,45 @@ export async function POST(request: NextRequest) {
             const param = registry.find(p => p.name === 'leadCutoff');
             if (param && !usedParams.has('leadCutoff')) {
               paramName = 'leadCutoff';
-              delta = problem.error < 0 ? 200 : -200;
-              usedParams.add('leadCutoff');
+              const direction = problem.error < 0 ? 1 : -1; // too dark → raise cutoff
+              if (isTried('leadCutoff', direction)) {
+                if (isTried('leadCutoff', -direction)) {
+                  paramName = null;
+                } else {
+                  delta = -direction * param.step * 2;
+                }
+              } else {
+                delta = direction * 400; // 400Hz steps (bigger for measurable effect)
+              }
+              if (paramName) usedParams.add('leadCutoff');
             }
             break;
           }
-          case 'Transient Density': {
-            const param = registry.find(p => p.name === 'duck');
-            if (param && !usedParams.has('duck')) {
-              paramName = 'duck';
-              delta = problem.error < 0 ? 0.05 : -0.05;
-              usedParams.add('duck');
-            }
-            break;
-          }
-          case 'Loudness': {
-            const param = registry.find(p => p.name === 'duck');
-            if (param && !usedParams.has('duck')) {
-              paramName = 'duck';
-              delta = problem.error < 0 ? 0.05 : -0.05;
-              usedParams.add('duck');
-            }
-            break;
-          }
+          case 'Transient Density':
+          case 'Loudness':
           case 'Energy': {
             const param = registry.find(p => p.name === 'duck');
             if (param && !usedParams.has('duck')) {
               paramName = 'duck';
-              delta = problem.error < 0 ? 0.05 : -0.05;
-              usedParams.add('duck');
+              const direction = problem.error < 0 ? 1 : -1; // too few transients → more duck
+              if (isTried('duck', direction)) {
+                if (isTried('duck', -direction)) {
+                  paramName = null;
+                } else {
+                  delta = -direction * param.step;
+                }
+              } else {
+                delta = direction * 0.1; // bigger steps
+              }
+              if (paramName) usedParams.add('duck');
             }
             break;
           }
+          case 'BPM':
+          case 'Stereo Width':
+          case 'Repetition':
+            // Can't fix with available parameters
+            break;
         }
 
         if (paramName) {
@@ -222,7 +255,12 @@ export async function POST(request: NextRequest) {
           if (param) {
             const newValue = adjustParameter(param, delta);
             if (newValue !== param.current) {
-              changes.push({ name: paramName, oldValue: param.current, newValue, delta: newValue - param.current });
+              changes.push({
+                name: paramName,
+                oldValue: param.current,
+                newValue,
+                delta: newValue - param.current,
+              });
             }
           }
         }
@@ -235,18 +273,18 @@ export async function POST(request: NextRequest) {
           targetProblem: 'none',
           targetError: 0,
           changes: [],
-          oldScore: currentScore,
-          newScore: currentScore,
+          oldScore,
+          newScore: oldScore,
           scoreDelta: 0,
           accepted: false,
-          reason: 'no actionable changes proposed',
-          oldMetrics: initialMetrics,
-          newMetrics: initialMetrics,
+          reason: 'no actionable changes proposed (all problems are non-parameter)',
+          oldMetrics: currentMetrics,
+          newMetrics: currentMetrics,
         });
         continue;
       }
 
-      // Render with new params
+      // ── Render with new params ──
       const newRegistry = applyChanges(registry, changes);
       const newRender = render(seed, worldId, duration, {
         paramOverrides: registryToOverrides(newRegistry),
@@ -256,14 +294,22 @@ export async function POST(request: NextRequest) {
       const newScoreResult = computeReferenceScore(newMetrics, referenceProfile, dna.bpmTarget);
       const newScore = newScoreResult.total;
 
-      // Accept or reject
-      const accepted = newScore > currentScore;
+      // ── Accept or reject ──
+      const accepted = newScore > oldScore;
+      const scoreDelta = newScore - oldScore;
+
       if (accepted) {
         registry = newRegistry;
         currentScore = newScore;
+        lastMetrics = newMetrics;
         if (newScore > bestScore) {
           bestScore = newScore;
           bestParams = registryToOverrides(newRegistry);
+        }
+      } else {
+        // Mark this direction as tried so we don't repeat it
+        for (const c of changes) {
+          triedChanges.add(`${c.name}:${c.delta > 0 ? '+' : '-'}`);
         }
       }
 
@@ -273,29 +319,28 @@ export async function POST(request: NextRequest) {
         targetProblem: changes[0]?.name || 'none',
         targetError: 0,
         changes,
-        oldScore: accepted ? currentScore - (newScore - currentScore) : currentScore,
+        oldScore,
         newScore,
-        scoreDelta: newScore - (accepted ? currentScore - (newScore - currentScore) : currentScore),
+        scoreDelta,
         accepted,
         reason: accepted
-          ? `score improved (${(newScore - currentScore + (newScore - currentScore)).toFixed(1)})`
-          : `score did not improve`,
-        oldMetrics: initialMetrics,
+          ? `score improved by ${scoreDelta.toFixed(1)} points`
+          : `score dropped by ${Math.abs(scoreDelta).toFixed(1)} — reverting`,
+        oldMetrics: currentMetrics,
         newMetrics,
       });
-
-      // Update currentScore for next iteration
-      if (accepted) currentScore = newScore;
     }
 
     return NextResponse.json({
       ok: true,
       iterations,
-      initialScore: initialScore.total,
+      initialScore: initialScoreResult.total,
       finalScore: currentScore,
       bestScore,
       bestParams,
-      referenceScoreBreakdown: initialScore.breakdown,
+      referenceScoreBreakdown: initialScoreResult.breakdown,
+      improvement: bestScore - initialScoreResult.total,
+      learned: bestScore > initialScoreResult.total,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -220,9 +220,9 @@ export function computeReferenceScore(
     explanation: `Regularity: ${ourReg.toFixed(2)} vs ref ${refReg.toFixed(2)} (error ${ourReg - refReg > 0 ? '+' : ''}${(ourReg - refReg).toFixed(2)})`,
   };
 
-  // Weighted total
+  // Weighted total — use 1 decimal place for finer resolution
   const total = Math.round(
-    bpm.score * bpm.weight +
+    (bpm.score * bpm.weight +
     kickDecay.score * kickDecay.weight +
     bassDecay.score * bassDecay.weight +
     spectralBalance.score * spectralBalance.weight +
@@ -230,8 +230,8 @@ export function computeReferenceScore(
     loudness.score * loudness.weight +
     stereoWidth.score * stereoWidth.weight +
     energy.score * energy.weight +
-    repetition.score * repetition.weight
-  );
+    repetition.score * repetition.weight) * 10
+  ) / 10;
 
   // Top problems — sort by (weight * (100 - score)) descending
   const allScores = [bpm, kickDecay, bassDecay, spectralBalance, transientDensity, loudness, stereoWidth, energy, repetition];

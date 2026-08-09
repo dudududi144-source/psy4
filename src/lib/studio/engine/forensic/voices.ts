@@ -135,8 +135,11 @@ export class BassVoice {
     this.saw.setFreq(freq);
     this.filter.reset();
     if (acid) {
-      this.cutoffStart = 2500;
-      this.cutoffEnd = 100;
+      // Acid mode: use params but with acid-appropriate ranges
+      // CRITICAL FIX: was ignoring params completely (hardcoded values),
+      // making bassCutoff/bassResonance DEAD PARAMETERS for acid worlds.
+      this.cutoffStart = Math.min(4000, (params?.cutoffStart ?? 2500) * 1.5);
+      this.cutoffEnd = Math.max(50, (params?.cutoffEnd ?? 100) * 0.5);
       this.res = 0.85;
       this.bassDecay = 0.15;
     } else {
