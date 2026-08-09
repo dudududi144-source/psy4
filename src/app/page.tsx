@@ -218,6 +218,14 @@ export default function LivePage() {
               <canvas ref={canvasRef} width={800} height={80} className="w-full h-20 rounded-lg bg-black/40" />
             </div>
           )}
+          {playing && (
+            <div className="mt-3 flex items-center gap-4 text-[10px] font-mono text-muted-foreground">
+              <span>SECTION: <span className="text-cyan-400">{section}</span></span>
+              <span>BAR: <span className="text-cyan-400">{bar}</span></span>
+              <span>PHRASE: <span className="text-cyan-400">{phrase}</span></span>
+              <span>VOICES: <span className="text-fuchsia-400">{activeVoices}</span></span>
+            </div>
+          )}
         </Card>
 
         {/* MACRO CONTROLS */}
