@@ -430,16 +430,18 @@ class LeadVoice {
     this.t += dt;
     if (this.t > this.dur + 0.05) { this.active = false; return [0, true]; }
 
-    const inc = this.freq / sr;
+    // BUG FIX: Use each saw's OWN frequency (set via setFreq in trigger) — NOT the base freq.
+    // Previously used `const inc = this.freq / sr` for all saws, which ignored the detune
+    // and made all saws play the same frequency. This made leadDetune a DEAD parameter.
 
     // Layer 1: Fundamental — 5 detuned saws
     let fundamental = 0;
-    for (const s of this.saws) fundamental += s.process(inc);
+    for (const s of this.saws) fundamental += s.process(s.freq / sr);
     fundamental /= this.saws.length;
 
     // Layer 2: Octave-up — 3 detuned saws at 2x freq (adds brightness/air)
     let octaveLayer = 0;
-    for (const s of this.octaveSaws) octaveLayer += s.process(inc * 2);
+    for (const s of this.octaveSaws) octaveLayer += s.process(s.freq / sr);
     octaveLayer /= this.octaveSaws.length;
 
     // Layer 3: Air — pink noise through high-pass (adds "breath" and sheen)
@@ -573,7 +575,8 @@ class PadVoice {
     this.saws[2].setFreq(this.freq * Math.pow(2, this.detune / 1200) * detuneMod);
 
     let mix = 0;
-    for (const s of this.saws) mix += s.process(inc);
+    // BUG FIX: use each saw's own frequency, not the shared base inc
+    for (const s of this.saws) mix += s.process(s.freq / sr);
     mix /= this.saws.length;
 
     // SLOW FILTER SWEEP — cutoff moves up and down over the duration
@@ -1785,8 +1788,10 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       // This creates the "pumping" groove that is THE defining characteristic of psytrance.
       if (this.duckEnv < 1) {
         // Exponential recovery — fast at first, then gradual
-        // This matches how real sidechain compression behaves
-        this.duckEnv += (1 - this.duckEnv) * (dt / 0.08);  // 80ms time constant
+        // FIX: was 0.08 (80ms) — too fast, bass plays on offbeat (117ms after kick)
+        // so the duck recovered before the bass played, making duck a DEAD parameter.
+        // 250ms release keeps the bass ducked through the offbeat.
+        this.duckEnv += (1 - this.duckEnv) * (dt / 0.25);  // 250ms time constant
       }
 
       // Mix all active voices into stereo buses
