@@ -1493,3 +1493,68 @@ BEFORE → AFTER:
   Bass: saturation + HP (from previous round)
   Kick sample: saturation (from previous round)
   = כל הקולות במערכת עברו rebuild
+
+---
+Task ID: 24
+Agent: Z.ai Code (main)
+Task: ROAST מוזיקלי + תיקונים: bass variation, hat velocity, fills, element removal, transition automation.
+
+Work Log:
+ROAST מוזיקלי (6 בעיות):
+1. באס מנגן את אותו פאטרן כל בר — אין שינוי בין בר 1 לבר 16
+2. האטס סטטיים — אותו velocity, אין ghost notes, אין velocity curve
+3. אין fills — הבר האחרון של פראזה זהה לכל שאר הברים
+4. אין filter automation — אין filter sweeps לפני דרופ
+5. מעברי סקשן חדים — אין build-down, אין element removal
+6. אין sustained bass — כל באס הוא 120ms pluck, אין וריאציה
+
+תיקונים:
+
+1. BASS — BAR-TO-BAR VARIATION:
+   לפני: אותו pattern לכל הסקשן (bassPatternIdx קבוע)
+   אחרי: pattern rotates כל 4 ברים + passing tones בברים אי-זוגיים + octave lift בבר 4 + sustained bass כל 8 ברים
+   
+2. HATS — VELOCITY CURVE + GHOST NOTES:
+   לפני: 2 רמות velocity (0.12 / 0.08)
+   אחרי: 4 רמות (downbeat 0.14 / backbeat 0.10 / offbeat 0.07) + bar variation (×1.2 בבר 4) + ghost hats (0.04, 15% chance)
+   
+3. SHAKER — VELOCITY VARIATION:
+   לפני: velocity קבוע
+   אחרי: accent על beat 4 (×1.3) — יוצר groove
+
+4. CLAP — BAR VARIATION:
+   לפני: velocity קבוע
+   אחרי: ×1.2 בבר 4 (fill leading)
+
+5. PERC — ACCENT VARIATION:
+   לפני: velocity קבוע
+   אחרי: ×1.3 accent בכל 8 צעדים
+
+6. DRUM FILLS — 3 סוגי fills במקום 1:
+   לפני: תמיד perc→hat→perc→hat
+   אחרי: 
+   - Fill A (כל 4 ברים): perc→hat→perc→open hat
+   - Fill B (כל 8 ברים): rapid hats→clap
+   - Fill C (כל 16 ברים): perc roll→impact (big fill)
+
+7. ELEMENT REMOVAL — hats muted לפני transitions:
+   לפני: הכל מנגן עד הסוף
+   אחרי: hats מושתקים ב-2 ברים האחרונים של BUILD ו-DROP (לפני FINAL DROP)
+   זה יוצר מתח על ידי הסרת אלמנטים — מה שעושים במוזיקה מסחרית
+
+8. TRANSITION AUTOMATION:
+   לפני: riser ב-2 ברים האחרונים של build, impact אחד בתחילת drop
+   אחרי: sweep נוסף 4 ברים לפני drop (tension מוקדם יותר) + double impact בתחילת drop (חזק יותר) + sweep ארוך יותר ב-build transitions
+
+VERIFIED: 0 errors, 40+ seconds stable
+Level: 68%→49% (GROOVE→BREAK dynamics — באס וליד מוסרים בבריק)
+
+BEFORE → AFTER:
+  Bass: same pattern all bars → rotates every 4 bars + passing tones + octave lift + sustained every 8 bars
+  Hats: 2 velocity levels → 4 levels + ghost notes + bar variation
+  Shaker: constant velocity → beat 4 accent
+  Clap: constant velocity → bar 4 accent
+  Fills: 1 fill type → 3 fill types (perc/hat/rapid/impact)
+  Element removal: none → hats muted before transitions
+  Transitions: single riser + single impact → early sweep + double impact + longer sweeps
+  Musical variation: none → bar-to-bar + phrase-to-phrase

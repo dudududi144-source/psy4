@@ -1671,27 +1671,42 @@ export class Psy4LiveEngine {
     // DROP CONTRAST: last 2 bars of build — remove bass, narrow filter, create tension
     const isPreDrop = S.label.includes('BUILD') && bar >= S.bars - 2;
     const isDropStart = S.bassOn && S.leadOn && bar === 0;
+    // ELEMENT REMOVAL: last bar of groove/build — remove hats for tension
+    const isPreTransition = bar === S.bars - 1;
+    // FILTER AUTOMATION: last 4 bars of build — riser + filter close
+    const isBuildClimax = S.label.includes('BUILD') && bar >= S.bars - 4;
 
-    // Riser before drop (last 2 bars of build)
+    // Riser before drop (last 2 bars of build) — LONGER riser for more tension
     if (isPreDrop && sb === 0) {
       this.riser(t, this.s16() * 32);
     }
-    // Impact at drop start
+    // Additional riser at 4 bars before drop (earlier tension build)
+    if (isBuildClimax && bar === S.bars - 4 && sb === 0) {
+      this.sweep(t, this.s16() * 16);
+    }
+    // Impact at drop start — LOUDER for more payoff
     if (isDropStart && sb === 0) {
       this.impact(t);
+      // Double impact for big drop entrance
+      this.impact(t + this.s16() * 2);
     }
     // Filter sweep in breakdown
     if (!S.bassOn && bar === 0 && sb === 0) {
       this.sweep(t, this.s16() * 32);
     }
-    // Sweep at section transitions (last bar)
-    if (bar === S.bars - 1 && sb === 12 && S.bassOn) {
-      this.sweep(t, this.s16() * 4);
+    // Sweep at section transitions (last bar) — vary sweep length by section
+    if (isPreTransition && sb === 12 && S.bassOn) {
+      const sweepLen = S.label.includes('BUILD') ? this.s16() * 8 : this.s16() * 4;
+      this.sweep(t, sweepLen);
     }
     // Downlifter at drop start (descending sweep after impact = contrast)
     if (isDropStart && sb === 4) {
       this.downlifter(t, 0.1 + this.macros.energy * 0.05);
     }
+    // ELEMENT REMOVAL: last 2 bars before break — remove hats (creates space)
+    // This is what commercial tracks do — they strip elements before a section change
+    const hatsMuted = (S.label.includes('BUILD') && bar >= S.bars - 2) ||
+                      (S.bassOn && S.leadOn && bar >= S.bars - 2 && S.label !== 'FINAL DROP');
 
     // ─── SECTION-AWARE REVERB/DELAY AUTOMATION ─────────────
     if (sb === 0 && bar === 0) {
@@ -1777,15 +1792,29 @@ export class Psy4LiveEngine {
       this.kick(t, 0.3);
     }
 
-    // ─── BASS (psytrance grammar — explicit patterns, not random) ──
+    // ─── BASS (psytrance grammar — bar-to-bar variation) ──
     const isOff = sb % 2 === 1;
     const bt = isOff ? t + sw * this.s16() : t;
     // Use explicit bass patterns from BASS_PATTERNS (controlled, not random)
     const bassPatterns = BASS_PATTERNS[w.bass] || BASS_PATTERNS.off;
-    const bassPattern = bassPatterns[S.bassPatternIdx % bassPatterns.length];
+    // BAR-TO-BAR VARIATION: change pattern index every 4 bars for musical evolution
+    // BEFORE: same pattern for entire section. AFTER: pattern rotates every 4 bars.
+    const bassPatternRotIdx = (S.bassPatternIdx + Math.floor(bar / 4)) % bassPatterns.length;
+    const bassPattern = bassPatterns[bassPatternRotIdx];
     const patternStep = Math.floor(sb / 2) % bassPattern.steps.length;
-    const bassDegree = bassPattern.steps[patternStep];
-    const bassAccent = bassPattern.accents[patternStep];
+    let bassDegree = bassPattern.steps[patternStep];
+    let bassAccent = bassPattern.accents[patternStep];
+
+    // BAR-TO-BAR NOTE VARIATION: every 2nd bar, add a passing tone or octave
+    if (bar % 2 === 1 && sb === 6 && S.rng.chance(0.4)) {
+      bassDegree = S.rng.pick([2, 4, 7]); // passing tone
+      bassAccent = 0.6;
+    }
+    // Every 4th bar, octave up on the last beat for lift
+    if (bar % 4 === 3 && sb === 14) {
+      bassDegree = 7; // octave
+      bassAccent = 0.8;
+    }
 
     // Determine if bass plays based on world type and pattern
     let bassOn = bassDegree >= 0 && bassAccent > 0;
@@ -1800,12 +1829,18 @@ export class Psy4LiveEngine {
 
     if (bassOn) {
       const bassNote = grammarScaleNote(w.root, w.scale, bassDegree);
-      // Velocity from pattern accent + energy
+      // Velocity from pattern accent + energy + BAR POSITION VARIATION
+      // Downbeats louder, ghost notes quieter — creates groove, not machine
       let bassVel = bassAccent * (0.4 + e * 0.2);
       let bassDur = this.s16() * 0.9;
       // Ghost bass: very quiet on step 0 of odd bars (lift)
       const isGhost = (bar % 2 === 1 && sb === 0 && S.rng.chance(0.3));
       if (isGhost) { bassVel = 0.2; bassDur = this.s16() * 0.4; }
+      // SUSTAINED BASS: every 8th bar, play a longer sustained note for variation
+      if (bar % 8 === 7 && sb === 0) {
+        bassDur = this.s16() * 2.5; // sustained — breaks the pluck pattern
+        bassVel *= 1.1;
+      }
       this.bass(bt, bassNote, bassDur, bassVel, w.acid);
     }
 
@@ -1820,41 +1855,85 @@ export class Psy4LiveEngine {
       }
     }
 
-    // ─── HATS (with groove + velocity variation) ────────────
-    if (w.hatPattern[sb] === 'x') {
-      const hatVel = (sb % 4 === 0 ? 0.12 : 0.08) * (0.5 + dens * 0.5);
-      const hatPan = 0.2 + Math.sin(s * 0.1) * 0.15; // slight movement
+    // ─── HATS (with groove + velocity variation + GHOST NOTES + ELEMENT REMOVAL) ───
+    // HATS MUTED before transitions — creates tension by removing elements
+    if (!hatsMuted && w.hatPattern[sb] === 'x') {
+      // VELOCITY CURVE: downbeats louder, offbeats lighter, bar position matters
+      // BEFORE: sb%4===0 ? 0.12 : 0.08 (only 2 levels)
+      // AFTER: 4 levels based on beat position + bar position + density
+      const beatPos = sb % 4;
+      let hatVel;
+      if (beatPos === 0) hatVel = 0.14;           // downbeat — loudest
+      else if (beatPos === 2) hatVel = 0.10;       // backbeat — medium
+      else hatVel = 0.07;                           // offbeat — lightest
+      // BAR VARIATION: every 4th bar, hats are louder (build tension)
+      if (bar % 4 === 3) hatVel *= 1.2;
+      // DENSITY: scale by section density
+      hatVel *= (0.5 + dens * 0.5);
+      const hatPan = 0.2 + Math.sin(s * 0.1) * 0.15;
       this.hat(t + (sb % 4 === 2 ? sw * this.s16() : 0), false, hatVel, hatPan);
     }
-    // Open hat on step 4
-    if (sb === 4 && S.bassOn) {
-      this.hat(t, true, 0.06 + dens * 0.04, -0.25);
+    // GHOST HATS: occasional quiet hat between main hats (adds groove, not machine)
+    if (!hatsMuted && w.hatPattern[sb] === '.' && sb % 2 === 0 && S.rng.chance(0.15 * dens) && S.bassOn) {
+      this.hat(t, false, 0.04 + dens * 0.02, 0.15 + Math.sin(s * 0.2) * 0.1);
     }
-    // Shaker on offbeats in groove/drop
-    if ((S.bassOn && S.leadOn || S.bassOn && S.leadOn) && sb % 2 === 1 && S.rng.chance(0.6 * dens)) {
-      this.shaker(t, 0.04 + dens * 0.03, -0.15 + Math.sin(s * 0.07) * 0.1);
+    // Open hat on step 4 — also muted during transition
+    if (!hatsMuted && sb === 4 && S.bassOn) {
+      const openVel = 0.06 + dens * 0.04;
+      // BAR VARIATION: every 4th bar, open hat is longer (fill-like)
+      const openIsLong = bar % 4 === 3;
+      this.hat(t, openIsLong, openVel, -0.25);
+    }
+    // Shaker on offbeats in groove/drop — VELOCITY VARIATION
+    if (S.bassOn && S.leadOn && sb % 2 === 1 && S.rng.chance(0.6 * dens)) {
+      // Vary velocity based on position — creates groove, not static
+      const shakerVel = (0.04 + dens * 0.03) * (sb % 4 === 3 ? 1.3 : 1.0); // accent on beat 4
+      this.shaker(t, shakerVel, -0.15 + Math.sin(s * 0.07) * 0.1);
     }
 
-    // ─── CLAP / SNARE (on 2 & 4) ────────────────────────────
+    // ─── CLAP / SNARE (on 2 & 4 with VARIATION) ─────────────────
     if (sb === 4 && S.bassOn || S.leadOn && S.bassOn) {
-      this.clap(t, 0.25 * (0.5 + e * 0.5));
+      // BAR VARIATION: every 4th bar, clap is harder (fill leading)
+      const clapVel = 0.25 * (0.5 + e * 0.5) * (bar % 4 === 3 ? 1.2 : 1.0);
+      this.clap(t, clapVel);
     }
     if (sb === 12 && S.bassOn && S.leadOn) {
+      // Only in drops, extra clap for drive
       this.clap(t, 0.2 * (0.5 + e * 0.5));
     }
 
-    // ─── PERCUSSION (world-specific pattern) ────────────────
+    // ─── PERCUSSION (world-specific pattern with VARIATION) ─────
     if (w.percPattern[sb] === 'x' && S.bassOn && S.rng.chance(0.7 * dens)) {
+      // VELOCITY VARIATION: accent on certain steps
+      const percVel = (0.1 + dens * 0.05) * (sb % 8 === 0 ? 1.3 : 1.0);
       const percPan = 0.3 + Math.sin(s * 0.05) * 0.2;
-      this.perc(t, 0.1 + dens * 0.05, percPan);
+      this.perc(t, percVel, percPan);
     }
 
-    // ─── DRUM FILL (last bar of phrase, steps 12-15) ────────
+    // ─── DRUM FILL (last bar of phrase — REAL fills, not same pattern) ──
+    // BEFORE: same 4 hits every time (perc, hat, perc, hat)
+    // AFTER: different fill patterns based on bar position + section
     if (bar % 4 === 3 && sb >= 12 && S.bassOn) {
-      if (sb === 12) this.perc(t, 0.12, 0.4);
-      if (sb === 13) this.hat(t, false, 0.1, -0.3);
-      if (sb === 14) this.perc(t, 0.1, -0.3);
-      if (sb === 15) this.hat(t, true, 0.08, 0.3);
+      const fillType = bar % 8 === 7 ? 2 : bar % 4 === 3 ? 1 : 0; // 3 fill types
+      if (fillType === 0) {
+        // Fill A: perc → hat → perc → open hat
+        if (sb === 12) this.perc(t, 0.12, 0.4);
+        if (sb === 13) this.hat(t, false, 0.1, -0.3);
+        if (sb === 14) this.perc(t, 0.1, -0.3);
+        if (sb === 15) this.hat(t, true, 0.08, 0.3);
+      } else if (fillType === 1) {
+        // Fill B: rapid hats → clap
+        if (sb === 12) this.hat(t, false, 0.08, 0.2);
+        if (sb === 13) this.hat(t, false, 0.09, -0.1);
+        if (sb === 14) this.hat(t, false, 0.10, 0.15);
+        if (sb === 15) this.clap(t, 0.15 * (0.5 + e * 0.5));
+      } else {
+        // Fill C: perc roll → impact (big fill before new phrase)
+        if (sb === 12) this.perc(t, 0.10, 0.3);
+        if (sb === 13) this.perc(t, 0.12, -0.2);
+        if (sb === 14) this.perc(t, 0.14, 0.1);
+        if (sb === 15) this.impact(t);
+      }
     }
 
     // ─── LEAD with CALL/RESPONSE (prevents MIDI soup) ────────
