@@ -1768,7 +1768,7 @@ export class Psy4LiveEngine {
     if (sb === 0 && bar % 2 === 0) {
       const progs = PROGRESSIONS[w.scale] || PROGRESSIONS.minor;
       const chord = progs[(bar / 2) % progs.length];
-      const padAmp = 0.03 * (0.5 + e * 0.5) * (!S.bassOn ? 1.5 : 0.8);
+      const padAmp = 0.12 * (0.5 + e * 0.5) * (!S.bassOn ? 1.5 : 0.8);
       this.pad(t, w.root - 12, chord, this.s16() * 32, padAmp);
     }
 
@@ -1781,15 +1781,15 @@ export class Psy4LiveEngine {
       this.texture(t, this.s16() * 32, w.textureLevel * 0.4 * psy);
     }
 
-    // ─── KICK (4 on floor, with velocity groove) ────────────
+    // ─── KICK (4 on floor — BALANCED: 0.5 not 0.9, kick was dominating 98% of mix energy)
     if (sb % 4 === 0) {
       const isDownbeat = sb === 0;
-      const kickVel = isDownbeat ? 0.9 + e * 0.1 : 0.8 + e * 0.15;
+      const kickVel = isDownbeat ? 0.5 + e * 0.05 : 0.42 + e * 0.08;
       this.kick(t, kickVel);
     }
     // Ghost kick on syncopated step in drop
     if (S.bassOn && S.leadOn && sb === 14 && S.rng.chance(0.3 * dens)) {
-      this.kick(t, 0.3);
+      this.kick(t, 0.15);
     }
 
     // ─── BASS (psytrance grammar — bar-to-bar variation) ──
@@ -1831,7 +1831,7 @@ export class Psy4LiveEngine {
       const bassNote = grammarScaleNote(w.root, w.scale, bassDegree);
       // Velocity from pattern accent + energy + BAR POSITION VARIATION
       // Downbeats louder, ghost notes quieter — creates groove, not machine
-      let bassVel = bassAccent * (0.4 + e * 0.2);
+      let bassVel = bassAccent * (0.35 + e * 0.15);
       let bassDur = this.s16() * 0.9;
       // Ghost bass: very quiet on step 0 of odd bars (lift)
       const isGhost = (bar % 2 === 1 && sb === 0 && S.rng.chance(0.3));
@@ -1863,9 +1863,9 @@ export class Psy4LiveEngine {
       // AFTER: 4 levels based on beat position + bar position + density
       const beatPos = sb % 4;
       let hatVel;
-      if (beatPos === 0) hatVel = 0.14;           // downbeat — loudest
-      else if (beatPos === 2) hatVel = 0.10;       // backbeat — medium
-      else hatVel = 0.07;                           // offbeat — lightest
+      if (beatPos === 0) hatVel = 0.25;           // downbeat — loudest
+      else if (beatPos === 2) hatVel = 0.18;       // backbeat — medium
+      else hatVel = 0.12;                           // offbeat — lightest
       // BAR VARIATION: every 4th bar, hats are louder (build tension)
       if (bar % 4 === 3) hatVel *= 1.2;
       // DENSITY: scale by section density
@@ -1951,7 +1951,7 @@ export class Psy4LiveEngine {
         if (leadResult) {
           const leadDur = this.s16() * (1.5 + psy * 0.5);
           const leadPan = Math.sin(s * 0.03) * 0.2;
-          this.lead(t, leadResult.note, leadDur, leadResult.velocity * 0.2, leadPan);
+          this.lead(t, leadResult.note, leadDur, leadResult.velocity * 0.5, leadPan);
         }
         if (sb === 0 && bar % 4 === 0 && bar > 0) S.leadMotif.evolve();
       } else if (isCounterTurn) {
@@ -1961,7 +1961,7 @@ export class Psy4LiveEngine {
           const counterDur = this.s16() * (1.2 + psy * 0.4);
           const counterPan = Math.sin(s * 0.04 + 1.5) * 0.25; // different pan position
           // Counter lead plays at different octave (already +12 from CallResponseEngine)
-          this.lead(t, counterNote, counterDur, 0.12 * e, counterPan);
+          this.lead(t, counterNote, counterDur, 0.3 * e, counterPan);
         }
       }
     }
