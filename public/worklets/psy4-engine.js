@@ -294,14 +294,16 @@ class BassVoice {
     this.amp = 0.5;
     this.dur = 0.2;
     this.acid = false;
-    this.square = new BLSquare();  // SQUARE wave (Astrix style — punchier than saw)
-    this.saw = new BLSaw();         // kept for acid mode
+    this.square = new BLSquare();
+    this.saw = new BLSaw();
     this.filter = new MoogLadder();
-    this.phase = 0; // for sub sine
+    this.phase = 0;
     this.cutoffStart = 800;
     this.cutoffEnd = 200;
     this.res = 0.1;
-    this.bassDecay = 0.12;  // SHORT decay — commercial psytrance bass is 80-150ms
+    this.bassDecay = 0.12;
+    // Post-filter state (one-pole HP for cleaning mud)
+    this.hpState = 0;
   }
 
   trigger(time, freq, dur, amp, acid, sr, params) {
@@ -312,6 +314,7 @@ class BassVoice {
     this.amp = amp;
     this.acid = acid;
     this.phase = 0;
+    this.hpState = 0;
     this.square.reset();
     this.square.setFreq(freq);
     this.saw.reset();
@@ -323,11 +326,10 @@ class BassVoice {
       this.res = 0.85;
       this.bassDecay = 0.15;
     } else {
-      // Commercial psytrance bass: SHORT envelope, controlled filter
-      this.cutoffStart = params?.cutoffStart ?? 800;   // lower start (less bright)
-      this.cutoffEnd = params?.cutoffEnd ?? 200;        // higher end (more body)
-      this.res = Math.min(0.3, (params?.resonance ?? 3) / 20);  // low resonance
-      this.bassDecay = 0.12;  // 120ms — tight, groovy, not sustained
+      this.cutoffStart = params?.cutoffStart ?? 800;
+      this.cutoffEnd = params?.cutoffEnd ?? 200;
+      this.res = Math.min(0.3, (params?.resonance ?? 3) / 20);
+      this.bassDecay = 0.12;
     }
   }
 
@@ -335,29 +337,41 @@ class BassVoice {
     if (!this.active) return [0, true];
     const dt = 1 / sr;
     this.t += dt;
-    // SHORT decay — bass note ends at bassDecay (120ms), not full duration
     if (this.t > this.bassDecay) { this.active = false; return [0, true]; }
 
     const inc = this.freq / sr;
-    // Use SQUARE wave for non-acid (Astrix style), SAW for acid
     const osc = this.acid ? this.saw.process(inc) : this.square.process(inc);
 
-    // Filter cutoff envelope: quick drop from cutoffStart to cutoffEnd
+    // 1. FILTER: Moog ladder with envelope (this is the tone-shaping stage)
     const cutoffEnv = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / 0.04) + this.cutoffEnd;
-    const drive = this.acid ? 2.5 : 1.3;  // moderate drive for warmth
+    const drive = this.acid ? 2.5 : 1.3;
     const filtered = this.filter.process(osc, cutoffEnv, this.res, drive, sr);
 
-    // Sub sine at freq/2 (clean low end, mono)
-    this.phase += 2 * Math.PI * (this.freq / 2) / sr;
-    const sub = Math.sin(this.phase) * 0.4;
+    // 2. SUB: Clean sine at fundamental (separate from body — provides weight)
+    this.phase += 2 * Math.PI * this.freq / sr;
+    const sub = Math.sin(this.phase) * 0.45;
 
-    // Amp envelope: FAST attack (1ms), SHORT decay (bassDecay)
-    // This creates the tight, percussive bass that locks with the kick
-    const attackEnv = Math.min(1, this.t / 0.001);  // 1ms attack
-    const decayEnv = Math.exp(-this.t / (this.bassDecay * 0.5));  // exponential decay
+    // 3. MIX: Body (filtered) + Sub (clean) — body provides character, sub provides weight
+    let mixed = filtered * 0.55 + sub * 0.45;
+
+    // 4. SATURATION: Post-mix tanh saturation (adds harmonics + warmth — this is what makes
+    //    a bass sound "produced" rather than "raw oscillator")
+    //    Commercial bass always has saturation. Without it, the bass sounds thin and digital.
+    mixed = fastTanh(mixed * 1.8);  // drive=1.8 — moderate, adds warmth without distortion
+
+    // 5. HP FILTER: Remove subsonic mud below 30Hz (one-pole HP)
+    //    Prevents the bass from interfering with the kick's sub region
+    const hpCutoff = 30;  // Hz
+    const hpA = (1 / sr) * 2 * Math.PI * hpCutoff;
+    this.hpState += hpA * (mixed - this.hpState) / (1 + hpA);
+    mixed = mixed - this.hpState * 0.7;  // partial HP — keep some sub but remove mud
+
+    // 6. AMP ENVELOPE: Fast attack (1ms) + exponential decay
+    const attackEnv = Math.min(1, this.t / 0.001);
+    const decayEnv = Math.exp(-this.t / (this.bassDecay * 0.5));
     const ampEnv = attackEnv * decayEnv;
-    const sample = (filtered * 0.6 + sub * 0.4) * ampEnv * this.amp;
-    return [sample, false];
+
+    return [mixed * ampEnv * this.amp, false];
   }
 }
 
@@ -839,7 +853,13 @@ class SampleVoice {
     const frac = this.position - idx;
     const s1 = this.sampleData[idx] || 0;
     const s2 = this.sampleData[idx + 1] || 0;
-    const sample = (s1 + (s2 - s1) * frac) * env * this.amp;
+    let sample = (s1 + (s2 - s1) * frac) * env * this.amp;
+
+    // SATURATION: Add warmth and punch to samples (especially kick)
+    // Commercial kicks/snares always have saturation. Without it, samples
+    // sound flat and lifeless. This tanh adds harmonics that make the
+    // kick "punch through" the mix.
+    sample = fastTanh(sample * 1.4);  // moderate drive — warm, not distorted
 
     // Advance position based on playback rate and sample rate ratio
     this.position += this.playbackRate * (this.sampleRate / sr);
@@ -881,7 +901,7 @@ class SchroederReverb {
       this.allpassBuffers.push(new Float32Array(this.allpassDelays[i]));
       this.allpassIdx.push(0);
     }
-    this.wet = 0.3;
+    this.wet = 0.45;  // INCREASED from 0.3 — more audible reverb
     this.inputGain = 0.15; // send level
   }
 
@@ -948,7 +968,7 @@ class StereoDelay {
     this.leftDelay = 0.375;  // seconds (3/8 at 120bpm)
     this.rightDelay = 0.281; // seconds (slightly different for ping-pong)
     this.feedback = 0.35;
-    this.wet = 0.25;
+    this.wet = 0.35;  // INCREASED from 0.25 — more audible delay
     this.inputGain = 0.2;
     this.sr = 44100;
     // LP filter on feedback for darker echoes
@@ -1004,31 +1024,59 @@ class StereoDelay {
 
 class MasterChain {
   constructor() {
-    this.gain = 0.9;
-    this.ceiling = 0.94;
-    // Simple envelope follower for limiter
+    this.gain = 0.92;
+    this.ceiling = 0.95;
+    // Envelope follower for limiter
     this.env = 0;
-    this.attack = 0.001;
-    this.release = 0.05;
+    this.attack = 0.0005;  // 0.5ms — fast catch
+    this.release = 0.08;   // 80ms — musical release
+    // Glue compression state (simple RMS-based)
+    this.glueEnv = 0;
+    this.glueThr = 0.6;
+    this.glueRatio = 2.5;
+    this.glueAttack = 0.005;   // 5ms
+    this.glueRelease = 0.15;   // 150ms
+    // Makeup gain after glue
+    this.makeup = 1.25;
   }
 
   process(sample, sr) {
-    // Saturation (tanh)
-    let s = fastTanh(sample * 1.15) * 0.85 + sample * 0.15;
-
-    // Limiter (envelope follower)
-    const abs = Math.abs(s);
     const dt = 1 / sr;
-    if (abs > this.env) {
-      this.env += (abs - this.env) * (dt / this.attack);
+
+    // 1. GLUE COMPRESSION: Simple RMS-based compressor that "glues" the mix together.
+    //    Without glue, the mix sounds like isolated sounds sitting next to each other.
+    //    With glue, it sounds like a cohesive track. This is the #1 missing element.
+    const abs = Math.abs(sample);
+    if (abs > this.glueEnv) {
+      this.glueEnv += (abs - this.glueEnv) * (dt / this.glueAttack);
     } else {
-      this.env += (abs - this.env) * (dt / this.release);
+      this.glueEnv += (abs - this.glueEnv) * (dt / this.glueRelease);
     }
-    let gain = 1;
+    let glueGain = 1;
+    if (this.glueEnv > this.glueThr) {
+      const over = this.glueEnv - this.glueThr;
+      const reduction = over * (1 - 1 / this.glueRatio);
+      glueGain = (this.glueEnv - reduction) / this.glueEnv;
+    }
+    let s = sample * glueGain * this.makeup;
+
+    // 2. SATURATION: Mix of dry + tanh-saturated (adds harmonic richness)
+    //    This is what makes the master sound "loud" and "warm" rather than "clean"
+    s = fastTanh(s * 1.2) * 0.7 + s * 0.3;
+
+    // 3. LIMITER: Fast envelope-follower limiter (prevents clipping)
+    const absS = Math.abs(s);
+    if (absS > this.env) {
+      this.env += (absS - this.env) * (dt / this.attack);
+    } else {
+      this.env += (absS - this.env) * (dt / this.release);
+    }
+    let limGain = 1;
     if (this.env > this.ceiling) {
-      gain = this.ceiling / this.env;
+      limGain = this.ceiling / this.env;
     }
-    s *= gain * this.gain;
+    s *= limGain * this.gain;
+
     return Math.max(-1, Math.min(1, s));
   }
 }
@@ -1106,8 +1154,10 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.delay = new StereoDelay();
     // Per-bus send amounts: [drum, bass, music, atmos, fx]
     // Bass/kick send very little (keep them dry/punchy). Music/atmos send more.
-    this.reverbSends = [0.08, 0.02, 0.25, 0.40, 0.30];
-    this.delaySends = [0.05, 0.0, 0.20, 0.10, 0.15];
+    // [drum, bass, music, atmos, fx] — INCREASED for more space/depth
+    // The mix was too dry. Commercial psytrance has significant reverb/delay.
+    this.reverbSends = [0.12, 0.03, 0.35, 0.50, 0.35];
+    this.delaySends = [0.08, 0.0, 0.25, 0.15, 0.20];
 
     // Master chain
     this.master = new MasterChain();

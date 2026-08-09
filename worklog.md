@@ -1220,3 +1220,53 @@ Stage Summary:
   - Canvas visualizer still runs at 60fps — minor CPU cost
   - Arrangement still uses same musical grammar — not real musical variation
   - 147 samples still loaded (most unused) — should reduce to ~20
+
+---
+Task ID: 19
+Agent: Z.ai Code (main)
+Task: ROAST + fix the actual sound: bass saturation, kick saturation, master glue compression, increased reverb/delay.
+
+Work Log:
+- WROTE BRUTAL ROAST identifying 10 real problems:
+  1. Bass still sounds like raw oscillator (no post-saturation)
+  2. Lead still sounds like MIDI (generic supersaw)
+  3. 147 samples loaded but most unused
+  4. Mix is sterile (no drum bus compression, no glue)
+  5. Sidechain is fake (global gain, not per-kick envelope)
+  6. Reverb/delay too quiet (mix is dry)
+  7. No real bass processing (just source → filter → gain)
+  8. Kick gets no processing (sample plays raw)
+  9. Master chain too simple (just tanh + limiter)
+  10. Building tools instead of fixing sound
+
+- FIXED BASS: Added post-mix saturation (tanh drive=1.8) + HP filter (30Hz)
+  BEFORE: square → Moog filter → sub + body mix → amp envelope
+  AFTER:  square → Moog filter → sub + body mix → SATURATION → HP FILTER → amp envelope
+  The saturation is the key — it's what makes a raw oscillator sound like a "produced" bass.
+
+- FIXED KICK/SAMPLES: Added saturation (tanh drive=1.4) to SampleVoice
+  BEFORE: sample interpolation → amp envelope → pan
+  AFTER:  sample interpolation → SATURATION → amp envelope → pan
+  909/MachineDrum samples now get harmonic warmth that makes them punch through.
+
+- FIXED MASTER: Added glue compression + stronger saturation
+  BEFORE: tanh(1.15) + limiter
+  AFTER:  GLUE COMPRESSION (thr=0.6, ratio=2.5:1, 5ms att, 150ms rel) + makeup 1.25x
+          → SATURATION (tanh 1.2, 70% wet) → LIMITER (0.5ms att, 80ms rel, ceiling 0.95)
+  The glue compression is the #1 missing element — it turns isolated sounds into a cohesive track.
+
+- FIXED REVERB/DELAY: Increased wet levels and send amounts
+  Reverb wet: 0.3 → 0.45 (50% increase)
+  Delay wet: 0.25 → 0.35 (40% increase)
+  Reverb sends: [0.08, 0.02, 0.25, 0.40, 0.30] → [0.12, 0.03, 0.35, 0.50, 0.35]
+  Delay sends: [0.05, 0.0, 0.20, 0.10, 0.15] → [0.08, 0.0, 0.25, 0.15, 0.20]
+  The mix was too dry — now it has space and depth.
+
+- VERIFIED: 0 errors, 5 voices, 15+ seconds stable, level 53%
+
+BEFORE → AFTER:
+  Bass: raw oscillator → oscillator + SATURATION + HP filter (produced sound)
+  Kick: raw sample → sample + SATURATION (punchier, warmer)
+  Master: tanh + limiter → GLUE + SATURATION + limiter (cohesive, loud)
+  Reverb: wet=0.3, sends=[0.08..0.40] → wet=0.45, sends=[0.12..0.50] (more space)
+  Delay: wet=0.25, sends=[0.05..0.20] → wet=0.35, sends=[0.08..0.25] (more depth)
