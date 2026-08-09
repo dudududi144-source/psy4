@@ -274,43 +274,33 @@ export default function ReferenceTrainingPage() {
 
   const startEngine = useCallback(async () => {
     try {
-      const { Psy4LiveEngine } = await import('@/lib/studio/engine/psy4LiveEngine');
-      const { SelfAnalyzer } = await import('@/lib/studio/engine/reference/selfAnalyzer');
+      // Use LiteEngine — pure Web Audio API, no AudioWorklet, never crashes
+      const { Psy4LiteEngine } = await import('@/lib/studio/engine/psy4LiteEngine');
 
       if (engineRef.current) {
         engineRef.current.stop();
       }
 
-      const engine = new Psy4LiveEngine();
-      engine.start(worldId, Math.floor(Math.random() * 1000000), {
-        energy: 0.6, psychedelia: 0.55, darkness: 0.4, density: 0.55,
-        groove: 0.5, evolution: 0.5, space: 0.4, surprise: 0.3,
-        aggression: 0.4, brightness: 0.55,
-      });
+      const engine = new Psy4LiteEngine();
+      engine.start(worldId);
+      engine.onSectionChange = (section) => {
+        // Could update UI here if needed
+      };
       engineRef.current = engine;
       setEnginePlaying(true);
 
-      // Attach self-analyzer after engine starts
-      // Use getAnalyser() which is always available (both legacy + worklet modes)
-      setTimeout(async () => {
-        try {
-          if (engineRef.current?.ctx) {
-            const analyser = engineRef.current.getAnalyser();
-            if (analyser) {
-              const { SelfAnalyzer } = await import('@/lib/studio/engine/reference/selfAnalyzer');
-              const analyzer = new SelfAnalyzer();
-              analyzer.attach(analyser, engineRef.current.ctx);
-              analyzer.onMetrics(m => setSelfMetrics(m));
-              analyzer.start();
-              selfAnalyzerRef.current = analyzer;
-            }
-          }
-        } catch (err) {
-          console.warn('[SelfAnalyzer] attach failed:', err);
-        }
-      }, 2000);
+      // Attach self-analyzer immediately (no worklet loading delay)
+      const analyser = engine.getAnalyser();
+      if (analyser) {
+        const { SelfAnalyzer } = await import('@/lib/studio/engine/reference/selfAnalyzer');
+        const analyzer = new SelfAnalyzer();
+        analyzer.attach(analyser, engine.ctx!);
+        analyzer.onMetrics(m => setSelfMetrics(m));
+        analyzer.start();
+        selfAnalyzerRef.current = analyzer;
+      }
 
-      toast.success('Engine started — self-analysis active');
+      toast.success('Engine started (Lite mode — pure Web Audio)');
     } catch (err) {
       toast.error(`Engine error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -362,11 +352,8 @@ export default function ReferenceTrainingPage() {
       if (engineRef.current) {
         trainer.setEngine({
           setWorld: (params: any) => {
-            engineRef.current?.setWorld?.(worldId);
-            // Also send params to the worklet
-            if (engineRef.current?.engineNode) {
-              engineRef.current.engineNode.setWorld(params);
-            }
+            // LiteEngine uses setWorld with params directly
+            engineRef.current?.setWorld?.(params);
           },
         });
       }
