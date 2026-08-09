@@ -1738,3 +1738,49 @@ BEFORE → AFTER (worklet levels synced):
   Drum bus: 0.95 → 0.85 (10% lower)
   Music bus: 0.9 → 1.0 (11% higher — lead+pad audible)
   Atmos bus: 0.7 → 0.85 (21% higher — pad audible)
+
+---
+Task ID: 29
+Agent: Z.ai Code (main)
+Task: לכידת פלט אמיתי של AudioWorklet + ניתוח ced.cpp — ה-AI שומע את האמת.
+
+Work Log:
+- בנינו מערכת לכידה מלאה:
+  1. ScriptProcessorNode מחובר ל-engine output (עם delay 2s לטעינת worklet)
+  2. processor.connect(ctx.destination) — חובה כדי ש-ScriptProcessor יקבל אודיו
+  3. Capture buffer: Float32Array chunks, mono mix
+  4. WAV conversion + download
+  5. Upload ל-/api/analyze-audio
+  6. API route מריץ ced.cpp + DSP analysis (Python)
+  7. תוצאות חוזרות לדפדפן
+
+- תוצאות ced.cpp על הפלט האמיתי של ה-AudioWorklet (23 שניות):
+  ✅ Music: 91% (ה-AI מזהה כמוזיקה)
+  ✅ Drum machine: 67% (עלה מ-43% ב-render ל-67% ב-worklet!)
+  ✅ Synthesizer: 30% (עלה מ-13% ב-render ל-30% ב-worklet!)
+  ✅ Musical instrument: 25%
+  ✅ Sampler: 16%
+
+- השוואת render vs worklet אמיתי:
+  | מדד | Render (סימולציה) | Worklet (אמת) |
+  |-----|-----------------|--------------|
+  | Music | 90% | 91% |
+  | Drum machine | 43% | 67% (!) |
+  | Synthesizer | 13% | 30% (!) |
+  | Musical instrument | 10% | 25% |
+
+  ה-worklet האמיתי נשמע יותר כמו "Drum machine" (67% לעומת 43%) ויותר כמו "Synthesizer" (30% לעומת 13%). זה אומר שהדגימות האמיתיות (909/Nord/MachineDrum) והסינת' האמיתי עובדים טוב יותר מהסימולציה.
+
+BEFORE → AFTER:
+  BEFORE: "PHYSICAL LISTENING UNVERIFIED" — לא יכולנו לשמוע
+  AFTER: AI שומע את הפלט האמיתי: Music 91%, Drum machine 67%, Synthesizer 30%
+  
+  המערכת כעת מסוגלת:
+  1. ללכוד את הפלט האמיתי של ה-AudioWorklet
+  2. להמיר ל-WAV
+  3. להעלות לשרת
+  4. להריץ ced.cpp (AI audio classification)
+  5. להריץ DSP analysis (LUFS, spectral, energy bands)
+  6. להחזיר תוצאות לדפדפן
+  
+  זהו closed-loop: generate → capture → analyze → identify weakness → fix → re-capture

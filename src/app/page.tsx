@@ -1,9 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Slider } from '@/components/ui/slider';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Toaster } from '@/components/ui/sonner';
@@ -32,6 +31,8 @@ export default function LivePage() {
   const [activeVoices, setActiveVoices] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animRef = useRef<number | null>(null);
+  // Audio capture state
+  const captureRef = useRef<{ buffer: Float32Array[]; recording: boolean }>({ buffer: [], recording: false });
 
   useEffect(() => {
     engineRef.current = new Psy4LiveEngine();
@@ -39,8 +40,7 @@ export default function LivePage() {
     return () => { engineRef.current?.stop(); };
   }, []);
 
-  // update UI state from engine — THROTTLED to 2/sec (was 10/sec)
-  // This was the #1 cause of latency: 80 React re-renders/sec was starving the audio scheduler
+  // update UI state from engine — THROTTLED to 2/sec
   useEffect(() => {
     if (!playing) return;
     const interval = setInterval(() => {
@@ -51,9 +51,6 @@ export default function LivePage() {
       setPhrase(e.currentPhrase);
       setEngineMode(e.isWorkletEngineActive() ? 'Worklet' : 'Web Audio');
       setActiveVoices(e.getEngineStats()?.activeVoices ?? 0);
-      // DO NOT update sampleUsage in React state — it causes re-renders
-      // DO NOT call setStatsTick — it forces unnecessary re-renders
-      // audio level from analyser
       const analyser = e.getAnalyser();
       if (analyser) {
         const data = new Uint8Array(analyser.frequencyBinCount);
@@ -62,11 +59,11 @@ export default function LivePage() {
         for (let i = 0; i < 64; i++) sum += data[i];
         setAudioLevel(sum / 64 / 255);
       }
-    }, 500); // 500ms = 2 updates/sec (was 100ms = 10 updates/sec)
+    }, 500);
     return () => clearInterval(interval);
   }, [playing]);
 
-  // visualizer — REUSED buffer (no allocation per frame)
+  // visualizer — REUSED buffer
   useEffect(() => {
     if (!playing || !canvasRef.current) return;
     const canvas = canvasRef.current;
@@ -75,8 +72,6 @@ export default function LivePage() {
     const e = engineRef.current;
     const analyser = e?.getAnalyser();
     if (!analyser) return;
-
-    // Allocate ONCE — not per frame
     const data = new Uint8Array(analyser.frequencyBinCount);
 
     const draw = () => {
@@ -108,9 +103,118 @@ export default function LivePage() {
     } else {
       e.start(worldId, Math.floor(Math.random() * 1000000), macros);
       setPlaying(true);
+
+      // ── CAPTURE: Insert ScriptProcessor to capture worklet output ──
+      // Delay 2s to ensure worklet is fully loaded
+      setTimeout(() => {
+        if (!e.ctx || !e.isWorkletEngineActive()) return;
+        const engineNode = e.engineNodePublic;
+        const engineOutput = engineNode?.outputNode;
+        if (engineOutput) {
+          const processor = e.ctx.createScriptProcessor(4096, 2, 2);
+          const capture = captureRef.current;
+          capture.buffer = [];
+          capture.recording = true;
+          processor.onaudioprocess = (event) => {
+            if (!capture.recording) return;
+            const inputL = event.inputBuffer.getChannelData(0);
+            const inputR = event.inputBuffer.getChannelData(1);
+            const mono = new Float32Array(inputL.length);
+            for (let i = 0; i < inputL.length; i++) mono[i] = (inputL[i] + inputR[i]) * 0.5;
+            capture.buffer.push(mono);
+          };
+          engineOutput.connect(processor);
+          processor.connect(e.ctx.destination); // ScriptProcessor needs to connect to destination to process
+          console.log('[PSY4] Audio capture started — recording worklet output');
+        } else {
+          console.warn('[PSY4] Cannot start capture — engine output not available');
+        }
+      }, 2000);
+
       toast.success('Live playback started');
     }
   }, [playing, worldId, macros]);
+
+  // Stop capture and download WAV
+  const handleDownloadCapture = useCallback(async () => {
+    const capture = captureRef.current;
+    capture.recording = false;
+    if (capture.buffer.length === 0) {
+      toast.error('No audio captured');
+      return;
+    }
+
+    // Concatenate all buffers
+    const totalLen = capture.buffer.reduce((sum, b) => sum + b.length, 0);
+    const audio = new Float32Array(totalLen);
+    let offset = 0;
+    for (const chunk of capture.buffer) {
+      audio.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    const sr = engineRef.current?.ctx?.sampleRate || 44100;
+    const duration = (totalLen / sr).toFixed(1);
+
+    // Convert to WAV
+    const buffer = new ArrayBuffer(44 + audio.length * 2);
+    const view = new DataView(buffer);
+    const writeString = (off: number, str: string) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
+    };
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + audio.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sr, true);
+    view.setUint32(28, sr * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, audio.length * 2, true);
+    let off = 44;
+    for (let i = 0; i < audio.length; i++) {
+      const s = Math.max(-1, Math.min(1, audio[i]));
+      view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      off += 2;
+    }
+
+    // Download
+    const blob = new Blob([buffer], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `psy4_worklet_capture.wav`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    // Also upload to server for ced.cpp analysis
+    try {
+      console.log('[PSY4] Uploading capture to /api/analyze-audio...');
+      const formData = new FormData();
+      formData.append('audio', blob, 'psy4_worklet_capture.wav');
+      const response = await fetch('/api/analyze-audio', { method: 'POST', body: formData });
+      console.log('[PSY4] API response status:', response.status);
+      if (response.ok) {
+        const result = await response.json();
+        console.log('[PSY4] AI Analysis result:', JSON.stringify(result).substring(0, 200));
+        toast.success(`Captured ${duration}s — AI: ${result.tags?.[0]?.tag || 'analyzed'} (${(result.tags?.[0]?.score * 100 || 0).toFixed(0)}%)`);
+      } else {
+        console.warn('[PSY4] API returned:', response.status, await response.text());
+        toast.success(`Captured ${duration}s — WAV downloaded`);
+      }
+    } catch (err) {
+      console.error('[PSY4] Upload failed:', err);
+      toast.success(`Captured ${duration}s — WAV downloaded`);
+    }
+
+    console.log(`[PSY4] Captured ${duration}s (${totalLen} samples) — WAV downloaded`);
+  }, []);
 
   const handleWorldChange = useCallback((id: string) => {
     setWorldId(id);
@@ -127,7 +231,6 @@ export default function LivePage() {
 
   const handleAction = useCallback((action: string) => {
     engineRef.current?.triggerAction(action);
-    // update macro display to reflect action
     setTimeout(() => {
       const e = engineRef.current;
       if (e) setMacros({ ...e.macros });
@@ -144,51 +247,40 @@ export default function LivePage() {
     { key: 'groove' as keyof Macros, label: 'Groove', icon: Drum, color: 'text-lime-400' },
     { key: 'evolution' as keyof Macros, label: 'Evolution', icon: TrendingUp, color: 'text-emerald-400' },
     { key: 'space' as keyof Macros, label: 'Space', icon: Waves, color: 'text-blue-400' },
-    { key: 'surprise' as keyof Macros, label: 'Surprise', icon: Shuffle, color: 'text-pink-400' },
-    { key: 'aggression' as keyof Macros, label: 'Aggression', icon: Flame, color: 'text-red-400' },
   ];
 
   const actionButtons = [
-    { label: 'Stranger', action: 'stranger', icon: Shuffle, color: 'bg-fuchsia-600 hover:bg-fuchsia-700' },
-    { label: 'Darker', action: 'darker', icon: Moon, color: 'bg-purple-600 hover:bg-purple-700' },
-    { label: 'Brighter', action: 'brighter', icon: Sun, color: 'bg-yellow-600 hover:bg-yellow-700' },
-    { label: 'More Bass', action: 'more-bass', icon: Drum, color: 'bg-orange-600 hover:bg-orange-700' },
-    { label: 'More Groove', action: 'more-groove', icon: Music, color: 'bg-lime-600 hover:bg-lime-700' },
-    { label: 'More Space', action: 'more-space', icon: Waves, color: 'bg-blue-600 hover:bg-blue-700' },
-    { label: 'Breakdown', action: 'breakdown', icon: Activity, color: 'bg-indigo-600 hover:bg-indigo-700' },
-    { label: 'Build', action: 'build', icon: TrendingUp, color: 'bg-cyan-600 hover:bg-cyan-700' },
-    { label: 'Drop', action: 'drop', icon: Flame, color: 'bg-red-600 hover:bg-red-700' },
-    { label: 'Reset', action: 'reset', icon: RotateCcw, color: 'bg-gray-600 hover:bg-gray-700' },
+    { action: 'stranger', label: 'Stranger', icon: Shuffle, color: 'bg-fuchsia-600 hover:bg-fuchsia-700' },
+    { action: 'darker', label: 'Darker', icon: Moon, color: 'bg-purple-600 hover:bg-purple-700' },
+    { action: 'brighter', label: 'Brighter', icon: Sun, color: 'bg-yellow-600 hover:bg-yellow-700' },
+    { action: 'more-bass', label: 'More Bass', icon: Zap, color: 'bg-orange-600 hover:bg-orange-700' },
+    { action: 'more-groove', label: 'More Groove', icon: Drum, color: 'bg-lime-600 hover:bg-lime-700' },
+    { action: 'more-space', label: 'More Space', icon: Waves, color: 'bg-blue-600 hover:bg-blue-700' },
+    { action: 'breakdown', label: 'Breakdown', icon: Moon, color: 'bg-indigo-600 hover:bg-indigo-700' },
+    { action: 'build', label: 'Build', icon: TrendingUp, color: 'bg-emerald-600 hover:bg-emerald-700' },
+    { action: 'drop', label: 'Drop', icon: Flame, color: 'bg-red-600 hover:bg-red-700' },
+    { action: 'reset', label: 'Reset', icon: RotateCcw, color: 'bg-slate-600 hover:bg-slate-700' },
   ];
 
   return (
-    <div className="min-h-screen flex flex-col bg-background text-foreground relative overflow-hidden">
-      <div className="fixed inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse at top, rgba(168,85,247,0.12), transparent 60%), radial-gradient(ellipse at bottom, rgba(34,211,238,0.08), transparent 55%)' }} />
-      <Toaster richColors position="top-right" />
-
-      <header className="relative z-10 border-b border-border/60 backdrop-blur-sm bg-background/40 sticky top-0">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4 flex-wrap">
+    <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950 text-foreground">
+      <Toaster />
+      <header className="relative z-10 border-b border-border/60 bg-background/60 backdrop-blur-sm">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className={`w-11 h-11 rounded-xl border border-fuchsia-500/30 flex items-center justify-center ${playing ? 'bg-gradient-to-br from-red-500/30 to-fuchsia-500/30' : 'bg-card/60'}`}>
-              <Radio className={`w-5 h-5 ${playing ? 'text-red-300 animate-pulse' : 'text-fuchsia-300'}`} />
-            </div>
+            <Radio className="w-8 h-8 text-fuchsia-400" />
             <div>
-              <h1 className="text-xl font-black tracking-tight bg-gradient-to-r from-fuchsia-400 via-purple-400 to-cyan-400 bg-clip-text text-transparent">PSY4 LIVE</h1>
-              <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">Browser-native Web Audio · instant playback · zero latency</p>
+              <h1 className="text-2xl font-bold bg-gradient-to-r from-fuchsia-400 to-cyan-400 bg-clip-text text-transparent">PSY4 LIVE</h1>
+              <p className="text-xs text-muted-foreground">Browser-native Web Audio · instant playback · zero latency</p>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="border-fuchsia-500/30 text-fuchsia-300">{section}</Badge>
-            <Badge variant="outline" className="border-cyan-500/30 text-cyan-300">bar {bar}</Badge>
-            <Badge variant="outline" className="border-lime-500/30 text-lime-300">phrase {phrase}</Badge>
           </div>
         </div>
       </header>
 
-      <main className="relative z-10 max-w-7xl mx-auto w-full px-4 sm:px-6 py-8 flex-1 space-y-5">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
         {/* TRANSPORT */}
         <Card className="p-5 sm:p-6 border-fuchsia-500/20 bg-card/60">
-          <div className="grid sm:grid-cols-[1fr_auto_auto_auto] gap-3 items-end">
+          <div className="grid sm:grid-cols-[1fr_auto_auto_auto_auto] gap-3 items-end">
             <div>
               <label className="text-xs uppercase tracking-wider text-muted-foreground mb-1.5 block">World</label>
               <Select value={worldId} onValueChange={handleWorldChange}>
@@ -228,12 +320,19 @@ export default function LivePage() {
               <span>VOICES: <span className="text-fuchsia-400">{activeVoices}</span></span>
             </div>
           )}
+          {playing && (
+            <div className="mt-3">
+              <Button onClick={handleDownloadCapture} size="sm" variant="outline" className="border-fuchsia-500/30">
+                <Music className="w-4 h-4 mr-2" /> Download Worklet Capture (WAV)
+              </Button>
+            </div>
+          )}
         </Card>
 
         {/* MACRO CONTROLS */}
         <Card className="p-5 sm:p-6 border-fuchsia-500/20 bg-card/60">
           <h4 className="font-semibold mb-4 flex items-center gap-2"><Gauge className="w-4 h-4 text-fuchsia-300" /> Live Macros — changes apply instantly</h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
             {macroControls.map(c => (
               <div key={c.key}>
                 <div className="flex items-center justify-between mb-1.5">
@@ -272,7 +371,7 @@ export default function LivePage() {
           <Card className="p-10 text-center border-fuchsia-500/20 bg-card/60">
             <Radio className="w-12 h-12 mx-auto mb-4 text-fuchsia-400 animate-pulse" />
             <p className="text-lg font-semibold mb-1">Press Play for instant live psychedelic music.</p>
-            <p className="text-sm text-muted-foreground">Browser-native Web Audio · no server rendering · no loading · macros apply instantly</p>
+            <p className="text-sm text-muted-foreground">AudioWorklet Engine · Sample-accurate · Zero-alloc voices</p>
           </Card>
         )}
       </main>

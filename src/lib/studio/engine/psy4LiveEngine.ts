@@ -1999,6 +1999,9 @@ export class Psy4LiveEngine {
   /** Check if the engine worklet is active (vs legacy Web Audio mode). */
   isWorkletEngineActive(): boolean { return this.useWorkletEngine; }
 
+  /** Expose engine node for audio capture (ScriptProcessor). */
+  get engineNodePublic(): Psy4EngineNode | null { return this.engineNode; }
+
   getWorlds(): { id: string; name: string }[] {
     return Object.values(WORLDS).map(w => ({ id: w.id, name: w.name }));
   }
