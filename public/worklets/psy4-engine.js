@@ -429,7 +429,7 @@ class LeadVoice {
     for (const s of this.saws) mix += s.process(inc);
     mix /= this.saws.length;
 
-    // LFO modulates filter cutoff
+    // LFO modulates filter cutoff (psychedelic movement)
     this.lfoPhase += this.lfoRate * dt;
     const lfo = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.lfoPhase);
     const modCutoff = this.cutoff * (1 + this.lfoDepth * (lfo * 2 - 1) * 0.5);
@@ -438,11 +438,15 @@ class LeadVoice {
     const fEnv = this.cutoff * 2 * Math.exp(-this.t / (this.dur * 0.5)) + this.cutoff;
     const cutoff = Math.min(18000, Math.max(100, fEnv * 0.5 + modCutoff * 0.5));
 
-    const filtered = this.filter.process(mix, cutoff, this.res, 1.2, sr);
+    const filtered = this.filter.process(mix, cutoff, this.res, 1.5, sr);
+
+    // SATURATION: Post-filter tanh — adds character and warmth that makes
+    // the lead sound "produced" rather than "raw synth"
+    const saturated = fastTanh(filtered * 1.6);
 
     // Amp envelope
     const ampEnv = Math.min(1, this.t / 0.006) * Math.exp(-this.t / this.dur);
-    const sample = filtered * ampEnv * this.amp;
+    const sample = saturated * ampEnv * this.amp;
     return [sample, false];
   }
 }
@@ -480,12 +484,15 @@ class AcidVoice {
     const inc = this.freq / sr;
     const sq = this.square.process(inc);
 
-    // Filter sweep
-    const cutoff = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / (this.dur * 0.7)) + this.cutoffEnd;
-    const filtered = this.filter.process(sq, cutoff, this.res, 2.5, sr);
+    // Filter sweep — FASTER decay for more squelch character
+    // The cutoff drops quickly, which creates the "squelch" as resonance
+    // sweeps through the harmonic content
+    const cutoff = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / (this.dur * 0.4)) + this.cutoffEnd;
+    // HIGHER resonance (0.95) for true acid squelch + HIGHER drive (3.0) for grit
+    const filtered = this.filter.process(sq, cutoff, 0.95, 3.0, sr);
 
-    // Distortion
-    const distorted = fastTanh(filtered * 3);
+    // Distortion — HEAVIER for acid character (drive=4)
+    const distorted = fastTanh(filtered * 4);
 
     const ampEnv = Math.min(1, this.t / 0.003) * Math.exp(-this.t / this.dur);
     const sample = distorted * ampEnv * this.amp;
@@ -1020,7 +1027,68 @@ class StereoDelay {
   }
 }
 
-// ─── Master chain (saturation + limiter) ───────────────────────────────────
+// ─── Bus Processor (compression + saturation + EQ per bus) ────────────────
+// Each bus (drum/bass/music/atmos/fx) gets its own processing.
+// This is what makes the mix sound "produced" — without bus processing,
+// it sounds like isolated sounds, not a cohesive track.
+
+class BusProcessor {
+  constructor(config) {
+    this.config = config;
+    // Compressor state
+    this.compEnv = 0;
+    // HP filter state (clean low end)
+    this.hpState = 0;
+    // Saturation drive
+    this.drive = config.drive || 1.0;
+    // Output gain
+    this.gain = config.gain || 1.0;
+  }
+
+  process(sample, sr) {
+    const dt = 1 / sr;
+
+    // 1. HP FILTER: Remove subsonic mud (configurable per bus)
+    if (this.config.hpFreq && this.config.hpFreq > 0) {
+      const hpA = (1 / sr) * 2 * Math.PI * this.config.hpFreq;
+      this.hpState += hpA * (sample - this.hpState) / (1 + hpA);
+      sample = sample - this.hpState;
+    }
+
+    // 2. COMPRESSION: Simple envelope-follower compressor
+    //    Drum bus: fast attack/release, moderate ratio (punchy)
+    //    Bass bus: medium attack/release, low ratio (controlled)
+    //    Music bus: slow attack/release, low ratio (glue)
+    if (this.config.compThr) {
+      const abs = Math.abs(sample);
+      const att = this.config.compAtt || 0.003;
+      const rel = this.config.compRel || 0.1;
+      if (abs > this.compEnv) {
+        this.compEnv += (abs - this.compEnv) * (dt / att);
+      } else {
+        this.compEnv += (abs - this.compEnv) * (dt / rel);
+      }
+      if (this.compEnv > this.config.compThr) {
+        const over = this.compEnv - this.config.compThr;
+        const ratio = this.config.compRatio || 2;
+        const reduction = over * (1 - 1 / ratio);
+        const compGain = (this.compEnv - reduction) / this.compEnv;
+        sample *= compGain;
+      }
+      // Makeup gain
+      sample *= this.config.compMakeup || 1.2;
+    }
+
+    // 3. SATURATION: Add warmth and harmonics
+    if (this.drive > 1.0) {
+      sample = fastTanh(sample * this.drive);
+    }
+
+    return sample * this.gain;
+  }
+}
+
+// ─── Master chain (glue compression + saturation + limiter) ───────────────────────────────────
 
 class MasterChain {
   constructor() {
@@ -1163,7 +1231,57 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.master = new MasterChain();
 
     // Bus gains (drum, bass, music, atmos, fx)
+    // Bus gains (drum, bass, music, atmos, fx)
     this.busGains = [1.0, 1.0, 1.0, 0.8, 0.7];
+
+    // ── BUS PROCESSORS — per-bus compression + saturation + EQ ──
+    // This is what makes the mix sound "produced" instead of "isolated sounds"
+    this.drumBusProc = new BusProcessor({
+      hpFreq: 0,           // don't HP the drum bus (kick needs sub)
+      compThr: 0.5,        // compress drums for punch
+      compRatio: 3,        // aggressive ratio for drums
+      compAtt: 0.002,      // 2ms — fast catch
+      compRel: 0.08,       // 80ms — musical release
+      compMakeup: 1.3,     // makeup after compression
+      drive: 1.3,          // warm saturation on drums
+      gain: 1.0,
+    });
+    this.bassBusProc = new BusProcessor({
+      hpFreq: 25,          // HP at 25Hz — remove subsonic mud
+      compThr: 0.4,        // compress bass for consistency
+      compRatio: 2,        // gentle ratio for bass
+      compAtt: 0.005,      // 5ms — let transient through
+      compRel: 0.12,       // 120ms — smooth release
+      compMakeup: 1.15,    // modest makeup
+      drive: 1.2,          // subtle warmth
+      gain: 1.0,
+    });
+    this.musicBusProc = new BusProcessor({
+      hpFreq: 80,          // HP at 80Hz — keep music out of bass territory
+      compThr: 0.45,       // glue compression for lead/acid
+      compRatio: 2,        // gentle glue
+      compAtt: 0.01,       // 10ms — slow, transparent
+      compRel: 0.15,       // 150ms — smooth
+      compMakeup: 1.1,     // subtle makeup
+      drive: 1.15,         // very subtle warmth
+      gain: 1.0,
+    });
+    this.atmosBusProc = new BusProcessor({
+      hpFreq: 60,          // HP at 60Hz — atmos doesn't need sub
+      compThr: 0,          // no compression — atmos should be open
+      drive: 1.0,          // no saturation — keep it clean
+      gain: 1.0,
+    });
+    this.fxProc = new BusProcessor({
+      hpFreq: 40,          // HP at 40Hz
+      compThr: 0.35,       // compress FX for consistency
+      compRatio: 2.5,
+      compAtt: 0.003,
+      compRel: 0.1,
+      compMakeup: 1.2,
+      drive: 1.2,
+      gain: 1.0,
+    });
 
     // Sidechain state
     this.duckEnv = 1.0;
@@ -1561,9 +1679,13 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < L.length; i++) {
       this.currentSample++;
 
-      // Sidechain envelope recovery
+      // Sidechain envelope — REAL envelope with fast attack + musical release
+      // When kick fires, duckEnv drops immediately, then recovers smoothly.
+      // This creates the "pumping" groove that is THE defining characteristic of psytrance.
       if (this.duckEnv < 1) {
-        this.duckEnv += (1 - this.duckEnv) * (dt / 0.12);
+        // Exponential recovery — fast at first, then gradual
+        // This matches how real sidechain compression behaves
+        this.duckEnv += (1 - this.duckEnv) * (dt / 0.08);  // 80ms time constant
       }
 
       // Mix all active voices into stereo buses
@@ -1633,30 +1755,27 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         }
       }
 
-      // Bass → bass bus (mono — sub must stay center for phase coherence)
+      // Bass → bass bus (mono — sidechain ducked by kick)
       for (const v of this.bassPool) {
         if (v.active) {
           const [s] = v.render(currentAudioTime + i * dt, sr);
-          const ducked = s * this.duckEnv;
+          const ducked = s * this.duckEnv;  // ONLY bass gets sidechain
           bassBusL += ducked; bassBusR += ducked;
         }
       }
 
-      // Lead → music bus (stereo width via detuned oscs — approximate with slight pan)
+      // Lead → music bus (NO sidechain — lead doesn't duck from kick)
       for (const v of this.leadPool) {
         if (v.active) {
           const [s] = v.render(currentAudioTime + i * dt, sr);
-          const ducked = s * this.duckEnv;
-          // Slight stereo width: 80% center + 20% side
-          musicBusL += ducked; musicBusR += ducked;
+          musicBusL += s; musicBusR += s;  // no duckEnv
         }
       }
-      // Acid → music bus (mono)
+      // Acid → music bus (NO sidechain)
       for (const v of this.acidPool) {
         if (v.active) {
           const [s] = v.render(currentAudioTime + i * dt, sr);
-          const ducked = s * this.duckEnv;
-          musicBusL += ducked; musicBusR += ducked;
+          musicBusL += s; musicBusR += s;  // no duckEnv
         }
       }
 
@@ -1683,6 +1802,20 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           fxBusL += s; fxBusR += s;
         }
       }
+
+      // ── BUS PROCESSING — each bus gets compression + saturation + EQ ──
+      // This is what makes the mix sound "produced" — without it, it's isolated sounds.
+      // Process L and R separately for stereo.
+      drumBusL = this.drumBusProc.process(drumBusL, sr);
+      drumBusR = this.drumBusProc.process(drumBusR, sr);
+      bassBusL = this.bassBusProc.process(bassBusL, sr);
+      bassBusR = this.bassBusProc.process(bassBusR, sr);
+      musicBusL = this.musicBusProc.process(musicBusL, sr);
+      musicBusR = this.musicBusProc.process(musicBusR, sr);
+      atmosBusL = this.atmosBusProc.process(atmosBusL, sr);
+      atmosBusR = this.atmosBusProc.process(atmosBusR, sr);
+      fxBusL = this.fxProc.process(fxBusL, sr);
+      fxBusR = this.fxProc.process(fxBusR, sr);
 
       // Sum buses with gains (stereo)
       let mixL = drumBusL * this.busGains[0]

@@ -1270,3 +1270,56 @@ BEFORE → AFTER:
   Master: tanh + limiter → GLUE + SATURATION + limiter (cohesive, loud)
   Reverb: wet=0.3, sends=[0.08..0.40] → wet=0.45, sends=[0.12..0.50] (more space)
   Delay: wet=0.25, sends=[0.05..0.20] → wet=0.35, sends=[0.08..0.25] (more depth)
+
+---
+Task ID: 20
+Agent: Z.ai Code (main)
+Task: DEEP ROAST + comprehensive fixes: bus processing, sidechain fix, lead saturation, acid squelch.
+
+Work Log:
+DEEP ROAST (10 additional problems found):
+1. No bus processing — drums/bass/music/atmos all go to master with NO compression, NO saturation, NO EQ
+2. Sidechain affects lead and acid — should ONLY affect bass (lead doesn't duck from kick)
+3. Sidechain envelope too slow — 120ms recovery, should be 80ms for tighter groove
+4. Lead has no saturation — filtered supersaw goes directly to amp env, sounds like raw synth
+5. Acid resonance too low (0.9) and distortion too low (drive=3) — needs 0.95 res + drive=4 for real squelch
+6. Acid filter decay too slow (0.7*dur) — should be 0.4*dur for faster squelch sweep
+7. No HP filter on bass bus (mud below 25Hz)
+8. No HP filter on music bus (lead/acid bleed into bass territory below 80Hz)
+9. No compression on drum bus (drums sound weak, not punchy)
+10. No compression on bass bus (bass levels inconsistent)
+
+FIXES APPLIED:
+
+1. Built BusProcessor class (compression + HP filter + saturation per bus):
+   - Drum bus: HP=0, comp thr=0.5 ratio=3:1 att=2ms rel=80ms makeup=1.3x, drive=1.3
+   - Bass bus: HP=25Hz, comp thr=0.4 ratio=2:1 att=5ms rel=120ms makeup=1.15x, drive=1.2
+   - Music bus: HP=80Hz, comp thr=0.45 ratio=2:1 att=10ms rel=150ms makeup=1.1x, drive=1.15
+   - Atmos bus: HP=60Hz, no compression (keep open), no saturation (keep clean)
+   - FX bus: HP=40Hz, comp thr=0.35 ratio=2.5:1 att=3ms rel=100ms makeup=1.2x, drive=1.2
+
+2. Fixed sidechain — ONLY bass gets duckEnv, lead and acid do NOT:
+   BEFORE: bass * duckEnv, lead * duckEnv, acid * duckEnv
+   AFTER:  bass * duckEnv, lead (no duck), acid (no duck)
+
+3. Faster sidechain recovery: 120ms → 80ms (tighter groove)
+
+4. Lead saturation: Added post-filter tanh (drive=1.6) — makes lead sound "produced" not "raw"
+
+5. Acid improvements:
+   - Resonance: 0.9 → 0.95 (more squelch)
+   - Filter drive: 2.5 → 3.0 (more grit)
+   - Distortion: drive=3 → drive=4 (heavier)
+   - Filter decay: 0.7*dur → 0.4*dur (faster sweep = more squelch character)
+
+VERIFIED: 0 errors, 35+ seconds stable, level 75% (up from 53% — bus compression + saturation = louder)
+
+BEFORE → AFTER:
+  Bus processing: NONE → 5 BusProcessors (compression + HP + saturation per bus)
+  Sidechain: affects bass+lead+acid → affects ONLY bass
+  Sidechain recovery: 120ms → 80ms
+  Lead: no saturation → tanh(1.6) post-filter
+  Acid resonance: 0.9 → 0.95 (more squelch)
+  Acid distortion: drive=3 → drive=4 (heavier)
+  Acid filter decay: 0.7*dur → 0.4*dur (faster sweep)
+  Level: 53% → 75% (bus compression + saturation = louder, more "produced" sound)
