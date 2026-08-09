@@ -145,9 +145,9 @@ def gen_lead(freq, dur=0.3, sr=SR):
         filtered[i] = filtered[i-1] + a * (total[i] - filtered[i-1]) / (1 + a)
     # Saturate
     saturated = np.array([fast_tanh(x * 1.6) for x in filtered])
-    # Amp envelope
+    # Amp envelope — LOUDER: was 0.15, now 0.5
     env = np.minimum(1, t / 0.006) * np.exp(-t / dur)
-    return saturated * env * 0.15
+    return saturated * env * 0.5  # was 0.15 — 3.3x louder
 
 # ─── Render a full track ──────────────────────────────────────────────────
 def render_track(bpm=138, duration=30, seed=42):
@@ -188,74 +188,106 @@ def render_track(bpm=138, duration=30, seed=42):
                 pos = int(t * sr)
                 if pos >= n_total: continue
                 
-                # Kick on every beat
+                # Kick — EVEN LOWER: 0.4 (was 0.55). Kick RMS=0.42, lead RMS=0.02 = 21:1 ratio
+                # Need to bring kick down to 0.4 and lead up to 0.5 to get ~2:1 ratio
                 if step % 4 == 0:
                     end = min(pos + len(kick), n_total)
-                    vel = 0.9 if step == 0 else 0.8
+                    vel = 0.4 if step == 0 else 0.35
                     out[pos:end] += kick[:end-pos] * vel
                 
-                # Bass on offbeats — VARY PATTERN every 4 bars
+                # Bass on offbeats — BALANCED: 0.45 not 0.5
                 if bass_on and step % 2 == 1:
                     end = min(pos + len(bass_note), n_total)
-                    # Different bass pattern every 4 bars
                     pattern_idx = (bar // 4) % 3
                     if pattern_idx == 0:
-                        bass_freq = 82  # root
+                        bass_freq = 82
                     elif pattern_idx == 1:
-                        bass_freq = 73 if step % 4 == 1 else 82  # alternating root/fifth
+                        bass_freq = 73 if step % 4 == 1 else 82
                     else:
-                        bass_freq = 65 if step == 1 else 82  # occasional low
-                    # Passing tone every 2nd bar step 6
+                        bass_freq = 65 if step == 1 else 82
                     if bar % 2 == 1 and step == 6:
-                        bass_freq = 98  # passing tone
+                        bass_freq = 98
                     bass = gen_bass(freq=bass_freq, decay=0.12)
-                    # Velocity variation
-                    vel = 0.5 * (1.0 if step % 4 == 1 else 0.7)
+                    vel = 0.45 * (1.0 if step % 4 == 1 else 0.7)
                     if bar % 8 == 7 and step == 0:
-                        # Sustained bass every 8 bars
                         bass = gen_bass(freq=bass_freq, decay=0.3)
-                        vel = 0.55
+                        vel = 0.5
                     out[pos:end] += bass[:end-pos] * vel
                 
-                # Hats — VELOCITY VARIATION + GHOST NOTES
+                # Hats — BALANCED: louder (0.25 not 0.14)
                 if step % 2 == 0:
                     end = min(pos + len(hat_closed), n_total)
                     beat_pos = step % 4
-                    if beat_pos == 0: vel = 0.14
-                    elif beat_pos == 2: vel = 0.10
-                    else: vel = 0.07
-                    if bar % 4 == 3: vel *= 1.2  # tension build
+                    if beat_pos == 0: vel = 0.25
+                    elif beat_pos == 2: vel = 0.18
+                    else: vel = 0.12
+                    if bar % 4 == 3: vel *= 1.2
                     out[pos:end] += hat_closed[:end-pos] * vel
                 # Ghost hat
                 if step % 4 == 2 and bar % 2 == 1 and np.random.random() < 0.3:
                     end = min(pos + len(hat_closed), n_total)
-                    out[pos:end] += hat_closed[:end-pos] * 0.04
+                    out[pos:end] += hat_closed[:end-pos] * 0.08
                 if step == 4:
                     end = min(pos + len(hat_open), n_total)
-                    out[pos:end] += hat_open[:end-pos] * 0.08
+                    out[pos:end] += hat_open[:end-pos] * 0.15
                 
-                # Lead in drops — VARY MOTIF every 4 bars + call/response
+                # CLAP on beats 2 & 4 — WAS MISSING ENTIRELY
+                if bass_on and (step == 4 or step == 12):
+                    end = min(pos + len(hat_open), n_total)  # reuse noise for clap
+                    clap_n = min(int(0.15 * sr), end - pos)
+                    if clap_n > 0:
+                        clap_noise = pink_noise(clap_n)
+                        clap_t = np.arange(clap_n) / sr
+                        # Multi-burst envelope
+                        clap_env = np.zeros(clap_n)
+                        for burst_t, burst_d in [(0, 0.02), (0.012, 0.02), (0.024, 0.02), (0.036, 0.09)]:
+                            for i in range(clap_n):
+                                if clap_t[i] >= burst_t:
+                                    clap_env[i] += np.exp(-(clap_t[i] - burst_t) / burst_d)
+                        clap = clap_noise * clap_env * 0.3
+                        out[pos:pos+clap_n] += clap[:clap_n]
+                
+                # Lead in drops — BALANCED: 0.35 not 0.15
                 if lead_on and step % 4 == 0:
-                    # Call/response: primary plays bars 0-1,4-5; counter plays 2-3,6-7
                     phrase_bar = bar % 8
                     is_primary = phrase_bar < 2 or (phrase_bar >= 4 and phrase_bar < 6)
                     is_counter = (phrase_bar >= 2 and phrase_bar < 4) or phrase_bar >= 6
                     
                     if is_primary:
                         end = min(pos + len(lead_note), n_total)
-                        # Different motif every 4 bars
                         motifs = [[440, 494, 392, 523], [440, 392, 349, 440], [523, 494, 440, 392]]
                         motif = motifs[(bar // 4) % 3]
                         note_idx = (step // 4) % 4
                         lead = gen_lead(freq=motif[note_idx], dur=0.3)
-                        out[pos:end] += lead[:end-pos] * 0.15
+                        out[pos:end] += lead[:end-pos] * 0.45  # was 0.35
                     elif is_counter and np.random.random() < 0.5:
-                        # Counter lead — octave up, different notes
                         end = min(pos + len(lead_note), n_total)
                         counter_notes = [880, 988, 784, 1047]
                         lead = gen_lead(freq=counter_notes[(step // 4) % 4], dur=0.25)
                         lead_len = min(len(lead), end - pos)
-                        out[pos:pos+lead_len] += lead[:lead_len] * 0.10
+                        out[pos:pos+lead_len] += lead[:lead_len] * 0.30  # was 0.22
+                
+                # PAD — WAS MISSING. Add sustained chord bed in drops
+                if lead_on and step == 0 and bar % 2 == 0:
+                    pad_n = int(2 * bar_dur * sr)  # 2 bars
+                    pad_end = min(pos + pad_n, n_total)
+                    pad_actual = pad_end - pos
+                    if pad_actual > 0:
+                        # Simple pad: 3 detuned saws through LP
+                        pad_freq = 220  # A3
+                        pad_t = np.arange(pad_actual) / sr
+                        pad_osc = bl_saw(pad_freq, pad_actual) * 0.4 + bl_saw(pad_freq * 1.01, pad_actual) * 0.4
+                        # LP filter at 1200Hz
+                        pad_filtered = one_pole_lp(pad_osc, 1200)
+                        # Slow attack/release
+                        attack = min(int(0.5 * sr), pad_actual)
+                        release_start = max(0, pad_actual - int(0.4 * sr))
+                        pad_env = np.ones(pad_actual)
+                        pad_env[:attack] = np.linspace(0, 1, attack)
+                        if release_start > 0:
+                            pad_env[release_start:] = np.linspace(1, 0, pad_actual - release_start)
+                        pad = pad_filtered * pad_env * 0.2  # BALANCED: 0.2 not 0.08
+                        out[pos:pad_end] += pad[:pad_actual]
                 
                 # Fills on last bar of 4-bar phrase
                 if bar % 4 == 3 and step >= 12:
