@@ -11,6 +11,7 @@ import {
   Radio, Play, Square, Activity, Wifi, WifiOff, Volume2, VolumeX,
   Zap, Brain, CheckCircle2, Music, Gauge, Waves, Sparkles, TrendingUp,
   TrendingDown, Target, ArrowUp, ArrowDown, Check, Shuffle,
+  Cpu, SlidersHorizontal, Layers, Piano, ListMusic, AudioWaveform,
 } from 'lucide-react';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
@@ -97,6 +98,21 @@ export default function PSY4Page() {
   // When true, the world selector shows an "AUTO" badge (engine has auto-switched).
   const [autoSwitchActive, setAutoSwitchActive] = useState(false);
 
+  // ── Integration UI state (Task I1-UI) ──
+  // Synthesis character (FM / supersaw / wavetable / classic) per track.
+  const [synthChar, setSynthChar] = useState<any>(null);
+  // Per-track synth-mode overrides (always works — backed by getSynthModeOverrides).
+  const [synthOverrides, setSynthOverrides] = useState<Record<number, string>>({});
+  // Effects matrix state (per-track EQ/comp/sat + send levels).
+  const [effectsState, setEffectsState] = useState<any>(null);
+  // Current chord + progression (from HarmonyEngine, Task H1).
+  const [currentChord, setCurrentChord] = useState<any>(null);
+  const [progressionInfo, setProgressionInfo] = useState<{ chords: any[]; idx: number } | null>(null);
+  // Deep pursuit dashboard (harmonic / transient / stereo field metrics).
+  const [pursuitDashboard, setPursuitDashboard] = useState<any>(null);
+  // Melody engine state (phrase position, tension, call-response).
+  const [melodyState, setMelodyState] = useState<any>(null);
+
   // Refs
   const listenerRef = useRef<any>(null);
   const analyzerRef = useRef<any>(null);
@@ -153,6 +169,19 @@ export default function PSY4Page() {
             energy: m.energy,
             bpm: m.bpm,
             detectedKey: m.detectedKey,
+            // ── Task T1: pass the new harmonic-content / transient-shape /
+            //    stereo-field metrics so the engine can drive the synthesis
+            //    detector + effects pursuit. All optional — undefined is
+            //    gracefully handled by the engine.
+            spectralCrest: m.spectralCrest,
+            hnr: m.hnr,
+            inharmonicity: m.inharmonicity,
+            spectralSlopeDb: m.spectralSlopeDb,
+            transientSharpness: m.transientSharpness,
+            transientDecayMs: m.transientDecayMs,
+            stereoBalance: m.stereoBalance,
+            stereoCorrelation: m.stereoCorrelation,
+            msRatio: m.msRatio,
           });
         }
       });
@@ -231,6 +260,33 @@ export default function PSY4Page() {
           if (engineRef.current?.getPursuitStatus) {
             try { setPursuit(engineRef.current.getPursuitStatus()); } catch {}
           }
+          // ── Integration UI pulls (Task I1-UI) ──
+          // All optional-chained: T1 may or may not have wired the getters yet.
+          try {
+            if (engineRef.current?.getSynthesisCharacter) {
+              setSynthChar(engineRef.current.getSynthesisCharacter());
+            }
+            if (engineRef.current?.getSynthModeOverrides) {
+              setSynthOverrides(engineRef.current.getSynthModeOverrides() || {});
+            }
+            if (engineRef.current?.getEffectsState) {
+              setEffectsState(engineRef.current.getEffectsState());
+            }
+            if (engineRef.current?.getCurrentChord) {
+              setCurrentChord(engineRef.current.getCurrentChord());
+            }
+            if (engineRef.current?.getCurrentProgression) {
+              const chords = engineRef.current.getCurrentProgression();
+              const idx = engineRef.current.getChordIdx?.() ?? 0;
+              if (Array.isArray(chords)) setProgressionInfo({ chords, idx });
+            }
+            if (engineRef.current?.getPursuitDashboard) {
+              setPursuitDashboard(engineRef.current.getPursuitDashboard());
+            }
+            if (engineRef.current?.getMelodyState) {
+              setMelodyState(engineRef.current.getMelodyState());
+            }
+          } catch {}
           // Track D: pull style classification + active world on every tick.
           // Optional chaining so we degrade gracefully if Track C isn't merged yet.
           if (engineRef.current?.getStyleClassification) {
@@ -274,6 +330,10 @@ export default function PSY4Page() {
     if (trainerRef.current) { trainerRef.current.stop(); trainerRef.current = null; }
     setEngineOn(false); setSelfMetrics(null); setLearning(false);
     setStyleMatches([]); setPursuit(null);
+    // Reset Integration UI state (Task I1-UI) so stale data doesn't persist.
+    setSynthChar(null); setSynthOverrides({}); setEffectsState(null);
+    setCurrentChord(null); setProgressionInfo(null);
+    setPursuitDashboard(null); setMelodyState(null);
     prevDeltaRef.current = {};
     lastSwitchToastRef.current = '';
   }, []);
@@ -320,6 +380,76 @@ export default function PSY4Page() {
     if (engineRef.current) engineRef.current.stop();
     if (trainerRef.current) trainerRef.current.stop();
   }, []);
+
+  // ── Integration UI helpers (Task I1-UI) ──
+
+  const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const midiToName = (m: number) => {
+    if (typeof m !== 'number' || !Number.isFinite(m)) return '—';
+    const n = Math.round(m);
+    return `${NOTE_NAMES[((n % 12) + 12) % 12]}${Math.floor(n / 12) - 1}`;
+  };
+  const CHORD_TYPE_LABEL: Record<string, string> = {
+    triad: '', maj7: 'maj7', min7: 'min7', dom7: '7', min9: 'min9',
+    maj9: 'maj9', sus2: 'sus2', sus4: 'sus4', dim: 'dim', aug: 'aug', min7b5: 'm7b5',
+  };
+  const INVERSION_LABEL = ['root', '1st inv', '2nd inv', '3rd inv'];
+
+  // Per-track defaults — mirrors applyWorldPresets() in psy4EngineV2.
+  // Used as a fallback when getSynthesisCharacter() is unavailable so the user
+  // still sees which synthesis mode each track is running.
+  const TRACK_NAMES = ['KICK', 'SNARE', 'HATS', 'PERC', 'BASS', 'LEAD', 'PAD', 'ARP'];
+  const TRACK_DEFAULT_MODE: Record<number, string> = {
+    0: 'classic', 1: 'classic', 2: 'classic', 3: 'classic',
+    4: 'classic', 5: 'fm', 6: 'supersaw', 7: 'wavetable',
+  };
+
+  const modeColor = (mode?: string): string => {
+    switch (mode) {
+      case 'fm': return 'bg-rose-600 text-white border-rose-500';
+      case 'supersaw': return 'bg-amber-600 text-white border-amber-500';
+      case 'wavetable': return 'bg-emerald-600 text-white border-emerald-500';
+      case 'classic': return 'bg-slate-600 text-white border-slate-500';
+      default: return 'bg-slate-700 text-slate-200 border-slate-600';
+    }
+  };
+  const modeTextColor = (mode?: string): string => {
+    switch (mode) {
+      case 'fm': return 'text-rose-400';
+      case 'supersaw': return 'text-amber-400';
+      case 'wavetable': return 'text-emerald-400';
+      default: return 'text-slate-300';
+    }
+  };
+
+  // Resolve the effective synthesis mode for a track: override first, then
+  // synthChar (if T1 has populated it), then the static default.
+  const effectiveMode = (trackIdx: number): string => {
+    if (synthOverrides?.[trackIdx]) return synthOverrides[trackIdx];
+    if (synthChar?.tracks?.[trackIdx]?.mode) return synthChar.tracks[trackIdx].mode;
+    if (synthChar?.mode && synthChar?.primaryTrack === trackIdx) return synthChar.mode;
+    return TRACK_DEFAULT_MODE[trackIdx] ?? 'classic';
+  };
+
+  // Color for a target-vs-actual delta (used by deep pursuit rows).
+  const deltaColor = (delta: number | undefined, tol: number): string => {
+    if (delta === undefined || !Number.isFinite(delta)) return 'text-slate-500';
+    const a = Math.abs(delta);
+    if (a <= tol) return 'text-emerald-400';
+    if (a <= tol * 3) return 'text-amber-400';
+    return 'text-rose-400';
+  };
+
+  // Mini horizontal bar for 0..1 normalized values.
+  const MiniBar = ({ value, max = 1, color = 'bg-cyan-500' }: { value: number; max?: number; color?: string }) => {
+    const v = typeof value === 'number' && Number.isFinite(value) ? value : 0;
+    const pct = Math.max(0, Math.min(100, (v / Math.max(0.0001, max)) * 100));
+    return (
+      <div className="h-1.5 w-full bg-slate-800 rounded overflow-hidden" aria-hidden>
+        <div className={`h-full ${color} rounded transition-all duration-200`} style={{ width: `${pct.toFixed(1)}%` }} />
+      </div>
+    );
+  };
 
   // ─── Render helpers ───────────────────────────────────────────────────────
 
@@ -764,6 +894,434 @@ export default function PSY4Page() {
           </Card>
         )}
 
+        {/* ─── SYNTHESIS CHARACTER (Task I1-UI · CHANGE 1) ─── */}
+        {/* Shows the active synthesis mode per track (FM / supersaw / wavetable / classic)
+            with confidence, FM depth, saw spread, wavetable position, and reasons.
+            Visible in listen + analyze so the user can see what the engine is doing. */}
+        {(mode === 'listen' || mode === 'analyze') && engineOn && (
+          <Card className="border-slate-800 bg-slate-900/60">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Cpu className="w-4 h-4 text-amber-400" />
+                SYNTHESIS
+                <span className="text-[10px] text-slate-500 font-mono ml-2">FM · supersaw · wavetable · classic</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Per-track mode grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+                {TRACK_NAMES.map((name, idx) => {
+                  const mode = effectiveMode(idx);
+                  const overridden = !!synthOverrides?.[idx];
+                  return (
+                    <div key={name} className="bg-slate-950 border border-slate-800 rounded p-2 text-center">
+                      <div className="text-[9px] text-slate-500 uppercase font-mono">{name}</div>
+                      <div className={`mt-1 inline-block px-1.5 py-0.5 rounded text-[10px] font-mono font-bold border ${modeColor(mode)}`}>
+                        {mode.toUpperCase()}
+                      </div>
+                      {overridden && (
+                        <div className="text-[8px] text-fuchsia-400 font-mono mt-0.5">override</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Primary character (from getSynthesisCharacter — T1) */}
+              {synthChar ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {/* Mode + confidence */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3 space-y-2">
+                    <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">Detected Character</div>
+                    <div className="flex items-baseline justify-between">
+                      <span className={`text-base font-bold ${modeTextColor(synthChar.mode)}`}>
+                        {(synthChar.mode || 'classic').toUpperCase()}
+                      </span>
+                      {typeof synthChar.confidence === 'number' && (
+                        <span className={`text-sm font-mono font-bold ${deltaColor(synthChar.confidence - 0.7, 0.2)}`}>
+                          {Math.round(synthChar.confidence * 100)}%
+                        </span>
+                      )}
+                    </div>
+                    {typeof synthChar.confidence === 'number' && (
+                      <MiniBar value={synthChar.confidence} color="bg-amber-500" />
+                    )}
+                  </div>
+
+                  {/* Mode-specific params */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3 space-y-2">
+                    <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">Mode Parameters</div>
+                    {synthChar.mode === 'fm' && typeof synthChar.fmDepth === 'number' && (
+                      <div>
+                        <div className="flex justify-between text-[10px] font-mono"><span className="text-slate-400">FM depth</span><span className={modeTextColor('fm')}>{synthChar.fmDepth.toFixed(2)}</span></div>
+                        <MiniBar value={synthChar.fmDepth} max={8} color="bg-rose-500" />
+                      </div>
+                    )}
+                    {synthChar.mode === 'supersaw' && typeof synthChar.sawSpread === 'number' && (
+                      <div>
+                        <div className="flex justify-between text-[10px] font-mono"><span className="text-slate-400">Saw spread</span><span className={modeTextColor('supersaw')}>{synthChar.sawSpread.toFixed(2)}</span></div>
+                        <MiniBar value={synthChar.sawSpread} max={1} color="bg-amber-500" />
+                      </div>
+                    )}
+                    {synthChar.mode === 'wavetable' && typeof synthChar.wtPosition === 'number' && (
+                      <div>
+                        <div className="flex justify-between text-[10px] font-mono"><span className="text-slate-400">Wavetable pos</span><span className={modeTextColor('wavetable')}>{synthChar.wtPosition.toFixed(2)}</span></div>
+                        <MiniBar value={synthChar.wtPosition} max={1} color="bg-emerald-500" />
+                      </div>
+                    )}
+                    {synthChar.mode === 'classic' && (
+                      <div className="text-[10px] font-mono text-slate-400">2-osc classic saw/square/sine</div>
+                    )}
+                    {!synthChar.mode && (
+                      <div className="text-[10px] font-mono text-slate-500">No character data yet</div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-[10px] text-slate-500 font-mono bg-slate-950 border border-slate-800 rounded p-3">
+                  Detailed character detection unavailable — showing per-track world-default modes above.
+                </div>
+              )}
+
+              {/* Reasons (if available) */}
+              {synthChar?.reasons && Array.isArray(synthChar.reasons) && synthChar.reasons.length > 0 && (
+                <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                  <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-2">Why this character?</div>
+                  <ul className={`space-y-1 text-[11px] font-mono text-slate-300 ${scrollList}`}>
+                    {synthChar.reasons.map((r: string, i: number) => (
+                      <li key={i} className="flex gap-1.5">
+                        <CheckCircle2 className="w-3 h-3 mt-0.5 flex-shrink-0 text-amber-400" />
+                        <span>{r}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ─── EFFECTS MATRIX (Task I1-UI · CHANGE 2) ─── */}
+        {/* Per-track insert chain (EQ / comp / sat) + 6 send levels.
+            Driven by getEffectsState() if T1 has wired it; otherwise a clear
+            placeholder is shown so the user knows the panel exists. */}
+        {mode === 'analyze' && engineOn && (
+          <Card className="border-slate-800 bg-slate-900/60">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <SlidersHorizontal className="w-4 h-4 text-cyan-400" />
+                EFFECTS MATRIX
+                <span className="text-[10px] text-slate-500 font-mono ml-2">8 tracks · EQ / comp / sat / sends</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {effectsState && Array.isArray(effectsState.tracks) && effectsState.tracks.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-slate-700">
+                        <TableHead className="text-slate-400 font-mono text-[10px] sticky left-0 bg-slate-900/60">TRACK</TableHead>
+                        <TableHead className="text-fuchsia-400 font-mono text-[10px]">EQ LOW</TableHead>
+                        <TableHead className="text-fuchsia-400 font-mono text-[10px]">EQ MID</TableHead>
+                        <TableHead className="text-fuchsia-400 font-mono text-[10px]">EQ HIGH</TableHead>
+                        <TableHead className="text-amber-400 font-mono text-[10px]">COMP</TableHead>
+                        <TableHead className="text-rose-400 font-mono text-[10px]">SAT</TableHead>
+                        <TableHead className="text-emerald-400 font-mono text-[10px]">CHORUS</TableHead>
+                        <TableHead className="text-emerald-400 font-mono text-[10px]">PHASER</TableHead>
+                        <TableHead className="text-rose-400 font-mono text-[10px]">DIST</TableHead>
+                        <TableHead className="text-cyan-400 font-mono text-[10px]">REVERB</TableHead>
+                        <TableHead className="text-cyan-400 font-mono text-[10px]">DELAY</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {effectsState.tracks.map((t: any, i: number) => {
+                        const eqLow = typeof t.eqLowGain === 'number' ? t.eqLowGain : 0;
+                        const eqMid = typeof t.eqMidGain === 'number' ? t.eqMidGain : 0;
+                        const eqHigh = typeof t.eqHighGain === 'number' ? t.eqHighGain : 0;
+                        const compThresh = typeof t.compThreshold === 'number' ? t.compThreshold : -18;
+                        const satDrive = typeof t.satDrive === 'number' ? t.satDrive : 1;
+                        const eqColor = (v: number) => Math.abs(v) < 1 ? 'text-emerald-400' : Math.abs(v) < 4 ? 'text-amber-400' : 'text-rose-400';
+                        return (
+                          <TableRow key={i} className="border-slate-800">
+                            <TableCell className="font-mono text-[10px] text-slate-300 sticky left-0 bg-slate-900/60">{TRACK_NAMES[i] ?? `T${i}`}</TableCell>
+                            <TableCell className="font-mono text-[10px]"><div className={eqColor(eqLow)}>{eqLow > 0 ? '+' : ''}{eqLow.toFixed(1)}dB</div></TableCell>
+                            <TableCell className="font-mono text-[10px]"><div className={eqColor(eqMid)}>{eqMid > 0 ? '+' : ''}{eqMid.toFixed(1)}dB</div></TableCell>
+                            <TableCell className="font-mono text-[10px]"><div className={eqColor(eqHigh)}>{eqHigh > 0 ? '+' : ''}{eqHigh.toFixed(1)}dB</div></TableCell>
+                            <TableCell className="font-mono text-[10px] text-amber-300">{compThresh.toFixed(0)}dB</TableCell>
+                            <TableCell className="font-mono text-[10px]">
+                              <div className="flex items-center gap-1">
+                                <span className="text-rose-300">{satDrive.toFixed(1)}</span>
+                                <div className="w-8"><MiniBar value={satDrive} max={6} color="bg-rose-500" /></div>
+                              </div>
+                            </TableCell>
+                            <TableCell className="font-mono text-[10px]"><div className="w-10"><MiniBar value={t.sendChorus ?? 0} max={1} color="bg-emerald-500" /></div></TableCell>
+                            <TableCell className="font-mono text-[10px]"><div className="w-10"><MiniBar value={t.sendPhaser ?? 0} max={1} color="bg-emerald-500" /></div></TableCell>
+                            <TableCell className="font-mono text-[10px]"><div className="w-10"><MiniBar value={t.sendDistortion ?? 0} max={1} color="bg-rose-500" /></div></TableCell>
+                            <TableCell className="font-mono text-[10px]"><div className="w-10"><MiniBar value={t.sendReverb ?? 0} max={1} color="bg-cyan-500" /></div></TableCell>
+                            <TableCell className="font-mono text-[10px]"><div className="w-10"><MiniBar value={t.sendDelay ?? 0} max={1} color="bg-cyan-500" /></div></TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : (
+                <div className="bg-slate-950 border border-slate-800 rounded p-4 text-center">
+                  <div className="text-[11px] text-amber-400 font-mono">Effects state unavailable</div>
+                  <div className="text-[10px] text-slate-500 font-mono mt-1">
+                    Engine method <code className="text-cyan-400">getEffectsState()</code> not yet wired — per-track rack configs will appear here once T1 ships.
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ─── HARMONY (Task I1-UI · CHANGE 3) ─── */}
+        {/* Current chord (root + type + inversion), chord notes as MIDI→note names,
+            the section progression with the current chord highlighted, and the
+            voice-led voicing notes. Driven by getCurrentChord() + getHarmony(). */}
+        {mode === 'analyze' && engineOn && (
+          <Card className="border-slate-800 bg-slate-900/60">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Piano className="w-4 h-4 text-emerald-400" />
+                HARMONY
+                <span className="text-[10px] text-slate-500 font-mono ml-2">voice leading · 7th/9th chords · inversions</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {currentChord ? (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {/* Chord name */}
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                      <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Current Chord</div>
+                      <div className="text-xl font-bold text-emerald-300 font-mono">
+                        {midiToName(currentChord.root)}
+                        <span className="text-emerald-400">{CHORD_TYPE_LABEL[currentChord.type] ?? currentChord.type}</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono mt-1">
+                        degree {currentChord.scaleDegree} · {INVERSION_LABEL[currentChord.inversion] ?? `inv ${currentChord.inversion}`}
+                      </div>
+                    </div>
+
+                    {/* Chord notes */}
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3 md:col-span-2">
+                      <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Chord Notes</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {Array.isArray(currentChord.notes) && currentChord.notes.map((n: number, i: number) => (
+                          <span key={i} className="px-1.5 py-0.5 bg-emerald-950/40 border border-emerald-800 rounded text-[11px] font-mono text-emerald-300">
+                            {midiToName(n)}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="text-[9px] text-slate-600 font-mono mt-1.5">root-position voicing · {Array.isArray(currentChord.notes) ? currentChord.notes.length : 0} notes</div>
+                    </div>
+                  </div>
+
+                  {/* Progression */}
+                  {progressionInfo && progressionInfo.chords.length > 0 ? (
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                      <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-2">Progression (current highlighted)</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {progressionInfo.chords.map((c: any, i: number) => {
+                          const isCurrent = i === (progressionInfo.idx - 1);
+                          return (
+                            <span
+                              key={i}
+                              className={`px-2 py-1 rounded text-[11px] font-mono border ${
+                                isCurrent
+                                  ? 'bg-emerald-600 text-white border-emerald-400'
+                                  : 'bg-slate-900 text-slate-400 border-slate-800'
+                              }`}
+                            >
+                              {midiToName(c.root)}{CHORD_TYPE_LABEL[c.type] ?? c.type}
+                            </span>
+                          );
+                        })}
+                      </div>
+                      <div className="text-[9px] text-slate-600 font-mono mt-2">
+                        bar {Math.max(1, progressionInfo.idx)} of {progressionInfo.chords.length} · section regenerates on section boundaries
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3 text-[10px] text-slate-500 font-mono">
+                      Progression view unavailable — engine method <code className="text-cyan-400">getCurrentProgression()</code> not yet wired.
+                    </div>
+                  )}
+
+                  {/* Voicing (computed from chord intervals — root-position) */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                    <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-2">Voicing (root position)</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] font-mono">
+                      <div>
+                        <span className="text-slate-500">Bass: </span>
+                        <span className="text-fuchsia-300">{midiToName(currentChord.root)}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Upper voices: </span>
+                        <span className="text-cyan-300">
+                          {Array.isArray(currentChord.notes) ? currentChord.notes.slice(1).map((n: number) => midiToName(n)).join(' · ') : '—'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-[9px] text-slate-600 font-mono mt-1.5">
+                      Voice-led voicing is computed at trigger time — pad plays 1 voice per note with 5ms stagger.
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="bg-slate-950 border border-slate-800 rounded p-4 text-center">
+                  <div className="text-[11px] text-slate-400 font-mono">No chord playing yet</div>
+                  <div className="text-[10px] text-slate-500 font-mono mt-1">
+                    Chords trigger at the start of each bar in lead sections. Wait for a drop or build.
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ─── DEEP PURSUIT (Task I1-UI · CHANGE 4) ─── */}
+        {/* Enhanced pursuit dashboard: harmonic content (flatness, crest, HNR,
+            inharmonicity, slope), transient shape (sharpness, decay), and stereo
+            field (width, balance, correlation, M/S ratio). Each row shows
+            target / actual / delta + convergence arrow. */}
+        {mode === 'analyze' && engineOn && pursuitDashboard && (
+          <Card className="border-slate-800 bg-slate-900/60">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Layers className="w-4 h-4 text-fuchsia-400" />
+                DEEP PURSUIT
+                <span className="text-[10px] text-slate-500 font-mono ml-2">harmonic · transient · stereo field</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Helper to render a metric group */}
+              {(() => {
+                const renderGroup = (title: string, color: string, rows: any[]) => {
+                  if (!rows || rows.length === 0) return null;
+                  return (
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                      <div className={`text-[10px] uppercase tracking-wider font-mono mb-2 ${color}`}>{title}</div>
+                      <div className="space-y-1.5">
+                        {rows.map((r: any, i: number) => {
+                          const target = typeof r.target === 'number' ? r.target : 0;
+                          const actual = typeof r.actual === 'number' ? r.actual : 0;
+                          const delta = typeof r.target === 'number' && typeof r.actual === 'number' ? (r.actual - r.target) : undefined;
+                          const tol = typeof r.tol === 'number' ? r.tol : (Math.abs(target) * 0.1 + 0.01);
+                          const isActive = target > 0 || actual > 0;
+                          const dColor = !isActive ? 'text-slate-500' : deltaColor(delta, tol);
+                          const arrow = !isActive ? 'idle'
+                            : Math.abs(delta ?? 0) <= tol ? 'ok'
+                            : (Math.abs(delta ?? 0) < (r.prevDelta ?? Math.abs(delta ?? 0) + 1) ? 'up' : 'down');
+                          return (
+                            <div key={i} className="grid grid-cols-12 gap-1 items-center text-[10px] font-mono">
+                              <span className="col-span-3 text-slate-300 truncate" title={r.label}>{r.label}</span>
+                              <span className="col-span-3 text-fuchsia-300 text-right">{isActive ? target.toFixed(2) : '—'}{r.unit || ''}</span>
+                              <span className="col-span-3 text-cyan-300 text-right">{isActive ? actual.toFixed(2) : '—'}{r.unit || ''}</span>
+                              <span className={`col-span-2 text-right ${dColor}`}>
+                                {isActive ? `${(delta ?? 0) > 0 ? '+' : ''}${(delta ?? 0).toFixed(2)}` : 'idle'}
+                              </span>
+                              <span className="col-span-1 text-right">
+                                <ArrowIcon a={arrow as any} />
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                };
+                return (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {renderGroup('Harmonic Content', 'text-emerald-400', pursuitDashboard.harmonic || [])}
+                    {renderGroup('Transient Shape', 'text-amber-400', pursuitDashboard.transient || [])}
+                    {renderGroup('Stereo Field', 'text-fuchsia-400', pursuitDashboard.stereo || [])}
+                  </div>
+                );
+              })()}
+              <p className="text-[10px] text-slate-500 font-mono">
+                <ArrowIcon a="up" /> converging · <ArrowIcon a="down" /> diverging · <ArrowIcon a="ok" /> locked.
+                Each row pairs the radio target with our engine's actual value, with tolerance-scaled color coding.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ─── MELODY (Task I1-UI · CHANGE 5) ─── */}
+        {/* Small indicator showing phrase position (A / A' / B / A''), tension
+            level, and call-response state. */}
+        {mode === 'analyze' && engineOn && (
+          <Card className="border-slate-800 bg-slate-900/60">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <ListMusic className="w-4 h-4 text-amber-400" />
+                MELODY
+                <span className="text-[10px] text-slate-500 font-mono ml-2">motif development · call-response · tension</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {melodyState ? (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Phrase position */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                    <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Phrase Position</div>
+                    <div className="text-2xl font-bold text-amber-300 font-mono">
+                      {melodyState.phraseLabel || melodyState.position || 'A'}
+                    </div>
+                    {typeof melodyState.phraseCount === 'number' && (
+                      <div className="text-[9px] text-slate-600 font-mono mt-0.5">phrase #{melodyState.phraseCount}</div>
+                    )}
+                  </div>
+
+                  {/* Tension */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                    <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Tension</div>
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-2xl font-bold text-fuchsia-300 font-mono">
+                        {typeof melodyState.tension === 'number' ? `${Math.round(melodyState.tension * 100)}%` : '—'}
+                      </span>
+                      {typeof melodyState.energy === 'number' && (
+                        <span className="text-[10px] text-slate-500 font-mono">energy {Math.round(melodyState.energy * 100)}%</span>
+                      )}
+                    </div>
+                    {typeof melodyState.tension === 'number' && (
+                      <div className="mt-2"><MiniBar value={melodyState.tension} max={1} color="bg-fuchsia-500" /></div>
+                    )}
+                  </div>
+
+                  {/* Call-response */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                    <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Call / Response</div>
+                    {melodyState.callResponseActive ? (
+                      <div className="flex items-center gap-2">
+                        <AudioWaveform className="w-4 h-4 text-emerald-400" />
+                        <span className="text-sm font-mono text-emerald-300">ACTIVE</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-mono text-slate-500">idle</span>
+                      </div>
+                    )}
+                    {typeof melodyState.motifLength === 'number' && (
+                      <div className="text-[9px] text-slate-600 font-mono mt-0.5">motif: {melodyState.motifLength} notes</div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-slate-950 border border-slate-800 rounded p-4 text-center">
+                  <div className="text-[11px] text-slate-400 font-mono">Melody state unavailable</div>
+                  <div className="text-[10px] text-slate-500 font-mono mt-1">
+                    Engine method <code className="text-cyan-400">getMelodyState()</code> not yet wired — melody info appears here once T1 ships.
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {/* REFERENCE PURSUIT — enhanced with convergence arrows (Track D) */}
         {(mode === 'analyze' || mode === 'train') && pursuit && (
           <Card className="border-slate-800 bg-slate-900/60">
@@ -898,7 +1456,7 @@ export default function PSY4Page() {
 
       <footer className="border-t border-slate-800 bg-slate-900/60 mt-auto">
         <div className="max-w-7xl mx-auto px-4 py-3 text-[10px] text-slate-500 font-mono flex items-center justify-between flex-wrap gap-2">
-          <span>PSY4 · Engine V2 · Pooled Voices · 8 Tracks · Factory Presets · Style Detection · A/B Spectral</span>
+          <span>PSY4 · Engine V2 · Synthesis · Effects · Harmony · Deep Pursuit · Melody · Style Detection · A/B Spectral</span>
           <span>NO ScriptProcessor · NO AudioWorklet · Pure Web Audio</span>
         </div>
       </footer>

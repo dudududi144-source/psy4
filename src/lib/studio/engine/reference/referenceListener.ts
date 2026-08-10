@@ -68,6 +68,28 @@ export interface ReferenceMetrics {
   detectedBassNote?: { note: number; freq: number; confidence: number };
   detectedStyle?: { style: string; confidence: number };
 
+  // ── Task T1: Harmonic-content analysis (optional — populated by V2 listener) ──
+  // Spectral flatness already exists above; these are the additional timbral
+  // descriptors needed to drive the synthesis-mode detector and effects pursuit.
+  spectralCrest?: number;       // 1..N — peak-to-mean magnitude ratio. High = tonal peaks.
+  hnr?: number;                 // 0..1 — harmonic-to-noise ratio. High = clean synth, low = noisy/distorted.
+  inharmonicity?: number;       // 0..1 — partial deviation from integer ratios. High = FM/bells/metallic.
+  spectralSlopeDb?: number;     // dB/oct (typically -6 to -24). -6=bright, -12=balanced, -24=dark.
+
+  // ── Task T1: Transient shape analysis ──
+  // transientDensity already exists above; these describe the SHAPE of the
+  // detected transients (not just how many there are).
+  transientSharpness?: number;  // 0..1 — 1 = clicky/fast attack, 0 = soft/slow attack.
+  transientDecayMs?: number;    // ms — average decay time of detected transients.
+
+  // ── Task T1: Stereo field analysis ──
+  // stereoWidth (above) collapses L/R correlation to a 0..1 magnitude. These
+  // give the directional + phase information the pursuit needs to match width
+  // without blindly widening everything.
+  stereoBalance?: number;       // -1..1 — -1 = full L, 0 = centered, +1 = full R.
+  stereoCorrelation?: number;   // -1..1 — 1 = mono, 0 = uncorrelated, -1 = out of phase.
+  msRatio?: number;             // 0..1 — side energy / (mid + side) energy. High = wide.
+
   timestamp: number;
   sourceStream: string;
 }
@@ -88,6 +110,20 @@ export interface ReferenceProfile {
   bassDecayMs: { mean: number; p10: number; p90: number };
   stereoWidth: { mean: number; p10: number; p90: number };
   energy: { mean: number; p10: number; p90: number };
+  // ── Task T1: rolling stats for the new timbral / shape / stereo fields ──
+  // All optional so existing profiles (and the V1 listener that doesn't
+  // populate them) remain valid. The pursuit engine reads these via the
+  // V2 listener's getProfile() and uses the means to drive long-term
+  // synthesis + effects decisions.
+  spectralCrest?: { mean: number; p10: number; p90: number };
+  hnr?: { mean: number; p10: number; p90: number };
+  inharmonicity?: { mean: number; p10: number; p90: number };
+  spectralSlopeDb?: { mean: number; p10: number; p90: number };
+  transientSharpness?: { mean: number; p10: number; p90: number };
+  transientDecayMs?: { mean: number; p10: number; p90: number };
+  stereoBalance?: { mean: number; p10: number; p90: number };
+  stereoCorrelation?: { mean: number; p10: number; p90: number };
+  msRatio?: { mean: number; p10: number; p90: number };
   windowCount: number;
   lastUpdated: number;
   sourceStream: string;
@@ -127,8 +163,8 @@ export class ReferenceListener {
   private captureCtx: OfflineAudioContext | null = null;
 
   // Analyser data buffers (reused — NO per-frame allocation)
-  private freqData: Uint8Array | null = null;
-  private timeData: Uint8Array | null = null;
+  private freqData: Uint8Array<ArrayBuffer> | null = null;
+  private timeData: Uint8Array<ArrayBuffer> | null = null;
 
   // Callbacks
   private onMetricsCallback: ((m: ReferenceMetrics) => void) | null = null;
@@ -185,9 +221,12 @@ export class ReferenceListener {
       this.sourceNode.connect(this.analyser);
       this.analyser.connect(this.audioCtx.destination);
 
-      // Pre-allocate reusable buffers (NO per-frame allocation)
-      this.freqData = new Uint8Array(this.analyser.frequencyBinCount);
-      this.timeData = new Uint8Array(this.analyser.fftSize);
+      // Pre-allocate reusable buffers (NO per-frame allocation).
+      // Allocate via explicit ArrayBuffer so the typed array's buffer is
+      // typed as ArrayBuffer (not ArrayBufferLike) — TS 5.7+ tightens
+      // AnalyserNode.getByteFrequencyData's parameter to require this.
+      this.freqData = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount));
+      this.timeData = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
       this.captureBuffer = new Float32Array(WINDOW_SECONDS * SAMPLE_RATE);
 
       // Start playback (muted) — must happen after context is running

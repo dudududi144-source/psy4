@@ -29,6 +29,14 @@ const MAX_WINDOWS = 30;
 const SAMPLE_RATE = 44100;
 const MIN_BYTES_FOR_ANALYSIS = 256 * 1024; // 256KB ≈ 16 seconds at 128kbps
 
+// ── Task T1: local numeric clamp (the file has no shared util) ──
+// Guards every new metric against NaN/Infinity so the pursuit can rely on
+// finite values even when the FFT produces denormals or all-zero frames.
+function clampT1(v: number, lo: number, hi: number): number {
+  if (!Number.isFinite(v)) return lo;
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+
 export class ReferenceListenerV2 {
   private stream: RadioStream | null = null;
   private audioCtx: AudioContext | null = null;
@@ -454,6 +462,192 @@ export class ReferenceListenerV2 {
     // Stereo width = 1 - correlation (0 = mono, 1 = wide)
     const stereoWidth = Math.max(0, Math.min(1, 1 - Math.abs(correlation)));
 
+    // ── Task T1: extended stereo-field analysis ──
+    // balance: -1 (full L) .. +1 (full R). correlation: signed value (the
+    // magnitude was used for stereoWidth above; the sign tells us phase).
+    // msRatio: side energy / (mid + side) energy → 0 = mono, 1 = full side.
+    const stereoBalance = (lEnergy + rEnergy) > 0
+      ? clampT1((rEnergy - lEnergy) / (lEnergy + rEnergy + 1e-12), -1, 1)
+      : 0;
+    const stereoCorrelation = isFinite(correlation) ? clampT1(correlation, -1, 1) : 0;
+    let midEnergySum = 0, sideEnergySum = 0;
+    const stereoStride = Math.max(1, Math.floor(length / 50000));
+    for (let i = 0; i < length; i += stereoStride) {
+      const l = leftData[i];
+      const r = rightData[i];
+      const mid = (l + r) * 0.5;
+      const side = (l - r) * 0.5;
+      midEnergySum += mid * mid;
+      sideEnergySum += side * side;
+    }
+    const msRatio = (midEnergySum + sideEnergySum) > 0
+      ? clampT1(sideEnergySum / (midEnergySum + sideEnergySum + 1e-12), 0, 1)
+      : 0;
+
+    // ── Task T1: spectral crest (peak-to-mean magnitude ratio) ──
+    let magMax = 0;
+    let magSum = 0;
+    for (let i = 1; i < avgMag.length; i++) {
+      if (avgMag[i] > magMax) magMax = avgMag[i];
+      magSum += avgMag[i];
+    }
+    const magMean = magSum / Math.max(1, avgMag.length - 1);
+    const spectralCrest = magMean > 0 ? magMax / magMean : 0;
+
+    // ── Task T1: spectral slope (dB/octave) via linear regression ──
+    // Fit ln(magnitude) = a + b * ln(freq). Convert slope b to dB/octave:
+    //   slope_dB_per_oct = b * ln(2) / ln(10^(1/10))  ... but since we want
+    //   dB per octave of frequency, and dB = 20*log10(mag), the simpler form
+    //   is: slope_dB_per_oct = b * ln(2) * 20 / ln(10) ≈ b * 6.0206.
+    // Typical: -6 (bright), -12 (balanced), -18 (dark), -24 (very dark).
+    let slopeN = 0, slopeSumX = 0, slopeSumY = 0, slopeSumXY = 0, slopeSumXX = 0;
+    const minSlopeBin = Math.max(2, Math.floor(80 / binHz));
+    for (let i = minSlopeBin; i < avgMag.length; i++) {
+      if (avgMag[i] <= 1e-12) continue;
+      const logF = Math.log(i * binHz);
+      const logM = Math.log(avgMag[i]);
+      slopeN++;
+      slopeSumX += logF;
+      slopeSumY += logM;
+      slopeSumXY += logF * logM;
+      slopeSumXX += logF * logF;
+    }
+    let spectralSlopeDb = 0;
+    if (slopeN > 2) {
+      const slopeDenom = slopeN * slopeSumXX - slopeSumX * slopeSumX;
+      if (Math.abs(slopeDenom) > 1e-9) {
+        const b = (slopeN * slopeSumXY - slopeSumX * slopeSumY) / slopeDenom;
+        spectralSlopeDb = b * Math.log(2) * 20 / Math.log(10);
+      }
+    }
+    // Clamp into a sane audio range so the pursuit doesn't react to noise.
+    spectralSlopeDb = clampT1(spectralSlopeDb, -36, 6);
+
+    // ── Task T1: fundamental-frequency estimate via HPS (harmonic product spectrum) ──
+    // Used for HNR + inharmonicity. Multiply downsampled spectra — the bin
+    // whose product is largest is most likely f0. Limited to 80-2000 Hz to
+    // avoid sub-harmonic and ultrasonic false positives.
+    const hpsDepth = 4;
+    const hpsMinBin = Math.max(2, Math.floor(80 / binHz));
+    const hpsMaxBin = Math.min(
+      Math.floor(avgMag.length / hpsDepth) - 1,
+      Math.floor(2000 / binHz),
+    );
+    let hpsBestBin = 0;
+    let hpsBestVal = 0;
+    for (let i = hpsMinBin; i <= hpsMaxBin; i++) {
+      let prod = avgMag[i];
+      for (let h = 2; h <= hpsDepth; h++) {
+        prod *= (avgMag[i * h] || 1e-15);
+      }
+      if (prod > hpsBestVal) {
+        hpsBestVal = prod;
+        hpsBestBin = i;
+      }
+    }
+    const f0Hz = hpsBestBin > 0 ? hpsBestBin * binHz : 0;
+
+    // ── Task T1: harmonic-to-noise ratio (HNR) ──
+    // Sum energy in ±2-bin windows around the first 10 harmonic bins; compare
+    // to total spectral energy above a small threshold. HNR = E_harmonic / E_total.
+    let harmonicEnergy = 0;
+    let totalSpectralEnergy = 0;
+    if (f0Hz > 60 && f0Hz < 2000) {
+      for (let h = 1; h <= 10; h++) {
+        const targetBin = Math.round((h * f0Hz) / binHz);
+        if (targetBin >= avgMag.length) break;
+        const lo = Math.max(1, targetBin - 2);
+        const hi = Math.min(avgMag.length - 1, targetBin + 2);
+        for (let b = lo; b <= hi; b++) harmonicEnergy += avgMag[b];
+      }
+    }
+    for (let i = 1; i < avgMag.length; i++) {
+      if (avgMag[i] > 1e-12) totalSpectralEnergy += avgMag[i];
+    }
+    const hnr = (totalSpectralEnergy > 0 && harmonicEnergy > 0)
+      ? clampT1(harmonicEnergy / totalSpectralEnergy, 0, 1)
+      : 0;
+
+    // ── Task T1: inharmonicity (0..1) ──
+    // Find spectral peaks (local maxima ≥ 3× mean). For each peak above f0,
+    // compute the relative frequency deviation from the nearest integer
+    // harmonic. Average deviation × 5 (so 20% mean deviation maps to 1.0).
+    const peakThreshold = magMean * 3;
+    const peaks: { freq: number }[] = [];
+    for (let i = 2; i < avgMag.length - 2; i++) {
+      if (avgMag[i] > peakThreshold &&
+          avgMag[i] > avgMag[i - 1] &&
+          avgMag[i] > avgMag[i + 1] &&
+          avgMag[i] >= avgMag[i - 2] &&
+          avgMag[i] >= avgMag[i + 2]) {
+        peaks.push({ freq: i * binHz });
+      }
+    }
+    let inharmonicity = 0;
+    if (f0Hz > 60 && peaks.length > 2) {
+      let totalDev = 0;
+      let countedPeaks = 0;
+      for (const p of peaks) {
+        if (p.freq < f0Hz * 0.9) continue;
+        const harmonicNum = Math.round(p.freq / f0Hz);
+        if (harmonicNum < 1) continue;
+        const expectedFreq = harmonicNum * f0Hz;
+        const dev = Math.abs(p.freq - expectedFreq) / expectedFreq;
+        totalDev += dev;
+        countedPeaks++;
+      }
+      if (countedPeaks > 0) {
+        inharmonicity = clampT1((totalDev / countedPeaks) * 5, 0, 1);
+      }
+    }
+
+    // ── Task T1: transient sharpness + decay ──
+    // For each detected transient, measure attack rise time (10% → 90% of
+    // peak) and decay time (peak → 10% of peak). Sharpness = 1 - rise/30ms.
+    // Decay is averaged in ms. Caps on the analysis window keep this O(N).
+    let sumSharpness = 0;
+    let sumDecayMs = 0;
+    let validTransients = 0;
+    const attackWindow = Math.floor(sr * 0.030);   // 30 ms look-back
+    const decayWindow = Math.floor(sr * 0.300);    // 300 ms look-ahead
+    const minPeak = 0.05;
+    for (const idx of transientIndices) {
+      const peakVal = Math.abs(mono[idx]);
+      if (peakVal < minPeak) continue;
+      // Attack phase
+      const startIdx = Math.max(1, idx - attackWindow);
+      let tenIdx = -1, ninetyIdx = -1;
+      for (let i = startIdx; i <= idx; i++) {
+        const a = Math.abs(mono[i]);
+        if (tenIdx < 0 && a >= peakVal * 0.1) tenIdx = i;
+        if (ninetyIdx < 0 && a >= peakVal * 0.9) ninetyIdx = i;
+        if (tenIdx >= 0 && ninetyIdx >= 0) break;
+      }
+      if (tenIdx >= 0 && ninetyIdx > tenIdx) {
+        const riseMs = ((ninetyIdx - tenIdx) / sr) * 1000;
+        sumSharpness += clampT1(1 - riseMs / 30, 0, 1);
+      } else {
+        sumSharpness += 0.5; // unknown attack — assume neutral
+      }
+      // Decay phase
+      const endIdx = Math.min(length - 1, idx + decayWindow);
+      let decaySamples = decayWindow;
+      for (let i = idx + 1; i <= endIdx; i++) {
+        if (Math.abs(mono[i]) <= peakVal * 0.1) {
+          decaySamples = i - idx;
+          break;
+        }
+      }
+      sumDecayMs += (decaySamples / sr) * 1000;
+      validTransients++;
+    }
+    const transientSharpness = validTransients > 0
+      ? clampT1(sumSharpness / validTransients, 0, 1)
+      : 0;
+    const transientDecayMs = validTransients > 0
+      ? clampT1(sumDecayMs / validTransients, 0, 1000)
+      : 0;
+
     // ── Rhythmic regularity ──
     const rhythmicRegularity = this.computeRegularity(transientIndices);
 
@@ -513,6 +707,16 @@ export class ReferenceListenerV2 {
       detectedKey,
       detectedBassNote,
       detectedStyle,
+      // ── Task T1: extended harmonic / transient-shape / stereo fields ──
+      spectralCrest,
+      hnr,
+      inharmonicity,
+      spectralSlopeDb,
+      transientSharpness,
+      transientDecayMs,
+      stereoBalance,
+      stereoCorrelation,
+      msRatio,
       timestamp: Date.now(),
       sourceStream: this.stream?.id || 'unknown',
     };
@@ -704,6 +908,17 @@ export class ReferenceListenerV2 {
       };
     };
 
+    // ── Task T1: only include a stat block when every window in the history
+    //    actually produced the value. This keeps the profile object clean —
+    //    older windows (or V1 listener frames) that don't have the new fields
+    //    won't pollute the means with undefined → NaN.
+    const optionalStats = (key: keyof ReferenceMetrics) => {
+      const vals = windows
+        .map(w => (w as unknown as Record<string, unknown>)[key as string])
+        .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+      return vals.length > 0 ? stats(vals) : undefined;
+    };
+
     this.profile = {
       bpm: { ...stats(windows.map(w => w.bpm)), count: windows.length },
       rms: stats(windows.map(w => w.rms)),
@@ -719,6 +934,16 @@ export class ReferenceListenerV2 {
       bassDecayMs: stats(windows.map(w => w.bassDecayMs)),
       stereoWidth: stats(windows.map(w => w.stereoWidth)),
       energy: stats(windows.map(w => w.energy)),
+      // ── Task T1: extended rolling stats (undefined if no windows have them) ──
+      spectralCrest: optionalStats('spectralCrest'),
+      hnr: optionalStats('hnr'),
+      inharmonicity: optionalStats('inharmonicity'),
+      spectralSlopeDb: optionalStats('spectralSlopeDb'),
+      transientSharpness: optionalStats('transientSharpness'),
+      transientDecayMs: optionalStats('transientDecayMs'),
+      stereoBalance: optionalStats('stereoBalance'),
+      stereoCorrelation: optionalStats('stereoCorrelation'),
+      msRatio: optionalStats('msRatio'),
       windowCount: windows.length,
       lastUpdated: Date.now(),
       sourceStream: this.stream?.id || 'unknown',

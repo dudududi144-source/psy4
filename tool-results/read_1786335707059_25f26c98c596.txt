@@ -1,0 +1,1737 @@
+     1→/**
+     2→ * PSY4 Engine V2 — based on PSY6 architecture (pooled voices, factory presets, step sequencer).
+     3→ *
+     4→ * This is a MAJOR upgrade from LiteEngine V1:
+     5→ *   - Pooled voices (persistent oscillators, no GC pressure)
+     6→ *   - 8 tracks (4 drums + 4 synth) with factory presets
+     7→ *   - Step sequencer with patterns, scenes, variation
+     8→ *   - Macros that affect real parameters
+     9→ *   - Worker-timed scheduler (jitter-resistant)
+    10→ *   - Syncs BPM and key with radio
+    11→ *   - REFERENCE PURSUIT: actively chases the radio's kick decay, spectral
+    12→ *     centroid, transient density, sub/high energy, bass decay, BPM and key.
+    13→ *
+    14→ * Sound quality comes from the 40+ factory presets adapted from PSY6.
+    15→ */
+    16→
+    17→import { SeededRng, LeadMotif, AcidPattern, BASS_PATTERNS, PROGRESSIONS, scaleNote, mtof } from './musicalGrammar';
+    18→import { WORLDS, WorldId, World } from './worlds';
+    19→import { classifyStyle, styleToWorld, StyleMatch, RefFeatures } from './styleClassifier';
+    20→
+    21→// ─── Constants ──────────────────────────────────────────────────────────────
+    22→
+    23→const clamp = (v: number, a: number, b: number) => v < a ? a : (v > b ? b : v);
+    24→
+    25→/**
+    26→ * Map a reference spectral centroid (Hz) to a target synth cutoff (Hz)
+    27→ * using log-linear interpolation. Anchor points:
+    28→ *   500Hz  ->  800 Hz cutoff (dark / warm)
+    29→ *   2000Hz -> 3000 Hz cutoff (balanced)
+    30→ *   5000Hz -> 6000 Hz cutoff (bright / cutting)
+    31→ * Falls back to clamp(centroid, 200, 12000) if out of typical range.
+    32→ */
+    33→function centroidToCutoff(centroid: number): number {
+    34→  if (!isFinite(centroid) || centroid <= 0) return 1500;
+    35→  const lc = Math.log(clamp(centroid, 80, 16000));
+    36→  // Fit using endpoints (500,800) and (5000,6000):
+    37→  //   ln(cut) = 0.8753 * ln(centroid) + 1.245
+    38→  const lcut = 0.8753 * lc + 1.245;
+    39→  return clamp(Math.exp(lcut), 200, 12000);
+    40→}
+    41→
+    42→// scaleNote is imported from musicalGrammar (supports all world scales including
+    43→// phrygianDominant, harmonicMinor, doubleHarmonic, minorPentatonic).
+    44→
+    45→// ─── Factory Presets (adapted from PSY6) ───────────────────────────────────
+    46→
+    47→interface DrumPreset {
+    48→  type: string; tune: number; decay: number; tone: number; punch: number;
+    49→}
+    50→interface SynthPreset {
+    51→  wave1: OscillatorType; wave2: OscillatorType; oct2: number; detune: number;
+    52→  cutoff: number; res: number; fType: BiquadFilterType;
+    53→  atk: number; dec: number; sus: number; rel: number; gate: number;
+    54→  lfoRate: number; lfoDepth: number; lfoDest: string; poly: number;
+    55→}
+    56→
+    57→const DRUM_PRESETS: Record<string, DrumPreset> = {
+    58→  'PS-KICK-TIGHT': { type: 'kick', tune: 0.9, decay: 0.8, tone: 1, punch: 0.85 },
+    59→  'PS-KICK-DEEP': { type: 'kick', tune: 0.7, decay: 1.4, tone: 1, punch: 0.4 },
+    60→  'PS-HAT': { type: 'hatC', tune: 1, decay: 0.32, tone: 1.2, punch: 0 },
+    61→  'PS-PERC': { type: 'tom', tune: 1.2, decay: 0.5, tone: 1, punch: 0 },
+    62→  'PS-GLITCH': { type: 'glitch', tune: 1, decay: 1.2, tone: 0.8, punch: 0 },
+    63→  'TR-CLAP': { type: 'clap', tune: 1, decay: 1.6, tone: 0.9, punch: 0 },
+    64→  'PR-SHAKER': { type: 'shaker', tune: 1, decay: 0.5, tone: 1, punch: 0 },
+    65→};
+    66→
+    67→const SYNTH_PRESETS: Record<string, SynthPreset> = {
+    68→  'PS-BASS-ROLL': {
+    69→    wave1: 'sawtooth', wave2: 'square', oct2: -1, detune: 4,
+    70→    cutoff: 500, res: 9, fType: 'lowpass',
+    71→    atk: 0.005, dec: 0.1, sus: 0.2, rel: 0.05, gate: 0.3,
+    72→    lfoRate: 0, lfoDepth: 0, lfoDest: 'off', poly: 2,
+    73→  },
+    74→  'PS-BASS-DEEP': {
+    75→    wave1: 'sawtooth', wave2: 'sawtooth', oct2: -1, detune: 12,
+    76→    cutoff: 350, res: 7, fType: 'lowpass',
+    77→    atk: 0.005, dec: 0.15, sus: 0.3, rel: 0.08, gate: 0.5,
+    78→    lfoRate: 0, lfoDepth: 0, lfoDest: 'off', poly: 2,
+    79→  },
+    80→  'PS-LEAD-SQUELCH': {
+    81→    wave1: 'square', wave2: 'sawtooth', oct2: 0, detune: 8,
+    82→    cutoff: 1800, res: 10, fType: 'lowpass',
+    83→    atk: 0.005, dec: 0.18, sus: 0.4, rel: 0.15, gate: 0.45,
+    84→    lfoRate: 0, lfoDepth: 0, lfoDest: 'off', poly: 4,
+    85→  },
+    86→  'PS-LEAD-FMTEX': {
+    87→    wave1: 'sine', wave2: 'sine', oct2: 1, detune: 2,
+    88→    cutoff: 2000, res: 3, fType: 'lowpass',
+    89→    atk: 0.005, dec: 0.3, sus: 0.6, rel: 0.2, gate: 0.6,
+    90→    lfoRate: 8, lfoDepth: 0.3, lfoDest: 'cutoff', poly: 4,
+    91→  },
+    92→  'PS-PAD-PSYCH': {
+    93→    wave1: 'sawtooth', wave2: 'sine', oct2: 1, detune: 14,
+    94→    cutoff: 1000, res: 6, fType: 'lowpass',
+    95→    atk: 0.7, dec: 0.5, sus: 0.7, rel: 1.3, gate: 2.6,
+    96→    lfoRate: 0.3, lfoDepth: 0.4, lfoDest: 'cutoff', poly: 8,
+    97→  },
+    98→  'PS-ARP-ACID': {
+    99→    wave1: 'square', wave2: 'sawtooth', oct2: 0, detune: 6,
+   100→    cutoff: 1200, res: 9, fType: 'lowpass',
+   101→    atk: 0.003, dec: 0.1, sus: 0.2, rel: 0.08, gate: 0.24,
+   102→    lfoRate: 0, lfoDepth: 0, lfoDest: 'off', poly: 4,
+   103→  },
+   104→};
+   105→
+   106→// ─── Track types ────────────────────────────────────────────────────────────
+   107→
+   108→interface Track {
+   109→  idx: number;
+   110→  kind: 'drum' | 'synth';
+   111→  name: string;
+   112→  presetId: string;
+   113→  mix: { vol: number; pan: number; mute: boolean; sendA: number; sendB: number };
+   114→  base?: any;
+   115→}
+   116→
+   117→interface StepData {
+   118→  on: number; vel: number; prob: number; note: number;
+   119→}
+   120→
+   121→interface Pattern {
+   122→  name: string;
+   123→  data: Record<number, { len: number; steps: StepData[] }>;
+   124→}
+   125→
+   126→// ─── Pooled Synth Voice (from PSY6 — persistent oscillators) ────────────────
+   127→
+   128→class PooledSynthVoice {
+   129→  osc1: OscillatorNode;
+   130→  osc2: OscillatorNode;
+   131→  g1: GainNode;
+   132→  g2: GainNode;
+   133→  filter: BiquadFilterNode;
+   134→  vca: GainNode;
+   135→  lfo: OscillatorNode;
+   136→  lfoGain: GainNode;
+   137→  bus: GainNode | null = null;
+   138→
+   139→  constructor(ctx: AudioContext) {
+   140→    this.osc1 = ctx.createOscillator();
+   141→    this.osc2 = ctx.createOscillator();
+   142→    this.g1 = ctx.createGain();
+   143→    this.g2 = ctx.createGain();
+   144→    this.filter = ctx.createBiquadFilter();
+   145→    this.filter.type = 'lowpass';
+   146→    this.vca = ctx.createGain();
+   147→    this.vca.gain.value = 0;
+   148→    this.lfo = ctx.createOscillator();
+   149→    this.lfoGain = ctx.createGain();
+   150→    this.lfoGain.gain.value = 0;
+   151→
+   152→    this.osc1.connect(this.g1);
+   153→    this.osc2.connect(this.g2);
+   154→    this.g1.connect(this.filter);
+   155→    this.g2.connect(this.filter);
+   156→    this.filter.connect(this.vca);
+   157→    this.lfo.connect(this.lfoGain);
+   158→
+   159→    // Start persistent oscillators (never stop them)
+   160→    this.osc1.start();
+   161→    this.osc2.start();
+   162→    this.lfo.start();
+   163→  }
+   164→
+   165→  connect(bus: GainNode) {
+   166→    if (this.bus !== bus) {
+   167→      this.vca.disconnect();
+   168→      this.vca.connect(bus);
+   169→      this.lfoGain.disconnect();
+   170→      this.lfoGain.connect(this.filter.frequency);
+   171→      this.bus = bus;
+   172→    }
+   173→  }
+   174→
+   175→  noteOn(p: SynthPreset, when: number, midi: number, vel: number, stepDur: number, bus: GainNode) {
+   176→    this.connect(bus);
+   177→    const f = mtof(clamp(midi, 12, 108));
+   178→    const gate = p.gate || 0.6;
+   179→    const dur = stepDur * gate * 2;
+   180→    const rel = Math.max(p.rel, 0.02);
+   181→    const end = when + dur;
+   182→
+   183→    this.osc1.type = p.wave1;
+   184→    this.osc2.type = p.wave2;
+   185→    this.osc1.frequency.setValueAtTime(f, when);
+   186→    this.osc2.frequency.setValueAtTime(f * Math.pow(2, p.oct2 || 0), when);
+   187→    this.osc2.detune.setValueAtTime(p.detune || 0, when);
+   188→    this.g1.gain.setValueAtTime(0.6, when);
+   189→    this.g2.gain.setValueAtTime(0.45, when);
+   190→
+   191→    const cut = clamp(p.cutoff, 60, 16000);
+   192→    const res = clamp(p.res, 0.2, 24);
+   193→    this.filter.type = p.fType;
+   194→    this.filter.Q.setValueAtTime(res, when);
+   195→    this.filter.frequency.cancelScheduledValues(when);
+   196→    this.filter.frequency.setValueAtTime(Math.min(cut * 3, 16000), when);
+   197→    this.filter.frequency.exponentialRampToValueAtTime(cut, when + Math.max((p.atk + p.dec * 0.7), 0.01));
+   198→
+   199→    if (p.lfoRate > 0 && p.lfoDest === 'cutoff') {
+   200→      this.lfo.frequency.setValueAtTime(p.lfoRate, when);
+   201→      this.lfoGain.gain.setValueAtTime(p.lfoDepth * 3000, when);
+   202→    } else {
+   203→      this.lfoGain.gain.setValueAtTime(0, when);
+   204→    }
+   205→
+   206→    const vca = this.vca.gain;
+   207→    const atk = Math.max(p.atk, 0.003);
+   208→    vca.cancelScheduledValues(when);
+   209→    vca.setValueAtTime(0, when);
+   210→    vca.linearRampToValueAtTime(vel * 0.5, when + atk);
+   211→    vca.setTargetAtTime(vel * 0.5 * p.sus, when + atk, Math.max(p.dec / 3, 0.01));
+   212→    vca.setTargetAtTime(0.0001, end, Math.max(rel / 3, 0.008));
+   213→  }
+   214→
+   215→  panic(ctx: AudioContext) {
+   216→    try {
+   217→      this.vca.gain.cancelScheduledValues(0);
+   218→      this.vca.gain.setValueAtTime(0, ctx.currentTime);
+   219→    } catch {}
+   220→  }
+   221→}
+   222→
+   223→// ─── Pooled Drum Voice (from PSY6 — multi-type) ────────────────────────────
+   224→
+   225→class PooledDrumVoice {
+   226→  noise: AudioBufferSourceNode;
+   227→  noiseGain: GainNode;
+   228→  nFilter: BiquadFilterNode;
+   229→  osc: OscillatorNode;
+   230→  oscGain: GainNode;
+   231→  out: GainNode;
+   232→  bus: GainNode | null = null;
+   233→
+   234→  constructor(ctx: AudioContext, noiseBuffer: AudioBuffer) {
+   235→    this.noise = ctx.createBufferSource();
+   236→    this.noise.buffer = noiseBuffer;
+   237→    this.noise.loop = true;
+   238→    this.noiseGain = ctx.createGain();
+   239→    this.noiseGain.gain.value = 0;
+   240→    this.nFilter = ctx.createBiquadFilter();
+   241→    this.nFilter.type = 'bandpass';
+   242→    this.noise.connect(this.nFilter);
+   243→    this.nFilter.connect(this.noiseGain);
+   244→    this.osc = ctx.createOscillator();
+   245→    this.osc.type = 'sine';
+   246→    this.oscGain = ctx.createGain();
+   247→    this.oscGain.gain.value = 0;
+   248→    this.osc.connect(this.oscGain);
+   249→    this.out = ctx.createGain();
+   250→    this.noiseGain.connect(this.out);
+   251→    this.oscGain.connect(this.out);
+   252→    this.noise.start();
+   253→    this.osc.start();
+   254→  }
+   255→
+   256→  connect(bus: GainNode) {
+   257→    if (this.bus !== bus) {
+   258→      this.out.disconnect();
+   259→      this.out.connect(bus);
+   260→      this.bus = bus;
+   261→    }
+   262→  }
+   263→
+   264→  /**
+   265→   * Trigger this voice. The optional `decayOverride` lets callers (e.g. reference
+   266→   * pursuit) replace the preset decay with a blended value to chase the radio's
+   267→   * kick decay. It is guarded against NaN/zero/out-of-range values.
+   268→   */
+   269→  hit(p: DrumPreset, when: number, vel: number, bus: GainNode, decayOverride?: number) {
+   270→    this.connect(bus);
+   271→    const tune = p.tune || 1;
+   272→    const candidateDecay = (typeof decayOverride === 'number'
+   273→      && isFinite(decayOverride) && decayOverride > 0.001 && decayOverride < 50)
+   274→      ? decayOverride
+   275→      : null;
+   276→    const decay = candidateDecay ?? p.decay ?? 1;
+   277→    const tone = p.tone || 1;
+   278→    const punch = p.punch || 0;
+   279→    const type = p.type;
+   280→    const ng = this.noiseGain.gain;
+   281→    const og = this.oscGain.gain;
+   282→    ng.cancelScheduledValues(when);
+   283→    og.cancelScheduledValues(when);
+   284→    ng.setValueAtTime(0, when);
+   285→    og.setValueAtTime(0, when);
+   286→
+   287→    if (type === 'kick') {
+   288→      const dur = 0.12 + 0.5 * decay;
+   289→      this.osc.frequency.setValueAtTime(180 * tune, when);
+   290→      this.osc.frequency.exponentialRampToValueAtTime(Math.max(36 * tune, 24), when + 0.09);
+   291→      og.setValueAtTime(vel * 1.1, when);
+   292→      og.exponentialRampToValueAtTime(0.0001, when + dur);
+   293→      if (punch > 0) {
+   294→        ng.setValueAtTime(vel * punch * 0.8, when);
+   295→        ng.exponentialRampToValueAtTime(0.0001, when + 0.02);
+   296→        this.nFilter.frequency.setValueAtTime(2500, when);
+   297→      }
+   298→    } else if (type === 'clap') {
+   299→      const dur = 0.25 + 0.15 * decay;
+   300→      this.nFilter.type = 'bandpass';
+   301→      this.nFilter.frequency.setValueAtTime(1150 * tone, when);
+   302→      this.nFilter.Q.value = 1.3;
+   303→      ng.setValueAtTime(0, when);
+   304→      [0, 0.014, 0.03].forEach(t2 => {
+   305→        ng.setValueAtTime(0, when + t2);
+   306→        ng.linearRampToValueAtTime(vel * 0.9, when + t2 + 0.002);
+   307→        ng.exponentialRampToValueAtTime(0.02, when + t2 + 0.012);
+   308→      });
+   309→      ng.exponentialRampToValueAtTime(0.0001, when + dur);
+   310→    } else if (type === 'hatC' || type === 'hatO') {
+   311→      const open = type === 'hatO';
+   312→      const dur = open ? 0.26 + 0.5 * decay : 0.03 + 0.05 * decay;
+   313→      this.nFilter.type = 'highpass';
+   314→      this.nFilter.frequency.setValueAtTime(7200 * Math.sqrt(tone), when);
+   315→      ng.setValueAtTime(vel * (open ? 0.4 : 0.5), when);
+   316→      ng.exponentialRampToValueAtTime(0.0001, when + dur);
+   317→    } else if (type === 'tom') {
+   318→      const dur = 0.22 + 0.35 * decay;
+   319→      this.osc.type = 'sine';
+   320→      this.osc.frequency.setValueAtTime(180 * tune, when);
+   321→      this.osc.frequency.exponentialRampToValueAtTime(92 * tune, when + dur * 0.7);
+   322→      og.setValueAtTime(vel * 0.9, when);
+   323→      og.exponentialRampToValueAtTime(0.0001, when + dur);
+   324→    } else if (type === 'shaker') {
+   325→      const dur = 0.04 + 0.07 * decay;
+   326→      this.nFilter.type = 'highpass';
+   327→      this.nFilter.frequency.setValueAtTime(6000 * tone, when);
+   328→      ng.setValueAtTime(vel * 0.45, when);
+   329→      ng.exponentialRampToValueAtTime(0.0001, when + dur);
+   330→    } else if (type === 'glitch') {
+   331→      const dur = 0.08 + 0.14 * decay;
+   332→      this.nFilter.type = 'bandpass';
+   333→      this.nFilter.frequency.setValueAtTime(1500 * tone + 800, when);
+   334→      this.nFilter.Q.value = 4;
+   335→      ng.setValueAtTime(vel * 0.7, when);
+   336→      ng.exponentialRampToValueAtTime(0.0001, when + dur);
+   337→    }
+   338→  }
+   339→
+   340→  panic(ctx: AudioContext) {
+   341→    try {
+   342→      this.noiseGain.gain.cancelScheduledValues(0);
+   343→      this.noiseGain.gain.setValueAtTime(0, ctx.currentTime);
+   344→      this.oscGain.gain.cancelScheduledValues(0);
+   345→      this.oscGain.gain.setValueAtTime(0, ctx.currentTime);
+   346→    } catch {}
+   347→  }
+   348→}
+   349→
+   350→// ─── Engine V2 ──────────────────────────────────────────────────────────────
+   351→
+   352→export class Psy4EngineV2 {
+   353→  ctx: AudioContext | null = null;
+   354→  playing = false;
+   355→  analyser: AnalyserNode | null = null;
+   356→
+   357→  // Musical understanding
+   358→  private musicalKey: { root: number; scale: string } = { root: 43, scale: 'phrygian' };
+   359→  private targetLufs = 0;
+   360→  private ownLufs = -30;
+   361→
+   362→  // ── Reference pursuit targets (set by liveTrack, consumed by triggerDrum / ──
+   363→  //    triggerSynth / scheduleStep). All zero = no pursuit active.
+   364→  private refKickDecay = 0;          // seconds (target kick decay from radio)
+   365→  private refSpectralCentroid = 0;   // Hz (target spectral centroid from radio)
+   366→  private refTransientDensity = 0;   // transients/sec
+   367→  private refSubEnergy = 0;          // 0..1
+   368→  private refHighEnergy = 0;         // 0..1
+   369→  private refBassDecay = 0;          // seconds
+   370→
+   371→  // ── Learned params from ContinuousTrainer (offline optimization). These are  ──
+   372→  //    blended ON TOP of reference pursuit + world timbre. Zero/null = not set.
+   373→  private learned: {
+   374→    kickDecay?: number;      // seconds (override for kick tail length)
+   375→    bassCutoff?: number;     // Hz (override for bass filter cutoff)
+   376→    leadCutoff?: number;     // Hz (override for lead filter cutoff)
+   377→    leadDetune?: number;     // cents (override for lead detune)
+   378→    padCutoff?: number;      // Hz (override for pad filter cutoff)
+   379→    duck?: number;           // 0..1 (sidechain depth override)
+   380→  } = {};
+   381→
+   382→  // ── Full reference feature snapshot for the style classifier (Task 14) ──
+   383→  //    These are updated by liveTrack() and consumed by classifyStyle() when
+   384→  //    applyMusicalUnderstanding() needs to infer a style from features.
+   385→  private refLowEnergy = 0;
+   386→  private refMidEnergy = 0;
+   387→  private refAirEnergy = 0;
+   388→  private refStereoWidth = 0;
+   389→  private refBpm = 0;
+   390→  private refEnergy = 0;
+   391→  private refKeyScale: string | undefined = undefined;
+   392→
+   393→  // ── Style classification (Task 14) — populated by applyMusicalUnderstanding() ──
+   394→  //    and read by getStyleClassification() for UI display.
+   395→  private styleMatches: StyleMatch[] = [];
+   396→
+   397→  // ── Auto-switch anti-thrash guard (Task 14) ──
+   398→  //    Don't auto-switch worlds more often than every 30 seconds. Also
+   399→  //    remember the last world we switched to so we can detect no-op switches.
+   400→  private lastAutoSwitchTime = 0;
+   401→  private lastAutoSwitchWorldId: string | null = null;
+   402→  private static readonly AUTO_SWITCH_COOLDOWN_MS = 30_000;
+   403→  private static readonly AUTO_SWITCH_CONFIDENCE_THRESHOLD = 0.55;
+   404→
+   405→  // ── Phrase-locked preset rotation (Task 15) ──
+   406→  //    Every 8 bars, rotate kick/bass preset between 2 variants, world-aware.
+   407→  //    (dark worlds → DEEP kick / ROLL bass; bright worlds → TIGHT kick / DEEP bass)
+   408→  private phraseCounter = 0;
+   409→  private phrasePresetVariant = 0; // 0 or 1 — alternates every 8 bars
+   410→
+   411→  // ── Own measured values (set by selfTrack) — for getPursuitStatus() and ──
+   412→  //    sub/high energy balancing. Zero = no measurement yet.
+   413→  private ownSpectralCentroid = 0;
+   414→  private ownTransientDensity = 0;
+   415→  private ownSubEnergy = 0;
+   416→  private ownHighEnergy = 0;
+   417→
+   418→  // ── Continuous BPM tracking — smooth ramp over 4 bars when diff > 2 BPM ──
+   419→  //    (avoids audio glitches from sudden tempo jumps)
+   420→  private targetBpm = 0;             // 0 = no active ramp
+   421→  private bpmRampPerBar = 0;         // bpm delta applied per bar
+   422→  private bpmRampBarsLeft = 0;       // bars remaining in current ramp
+   423→
+   424→  // ── Musical generators — re-created on key change for true key pursuit ──
+   425→  private leadMotif: LeadMotif | null = null;
+   426→  private acidPattern: AcidPattern | null = null;
+   427→  private musicRng: SeededRng | null = null;
+   428→
+   429→  // Audio graph
+   430→  private master!: GainNode;
+   431→  private comp!: DynamicsCompressorNode;
+   432→  private noiseBuffer!: AudioBuffer;
+   433→  private delaySend!: GainNode;
+   434→  private delay!: DelayNode;
+   435→  private delayFb!: GainNode;
+   436→  private delayReturn!: GainNode;
+   437→  private reverbSend!: GainNode;
+   438→  private reverb!: ConvolverNode;
+   439→  private reverbReturn!: GainNode;
+   440→  private chains: GainNode[] = [];
+   441→  private trackGains: GainNode[] = [];
+   442→  private duckGain!: GainNode;  // sidechain duck for bass track
+   443→  private saturator!: WaveShaperNode;
+   444→  private toneLow!: BiquadFilterNode;
+   445→  private toneHigh!: BiquadFilterNode;
+   446→
+   447→  // Voice pools
+   448→  private synthPool: PooledSynthVoice[] = [];
+   449→  private drumPool: PooledDrumVoice[] = [];
+   450→  private synthIdx = 0;
+   451→  private drumIdx = 0;
+   452→
+   453→  // Scheduler
+   454→  private timer: ReturnType<typeof setTimeout> | null = null;
+   455→  private step = 0;
+   456→  private bar = 0;
+   457→  private nextTime = 0;
+   458→  private sectionIdx = 0;
+   459→  private currentSection = 'INTRO';
+   460→
+   461→  // Tracks and patterns
+   462→  private tracks: Track[] = [];
+   463→  private pattern: Pattern | null = null;
+   464→  private presetIdx = 0;
+   465→
+   466→  // ── World-driven pattern engine (Track A) ──
+   467→  private currentWorld: World = WORLDS['dark-psy'];
+   468→  private arpIdx = 0;
+   469→  private bassPatternIdx = 0;
+   470→
+   471→  // Arrangement
+   472→  private arrangement = [
+   473→    { bars: 4, density: 0.3, bass: false, lead: false, label: 'INTRO' },
+   474→    { bars: 4, density: 0.5, bass: true, lead: false, label: 'GROOVE' },
+   475→    { bars: 4, density: 0.7, bass: true, lead: false, label: 'BUILD' },
+   476→    { bars: 8, density: 0.9, bass: true, lead: true, label: 'DROP' },
+   477→    { bars: 4, density: 0.7, bass: true, lead: true, label: 'VARIATION' },
+   478→    { bars: 4, density: 0.3, bass: false, lead: false, label: 'BREAK' },
+   479→    { bars: 8, density: 1.0, bass: true, lead: true, label: 'FINAL DROP' },
+   480→    { bars: 4, density: 0.3, bass: true, lead: false, label: 'OUTRO' },
+   481→  ];
+   482→
+   483→  onSectionChange: ((section: string) => void) | null = null;
+   484→
+   485→  /**
+   486→   * Callback fired when the engine auto-switches worlds (Task 14). Lets the UI
+   487→   * update its world dropdown / "AUTO" badge without polling. The optional
+   488→   * `reason` is a human-readable explanation (e.g. the matched style name).
+   489→   */
+   490→  onWorldChange: ((worldId: string, reason?: string) => void) | null = null;
+   491→
+   492→  init(): void {
+   493→    if (this.ctx) return;
+   494→    const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+   495→    const c = this.ctx = new Ctx({ latencyHint: 'interactive' });
+   496→
+   497→    // Noise buffer
+   498→    this.noiseBuffer = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
+   499→    const nd = this.noiseBuffer.getChannelData(0);
+   500→    for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+   501→
+   502→    // Master chain — boosted + saturation + tone shelves (from PSY6/psy)
+   503→    this.master = c.createGain();
+   504→    this.master.gain.value = 1.1;
+   505→
+   506→    // Saturation (WaveShaper — adds warmth and loudness)
+   507→    this.saturator = c.createWaveShaper();
+   508→    this.saturator.oversample = '4x';
+   509→    const satCurve = new Float32Array(1024);
+   510→    for (let i = 0; i < 1024; i++) {
+   511→      const x = (i / 512) - 1;
+   512→      satCurve[i] = Math.tanh(x * 1.3) * 0.7 + x * 0.3;
+   513→    }
+   514→    this.saturator.curve = satCurve;
+   515→
+   516→    // Tone shelves (final EQ)
+   517→    this.toneLow = c.createBiquadFilter();
+   518→    this.toneLow.type = 'lowshelf';
+   519→    this.toneLow.frequency.value = 110;
+   520→    this.toneLow.gain.value = 1.5;
+   521→    this.toneHigh = c.createBiquadFilter();
+   522→    this.toneHigh.type = 'highshelf';
+   523→    this.toneHigh.frequency.value = 8500;
+   524→    this.toneHigh.gain.value = -2;
+   525→
+   526→    this.comp = c.createDynamicsCompressor();
+   527→    this.comp.threshold.value = -8;
+   528→    this.comp.knee.value = 12;
+   529→    this.comp.ratio.value = 6;
+   530→    this.comp.attack.value = 0.003;
+   531→    this.comp.release.value = 0.2;
+   532→    this.analyser = c.createAnalyser();
+   533→    this.analyser.fftSize = 2048;
+   534→
+   535→    // Connect: master → saturator → toneLow → toneHigh → comp → analyser → destination
+   536→    this.master.connect(this.saturator);
+   537→    this.saturator.connect(this.toneLow);
+   538→    this.toneLow.connect(this.toneHigh);
+   539→    this.toneHigh.connect(this.comp);
+   540→    this.comp.connect(this.analyser);
+   541→    this.analyser.connect(c.destination);
+   542→
+   543→    // Delay (ping-pong with band-limited feedback)
+   544→    this.delaySend = c.createGain();
+   545→    this.delaySend.gain.value = 0.15;
+   546→    this.delay = c.createDelay(0.5);
+   547→    this.delay.delayTime.value = 0.375;
+   548→    this.delayFb = c.createGain();
+   549→    this.delayFb.gain.value = 0.35;
+   550→    this.delayReturn = c.createGain();
+   551→    this.delayReturn.gain.value = 0.5;
+   552→    const dLP = c.createBiquadFilter();
+   553→    dLP.type = 'lowpass';
+   554→    dLP.frequency.value = 3300;
+   555→    this.delaySend.connect(this.delay);
+   556→    this.delay.connect(dLP);
+   557→    dLP.connect(this.delayFb);
+   558→    this.delayFb.connect(this.delay);
+   559→    this.delay.connect(this.delayReturn);
+   560→    this.delayReturn.connect(this.master);
+   561→
+   562→    // Reverb
+   563→    this.reverbSend = c.createGain();
+   564→    this.reverbSend.gain.value = 0.12;
+   565→    this.reverb = c.createConvolver();
+   566→    const irLen = Math.floor(c.sampleRate * 1.5);
+   567→    const ir = c.createBuffer(2, irLen, c.sampleRate);
+   568→    for (let ch = 0; ch < 2; ch++) {
+   569→      const d = ir.getChannelData(ch);
+   570→      for (let i = 0; i < irLen; i++) {
+   571→        d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (c.sampleRate * 0.4));
+   572→      }
+   573→    }
+   574→    this.reverb.buffer = ir;
+   575→    this.reverbReturn = c.createGain();
+   576→    this.reverbReturn.gain.value = 0.6;
+   577→    this.reverbSend.connect(this.reverb);
+   578→    this.reverb.connect(this.reverbReturn);
+   579→    this.reverbReturn.connect(this.master);
+   580→
+   581→    // Track buses (8 tracks) with HPF, pan, and duck
+   582→    this.duckGain = c.createGain();
+   583→    this.duckGain.gain.value = 1.0;
+   584→    // duckGain connects to master ONCE (not twice — was causing feedback)
+   585→    this.duckGain.connect(this.master);
+   586→
+   587→    for (let i = 0; i < 8; i++) {
+   588→      const bus = c.createGain();
+   589→      // HPF on each track to clean mud (except kick/bass)
+   590→      const hpf = c.createBiquadFilter();
+   591→      hpf.type = 'highpass';
+   592→      hpf.frequency.value = i < 2 ? 20 : (i < 4 ? 80 : 120);
+   593→      // Stereo panner
+   594→      const panner = c.createStereoPanner();
+   595→      const panValues = [0, -0.15, 0.2, -0.2, 0, 0.1, -0.1, 0.15];
+   596→      panner.pan.value = panValues[i];
+   597→      // Track gain
+   598→      const gain = c.createGain();
+   599→      gain.gain.value = 0.8;
+   600→
+   601→      bus.connect(hpf);
+   602→      hpf.connect(panner);
+   603→      // Bass track (4) goes through duck gain for sidechain
+   604→      if (i === 4) {
+   605→        panner.connect(this.duckGain);
+   606→      } else {
+   607→        panner.connect(gain);
+   608→        gain.connect(this.master);
+   609→      }
+   610→
+   611→      // Send to delay/reverb
+   612→      const dSend = c.createGain();
+   613→      dSend.gain.value = i >= 4 ? 0.15 : 0.02;
+   614→      bus.connect(dSend);
+   615→      dSend.connect(this.delaySend);
+   616→      const rSend = c.createGain();
+   617→      rSend.gain.value = i >= 5 ? 0.2 : 0.03;
+   618→      bus.connect(rSend);
+   619→      rSend.connect(this.reverbSend);
+   620→
+   621→      this.chains.push(bus);
+   622→      this.trackGains.push(gain);
+   623→    }
+   624→    // duckGain already connected to master above (line 458)
+   625→
+   626→    // Allocate voice pools (20 synth + 24 drum — from PSY6)
+   627→    for (let i = 0; i < 20; i++) this.synthPool.push(new PooledSynthVoice(c));
+   628→    for (let i = 0; i < 24; i++) this.drumPool.push(new PooledDrumVoice(c, this.noiseBuffer));
+   629→
+   630→    // Initialize tracks
+   631→    this.initTracks();
+   632→  }
+   633→
+   634→  private initTracks(): void {
+   635→    const names = ['KICK', 'SNARE', 'HATS', 'PERC', 'BASS', 'LEAD', 'PAD', 'ARP'];
+   636→    const presets = ['PS-KICK-TIGHT', 'TR-CLAP', 'PS-HAT', 'PS-PERC', 'PS-BASS-ROLL', 'PS-LEAD-SQUELCH', 'PS-PAD-PSYCH', 'PS-ARP-ACID'];
+   637→    // Boosted track volumes for commercial loudness
+   638→    const vols = [1.0, 0.6, 0.5, 0.4, 1.2, 0.7, 0.5, 0.5];
+   639→    this.tracks = [];
+   640→    for (let i = 0; i < 8; i++) {
+   641→      this.tracks.push({
+   642→        idx: i,
+   643→        kind: i < 4 ? 'drum' : 'synth',
+   644→        name: names[i],
+   645→        presetId: presets[i],
+   646→        mix: { vol: vols[i], pan: 0, mute: false, sendA: 0, sendB: 0 },
+   647→      });
+   648→    }
+   649→    // Initialize musical generators with the default key so they exist before
+   650→    // the first key-change event arrives from the reference listener.
+   651→    this.refreshMusicalGenerators();
+   652→  }
+   653→
+   654→  start(worldId?: string): void {
+   655→    this.init();
+   656→    if (this.ctx!.state === 'suspended') this.ctx!.resume();
+   657→
+   658→    // ── World-driven configuration (Track A) ──
+   659→    this.currentWorld = WORLDS[worldId as WorldId] || WORLDS['dark-psy'];
+   660→    this._bpm = this.currentWorld.defaultBpm;
+   661→    this.musicalKey = {
+   662→      root: Math.floor((this.currentWorld.rootRange[0] + this.currentWorld.rootRange[1]) / 2),
+   663→      scale: this.currentWorld.defaultScale,
+   664→    };
+   665→    // Re-create musical generators with the world's key (LeadMotif, AcidPattern)
+   666→    this.refreshMusicalGenerators();
+   667→    this.arpIdx = 0;
+   668→    this.bassPatternIdx = 0;
+   669→    // Reset phrase-locked rotation counters for a clean start
+   670→    this.phraseCounter = 0;
+   671→    this.phrasePresetVariant = 0;
+   672→    // Reset auto-switch anti-thrash guard
+   673→    this.lastAutoSwitchTime = 0;
+   674→    this.lastAutoSwitchWorldId = null;
+   675→    this.styleMatches = [];
+   676→
+   677→    // Apply the world's preferred kick/bass/lead presets immediately so the
+   678→    // engine starts with the right timbres (Task 15).
+   679→    this.applyWorldPresets();
+   680→
+   681→    // Apply world FX mix to reverb and delay sends
+   682→    const fxMix = this.currentWorld.fxMix;
+   683→    this.reverbSend.gain.setTargetAtTime(0.04 + fxMix * 0.22, this.ctx!.currentTime, 0.05);
+   684→    this.delaySend.gain.setTargetAtTime(0.05 + fxMix * 0.30, this.ctx!.currentTime, 0.05);
+   685→
+   686→    if (this.playing) return;
+   687→    this.playing = true;
+   688→    this.step = 0;
+   689→    this.bar = 0;
+   690→    this.sectionIdx = 0;
+   691→    this.currentSection = this.arrangement[0].label;
+   692→    this.onSectionChange?.(this.currentSection);
+   693→    this.nextTime = this.ctx!.currentTime + 0.03;
+   694→    this.scheduleNextTick();
+   695→  }
+   696→
+   697→  stop(): void {
+   698→    this.playing = false;
+   699→    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+   700→    if (this.ctx) {
+   701→      for (const v of this.synthPool) v.panic(this.ctx);
+   702→      for (const v of this.drumPool) v.panic(this.ctx);
+   703→    }
+   704→  }
+   705→
+   706→  private get bpm(): number {
+   707→    return this._bpm || 145;
+   708→  }
+   709→  private _bpm = 145;
+   710→
+   711→  setBpm(bpm: number): void {
+   712→    this._bpm = bpm;
+   713→  }
+   714→
+   715→  applyMusicalUnderstanding(understanding: {
+   716→    key: { root: number; scale: string; confidence: number };
+   717→    bpm: number;
+   718→    bpmConfidence: number;
+   719→    style?: string;
+   720→    styleConfidence?: number;
+   721→  }): void {
+   722→    // ── KEY PURSUIT — refresh lead/acid generators when key changes ──
+   723→    // The radio's key detector returns a CHROMATIC root (0-11, C=0..B=11).
+   724→    // Our internal musicalKey.root is a MIDI note (typically 36-60). So we
+   725→    // lift the chromatic root into the bass octave (36 + root) when it's in
+   726→    // the chromatic range. If the listener ever returns a MIDI note directly
+   727→    // (> 11), we trust it as-is. NaN/undefined confidence → no-op.
+   728→    const k = understanding.key;
+   729→    const conf = typeof k?.confidence === 'number' && isFinite(k.confidence) ? k.confidence : 0;
+   730→    const rawRoot = typeof k?.root === 'number' && isFinite(k.root) ? k.root : -1;
+   731→    if (conf > 0.2 && rawRoot >= 0) {
+   732→      // Snap the root into the world's preferred rootRange so the engine
+   733→      // stays in a useful octave for the current world. We pick the octave
+   734→      // of 36 + (root mod 12) that falls inside rootRange.
+   735→      const chroma = ((rawRoot % 12) + 12) % 12;
+   736→      const worldRange = this.currentWorld.rootRange;
+   737→      let newRoot: number;
+   738→      if (rawRoot >= 12 && rawRoot >= worldRange[0] && rawRoot <= worldRange[1]) {
+   739→        // Listener returned a MIDI note already in range — trust it.
+   740→        newRoot = rawRoot;
+   741→      } else {
+   742→        // Lift chroma into an octave inside the world's rootRange.
+   743→        const lo = worldRange[0];
+   744→        const candidate = lo + (((chroma - (lo % 12)) + 12) % 12);
+   745→        newRoot = candidate;
+   746→      }
+   747→      const newScale = (typeof k.scale === 'string' && k.scale.length > 0) ? k.scale : this.musicalKey.scale;
+   748→      const changed = newRoot !== this.musicalKey.root || newScale !== this.musicalKey.scale;
+   749→      // ALWAYS update musicalKey first, then refresh generators — order matters
+   750→      // so the generators pick up the new key.
+   751→      this.musicalKey = { root: newRoot, scale: newScale };
+   752→      // Also store the scale on the ref feature snapshot so the classifier
+   753→      // can use it next time it runs.
+   754→      this.refKeyScale = newScale;
+   755→      if (changed) {
+   756→        this.refreshMusicalGenerators();
+   757→        if (typeof console !== 'undefined') {
+   758→          console.log('[PSY4] Key updated:', this.musicalKey);
+   759→        }
+   760→      }
+   761→    }
+   762→
+   763→    // ── CONTINUOUS BPM TRACKING (smooth ramp for large diffs) ──
+   764→    // Always honor the new BPM when confidence is high. Small diffs (<=2 BPM)
+   765→    // are applied immediately; larger diffs ramp across 4 bars to avoid tempo
+   766→    // glitches and keep the scheduler's lookahead stable.
+   767→    if (understanding.bpm > 0 && understanding.bpmConfidence > 0.5) {
+   768→      const target = Math.round(understanding.bpm);
+   769→      this.refBpm = clamp(target, 30, 220);
+   770→      const diff = target - this._bpm;
+   771→      if (Math.abs(diff) > 2) {
+   772→        this.targetBpm = clamp(target, 60, 200);
+   773→        this.bpmRampBarsLeft = 4;
+   774→        this.bpmRampPerBar = diff / 4;
+   775→      } else {
+   776→        this._bpm = clamp(target, 60, 200);
+   777→        this.targetBpm = 0;
+   778→        this.bpmRampBarsLeft = 0;
+   779→        this.bpmRampPerBar = 0;
+   780→      }
+   781→    }
+   782→
+   783→    // ── STYLE CLASSIFICATION (Task 14) ──
+   784→    // Two paths to determine the style:
+   785→    //   (a) Reference listener provided an explicit style tag with high
+   786→    //       confidence → use it directly (legacy path, kept for compat).
+   787→    //   (b) No style tag (or low confidence) → LEARN the style from the
+   788→    //       acoustic features we've accumulated in liveTrack(). This is the
+   789→    //       new spectral classifier path that addresses the user's complaint
+   790→    //       that "style must be learned, not defined by fat bass".
+   791→    // In both cases we run the classifier on the stored features so the UI
+   792→    // can render the full ranking. Auto-switch only happens when the top
+   793→    // match's confidence exceeds the threshold AND the anti-thrash cooldown
+   794→    // has elapsed.
+   795→    const features = this.buildRefFeatures();
+   796→    if (features) {
+   797→      const matches = classifyStyle(features);
+   798→      this.styleMatches = matches;
+   799→
+   800→      const explicitStyle = understanding.style;
+   801→      const explicitConf = understanding.styleConfidence ?? 0;
+   802→      const topMatch = matches[0];
+   803→
+   804→      if (explicitStyle && explicitConf > 0.4) {
+   805→        // Path (a): use the explicit tag — but still record matches for UI.
+   806→        // Only auto-switch if explicit tag strongly disagrees with current world.
+   807→        const explicitWorldId = styleToWorld(explicitStyle);
+   808→        if (explicitWorldId !== this.currentWorld.id && explicitConf > 0.6) {
+   809→          this.tryAutoSwitch(explicitWorldId, `explicit style tag '${explicitStyle}' (${(explicitConf * 100).toFixed(0)}%)`);
+   810→        }
+   811→      } else if (topMatch &&
+   812→                 topMatch.confidence >= Psy4EngineV2.AUTO_SWITCH_CONFIDENCE_THRESHOLD) {
+   813→        // Path (b): learn from features and auto-switch if confident.
+   814→        const targetWorldId = styleToWorld(topMatch.style);
+   815→        if (targetWorldId !== this.currentWorld.id) {
+   816→          const reason = topMatch.reasons[0] || `style '${topMatch.style}' (${(topMatch.confidence * 100).toFixed(0)}%)`;
+   817→          this.tryAutoSwitch(targetWorldId, reason);
+   818→        }
+   819→      }
+   820→    }
+   821→  }
+   822→
+   823→  /**
+   824→   * Build a RefFeatures snapshot from the stored reference metrics.
+   825→   * Returns null if we don't have enough features to classify meaningfully
+   826→   * (need at least BPM or centroid + one energy band).
+   827→   */
+   828→  private buildRefFeatures(): RefFeatures | null {
+   829→    const hasBpm = this.refBpm > 0;
+   830→    const hasCentroid = this.refSpectralCentroid > 0;
+   831→    const hasEnergy = this.refSubEnergy > 0 || this.refHighEnergy > 0 ||
+   832→                      this.refLowEnergy > 0 || this.refMidEnergy > 0;
+   833→    if (!hasBpm && !hasCentroid && !hasEnergy) return null;
+   834→
+   835→    return {
+   836→      bpm: this.refBpm,
+   837→      spectralCentroid: this.refSpectralCentroid,
+   838→      subEnergy: this.refSubEnergy,
+   839→      lowEnergy: this.refLowEnergy,
+   840→      midEnergy: this.refMidEnergy,
+   841→      highEnergy: this.refHighEnergy,
+   842→      airEnergy: this.refAirEnergy,
+   843→      transientDensity: this.refTransientDensity,
+   844→      kickDecayMs: this.refKickDecay * 1000,
+   845→      bassDecayMs: this.refBassDecay * 1000,
+   846→      stereoWidth: this.refStereoWidth,
+   847→      energy: this.refEnergy,
+   848→      detectedKey: this.refKeyScale
+   849→        ? { root: this.musicalKey.root, scale: this.refKeyScale, confidence: 1 }
+   850→        : undefined,
+   851→    };
+   852→  }
+   853→
+   854→  /**
+   855→   * Apply a style classification result directly (Task 14).
+   856→   * If the top match's confidence exceeds the auto-switch threshold AND it
+   857→   * differs from the current world, switch worlds smoothly.
+   858→   * Public so the UI/tests can drive it explicitly if desired.
+   859→   */
+   860→  applyStyleClassification(matches: StyleMatch[]): void {
+   861→    this.styleMatches = matches;
+   862→    const top = matches[0];
+   863→    if (!top) return;
+   864→    if (top.confidence >= Psy4EngineV2.AUTO_SWITCH_CONFIDENCE_THRESHOLD) {
+   865→      const targetWorldId = styleToWorld(top.style);
+   866→      if (targetWorldId !== this.currentWorld.id) {
+   867→        const reason = top.reasons[0] || `style '${top.style}' (${(top.confidence * 100).toFixed(0)}%)`;
+   868→        this.tryAutoSwitch(targetWorldId, reason);
+   869→      }
+   870→    }
+   871→  }
+   872→
+   873→  /**
+   874→   * Snapshot of the latest style classification for UI display.
+   875→   * Empty array if no reference features have arrived yet.
+   876→   */
+   877→  getStyleClassification(): StyleMatch[] {
+   878→    return this.styleMatches;
+   879→  }
+   880→
+   881→  /**
+   882→   * Return the id of the currently active world. Used by the UI to keep its
+   883→   * dropdown in sync with the engine after an auto-switch (Task 14).
+   884→   */
+   885→  getCurrentWorldId(): string {
+   886→    return this.currentWorld.id;
+   887→  }
+   888→
+   889→  /**
+   890→   * Attempt an automatic world switch. Respects the 30-second anti-thrash
+   891→   * cooldown and skips if the target world is the same as the last switch.
+   892→   * This is the only place auto-switches should happen.
+   893→   */
+   894→  private tryAutoSwitch(worldId: string, reason?: string): void {
+   895→    if (!this.ctx) return;
+   896→    // Defensive: validate that worldId is one of the known WorldIds before
+   897→    // attempting to switch. The classifier's styleToWorld() should always
+   898→    // return a valid id, but we don't want a bad id to slip through and
+   899→    // silently no-op in switchWorld().
+   900→    if (!(worldId in WORLDS)) {
+   901→      if (typeof console !== 'undefined') {
+   902→        console.warn('[PSY4] tryAutoSwitch: unknown worldId', worldId);
+   903→      }
+   904→      return;
+   905→    }
+   906→    const now = this.ctx.currentTime * 1000; // ms since ctx start
+   907→    if (this.lastAutoSwitchTime > 0 &&
+   908→        (now - this.lastAutoSwitchTime) < Psy4EngineV2.AUTO_SWITCH_COOLDOWN_MS) {
+   909→      return; // too soon — thrash guard
+   910→    }
+   911→    if (this.lastAutoSwitchWorldId === worldId) {
+   912→      return; // we already switched to this world recently — no-op
+   913→    }
+   914→    this.switchWorld(worldId as WorldId);
+   915→    this.lastAutoSwitchTime = now;
+   916→    this.lastAutoSwitchWorldId = worldId;
+   917→    // Notify the UI that an auto-switch happened.
+   918→    try { this.onWorldChange?.(worldId, reason); } catch {}
+   919→  }
+   920→
+   921→  /**
+   922→   * Switch to a different world smoothly (Task 14). Does NOT restart playback.
+   923→   *   - Updates currentWorld, musicalKey (root + scale), refreshes generators
+   924→   *   - Ramps BPM over 4 bars if the new world's BPM differs by more than 2
+   925→   *   - Applies the new world's FX mix to reverb/delay sends
+   926→   *   - Resets phrase-locked rotation counters (start the new world's first
+   927→   *     phrase cleanly)
+   928→   *   - All audio parameter changes use setTargetAtTime / 4-bar ramp — no jumps
+   929→   */
+   930→  switchWorld(worldId: WorldId): void {
+   931→    const newWorld = WORLDS[worldId];
+   932→    if (!newWorld) return;
+   933→    this.currentWorld = newWorld;
+   934→
+   935→    // Key — keep the root if it's within the world's range; otherwise snap to
+   936→    // the midpoint of the world's rootRange.
+   937→    const newRoot = (this.musicalKey.root >= newWorld.rootRange[0] &&
+   938→                     this.musicalKey.root <= newWorld.rootRange[1])
+   939→      ? this.musicalKey.root
+   940→      : Math.floor((newWorld.rootRange[0] + newWorld.rootRange[1]) / 2);
+   941→    // PRESERVE the listener-detected scale if the reference listener has set
+   942→    // one (refKeyScale) AND the new world allows that scale. This prevents
+   943→    // switchWorld from clobbering the key pursuit when the world auto-switches
+   944→    // (the original bug: radio detected "F major" but the engine reverted to
+   945→    // the world's defaultScale "phrygianDominant" immediately after switching).
+   946→    const listenerScale = this.refKeyScale;
+   947→    const scaleAllowed = (s?: string): s is string =>
+   948→      !!s && newWorld.scales.includes(s);
+   949→    const newScale = scaleAllowed(listenerScale)
+   950→      ? listenerScale
+   951→      : newWorld.defaultScale;
+   952→    const keyChanged = newRoot !== this.musicalKey.root || newScale !== this.musicalKey.scale;
+   953→    this.musicalKey = { root: newRoot, scale: newScale };
+   954→    if (keyChanged) this.refreshMusicalGenerators();
+   955→
+   956→    // BPM — ramp over 4 bars if diff > 2
+   957→    const newBpm = newWorld.defaultBpm;
+   958→    if (Math.abs(newBpm - this._bpm) > 2) {
+   959→      this.targetBpm = clamp(newBpm, 60, 200);
+   960→      this.bpmRampBarsLeft = 4;
+   961→      this.bpmRampPerBar = (newBpm - this._bpm) / 4;
+   962→    } else {
+   963→      this._bpm = clamp(newBpm, 60, 200);
+   964→      this.targetBpm = 0;
+   965→      this.bpmRampBarsLeft = 0;
+   966→      this.bpmRampPerBar = 0;
+   967→    }
+   968→
+   969→    // FX mix — smooth ramp
+   970→    if (this.ctx) {
+   971→      const now = this.ctx.currentTime;
+   972→      const fxMix = newWorld.fxMix;
+   973→      this.reverbSend.gain.setTargetAtTime(0.04 + fxMix * 0.22, now, 0.5);
+   974→      this.delaySend.gain.setTargetAtTime(0.05 + fxMix * 0.30, now, 0.5);
+   975→    }
+   976→
+   977→    // Reset phrase-locked counters — start the new world's first phrase cleanly
+   978→    this.phraseCounter = 0;
+   979→    this.phrasePresetVariant = 0;
+   980→    this.arpIdx = 0;
+   981→    this.bassPatternIdx = 0;
+   982→
+   983→    // Apply the new world's preferred kick/bass/lead presets immediately so
+   984→    // the next phrase starts with the right timbres. The phrase-locked
+   985→    // rotation will then alternate between the two variants from here on.
+   986→    this.applyWorldPresets();
+   987→  }
+   988→
+   989→  /**
+   990→   * Apply the current world's preferred kick/bass/lead/pad/arp presets.
+   991→   * Called by switchWorld() and at start(). Phrase-locked rotation in tick()
+   992→   * will alternate between the two variants every 8 bars from here on.
+   993→   */
+   994→  private applyWorldPresets(): void {
+   995→    const id = this.currentWorld.id;
+   996→    // Dark worlds → DEEP kick + ROLL bass; bright worlds → TIGHT kick + DEEP bass.
+   997→    // Mid worlds → mix. Lead swaps for goa/acid (squelch) vs others (fmtex).
+   998→    const dark = id === 'dark-psy' || id === 'forest' || id === 'deep-psy' || id === 'hypnotic';
+   999→    const acid = id === 'goa' || id === 'acid-psy';
+  1000→    const bright = id === 'morning-psy' || id === 'cosmic' || id === 'organic-psy';
+  1001→
+  1002→    this.tracks[0].presetId = dark ? 'PS-KICK-DEEP' : 'PS-KICK-TIGHT';
+  1003→    this.tracks[4].presetId = dark ? 'PS-BASS-ROLL' : (bright ? 'PS-BASS-DEEP' : 'PS-BASS-ROLL');
+  1004→    this.tracks[5].presetId = acid ? 'PS-LEAD-SQUELCH' : (bright ? 'PS-LEAD-FMTEX' : 'PS-LEAD-SQUELCH');
+  1005→    this.tracks[6].presetId = 'PS-PAD-PSYCH';
+  1006→    this.tracks[7].presetId = 'PS-ARP-ACID';
+  1007→  }
+  1008→
+  1009→  /**
+  1010→   * Re-create the LeadMotif and AcidPattern with the current musicalKey.
+  1011→   * Called whenever the reference listener reports a new key — this is what
+  1012→   * makes the engine actually pursue the radio's tonal center, not just store it.
+  1013→   */
+  1014→  private refreshMusicalGenerators(): void {
+  1015→    const seed = (this.musicalKey.root * 31 + this.musicalKey.scale.length * 7 + 11) >>> 0;
+  1016→    this.musicRng = new SeededRng(seed);
+  1017→    this.leadMotif = new LeadMotif(this.musicalKey.root, this.musicalKey.scale, this.musicRng);
+  1018→    this.acidPattern = new AcidPattern(this.musicalKey.root, this.musicalKey.scale, this.musicRng);
+  1019→  }
+  1020→
+  1021→  private applyStyle(style: string): void {
+  1022→    // Map detected style to preset combinations
+  1023→    const stylePresets: Record<string, { kick: string; bass: string; lead: string; pad: string; arp: string }> = {
+  1024→      'progressive-psy': { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-DEEP', lead: 'PS-LEAD-FMTEX', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+  1025→      'dark-psy':        { kick: 'PS-KICK-DEEP', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+  1026→      'goa':             { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+  1027→      'morning-psy':     { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-DEEP', lead: 'PS-LEAD-FMTEX', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+  1028→      'forest':          { kick: 'PS-KICK-DEEP', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+  1029→      'acid-psy':        { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+  1030→      'full-on':         { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+  1031→    };
+  1032→    const p = stylePresets[style];
+  1033→    if (p) {
+  1034→      this.tracks[0].presetId = p.kick;
+  1035→      this.tracks[4].presetId = p.bass;
+  1036→      this.tracks[5].presetId = p.lead;
+  1037→      this.tracks[6].presetId = p.pad;
+  1038→      this.tracks[7].presetId = p.arp;
+  1039→    }
+  1040→  }
+  1041→
+  1042→  private targetEnergy = 0.5;
+  1043→
+  1044→  /**
+  1045→   * Receive fresh metrics from the reference radio and store them as pursuit
+  1046→   * targets. Also applies the smooth sub/high energy gain ramps immediately
+  1047→   * (these are the only adjustments that can ramp across long time constants
+  1048→   * without per-note cooperation — kick decay / centroid / transient density
+  1049→   * are applied per-note in triggerDrum / triggerSynth / scheduleStep).
+  1050→   */
+  1051→  liveTrack(refMetrics: {
+  1052→    lufs: number;
+  1053→    kickDecayMs: number;
+  1054→    spectralCentroid: number;
+  1055→    energy?: number;
+  1056→    subEnergy?: number;
+  1057→    lowEnergy?: number;
+  1058→    midEnergy?: number;
+  1059→    highEnergy?: number;
+  1060→    airEnergy?: number;
+  1061→    transientDensity?: number;
+  1062→    bassDecayMs?: number;
+  1063→    stereoWidth?: number;
+  1064→    bpm?: number;
+  1065→    detectedKey?: { root: number; scale: string; confidence: number };
+  1066→  }): void {
+  1067→    if (isFinite(refMetrics.lufs)) this.targetLufs = refMetrics.lufs;
+  1068→    if (refMetrics.energy !== undefined && isFinite(refMetrics.energy)) {
+  1069→      this.targetEnergy = clamp(refMetrics.energy, 0, 1);
+  1070→      this.refEnergy = this.targetEnergy;
+  1071→    }
+  1072→
+  1073→    // ── KICK DECAY target (seconds) ──
+  1074→    if (refMetrics.kickDecayMs > 50 && refMetrics.kickDecayMs < 800) {
+  1075→      this.refKickDecay = clamp(refMetrics.kickDecayMs / 1000, 0.05, 0.8);
+  1076→    }
+  1077→
+  1078→    // ── SPECTRAL CENTROID target (Hz) ──
+  1079→    if (isFinite(refMetrics.spectralCentroid) && refMetrics.spectralCentroid > 0) {
+  1080→      this.refSpectralCentroid = clamp(refMetrics.spectralCentroid, 100, 12000);
+  1081→    }
+  1082→
+  1083→    // ── TRANSIENT DENSITY target (transients/sec) ──
+  1084→    const td = refMetrics.transientDensity ?? 0;
+  1085→    if (isFinite(td) && td > 0) {
+  1086→      this.refTransientDensity = clamp(td, 0, 40);
+  1087→    }
+  1088→
+  1089→    // ── SUB / HIGH ENERGY targets (0..1) ──
+  1090→    if (refMetrics.subEnergy !== undefined && isFinite(refMetrics.subEnergy)) {
+  1091→      this.refSubEnergy = clamp(refMetrics.subEnergy, 0, 1);
+  1092→    }
+  1093→    if (refMetrics.highEnergy !== undefined && isFinite(refMetrics.highEnergy)) {
+  1094→      this.refHighEnergy = clamp(refMetrics.highEnergy, 0, 1);
+  1095→    }
+  1096→
+  1097→    // ── BASS DECAY target (seconds) ──
+  1098→    if (refMetrics.bassDecayMs !== undefined && refMetrics.bassDecayMs > 20 && refMetrics.bassDecayMs < 1500) {
+  1099→      this.refBassDecay = clamp(refMetrics.bassDecayMs / 1000, 0.05, 1.5);
+  1100→    }
+  1101→
+  1102→    // ── Additional features for the style classifier (Task 14) ──
+  1103→    if (refMetrics.lowEnergy !== undefined && isFinite(refMetrics.lowEnergy)) {
+  1104→      this.refLowEnergy = clamp(refMetrics.lowEnergy, 0, 1);
+  1105→    }
+  1106→    if (refMetrics.midEnergy !== undefined && isFinite(refMetrics.midEnergy)) {
+  1107→      this.refMidEnergy = clamp(refMetrics.midEnergy, 0, 1);
+  1108→    }
+  1109→    if (refMetrics.airEnergy !== undefined && isFinite(refMetrics.airEnergy)) {
+  1110→      this.refAirEnergy = clamp(refMetrics.airEnergy, 0, 1);
+  1111→    }
+  1112→    if (refMetrics.stereoWidth !== undefined && isFinite(refMetrics.stereoWidth)) {
+  1113→      this.refStereoWidth = clamp(refMetrics.stereoWidth, 0, 1);
+  1114→    }
+  1115→    if (refMetrics.bpm !== undefined && isFinite(refMetrics.bpm) && refMetrics.bpm > 0) {
+  1116→      this.refBpm = clamp(refMetrics.bpm, 30, 220);
+  1117→    }
+  1118→    if (refMetrics.detectedKey?.scale) {
+  1119→      this.refKeyScale = refMetrics.detectedKey.scale;
+  1120→    }
+  1121→
+  1122→    // ── SUB / HIGH energy balancing — smooth ramp on track gains ──
+  1123→    // Boost bass track (4) when ref has more sub than we do; boost lead/pad/arp
+  1124→    // (5,6,7) when ref has more high energy. Time constants 0.8-1.0s (timbre).
+  1125→    if (this.ctx) {
+  1126→      const now = this.ctx.currentTime;
+  1127→      if (this.refSubEnergy > 0 && this.ownSubEnergy > 0) {
+  1128→        const subDiff = this.refSubEnergy - this.ownSubEnergy;
+  1129→        if (Math.abs(subDiff) > 0.05) {
+  1130→          const bassAdj = clamp(subDiff * 0.4, -0.3, 0.3);
+  1131→          const bassTarget = clamp(0.8 + bassAdj, 0.3, 2.0);
+  1132→          this.trackGains[4]?.gain.setTargetAtTime(bassTarget, now, 0.8);
+  1133→          if (subDiff > 0.05) {
+  1134→            const kickTarget = clamp(1.0 + subDiff * 0.2, 0.6, 1.8);
+  1135→            this.trackGains[0]?.gain.setTargetAtTime(kickTarget, now, 0.8);
+  1136→          }
+  1137→        }
+  1138→      }
+  1139→      if (this.refHighEnergy > 0 && this.ownHighEnergy > 0) {
+  1140→        const highDiff = this.refHighEnergy - this.ownHighEnergy;
+  1141→        if (Math.abs(highDiff) > 0.05) {
+  1142→          const adj = clamp(highDiff * 0.5, -0.3, 0.3);
+  1143→          for (const ti of [5, 6, 7]) {
+  1144→            const target = clamp(0.8 + adj, 0.3, 1.6);
+  1145→            this.trackGains[ti]?.gain.setTargetAtTime(target, now, 1.0);
+  1146→          }
+  1147→        }
+  1148→      }
+  1149→    }
+  1150→  }
+  1151→
+  1152→  /**
+  1153→   * Receive fresh metrics from our own engine output (via SelfAnalyzer).
+  1154→   * Stores own sub/high/centroid/transient for getPursuitStatus() and the
+  1155→   * sub/high balancing done in liveTrack().
+  1156→   */
+  1157→  selfTrack(selfMetrics: {
+  1158→    lufs: number;
+  1159→    energy?: number;
+  1160→    spectralCentroid?: number;
+  1161→    transientDensity?: number;
+  1162→    subEnergy?: number;
+  1163→    highEnergy?: number;
+  1164→  }): void {
+  1165→    this.ownLufs = selfMetrics.lufs;
+  1166→    if (selfMetrics.spectralCentroid !== undefined && isFinite(selfMetrics.spectralCentroid) && selfMetrics.spectralCentroid > 0) {
+  1167→      this.ownSpectralCentroid = selfMetrics.spectralCentroid;
+  1168→    }
+  1169→    if (selfMetrics.transientDensity !== undefined && isFinite(selfMetrics.transientDensity)) {
+  1170→      this.ownTransientDensity = selfMetrics.transientDensity;
+  1171→    }
+  1172→    if (selfMetrics.subEnergy !== undefined && isFinite(selfMetrics.subEnergy)) {
+  1173→      this.ownSubEnergy = selfMetrics.subEnergy;
+  1174→    }
+  1175→    if (selfMetrics.highEnergy !== undefined && isFinite(selfMetrics.highEnergy)) {
+  1176→      this.ownHighEnergy = selfMetrics.highEnergy;
+  1177→    }
+  1178→    // LUFS matching
+  1179→    if (this.targetLufs !== 0 && Math.abs(selfMetrics.lufs - this.targetLufs) > 1.0) {
+  1180→      const diff = this.targetLufs - selfMetrics.lufs;
+  1181→      const adj = diff > 0 ? 0.08 : -0.08;
+  1182→      const newMaster = clamp(this.master.gain.value + adj, 0.3, 2.0);
+  1183→      this.master.gain.setTargetAtTime(newMaster, this.ctx!.currentTime, 0.15);
+  1184→    }
+  1185→    // Energy matching — adjust track volumes
+  1186→    if (this.targetEnergy > 0 && selfMetrics.energy !== undefined) {
+  1187→      const energyDiff = this.targetEnergy - selfMetrics.energy;
+  1188→      if (Math.abs(energyDiff) > 0.05) {
+  1189→        // Boost/reduce all track gains slightly
+  1190→        const volAdj = energyDiff > 0 ? 0.02 : -0.02;
+  1191→        for (let i = 0; i < 8; i++) {
+  1192→          const g = this.trackGains[i];
+  1193→          if (g) {
+  1194→            const newVol = clamp(g.gain.value + volAdj, 0.1, 2.0);
+  1195→            g.gain.setTargetAtTime(newVol, this.ctx!.currentTime, 0.5);
+  1196→          }
+  1197→        }
+  1198→      }
+  1199→    }
+  1200→  }
+  1201→
+  1202→  setWorld(params: Record<string, number>): void {
+  1203→    if (!this.ctx) return;
+  1204→    const t = this.ctx.currentTime;
+  1205→    if (params.masterLevel !== undefined) {
+  1206→      this.master.gain.setTargetAtTime(params.masterLevel, t, 0.1);
+  1207→    }
+  1208→    if (params.bassLevel !== undefined) {
+  1209→      this.trackGains[4].gain.setTargetAtTime(params.bassLevel * 0.8, t, 0.1);
+  1210→    }
+  1211→    if (params.leadLevel !== undefined) {
+  1212→      this.trackGains[5].gain.setTargetAtTime(params.leadLevel * 0.8, t, 0.1);
+  1213→    }
+  1214→    if (params.kickLevel !== undefined) {
+  1215→      this.trackGains[0].gain.setTargetAtTime(params.kickLevel * 0.8, t, 0.1);
+  1216→    }
+  1217→    // ── Learned params from ContinuousTrainer (Task 22): store for blending ──
+  1218→    //    These are applied incrementally in triggerDrum / triggerSynth, not here,
+  1219→    //    because they affect per-voice synthesis. Guard against NaN/out-of-range.
+  1220→    if (isFinite(params.kickDecay) && params.kickDecay > 0.02 && params.kickDecay < 2) {
+  1221→      this.learned.kickDecay = params.kickDecay;
+  1222→    }
+  1223→    if (isFinite(params.bassCutoff) && params.bassCutoff > 40 && params.bassCutoff < 4000) {
+  1224→      this.learned.bassCutoff = params.bassCutoff;
+  1225→    }
+  1226→    if (isFinite(params.leadCutoff) && params.leadCutoff > 100 && params.leadCutoff < 16000) {
+  1227→      this.learned.leadCutoff = params.leadCutoff;
+  1228→    }
+  1229→    if (isFinite(params.leadDetune) && params.leadDetune >= 0 && params.leadDetune < 100) {
+  1230→      this.learned.leadDetune = params.leadDetune;
+  1231→    }
+  1232→    if (isFinite(params.padCutoff) && params.padCutoff > 80 && params.padCutoff < 12000) {
+  1233→      this.learned.padCutoff = params.padCutoff;
+  1234→    }
+  1235→    if (isFinite(params.duck) && params.duck >= 0 && params.duck <= 1) {
+  1236→      this.learned.duck = params.duck;
+  1237→    }
+  1238→  }
+  1239→
+  1240→  getAnalyser(): AnalyserNode | null { return this.analyser; }
+  1241→
+  1242→  private scheduleNextTick(): void {
+  1243→    if (!this.playing) return;
+  1244→    this.timer = setTimeout(() => {
+  1245→      this.tick();
+  1246→      this.scheduleNextTick();
+  1247→    }, 15);
+  1248→  }
+  1249→
+  1250→  private tick(): void {
+  1251→    if (!this.playing || !this.ctx) return;
+  1252→    const lookahead = 0.06;
+  1253→
+  1254→    while (this.nextTime < this.ctx.currentTime + lookahead) {
+  1255→      // Recompute s16 each step so the BPM ramp changes tempo smoothly
+  1256→      // without invalidating the scheduler's lookahead window.
+  1257→      const s16 = 60 / this.bpm / 4;
+  1258→      this.scheduleStep(this.step, this.bar, this.nextTime);
+  1259→      this.step++;
+  1260→      this.nextTime += s16;
+  1261→      if (this.step >= 16) {
+  1262→        this.step = 0;
+  1263→        this.bar++;
+  1264→        // ── Per-bar musical evolution (Task 15) ──
+  1265→        // tickEvolution() decides internally whether to mutate based on bar
+  1266→        // count and world.evolutionRate. Mutates the LeadMotif's
+  1267→        // EvolvingSequence in addition to the section-boundary evolve() call.
+  1268→        this.leadMotif?.tickEvolution(this.bar, this.currentWorld.evolutionRate, 8);
+  1269→        // ── BPM ramp smoothing (one step per bar, over 4 bars total) ──
+  1270→        if (this.bpmRampBarsLeft > 0 && this.bpmRampPerBar !== 0) {
+  1271→          const stepped = this._bpm + this.bpmRampPerBar;
+  1272→          this._bpm = clamp(Math.round(stepped * 10) / 10, 60, 200);
+  1273→          this.bpmRampBarsLeft--;
+  1274→          if (this.bpmRampBarsLeft <= 0) {
+  1275→            // Snap to final target at end of ramp
+  1276→            this._bpm = this.targetBpm || this._bpm;
+  1277→            this.targetBpm = 0;
+  1278→            this.bpmRampPerBar = 0;
+  1279→          }
+  1280→        }
+  1281→        const section = this.arrangement[this.sectionIdx % this.arrangement.length];
+  1282→        if (this.bar >= section.bars) {
+  1283→          this.sectionIdx++;
+  1284→          this.bar = 0;
+  1285→          const next = this.arrangement[this.sectionIdx % this.arrangement.length];
+  1286→          this.currentSection = next.label;
+  1287→          this.onSectionChange?.(this.currentSection);
+  1288→          // Evolve lead motif at section boundaries for musical development
+  1289→          this.leadMotif?.evolve();
+  1290→          // (arpIdx rotation removed — base arp shape now comes from world.arpPattern;
+  1291→          //  arpIdx is retained as a field for backward compatibility but no longer
+  1292→          //  drives arp shape selection.)
+  1293→        }
+  1294→        // ── Phrase-locked preset rotation (Task 15) ──
+  1295→        // Every 8 bars, rotate kick/bass preset between 2 variants based on
+  1296→        // world character. Gives sonic consistency within a phrase, then
+  1297→        // variation across phrases. Also rotates bass pattern every 4 bars
+  1298→        // for melodic variation (kept from Track A).
+  1299→        this.phraseCounter++;
+  1300→        if (this.bar % 8 === 0 && this.bar > 0) {
+  1301→          this.phrasePresetVariant = (this.phrasePresetVariant + 1) % 2;
+  1302→          this.applyPhrasePresetRotation();
+  1303→        }
+  1304→        // Bass pattern rotates every 4 bars (kept from Track A — denser variation)
+  1305→        if (this.bar % 4 === 0 && this.bar > 0) {
+  1306→          const bassStyle = this.deriveBassStyle();
+  1307→          const bps = BASS_PATTERNS[bassStyle] || BASS_PATTERNS.off;
+  1308→          this.bassPatternIdx = (this.bassPatternIdx + 1) % bps.length;
+  1309→        }
+  1310→      }
+  1311→    }
+  1312→  }
+  1313→
+  1314→  /**
+  1315→   * Phrase-locked preset rotation (Task 15). Every 8 bars, swap kick + bass
+  1316→   * presets between two variants based on the current world's character:
+  1317→   *   - Dark worlds (dark-psy, forest, deep-psy, hypnotic) → rotate between
+  1318→   *     DEEP/ROLL (default) and TIGHT/ROLL (variation).
+  1319→   *   - Bright worlds (morning-psy, cosmic, organic-psy) → rotate between
+  1320→   *     TIGHT/DEEP (default) and TIGHT/ROLL (variation).
+  1321→   *   - Acid worlds (goa, acid-psy) → rotate between TIGHT/ROLL and TIGHT/DEEP.
+  1322→   *   - Others → rotate between TIGHT/ROLL and DEEP/ROLL.
+  1323→   * Lead/Pad/Arp presets stay fixed per world — only kick/bass rotate to keep
+  1324→   * the harmonic identity stable.
+  1325→   */
+  1326→  private applyPhrasePresetRotation(): void {
+  1327→    const id = this.currentWorld.id;
+  1328→    const variant = this.phrasePresetVariant;
+  1329→    const dark = id === 'dark-psy' || id === 'forest' || id === 'deep-psy' || id === 'hypnotic';
+  1330→    const bright = id === 'morning-psy' || id === 'cosmic' || id === 'organic-psy';
+  1331→    const acid = id === 'goa' || id === 'acid-psy';
+  1332→
+  1333→    let kick: string;
+  1334→    let bass: string;
+  1335→    if (dark) {
+  1336→      kick = variant === 0 ? 'PS-KICK-DEEP' : 'PS-KICK-TIGHT';
+  1337→      bass = 'PS-BASS-ROLL';
+  1338→    } else if (bright) {
+  1339→      kick = 'PS-KICK-TIGHT';
+  1340→      bass = variant === 0 ? 'PS-BASS-DEEP' : 'PS-BASS-ROLL';
+  1341→    } else if (acid) {
+  1342→      kick = 'PS-KICK-TIGHT';
+  1343→      bass = variant === 0 ? 'PS-BASS-ROLL' : 'PS-BASS-DEEP';
+  1344→    } else {
+  1345→      // progressive-psy and any other mid character
+  1346→      kick = variant === 0 ? 'PS-KICK-TIGHT' : 'PS-KICK-DEEP';
+  1347→      bass = variant === 0 ? 'PS-BASS-ROLL' : 'PS-BASS-DEEP';
+  1348→    }
+  1349→    this.tracks[0].presetId = kick;
+  1350→    this.tracks[4].presetId = bass;
+  1351→  }
+  1352→
+  1353→  /** Derive bass style from world id (worlds.ts doesn't have a 'bass' field). */
+  1354→  private deriveBassStyle(): 'roll' | 'acid' | 'off' {
+  1355→    const id = this.currentWorld.id;
+  1356→    if (id.includes('dark') || id.includes('forest')) return 'roll';
+  1357→    if (id.includes('goa') || id.includes('acid')) return 'acid';
+  1358→    return 'off';
+  1359→  }
+  1360→
+  1361→  private scheduleStep(step: number, bar: number, time: number): void {
+  1362→    const w = this.currentWorld;
+  1363→    const section = this.arrangement[this.sectionIdx % this.arrangement.length];
+  1364→    const key = this.musicalKey;
+  1365→    const root = key.root;
+  1366→    const sc = key.scale;
+  1367→    const sd = 60 / this.bpm / 4;
+  1368→
+  1369→    // ── Energy from world's energyCurve, modulated by section density ──
+  1370→    const eIdx = clamp(
+  1371→      Math.floor((bar / Math.max(1, section.bars)) * w.energyCurve.length),
+  1372→      0,
+  1373→      w.energyCurve.length - 1
+  1374→    );
+  1375→    const baseEnergy = w.energyCurve[eIdx];
+  1376→    const energy = clamp(baseEnergy * (0.4 + 0.6 * section.density), 0, 1);
+  1377→
+  1378→    // ── Swing: delay offbeat steps by swing * halfStep ──
+  1379→    let stepTime = time;
+  1380→    if (step % 2 === 1 && w.swing > 0) {
+  1381→      stepTime += w.swing * sd * 0.5;
+  1382→    }
+  1383→
+  1384→    const isPreDrop = (section.label === 'BUILD' || section.label === 'BUILD 2') && bar >= section.bars - 2;
+  1385→    const isDropStart = section.label.includes('DROP') && bar === 0 && step === 0;
+  1386→
+  1387→    // ── RISER FX (last 2 bars of build) — uses raw time, not swung ──
+  1388→    if (isPreDrop && step === 0 && bar === section.bars - 2) {
+  1389→      this.triggerRiser(time, sd * 32);
+  1390→    }
+  1391→
+  1392→    // ── IMPACT FX (drop start) ──
+  1393→    if (isDropStart) {
+  1394→      this.triggerImpact(time);
+  1395→    }
+  1396→
+  1397→    // Reference pursuit — scale hat/perc probability by refTransientDensity.
+  1398→    const tScale = this.refTransientDensity > 0
+  1399→      ? clamp(0.5 + this.refTransientDensity / 24, 0.3, 1.8)
+  1400→      : 1.0;
+  1401→    const tVelBoost = tScale > 1 ? (tScale - 1) * 0.5 : 0;
+  1402→
+  1403→    // ── Pre-compute world timbre overrides (cutoff/resonance modulated by character) ──
+  1404→    const leadTimbre = {
+  1405→      cutoff: w.leadTimbre.cutoff * (0.7 + 0.6 * w.brightness),
+  1406→      res: 2 + w.leadTimbre.resonance * 12,
+  1407→      drive: w.leadTimbre.drive,
+  1408→    };
+  1409→    const bassTimbre = {
+  1410→      cutoff: w.bassTimbre.cutoff * (0.7 + 0.6 * (1 - w.darkness)),
+  1411→      res: 2 + w.bassTimbre.resonance * 12,
+  1412→      drive: w.bassTimbre.drive,
+  1413→    };
+  1414→    const padTimbre = {
+  1415→      cutoff: w.padTimbre.cutoff * (0.6 + 0.8 * w.brightness),
+  1416→      res: 2 + w.padTimbre.resonance * 12,
+  1417→      drive: w.padTimbre.drive,
+  1418→    };
+  1419→    const arpTimbre = {
+  1420→      cutoff: w.textureTimbre.cutoff * (0.7 + 0.6 * w.psychedelia),
+  1421→      res: 2 + w.textureTimbre.resonance * 12,
+  1422→      drive: w.textureTimbre.drive,
+  1423→    };
+  1424→
+  1425→    // ── KICK (track 0) — world-driven kickPattern (16-char gate string) ──
+  1426→    if (w.kickPattern.length === 16 && w.kickPattern.charAt(step) === 'x') {
+  1427→      const isDownbeat = step % 4 === 0;
+  1428→      const aggressionBoost = 0.7 + 0.6 * w.aggression;
+  1429→      // Velocity scales with both section.density and energyCurve so drops hit
+  1430→      // harder than builds even at the same density (Task 15: verify energy
+  1431→      // actually affects velocity/density).
+  1432→      const vel = isDownbeat
+  1433→        ? 0.4 + section.density * 0.3 * aggressionBoost + energy * 0.15
+  1434→        : 0.3 * aggressionBoost + energy * 0.1;
+  1435→      this.triggerDrum(0, stepTime, vel);
+  1436→    }
+  1437→
+  1438→    // ── CLAP (track 1) — world-driven clapPattern gate ('x' = hit) ──
+  1439→    if (w.clapPattern && w.clapPattern.length === 16 && w.clapPattern.charAt(step) === 'x' && section.density > 0.4) {
+  1440→      this.triggerDrum(1, stepTime, 0.3 + energy * 0.1);
+  1441→    }
+  1442→
+  1443→    // ── HATS (track 2) — probability from world.hatDensity per eligible offbeat ──
+  1444→    const hatProb = clamp(w.hatDensity * (0.5 + 0.5 * energy) * tScale, 0, 1);
+  1445→    if (step % 2 === 1 && this.musicRng?.chance(hatProb)) {
+  1446→      const vel = 0.15 + (step % 4 === 3 ? 0.1 : 0) + energy * 0.1 + tVelBoost;
+  1447→      this.triggerDrum(2, stepTime, vel);
+  1448→    }
+  1449→
+  1450→    // ── PERC (track 3) — world-driven percPattern gate + density-based probability ──
+  1451→    const percProb = clamp(w.percDensity * energy * tScale, 0, 1);
+  1452→    if (w.percPattern && w.percPattern.length === 16 && w.percPattern.charAt(step) === 'x' && section.density > 0.5 && this.musicRng?.chance(percProb)) {
+  1453→      this.triggerDrum(3, stepTime, 0.2 + tVelBoost);
+  1454→    }
+  1455→
+  1456→    // ── BASS (track 4) — world-driven bassPattern + BASS_PATTERNS by derived style ──
+  1457→    if (section.bass && w.bassPattern.length === 16 && w.bassPattern.charAt(step) === 'x') {
+  1458→      const bassStyle = this.deriveBassStyle();
+  1459→      const bps = BASS_PATTERNS[bassStyle] || BASS_PATTERNS.off;
+  1460→      const bp = bps[this.bassPatternIdx % bps.length];
+  1461→      const bassStep = Math.floor((step - 1) / 2) % bp.steps.length;
+  1462→      const bassDeg = bp.steps[bassStep];
+  1463→      if (bassDeg >= 0) {
+  1464→        const note = scaleNote(root, sc, bassDeg);
+  1465→        const accent = bp.accents[bassStep] ?? 1;
+  1466→        // Bass velocity scales with energy so drops push the bass harder
+  1467→        this.triggerSynth(4, stepTime, note, (0.4 + energy * 0.2) * accent, sd, undefined, bassTimbre);
+  1468→      }
+  1469→    }
+  1470→
+  1471→    // ── LEAD (track 5) — LeadMotif with AABA structure, gated by section + energy ──
+  1472→    if (section.lead && this.leadMotif && energy > 0.35) {
+  1473→      const noteInfo = this.leadMotif.nextNote(step, bar, energy, this.musicRng!);
+  1474→      if (noteInfo) {
+  1475→        this.triggerSynth(5, stepTime, noteInfo.note, noteInfo.velocity, sd, sd * 0.5, leadTimbre);
+  1476→      }
+  1477→    }
+  1478→
+  1479→    // ── PAD (track 6) — chord progression from PROGRESSIONS[scale], on bar downbeat in drops ──
+  1480→    if (section.lead && step === 0) {
+  1481→      const prog = PROGRESSIONS[sc] || PROGRESSIONS.minor;
+  1482→      const chordDeg = prog[bar % prog.length];
+  1483→      const chordRoot = scaleNote(root + 12, sc, chordDeg);
+  1484→      // Pad velocity scales with energy (Task 15)
+  1485→      this.triggerSynth(6, stepTime, chordRoot, 0.2 + energy * 0.15, sd * 4, undefined, padTimbre);
+  1486→      // Also play fifth for full chord
+  1487→      this.triggerSynth(6, stepTime + 0.01, scaleNote(root + 12, sc, chordDeg + 4), 0.12 + energy * 0.1, sd * 4, undefined, padTimbre);
+  1488→    }
+  1489→
+  1490→    // ── ARP (track 7) — world-driven arpPattern (8 scale degrees per step) ──
+  1491→    const arpProb = clamp(0.7 * energy, 0, 1);
+  1492→    if (section.lead && step % 2 === 0 && this.musicRng?.chance(arpProb)) {
+  1493→      const arp = w.arpPattern || [0,2,4,7,4,2,0,7];
+  1494→      const arpStep = Math.floor(step / 2) % arp.length;
+  1495→      const deg = arp[arpStep];
+  1496→      const note = scaleNote(root + 24, sc, deg);
+  1497→      this.triggerSynth(7, stepTime, note, 0.25 * energy, sd, undefined, arpTimbre);
+  1498→    }
+  1499→
+  1500→    // ── SHAKER (track 3 alt) — continuous offbeat in drops ──
+  1501→    const shakerProb = clamp(0.4 * energy * tScale, 0, 1);
+  1502→    if (section.bass && section.lead && step % 2 === 1 && this.musicRng?.chance(shakerProb)) {
+  1503→      this.triggerDrum(3, stepTime, 0.15 + tVelBoost);
+  1504→    }
+  1505→  }
+  1506→
+  1507→  private triggerDrum(trackIdx: number, time: number, vel: number, decayOverride?: number): void {
+  1508→    const track = this.tracks[trackIdx];
+  1509→    if (track.mix.mute) return;
+  1510→    const preset = DRUM_PRESETS[track.presetId];
+  1511→    if (!preset) return;
+  1512→    const voice = this.drumPool[this.drumIdx];
+  1513→    this.drumIdx = (this.drumIdx + 1) % this.drumPool.length;
+  1514→
+  1515→    // Reference pursuit — KICK DECAY: blend preset decay with refKickDecay.
+  1516→    // The kick dur formula is `dur = 0.12 + 0.5 * decay`, so to hit a target
+  1517→    // seconds T the equivalent decay param is `(T - 0.12) / 0.5`. We blend
+  1518→    // 50/50 with the preset decay so the kick keeps its tonal character but
+  1519→    // adopts the reference's tail length.
+  1520→    let effectiveDecayOverride = decayOverride;
+  1521→    if (trackIdx === 0 && this.refKickDecay > 0) {
+  1522→      const targetDur = clamp(this.refKickDecay, 0.05, 0.8);
+  1523→      const refDecayParam = clamp((targetDur - 0.12) / 0.5, 0.05, 4.0);
+  1524→      const blended = preset.decay * 0.5 + refDecayParam * 0.5;
+  1525→      effectiveDecayOverride = (isFinite(blended) && blended > 0) ? blended : undefined;
+  1526→    }
+  1527→    // Learned kick decay (from ContinuousTrainer offline optimization) — blend 25%
+  1528→    // on top of the reference-pursued decay. This lets the trainer nudge the kick
+  1529→    // tail toward an optimized value without fighting the live reference pursuit.
+  1530→    if (trackIdx === 0 && this.learned.kickDecay && effectiveDecayOverride !== undefined) {
+  1531→      const learnedDur = clamp(this.learned.kickDecay, 0.05, 0.8);
+  1532→      const learnedParam = clamp((learnedDur - 0.12) / 0.5, 0.05, 4.0);
+  1533→      const blended = effectiveDecayOverride * 0.75 + learnedParam * 0.25;
+  1534→      effectiveDecayOverride = (isFinite(blended) && blended > 0) ? blended : effectiveDecayOverride;
+  1535→    }
+  1536→
+  1537→    voice.hit(preset, time, vel * track.mix.vol, this.chains[trackIdx], effectiveDecayOverride);
+  1538→
+  1539→    // Sidechain: when kick fires, duck the bass
+  1540→    if (trackIdx === 0 && this.duckGain && this.ctx) {
+  1541→      this.duckGain.gain.cancelScheduledValues(time);
+  1542→      // Blend learned duck depth (from trainer) with the default 0.4 — trainer
+  1543→      // can push the sidechain deeper (up to 0.7) or shallower for groove control.
+  1544→      const duckDepth = this.learned.duck !== undefined
+  1545→        ? clamp(0.4 * 0.6 + this.learned.duck * 0.7 * 0.4, 0.15, 0.7)
+  1546→        : 0.4;
+  1547→      this.duckGain.gain.setValueAtTime(1 - duckDepth, time);
+  1548→      this.duckGain.gain.linearRampToValueAtTime(1.0, time + 0.25); // 250ms recovery
+  1549→    }
+  1550→  }
+  1551→
+  1552→  private triggerRiser(time: number, dur: number): void {
+  1553→    if (!this.ctx) return;
+  1554→    const c = this.ctx;
+  1555→    // Noise through filter that opens up
+  1556→    const noise = c.createBufferSource();
+  1557→    noise.buffer = this.noiseBuffer;
+  1558→    noise.loop = true;
+  1559→    const filter = c.createBiquadFilter();
+  1560→    filter.type = 'bandpass';
+  1561→    filter.frequency.setValueAtTime(200, time);
+  1562→    filter.frequency.exponentialRampToValueAtTime(8000, time + dur);
+  1563→    filter.Q.value = 2;
+  1564→    const gain = c.createGain();
+  1565→    gain.gain.setValueAtTime(0.001, time);
+  1566→    gain.gain.exponentialRampToValueAtTime(0.3, time + dur);
+  1567→    gain.gain.exponentialRampToValueAtTime(0.001, time + dur + 0.1);
+  1568→    noise.connect(filter);
+  1569→    filter.connect(gain);
+  1570→    gain.connect(this.master);
+  1571→    noise.start(time);
+  1572→    noise.stop(time + dur + 0.2);
+  1573→  }
+  1574→
+  1575→  private triggerImpact(time: number): void {
+  1576→    if (!this.ctx) return;
+  1577→    const c = this.ctx;
+  1578→    // Sub boom + noise crack
+  1579→    const osc = c.createOscillator();
+  1580→    osc.type = 'sine';
+  1581→    osc.frequency.setValueAtTime(120, time);
+  1582→    osc.frequency.exponentialRampToValueAtTime(35, time + 0.5);
+  1583→    const og = c.createGain();
+  1584→    og.gain.setValueAtTime(0.8, time);
+  1585→    og.gain.exponentialRampToValueAtTime(0.001, time + 0.6);
+  1586→    osc.connect(og);
+  1587→    og.connect(this.master);
+  1588→    osc.start(time);
+  1589→    osc.stop(time + 0.7);
+  1590→
+  1591→    const noise = c.createBufferSource();
+  1592→    noise.buffer = this.noiseBuffer;
+  1593→    const hp = c.createBiquadFilter();
+  1594→    hp.type = 'highpass';
+  1595→    hp.frequency.value = 3000;
+  1596→    const ng = c.createGain();
+  1597→    ng.gain.setValueAtTime(0.4, time);
+  1598→    ng.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
+  1599→    noise.connect(hp);
+  1600→    hp.connect(ng);
+  1601→    ng.connect(this.master);
+  1602→    noise.start(time);
+  1603→    noise.stop(time + 0.1);
+  1604→  }
+  1605→
+  1606→  private triggerSynth(
+  1607→    trackIdx: number,
+  1608→    time: number,
+  1609→    midi: number,
+  1610→    vel: number,
+  1611→    stepDur: number,
+  1612→    dur?: number,
+  1613→    timbre?: { cutoff?: number; res?: number; drive?: number }
+  1614→  ): void {
+  1615→    const track = this.tracks[trackIdx];
+  1616→    if (track.mix.mute) return;
+  1617→    const basePreset = SYNTH_PRESETS[track.presetId];
+  1618→    if (!basePreset) return;
+  1619→    const voice = this.synthPool[this.synthIdx];
+  1620→    this.synthIdx = (this.synthIdx + 1) % this.synthPool.length;
+  1621→
+  1622→    // ── Apply world timbre overrides on top of the factory preset ──
+  1623→    let preset: SynthPreset = basePreset;
+  1624→    if (timbre) {
+  1625→      preset = {
+  1626→        ...basePreset,
+  1627→        cutoff: timbre.cutoff !== undefined ? clamp(timbre.cutoff, 60, 16000) : basePreset.cutoff,
+  1628→        res: timbre.res !== undefined ? clamp(timbre.res, 0.2, 24) : basePreset.res,
+  1629→      };
+  1630→    }
+  1631→
+  1632→    let p: SynthPreset = dur ? { ...preset, gate: dur / (stepDur * 2) } : preset;
+  1633→
+  1634→    // Reference pursuit — SPECTRAL CENTROID matching for lead (5) and pad (6).
+  1635→    // Applied on top of the world timbre so radio brightness nudges the world cutoff.
+  1636→    if ((trackIdx === 5 || trackIdx === 6) && this.refSpectralCentroid > 0) {
+  1637→      const targetCut = centroidToCutoff(this.refSpectralCentroid);
+  1638→      const blended = preset.cutoff * 0.6 + targetCut * 0.4;
+  1639→      if (isFinite(blended) && blended > 60) {
+  1640→        p = { ...p, cutoff: clamp(blended, 200, 12000) };
+  1641→      }
+  1642→    }
+  1643→
+  1644→    // Reference pursuit — BASS DECAY matching for bass (4).
+  1645→    if (trackIdx === 4 && this.refBassDecay > 0) {
+  1646→      const desiredGate = clamp(this.refBassDecay / Math.max(stepDur * 2, 0.01), 0.05, 2.5);
+  1647→      const blended = preset.gate * 0.7 + desiredGate * 0.3;
+  1648→      if (isFinite(blended) && blended > 0) {
+  1649→        p = { ...p, gate: clamp(blended, 0.05, 2.5) };
+  1650→      }
+  1651→    }
+  1652→
+  1653→    // ── Learned params from ContinuousTrainer (Task 22) ──
+  1654→    //    Blend 30% learned cutoff on top of world + reference pursuit.
+  1655→    //    This lets the offline optimizer steer timbre toward an accepted
+  1656→    //    configuration without overriding the live reference pursuit.
+  1657→    if (trackIdx === 4 && this.learned.bassCutoff) {
+  1658→      const blended = p.cutoff * 0.7 + this.learned.bassCutoff * 0.3;
+  1659→      if (isFinite(blended) && blended > 40) p = { ...p, cutoff: clamp(blended, 60, 4000) };
+  1660→    }
+  1661→    if (trackIdx === 5 && this.learned.leadCutoff) {
+  1662→      const blended = p.cutoff * 0.7 + this.learned.leadCutoff * 0.3;
+  1663→      if (isFinite(blended) && blended > 100) p = { ...p, cutoff: clamp(blended, 200, 16000) };
+  1664→    }
+  1665→    if (trackIdx === 6 && this.learned.padCutoff) {
+  1666→      const blended = p.cutoff * 0.7 + this.learned.padCutoff * 0.3;
+  1667→      if (isFinite(blended) && blended > 80) p = { ...p, cutoff: clamp(blended, 150, 12000) };
+  1668→    }
+  1669→    // Learned lead detune — nudge the osc2 detune toward the optimized value.
+  1670→    if (trackIdx === 5 && this.learned.leadDetune !== undefined) {
+  1671→      const blended = (p.detune || 0) * 0.7 + this.learned.leadDetune * 0.3;
+  1672→      if (isFinite(blended) && blended >= 0) p = { ...p, detune: clamp(blended, 0, 50) };
+  1673→    }
+  1674→
+  1675→    // Drive scales the voice velocity (per-voice drive isn't a SynthPreset field)
+  1676→    const driveBoost = timbre?.drive ? clamp(timbre.drive / 1.5, 0.5, 1.8) : 1;
+  1677→    voice.noteOn(p, time, midi, vel * track.mix.vol * driveBoost, stepDur, this.chains[trackIdx]);
+  1678→
+  1679→    // Add sub oscillator for bass track (sine one octave below)
+  1680→    if (trackIdx === 4 && this.ctx) {
+  1681→      const subFreq = mtof(midi - 12); // one octave below
+  1682→      const subOsc = this.ctx.createOscillator();
+  1683→      const subGain = this.ctx.createGain();
+  1684→      subOsc.type = 'sine';
+  1685→      subOsc.frequency.value = subFreq;
+  1686→      // When chasing ref bass decay, lengthen the sub-osc tail to match.
+  1687→      const baseDur = dur || stepDur * 0.3;
+  1688→      const subDecay = (this.refBassDecay > 0)
+  1689→        ? clamp(baseDur * 0.5 + this.refBassDecay * 0.5, 0.05, 1.5)
+  1690→        : baseDur + 0.05;
+  1691→      subGain.gain.setValueAtTime(0.5 * track.mix.vol * driveBoost, time);
+  1692→      subGain.gain.exponentialRampToValueAtTime(0.001, time + subDecay);
+  1693→      subOsc.connect(subGain);
+  1694→      subGain.connect(this.chains[4]);
+  1695→      subOsc.start(time);
+  1696→      subOsc.stop(time + subDecay + 0.02);
+  1697→    }
+  1698→  }
+  1699→
+  1700→  /**
+  1701→   * Snapshot of reference pursuit state for UI display. Each entry pairs the
+  1702→   * radio target with our current actual so the UI can render a delta.
+  1703→   * Values are zero when no reference data has arrived yet.
+  1704→   */
+  1705→  getPursuitStatus(): {
+  1706→    kickDecay: { target: number; actual: number };
+  1707→    centroid: { target: number; actual: number };
+  1708→    transientDensity: { target: number; actual: number };
+  1709→    bpm: { target: number; actual: number };
+  1710→    key: { root: number; scale: string };
+  1711→  } {
+  1712→    // Actual kick decay = current kick preset's dur, blended with ref if pursuing.
+  1713→    let actualKickDur = 0;
+  1714→    const kickPreset = DRUM_PRESETS[this.tracks[0]?.presetId ?? ''];
+  1715→    if (kickPreset) {
+  1716→      const presetDur = 0.12 + 0.5 * (kickPreset.decay || 1);
+  1717→      if (this.refKickDecay > 0) {
+  1718→        const refDecayParam = clamp((this.refKickDecay - 0.12) / 0.5, 0.05, 4.0);
+  1719→        const blendedDecay = kickPreset.decay * 0.5 + refDecayParam * 0.5;
+  1720→        actualKickDur = 0.12 + 0.5 * blendedDecay;
+  1721→      } else {
+  1722→        actualKickDur = presetDur;
+  1723→      }
+  1724→    }
+  1725→    return {
+  1726→      kickDecay: { target: this.refKickDecay, actual: actualKickDur },
+  1727→      centroid: { target: this.refSpectralCentroid, actual: this.ownSpectralCentroid },
+  1728→      transientDensity: { target: this.refTransientDensity, actual: this.ownTransientDensity },
+  1729→      bpm: { target: this.targetBpm || this._bpm, actual: this._bpm },
+  1730→      key: { root: this.musicalKey.root, scale: this.musicalKey.scale },
+  1731→    };
+  1732→  }
+  1733→
+  1734→  getMusicalKey(): { root: number; scale: string } { return this.musicalKey; }
+  1735→  getOwnLufs(): number { return this.ownLufs; }
+  1736→}
+  1737→

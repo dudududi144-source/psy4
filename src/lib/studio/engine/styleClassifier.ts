@@ -40,6 +40,29 @@ export interface RefFeatures {
   stereoWidth: number;      // 0..1
   energy: number;           // 0..1
   detectedKey?: { root: number; scale: string; confidence: number };
+
+  // ── Task T1: extended timbral / shape / stereo descriptors ──
+  // All optional — the synthesis-mode detector and effects pursuit both
+  // gracefully degrade to "classic" / no-op when these are absent. Populated
+  // by the V2 reference listener (referenceListenerV2.ts) when it has enough
+  // decoded PCM data to compute them.
+  harmonicContent?: {
+    flatness: number;      // 0..1 — spectral flatness (1 = noise-like, 0 = tonal)
+    crest: number;         // 1..N — peak-to-mean magnitude ratio (tonal peaks)
+    hnr: number;           // 0..1 — harmonic-to-noise ratio (1 = clean, 0 = noisy)
+    inharmonicity: number; // 0..1 — partial deviation (1 = FM/bells/metallic)
+    slope: number;         // dB/oct, typically -6 (bright) to -24 (dark)
+  };
+  transientShape?: {
+    sharpness: number;     // 0..1 — 1 = clicky, 0 = soft
+    decay: number;         // ms — average decay of detected transients
+  };
+  stereoField?: {
+    width: number;         // 0..1 — magnitude width (1 = wide)
+    balance: number;       // -1..1 — -1 = full L, +1 = full R
+    correlation: number;   // -1..1 — 1 = mono, 0 = uncorrelated, -1 = out of phase
+    msRatio: number;       // 0..1 — side / (mid + side) energy
+  };
 }
 
 export interface StyleMatch {
