@@ -289,17 +289,12 @@ export default function ReferenceTrainingPage() {
         refAudioRef.current.crossOrigin = 'anonymous';
         refAudioRef.current.volume = 0.6;
       }
-      // Try proxy first, fall back to direct URL
-      const tryPlay = async (url: string) => {
-        refAudioRef.current!.src = url;
-        await refAudioRef.current!.play();
-      };
-      try {
-        await tryPlay(`/api/reference/proxy?stream=${encodeURIComponent(stream.id)}&continuous=1`);
-      } catch {
-        // Proxy failed — try direct URL (works for HTTPS streams)
-        await tryPlay(stream.url);
-      }
+      // Use direct URL for HTTPS streams (CORS-enabled), proxy only for HTTP
+      const playUrl = stream.url.startsWith('https')
+        ? stream.url
+        : `/api/reference/proxy?stream=${encodeURIComponent(stream.id)}&continuous=1`;
+      refAudioRef.current.src = playUrl;
+      await refAudioRef.current.play();
       setRefAudioPlaying(true);
       toast.success(`Playing: ${stream.name}`);
     } catch (err) {
@@ -749,7 +744,7 @@ export default function ReferenceTrainingPage() {
             )}
 
             {/* Learned knowledge */}
-            {learningState && learningState.learnedKnowledge && Object.keys(learningState.learnedKnowledge).length > 0 && (
+            {learningState?.learnedKnowledge && typeof learningState.learnedKnowledge === 'object' && Object.keys(learningState.learnedKnowledge).length > 0 && (
               <Card className="border-slate-800 bg-slate-900/60">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">

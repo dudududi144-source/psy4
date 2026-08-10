@@ -5,8 +5,6 @@
  * Self-contained — no imports from lib (ensures edge runtime compatibility).
  */
 
-import { NextResponse } from 'next/server';
-
 export const runtime = 'edge';
 
 const STREAMS = [
@@ -85,8 +83,8 @@ const STREAMS = [
 ];
 
 export async function GET() {
-  return NextResponse.json({
-    ok: true,
-    streams: STREAMS,
+  const body = JSON.stringify({ ok: true, streams: STREAMS });
+  return new Response(body, {
+    headers: { 'Content-Type': 'application/json' },
   });
 }

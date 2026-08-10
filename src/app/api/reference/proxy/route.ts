@@ -12,10 +12,7 @@
  *   - continuous=1: streams the audio indefinitely (for playback)
  */
 
-import { NextRequest } from 'next/server';
-
 export const runtime = 'edge';
-export const dynamic = 'force-dynamic';
 
 const STREAM_URLS: Record<string, string> = {
   'psyndora-psytrance': 'https://cast.magicstreams.gr:9111/stream/1/',
@@ -30,7 +27,7 @@ const STREAM_URLS: Record<string, string> = {
   'psyradio-progressive': 'http://streamer.psyradio.org:8030/;listen.mp3',
 };
 
-export async function GET(request: NextRequest) {
+export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const streamId = searchParams.get('stream') || 'babaganousha';
   const continuous = searchParams.get('continuous') === '1';
