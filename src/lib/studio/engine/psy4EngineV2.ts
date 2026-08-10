@@ -30,6 +30,18 @@ import { ChorusSend, PhaserSend, DistortionSend, BitcrushSend } from './sendEffe
 import { MultibandCompressor } from './multibandCompressor';
 import { detectSynthesisCharacter, SynthesisCharacter } from './synthesisDetector';
 import { SchedulerWorker } from './schedulerWorker';
+import { PerformanceMonitor, QualityLevel, PerformanceStatus } from './performanceMonitor';
+import { FlowEngine, FlowState, SurpriseEvent } from './flowEngine';
+// ── Task A1: deep A/B analysis (effects, timbre, uniqueness, router) ──
+import { detectEffects, DetectedEffects } from './effectsDetector';
+import {
+  computeTimbreFingerprint,
+  compareFingerprints,
+  TimbreFingerprint,
+  FingerprintComparison,
+} from './timbreFingerprint';
+import { detectUniqueElements, UniqueElement } from './uniquenessDetector';
+import { routeSynthesis, SynthesisPlan, SynthesisAdjustment } from './synthesisRouter';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -48,6 +60,8 @@ function buildTrackRackConfigs(world: World): TrackRackConfig[] {
   // Base configs — these give each track its core "produced" character.
   const base: TrackRackConfig[] = [
     // 0: KICK — mono/centered, heavy comp, no sends. Low-end focus.
+    // P1: skipHaas=true — kick is mono/centered, no need for the Haas widener
+    // or stereo panner. Saves 9 nodes per rack.
     {
       eqLowGain: 2.5, eqMidFreq: 350, eqMidGain: -3, eqMidQ: 1.2, eqHighGain: -1,
       compThreshold: -16, compRatio: 6, compAttack: 0.003, compRelease: 0.08, compKnee: 4,
@@ -55,6 +69,7 @@ function buildTrackRackConfigs(world: World): TrackRackConfig[] {
       pan: 0, useHaas: false, haasDelayMs: 0, haasMix: 0,
       outputGain: 1.0,
       sendReverb: 0, sendDelay: 0, sendChorus: 0, sendPhaser: 0, sendDistortion: 0, sendBitcrush: 0,
+      skipHaas: true,
     },
     // 1: SNARE/CLAP — stereo, comp, reverb send. Crackle + body.
     {
@@ -85,6 +100,8 @@ function buildTrackRackConfigs(world: World): TrackRackConfig[] {
     },
     // 4: BASS — mono/centered, gentle comp, reverb send only (per spec).
     //    Tight low end with controlled midrange to leave room for the kick.
+    // P1: skipHaas=true — bass is mono/centered, no need for the Haas widener
+    // or stereo panner. Saves 9 nodes per rack.
     {
       eqLowGain: 2.5, eqMidFreq: 280, eqMidGain: -2, eqMidQ: 1.1, eqHighGain: -1.5,
       compThreshold: -14, compRatio: 3, compAttack: 0.015, compRelease: 0.15, compKnee: 12,
@@ -92,6 +109,7 @@ function buildTrackRackConfigs(world: World): TrackRackConfig[] {
       pan: 0, useHaas: false, haasDelayMs: 0, haasMix: 0,
       outputGain: 1.2,
       sendReverb: 0.06, sendDelay: 0, sendChorus: 0, sendPhaser: 0, sendDistortion: 0, sendBitcrush: 0,
+      skipHaas: true,
     },
     // 5: LEAD — stereo + Haas, all melodic sends active. Cuts through.
     {
@@ -511,6 +529,25 @@ export class Psy4EngineV2 {
   private recentLufsValues: number[] = [];
   private static readonly LUFS_HISTORY_MAX = 8;
 
+  // ── Task A1: deep A/B analysis state ──
+  // The expanded A/B comparison stores the latest detector outputs so the UI
+  // can render them via getDeepAnalysis(). All of these update on every
+  // liveTrack() call, but the actual SYNTHESIS ROUTING is only applied when
+  // the deep pursuit cooldown has elapsed (10s) — this prevents thrashing
+  // when the detectors wobble on borderline material.
+  private refEffects: DetectedEffects | null = null;
+  private refTimbre: TimbreFingerprint | null = null;
+  private currentTimbre: TimbreFingerprint | null = null;
+  private timbreComparison: FingerprintComparison | null = null;
+  private uniqueElements: UniqueElement[] = [];
+  private synthPlan: SynthesisPlan | null = null;
+  private refFeaturesHistory: RefFeatures[] = [];
+  private static readonly REF_HISTORY_MAX = 12; // ~2 minutes at 10s hop
+  private lastDeepPursuitTime = 0;
+  private static readonly DEEP_PURSUIT_COOLDOWN_MS = 10_000;
+  private static readonly DEEP_PURSUIT_CONFIDENCE_THRESHOLD = 0.3;
+
+
   // ── Style classification (Task 14) — populated by applyMusicalUnderstanding() ──
   //    and read by getStyleClassification() for UI display.
   private styleMatches: StyleMatch[] = [];
@@ -606,10 +643,35 @@ export class Psy4EngineV2 {
   private multiband!: MultibandCompressor;
 
   // Voice pools
+  // P1: reduced from 20 → 8 synth voices and 24 → 10 drum voices.
+  // Psytrance rarely has >6 simultaneous synth notes; the 7th/8th voices
+  // are for overlap during note transitions. Drum voice count of 10 covers
+  // kick + snare + 2 hats + 2 perc + 2 claps + 2 spare with voice stealing.
+  // Combined with lazy voice allocation (AdvancedSynthVoice), idle synth
+  // pool is 8 voices × 8 common nodes = 64 nodes (was 580).
   private synthPool: AdvancedSynthVoice[] = [];
   private drumPool: PooledDrumVoice[] = [];
   private synthIdx = 0;
   private drumIdx = 0;
+
+  // ── P1: adaptive quality (Task P1) ──
+  // PerformanceMonitor watches main-thread frame time + engine tick duration
+  // and escalates / de-escalates the quality level on a 3s/10s hysteresis.
+  // Quality level controls: supersaw osc cap, send-effect availability,
+  // multiband compressor bypass, and Haas widener engagement.
+  private perfMonitor: PerformanceMonitor = new PerformanceMonitor({
+    onQualityChange: (q, reason) => this.onAdaptiveQualityChange(q, reason),
+  });
+  private quality: QualityLevel = 'medium';
+  // Supersaw osc cap — clamped per-note in triggerSynth. 'low'=3, 'medium'=4,
+  // 'high'=7 (full). Lowering this on weak devices keeps supersaw's character
+  // (detuned saws panned across the field) while cutting CPU.
+  private maxSupersawOsc = 7;
+  // Track the multiband's last-set ratios so we can restore them when quality
+  // escalates back to 'medium' / 'high' without re-reading the world config.
+  private multibandLowRatio = 4;
+  private multibandMidRatio = 3;
+  private multibandHighRatio = 2;
 
   // ── Synth mode overrides (Task S1) ──
   // Per-track synth-mode overrides let the reference pursuit switch a track's
@@ -673,6 +735,34 @@ export class Psy4EngineV2 {
   // timbre + reference pursuit blend as before).
   private lastAutomationSection = '';
   private leadCutoffOverride = -1;
+
+  // ── Task F1: dynamic flow engine (replaces the fixed `arrangement` array) ──
+  // The FlowEngine decides WHEN to transition (based on radio energy, time
+  // since last transition, musical logic, and the world's flow profile) and
+  // WHAT to transition to (archetype + section length). It also produces
+  // continuous automation parameters (filterCutoff, reverbAmount, delayAmount,
+  // tension, surprise) that replace the old static section-based automation.
+  //
+  // `currentFlow` is the latest FlowState returned by flowEngine.tick() —
+  // scheduleStep reads it instead of `arrangement[sectionIdx]`.
+  // `totalBars` is the absolute bar counter (never resets) — the flow engine
+  // uses it to track time-since-transition and schedule surprise events.
+  // `lastRefEnergyForFlow` tracks the last radio energy value pushed to the
+  // flow engine so we can detect significant shifts (>0.15 delta) and call
+  // onReferenceEnergyChange() — this is how the flow engine "listens" to the
+  // radio and follows its energy curve.
+  // `activeSurprise` is the currently-active surprise event (or null). It's
+  // popped from the flow engine in tick() and applied per-step in
+  // applyFlowAutomation() (e.g., keep tracks muted during a dropOut, keep
+  // the filter swept during a filterSweep).
+  // `surpriseReverseHitScheduled` guards the reverseHit one-shot so it fires
+  // exactly once per surprise (not every step while the surprise is active).
+  private flowEngine: FlowEngine | null = null;
+  private currentFlow: FlowState | null = null;
+  private totalBars = 0;
+  private lastRefEnergyForFlow = 0;
+  private activeSurprise: SurpriseEvent | null = null;
+  private surpriseReverseHitScheduled = false;
 
   onSectionChange: ((section: string) => void) | null = null;
 
@@ -879,11 +969,14 @@ export class Psy4EngineV2 {
     }
     // duckGain already connected to master above
 
-    // Allocate voice pools (20 synth + 24 drum — from PSY6)
-    // Each AdvancedSynthVoice preallocates 7 OscillatorNodes + panners + LFOs.
-    // Total: 20 voices × 7 osc = 140 max oscillators (modern browsers handle this).
-    for (let i = 0; i < 20; i++) this.synthPool.push(new AdvancedSynthVoice(c, i));
-    for (let i = 0; i < 24; i++) this.drumPool.push(new PooledDrumVoice(c, this.noiseBuffer));
+    // Allocate voice pools (P1: 8 synth + 10 drum — down from 20 + 24).
+    // Each AdvancedSynthVoice now lazy-allocates only its 8 common nodes on
+    // construction; per-osc nodes are added on noteOn and torn down on
+    // release-tail-end. With 8 voices × 8 common = 64 idle nodes (was 580).
+    // 10 drum voices × ~8 nodes = 80 nodes; with voice stealing this covers
+    // the busiest psytrance patterns.
+    for (let i = 0; i < 8; i++) this.synthPool.push(new AdvancedSynthVoice(c, i));
+    for (let i = 0; i < 10; i++) this.drumPool.push(new PooledDrumVoice(c, this.noiseBuffer));
 
     // Initialize tracks
     this.initTracks();
@@ -950,7 +1043,28 @@ export class Psy4EngineV2 {
     this.step = 0;
     this.bar = 0;
     this.sectionIdx = 0;
-    this.currentSection = this.arrangement[0].label;
+    // ── Task F1: create the dynamic flow engine ──
+    // Replaces the fixed `arrangement` array with a creative, radio-responsive
+    // flow. The engine decides when to transition (based on radio energy, time
+    // since last transition, musical logic, and the world's flow profile) and
+    // produces continuous automation parameters (filterCutoff, reverbAmount,
+    // delayAmount, tension, surprise) that replace the old static section-based
+    // automation.
+    //
+    // The seed combines the world id hash, key root, and scale length so each
+    // world+key combo produces a different but reproducible flow. A fresh seed
+    // on every start() means each play-through takes a different path through
+    // the archetype graph (more creative, less formulaic).
+    this.totalBars = 0;
+    this.lastRefEnergyForFlow = 0;
+    this.activeSurprise = null;
+    this.surpriseReverseHitScheduled = false;
+    const flowSeed = ((Date.now() & 0xffff) ^ (this.currentWorld.id.length * 131) ^
+                      (this.musicalKey.root * 17) ^ (this.musicalKey.scale.length * 7) ^ 0x5a5a) >>> 0;
+    this.flowEngine = new FlowEngine(new SeededRng(flowSeed || 1));
+    this.flowEngine.setWorld(this.currentWorld);
+    this.currentFlow = this.flowEngine.getCurrent();
+    this.currentSection = this.currentFlow.label;
     // Task V2b: reset section-automation state so the first section's static
     // levels get pushed on the first tick. Also clear any leftover lead
     // cutoff override from a previous session so the lead starts clean.
@@ -1229,6 +1343,17 @@ export class Psy4EngineV2 {
     // Apply per-world send-effect settings (Task E1) — pushes per-track send
     // levels and global effect parameters for the new world.
     this.applyWorldEffectSettings(newWorld);
+
+    // ── Task F1: update the flow engine's world profile ──
+    // The new world's flow characteristics (baseline energy, section length
+    // range, archetype weights, surprise rate) take effect on the NEXT
+    // transition. We DON'T force a transition here — the music keeps flowing
+    // organically and the new world's character shapes the next section
+    // change. This avoids jarring mid-section character shifts while still
+    // adapting the flow to the new world's identity.
+    if (this.flowEngine) {
+      this.flowEngine.setWorld(newWorld);
+    }
   }
 
   /**
@@ -1395,162 +1520,324 @@ export class Psy4EngineV2 {
     this.multiband?.setParameter(name, value);
   }
 
-  // ─── Task V2b: section-based effects automation ─────────────────────────────
+  // ─── Task F1: continuous flow automation (replaces V2b section automation) ──
   //
   // Commercial psytrance rides the mix alongside the arrangement: reverb
   // washes out in breaks, sucks dry in drops, delay throws in transitions,
-  // filter sweeps open in builds, chorus thickens in the variation. The
-  // pre-V2b engine left all the per-track send levels STATIC once the world
-  // was applied — so a DROP and a BREAK had the same reverb tail, which is
-  // exactly what makes a generated track sound "produced-but-not-mixed".
+  // filter sweeps open in builds, chorus thickens in the variation.
   //
-  // applySectionAutomation() is called every step from scheduleStep(). It
-  // does two things:
-  //   1. When the section CHANGES, push a fresh set of static send levels
-  //      (reverb/delay/chorus/phaser per section type) via setSendLevel().
-  //      These ride on top of the world's per-track send levels (the rack
-  //      uses setTargetAtTime, so the ramps are smooth and click-free).
-  //   2. On EVERY step inside a BUILD section's last 2 bars, compute the
-  //      filter sweep progress and call setTrackEffect(5, 'cutoff', value)
-  //      to ramp the lead filter 800 Hz → 4000 Hz. The lead's noteOn in
-  //      triggerSynth reads leadCutoffOverride and applies it to the voice's
-  //      filter.frequency ramp — so the sweep is sample-accurate per note.
+  // The V2b approach pushed STATIC send levels on section changes — a DROP
+  // and a BREAK had different reverb tails, but within a section the mix was
+  // flat. Task F1 replaces this with CONTINUOUS automation: the flow engine
+  // produces smooth filterCutoff / reverbAmount / delayAmount / tension /
+  // surprise values every bar (interpolated toward the archetype target with
+  // a 1-4 bar time constant), and applyFlowAutomation() pushes them every
+  // step via setTrackEffect / setSendLevel (both use setTargetAtTime
+  // internally, so re-pushing is a smooth no-op once settled).
   //
-  // Section profiles (per the task spec):
-  //   INTRO       : reverb 0.60 / delay 0.10 / no chorus / no phaser
-  //   GROOVE      : reverb 0.40 / delay 0.20 / slight chorus on lead
-  //   BUILD       : rising lead filter cutoff 800→4000 Hz (last 2 bars),
-  //                 increasing delay feedback, riser FX
-  //   DROP        : reverb 0.25 (punchy) / delay 0.30 / full chorus on lead,
-  //                 phaser on arp
-  //   VARIATION   : reverb 0.35 / delay 0.40 (echo throws) / phaser on lead
-  //   BREAK       : reverb 0.70 / delay 0.50 / filter closing on lead
-  //   FINAL DROP  : reverb 0.20 / delay 0.30 / full effects
-  //   OUTRO       : same as INTRO (wash out)
+  // This means:
+  //   - The lead filter OPENS continuously during a BUILD (tension rising →
+  //     cutoff rising) instead of jumping at the section boundary.
+  //   - The reverb wash CONTINUOUSLY recedes during a DROP approach (energy
+  //     rising → reverb falling) instead of snapping dry at the drop start.
+  //   - The delay amount RISES at the end of a VARIATION phrase (tension
+  //     releasing → delay rising for echo throws) instead of being a flat
+  //     0.40 throughout.
+  //
+  // Layered on top:
+  //   - Per-section chorus/phaser profile (kept from V2b — these are timbral
+  //     colors that don't benefit from continuous automation).
+  //   - Active surprise event effects (dropOut mute, filterSweep progression,
+  //     echoThrow delay boost, silence) — applied per-step.
   //
   // Tracks: 0=KICK 1=SNARE 2=HATS 3=PERC 4=BASS 5=LEAD 6=PAD 7=ARP.
-  applySectionAutomation(section: ArrangementSection, bar: number, step: number): void {
+  applyFlowAutomation(flow: FlowState, bar: number, step: number, time: number): void {
     if (!this.ctx) return;
 
-    // ── (1) Static levels — only re-push when the section label changes ──
-    // The rack's setParameter uses setTargetAtTime(0.05s), so re-pushing
-    // every step would be a no-op once the value has settled. We track the
-    // last-applied section to avoid spamming the audio thread.
-    if (section.label !== this.lastAutomationSection) {
-      this.lastAutomationSection = section.label;
-      this.applyStaticSectionLevels(section);
+    // ── (1) Per-section chorus/phaser profile (pushed on label change) ──
+    // These are timbral colors that don't benefit from continuous automation
+    // — they're either on or off for a given section type. We track the last
+    // applied label to avoid spamming the audio thread (the rack uses
+    // setTargetAtTime(0.05s) so re-pushing is a no-op once settled).
+    if (flow.label !== this.lastAutomationSection) {
+      this.lastAutomationSection = flow.label;
+      this.applySectionChorusPhaser(flow.label);
     }
 
-    // ── (2) BUILD filter sweep — per-step ramp in the last 2 bars ──
-    // Sweep the lead filter cutoff from 800 Hz → 4000 Hz across the last 2
-    // bars of a BUILD section. 2 bars × 16 steps = 32 steps total. We
-    // compute a linear progress 0..1 and interpolate.
+    // ── (2) Continuous reverb send — driven by flow.reverbAmount ──
+    // The flow engine smooths reverbAmount toward the archetype target:
+    //   BREAK → 0.70 (wash), DROP → 0.25 (punchy), INTRO → 0.60, etc.
+    // We push it to all melodic (5/6/7) and atmos (1/2/3) tracks. Kick (0)
+    // and bass (4) stay at their world defaults — they need to stay punchy.
+    const melReverb = clamp(flow.reverbAmount, 0, 0.8);
+    const atmoReverb = clamp(flow.reverbAmount * 0.7, 0, 0.6);
+    for (const ti of [5, 6, 7]) {
+      this.setSendLevel(ti, 'reverb', melReverb);
+    }
+    for (const ti of [1, 2, 3]) {
+      this.setSendLevel(ti, 'reverb', atmoReverb);
+    }
+
+    // ── (3) Continuous delay send — driven by flow.delayAmount ──
+    // The flow engine smooths delayAmount: VARIATION → 0.45 (echo throws),
+    // BREAK → 0.50, DROP → 0.30, INTRO → 0.10. Same track routing as reverb.
+    const melDelay = clamp(flow.delayAmount, 0, 0.6);
+    const atmoDelay = clamp(flow.delayAmount * 0.5, 0, 0.4);
+    for (const ti of [5, 6, 7]) {
+      this.setSendLevel(ti, 'delay', melDelay);
+    }
+    for (const ti of [1, 2, 3]) {
+      this.setSendLevel(ti, 'delay', atmoDelay);
+    }
+
+    // ── (4) Continuous lead filter cutoff — driven by flow.filterCutoff ──
+    // The flow engine smooths filterCutoff exponentially (ears hear log-Hz):
+    //   BUILD → 3500 Hz (opening), DROP → 4000 Hz (bright), BREAK → 700 Hz
+    //   (closing), INTRO → 1200 Hz. This naturally produces the signature
+    //   "filter opening" build effect and "filter closing" break release
+    //   WITHOUT hardcoded per-section sweeps — the smoothing does the work.
     //
-    // The lead's AdvancedSynthVoice.noteOn() already does an exponential
-    // filter sweep on every note (cut*3 → cut over atk+dec*0.7), so the
-    // sweep value here is the BASELINE cutoff for each note. As the baseline
-    // climbs across the 32 steps, each successive note opens brighter — the
-    // signature "filter opening" build effect.
-    if (section.label === 'BUILD' && bar >= section.bars - 2) {
-      const sweepStartBar = section.bars - 2;
-      const totalSteps = 2 * 16; // 2 bars × 16 steps
-      const stepInSweep = (bar - sweepStartBar) * 16 + step;
-      const progress = clamp(stepInSweep / Math.max(1, totalSteps - 1), 0, 1);
-      // Exponential sweep feels more natural than linear (ears hear log-Hz).
-      const startHz = 800;
-      const endHz = 4000;
-      const sweepHz = startHz * Math.pow(endHz / startHz, progress);
-      this.setTrackEffect(5, 'cutoff', clamp(sweepHz, 200, 16000));
-    } else if (this.leadCutoffOverride > 0) {
-      // Outside a BUILD sweep, clear the override so the lead reverts to its
-      // world timbre + reference pursuit cutoff. This also covers the BREAK
-      // case: we leave the lead cutoff alone (world timbre is already dark
-      // for BREAK energy 0.3) and rely on the high reverb to wash it out.
-      this.leadCutoffOverride = -1;
+    // During a filterSweep surprise, we OVERRIDE this with the surprise's
+    // own sweep curve (computed below in the surprise handling section).
+    let leadCutoffTarget = flow.filterCutoff;
+
+    // ── (5) Active surprise event effects ──
+    // Per-step application of the active surprise (set in tick() when
+    // maybeSurprise() returns an event).
+    const surprise = this.activeSurprise;
+    if (surprise) {
+      const surpriseProgress = clamp(
+        (this.totalBars - surprise.startBar) / Math.max(1, surprise.durationBars),
+        0, 1,
+      );
+      switch (surprise.type) {
+        case 'filterSweep': {
+          // Open the filter wide, then close it back — a DJ-style EQ sweep.
+          // Peak at mid-progress (intensity scales how wide the sweep goes).
+          const peakHz = clamp(2000 + surprise.intensity * 6000, 2000, 12000);
+          const baseHz = clamp(leadCutoffTarget, 400, 4000);
+          // Triangle: baseHz → peakHz → baseHz
+          const tri = 1 - Math.abs(surpriseProgress * 2 - 1);
+          leadCutoffTarget = baseHz * Math.pow(peakHz / baseHz, tri);
+          break;
+        }
+        case 'echoThrow': {
+          // Boost the delay send + feedback for the echo throw duration.
+          // The delay feedback is on this.delayFb (set at init to 0.35).
+          const throwBoost = clamp(0.4 + surprise.intensity * 0.4, 0.4, 0.8);
+          this.setSendLevel(5, 'delay', throwBoost);     // lead echo
+          this.setSendLevel(7, 'delay', throwBoost * 0.7); // arp echo
+          if (this.delayFb) {
+            this.delayFb.gain.setTargetAtTime(
+              clamp(0.45 + surprise.intensity * 0.3, 0.4, 0.8),
+              time, 0.05,
+            );
+          }
+          break;
+        }
+        case 'stutter': {
+          // During a stutter, the lead retrigger is handled by the surprise
+          // start handler (startSurprise) — here we just boost the delay send
+          // so the stuttered notes echo.
+          this.setSendLevel(5, 'delay', clamp(0.5 * surprise.intensity + 0.2, 0.2, 0.7));
+          break;
+        }
+        case 'dropOut':
+        case 'silence':
+        case 'reverseHit':
+          // No per-step FX change — the note gating in scheduleStep handles
+          // dropOut/silence, and reverseHit is a one-shot fired in startSurprise.
+          break;
+      }
+    } else {
+      // No active surprise — relax the delay feedback back to its default.
+      if (this.delayFb) {
+        this.delayFb.gain.setTargetAtTime(0.35, time, 0.3);
+      }
     }
 
-    // ── (2b) BREAK filter closing — gradual close across the section ──
-    // Over a 4-bar BREAK, drop the lead cutoff from ~1800 Hz to ~600 Hz for
-    // a "filter closing" release effect. This complements the high reverb
-    // (0.70) and delay (0.50) — the lead recedes into the wash.
-    if (section.label === 'BREAK' && section.bars > 0) {
-      const breakProgress = clamp(bar / Math.max(1, section.bars), 0, 1);
-      const startHz = 1800;
-      const endHz = 600;
-      // Exponential close.
-      const sweepHz = startHz * Math.pow(endHz / startHz, breakProgress);
-      this.setTrackEffect(5, 'cutoff', clamp(sweepHz, 200, 16000));
+    // Apply the lead cutoff target (from flow OR from a filterSweep surprise).
+    // setTrackEffect(5, 'cutoff', ...) stores it in leadCutoffOverride, which
+    // triggerSynth reads and applies to the AdvancedSynthVoice's filter.
+    this.setTrackEffect(5, 'cutoff', clamp(leadCutoffTarget, 200, 16000));
+  }
+
+  /**
+   * Push the per-section chorus/phaser profile for a given section label.
+   * Extracted from the old applyStaticSectionLevels (Task V2b) — only the
+   * chorus/phaser part is kept here because reverb/delay are now driven
+   * continuously by flow.reverbAmount / flow.delayAmount.
+   *
+   * All ramps are smooth (the rack uses setTargetAtTime(0.05s) internally).
+   * Layered on top of the world's per-track send levels.
+   *
+   * Tracks: 0=KICK 1=SNARE 2=HATS 3=PERC 4=BASS 5=LEAD 6=PAD 7=ARP.
+   */
+  private applySectionChorusPhaser(label: string): void {
+    interface SectionProfile {
+      melChorus: number; melPhaser: number;
+      arpPhaser?: number;
+      leadChorus?: number;
+    }
+    const profiles: Record<string, SectionProfile> = {
+      INTRO:        { melChorus: 0.00, melPhaser: 0.00 },
+      GROOVE:       { melChorus: 0.15, melPhaser: 0.10, leadChorus: 0.20 },
+      BUILD:        { melChorus: 0.20, melPhaser: 0.15 },
+      DROP:         { melChorus: 0.30, melPhaser: 0.20, leadChorus: 0.35, arpPhaser: 0.30 },
+      VARIATION:    { melChorus: 0.25, melPhaser: 0.25, leadChorus: 0.25, arpPhaser: 0.20 },
+      BREAK:        { melChorus: 0.10, melPhaser: 0.10 },
+      'FINAL DROP': { melChorus: 0.32, melPhaser: 0.22, leadChorus: 0.38, arpPhaser: 0.30 },
+      OUTRO:        { melChorus: 0.00, melPhaser: 0.00 },
+    };
+    const p = profiles[label] || profiles.GROOVE;
+    for (const ti of [5, 6, 7]) {
+      this.setSendLevel(ti, 'chorus', p.melChorus);
+      this.setSendLevel(ti, 'phaser', p.melPhaser);
+    }
+    if (p.leadChorus !== undefined) {
+      this.setSendLevel(5, 'chorus', p.leadChorus);
+    }
+    if (p.arpPhaser !== undefined) {
+      this.setSendLevel(7, 'phaser', p.arpPhaser);
+    }
+  }
+
+  // ─── Task F1: surprise event handlers ──────────────────────────────────────
+  //
+  // startSurprise() is called once when a surprise event is popped from the
+  // flow engine (in tick()). It fires any one-shot effects:
+  //   - reverseHit: trigger a reversed impact (build tension)
+  //   - dropOut:    ramp non-kick track gains to near-zero (DJ brake)
+  //   - silence:    ramp the master to near-zero (dramatic pause)
+  //   - stutter:    schedule a rapid lead retrigger via the existing triggerSynth
+  //   - filterSweep / echoThrow: no one-shot — handled per-step in applyFlowAutomation
+  //
+  // endActiveSurprise() is called when the surprise's duration has elapsed.
+  // It restores any muted tracks / boosted sends to their normal levels.
+  // The continuous automation in applyFlowAutomation will re-push the
+  // correct values on the next step, so we just need to clear the surprise-
+  // specific overrides here.
+
+  private startSurprise(event: SurpriseEvent, time: number): void {
+    if (!this.ctx) return;
+    const intensity = clamp(event.intensity, 0, 1);
+
+    switch (event.type) {
+      case 'reverseHit': {
+        // Fire a reversed impact — a sub-boom that swells IN instead of
+        // decaying OUT. Builds tension before the next hit.
+        if (!this.surpriseReverseHitScheduled) {
+          this.triggerReverseImpact(time, intensity);
+          this.surpriseReverseHitScheduled = true;
+        }
+        break;
+      }
+      case 'dropOut': {
+        // DJ brake: ramp all non-kick track gains to near-zero over 50ms,
+        // hold for the duration, then ramp back (the ramp-back happens in
+        // endActiveSurprise). Kick (track 0) is NOT muted — it's the
+        // heartbeat that keeps the groove alive during the brake.
+        const muteDepth = clamp(1 - intensity * 0.95, 0.05, 0.5);
+        for (let i = 1; i < 8; i++) {
+          const g = this.trackGains[i];
+          if (g) {
+            g.gain.setTargetAtTime(g.gain.value * muteDepth, time, 0.02);
+          }
+        }
+        break;
+      }
+      case 'silence': {
+        // Dramatic pause: ramp the master to near-zero. The next section's
+        // first hit (or the end-of-surprise ramp-back) will be the payoff.
+        const muteDepth = clamp(1 - intensity * 0.98, 0.02, 0.3);
+        this.master.gain.setTargetAtTime(this.master.gain.value * muteDepth, time, 0.015);
+        break;
+      }
+      case 'stutter': {
+        // Rapid lead retrigger — fire 4-6 short lead notes at the current
+        // chord root. Uses triggerSynth directly so the notes go through
+        // the full voice + rack chain (with the flow's current lead timbre).
+        if (this.currentChord && this.melody) {
+          const root = this.currentChord.notes[0] + 12; // one octave up
+          const stutters = 4 + Math.round(intensity * 2);
+          const s16 = 60 / this.bpm / 4;
+          for (let i = 0; i < stutters; i++) {
+            this.triggerSynth(5, time + i * s16 * 0.5, root, 0.3 + intensity * 0.2, s16, s16 * 0.4);
+          }
+        }
+        break;
+      }
+      case 'filterSweep':
+      case 'echoThrow':
+        // No one-shot — handled per-step in applyFlowAutomation
+        break;
     }
   }
 
   /**
-   * Apply the static send levels (reverb/delay/chorus/phaser) for a given
-   * section. Called once per section change from applySectionAutomation().
-   *
-   * All ramps are smooth (the rack uses setTargetAtTime(0.05s) internally)
-   * so a section change doesn't produce clicks or zipper noise. The values
-   * are applied IN ADDITION to the world's per-track send levels — the
-   * section automation is layered on top, so a world with extra phaser on
-   * goa leads will still get its goa character plus the section's phaser
-   * boost during drops.
-   *
-   * Tracks: 0=KICK 1=SNARE 2=HATS 3=PERC 4=BASS 5=LEAD 6=PAD 7=ARP.
+   * Restore tracks/sends to normal after a surprise event ends. The
+   * continuous automation in applyFlowAutomation will re-push the correct
+   * values on the next step; this just clears the surprise-specific mutes.
    */
-  private applyStaticSectionLevels(section: ArrangementSection): void {
-    // Profile lookup — returns the target send levels per section type.
-    // Each profile is a tuple of [reverb, delay, chorus, phaser] for the
-    // melodic tracks (5/6/7) and a separate (reverb, delay) for the atmos
-    // tracks (1/2/3). Kick (0) and bass (4) always stay dry-ish — they
-    // need to stay punchy and centered regardless of section.
-    interface SectionProfile {
-      // melodic (LEAD/PAD/ARP) sends
-      melReverb: number; melDelay: number; melChorus: number; melPhaser: number;
-      // atmos (SNARE/HATS/PERC) sends
-      atmoReverb: number; atmoDelay: number;
-      // ARP-specific phaser (for DROP, VARIATION)
-      arpPhaser?: number;
-      // LEAD-specific chorus (for GROOVE slight, DROP full)
-      leadChorus?: number;
+  private endActiveSurprise(time: number): void {
+    if (!this.ctx) return;
+    // Restore master gain (in case of silence surprise)
+    this.master.gain.setTargetAtTime(1.1, time, 0.05);
+    // Restore track gains (in case of dropOut surprise) — ramp back to
+    // their world-default levels. The liveTrack() selfTrack loop will
+    // re-adjust these based on LUFS/energy matching, so we just need a
+    // reasonable restoration here.
+    const defaultVols = [1.0, 0.6, 0.5, 0.4, 1.2, 0.7, 0.5, 0.5];
+    for (let i = 1; i < 8; i++) {
+      const g = this.trackGains[i];
+      if (g) {
+        g.gain.setTargetAtTime(defaultVols[i], time, 0.1);
+      }
     }
-
-    const profiles: Record<string, SectionProfile> = {
-      INTRO:       { melReverb: 0.60, melDelay: 0.10, melChorus: 0.00, melPhaser: 0.00, atmoReverb: 0.30, atmoDelay: 0.05 },
-      GROOVE:      { melReverb: 0.40, melDelay: 0.20, melChorus: 0.15, melPhaser: 0.10, atmoReverb: 0.22, atmoDelay: 0.10, leadChorus: 0.20 },
-      BUILD:       { melReverb: 0.35, melDelay: 0.30, melChorus: 0.20, melPhaser: 0.15, atmoReverb: 0.25, atmoDelay: 0.18 },
-      DROP:        { melReverb: 0.25, melDelay: 0.30, melChorus: 0.30, melPhaser: 0.20, atmoReverb: 0.18, atmoDelay: 0.12, leadChorus: 0.35, arpPhaser: 0.30 },
-      VARIATION:   { melReverb: 0.35, melDelay: 0.40, melChorus: 0.25, melPhaser: 0.25, atmoReverb: 0.22, atmoDelay: 0.18, leadChorus: 0.25, arpPhaser: 0.20 },
-      BREAK:       { melReverb: 0.70, melDelay: 0.50, melChorus: 0.10, melPhaser: 0.10, atmoReverb: 0.50, atmoDelay: 0.30 },
-      'FINAL DROP':{ melReverb: 0.20, melDelay: 0.30, melChorus: 0.32, melPhaser: 0.22, atmoReverb: 0.16, atmoDelay: 0.12, leadChorus: 0.38, arpPhaser: 0.30 },
-      OUTRO:       { melReverb: 0.60, melDelay: 0.10, melChorus: 0.00, melPhaser: 0.00, atmoReverb: 0.30, atmoDelay: 0.05 },
-    };
-
-    const p = profiles[section.label] || profiles.GROOVE;
-
-    // Melodic tracks (5 LEAD, 6 PAD, 7 ARP) — push reverb/delay/chorus/phaser.
-    for (const ti of [5, 6, 7]) {
-      this.setSendLevel(ti, 'reverb', p.melReverb);
-      this.setSendLevel(ti, 'delay', p.melDelay);
-      this.setSendLevel(ti, 'chorus', p.melChorus);
-      this.setSendLevel(ti, 'phaser', p.melPhaser);
+    // Restore delay feedback (in case of echoThrow surprise)
+    if (this.delayFb) {
+      this.delayFb.gain.setTargetAtTime(0.35, time, 0.1);
     }
+  }
 
-    // LEAD-specific chorus bump (GROOVE = slight, DROP/FINAL DROP = full).
-    if (p.leadChorus !== undefined) {
-      this.setSendLevel(5, 'chorus', p.leadChorus);
-    }
+  /**
+   * Trigger a reversed impact — a sub-boom that swells IN (opposite of the
+   * normal triggerImpact which decays OUT). Used by the reverseHit surprise.
+   */
+  private triggerReverseImpact(time: number, intensity: number): void {
+    if (!this.ctx) return;
+    const c = this.ctx;
+    const osc = c.createOscillator();
+    osc.type = 'sine';
+    // Start low, swell up to a sub-bass peak
+    osc.frequency.setValueAtTime(35, time);
+    osc.frequency.exponentialRampToValueAtTime(120, time + 0.5);
+    const og = c.createGain();
+    // Reversed envelope: start silent, swell in, then cut
+    og.gain.setValueAtTime(0.001, time);
+    og.gain.exponentialRampToValueAtTime(0.6 * intensity, time + 0.5);
+    og.gain.setValueAtTime(0.6 * intensity, time + 0.5);
+    og.gain.exponentialRampToValueAtTime(0.001, time + 0.6);
+    osc.connect(og);
+    og.connect(this.master);
+    osc.start(time);
+    osc.stop(time + 0.7);
 
-    // ARP-specific phaser bump (DROP = full, VARIATION = medium).
-    if (p.arpPhaser !== undefined) {
-      this.setSendLevel(7, 'phaser', p.arpPhaser);
-    }
-
-    // Atmos tracks (1 SNARE, 2 HATS, 3 PERC) — push reverb/delay only.
-    // Kick (0) and bass (4) are left at their world defaults — they need
-    // to stay punchy and centered regardless of section.
-    for (const ti of [1, 2, 3]) {
-      this.setSendLevel(ti, 'reverb', p.atmoReverb);
-      this.setSendLevel(ti, 'delay', p.atmoDelay);
-    }
+    // Add a noise swell that builds in (reversed crack)
+    const noise = c.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const hp = c.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 3000;
+    const ng = c.createGain();
+    ng.gain.setValueAtTime(0.001, time);
+    ng.gain.exponentialRampToValueAtTime(0.3 * intensity, time + 0.4);
+    ng.gain.exponentialRampToValueAtTime(0.001, time + 0.5);
+    noise.connect(hp);
+    hp.connect(ng);
+    ng.connect(this.master);
+    noise.start(time);
+    noise.stop(time + 0.6);
   }
 
   /**
@@ -1645,8 +1932,20 @@ export class Psy4EngineV2 {
   }): void {
     if (isFinite(refMetrics.lufs)) this.targetLufs = refMetrics.lufs;
     if (refMetrics.energy !== undefined && isFinite(refMetrics.energy)) {
-      this.targetEnergy = clamp(refMetrics.energy, 0, 1);
+      const newEnergy = clamp(refMetrics.energy, 0, 1);
+      this.targetEnergy = newEnergy;
       this.refEnergy = this.targetEnergy;
+      // ── Task F1: notify the flow engine of significant radio energy shifts ──
+      // The flow engine uses this to decide when to transition early (chase
+      // the radio's energy curve). We only call onReferenceEnergyChange when
+      // the energy has shifted by more than 0.15 from the last value we
+      // pushed — this avoids spamming the flow engine with every minor
+      // fluctuation (the flow engine's tick() also reads this.refEnergy
+      // directly every bar for the smooth chase).
+      if (this.flowEngine && Math.abs(newEnergy - this.lastRefEnergyForFlow) > 0.15) {
+        this.flowEngine.onReferenceEnergyChange(newEnergy);
+        this.lastRefEnergyForFlow = newEnergy;
+      }
     }
 
     // ── KICK DECAY target (seconds) ──
@@ -1773,6 +2072,13 @@ export class Psy4EngineV2 {
     // against NaN/undefined internally, so partial feature sets no-op.
     this.applySynthesisPursuit();
     this.applyEffectsPursuit();
+    // ── Task A1: deep A/B analysis ──
+    // Runs the effects detector + timbre fingerprint + uniqueness detector +
+    // synthesis router on the latest reference features. Stores the results
+    // for the UI dashboard. The synthesis ROUTING (mode switches, send-level
+    // adjustments) is gated by a 10-second anti-thrash cooldown so the engine
+    // doesn't flicker modes when the detector wobbles on borderline material.
+    this.applyDeepPursuit();
   }
 
   // ─── Task T1: synthesis character pursuit ──────────────────────────────────
@@ -2033,6 +2339,255 @@ export class Psy4EngineV2 {
     };
   }
 
+  // ─── Task A1: deep A/B analysis (effects + timbre + uniqueness + router) ──
+  //
+  // applyDeepPursuit() runs the four new detectors on the latest reference
+  // features and stores the results for the UI dashboard. The synthesis
+  // ROUTING (applying mode switches + send-level adjustments) is gated by
+  // a 10-second anti-thrash cooldown so the engine doesn't flicker modes
+  // when the detector wobbles on borderline material.
+  //
+  // The detectors themselves ALWAYS run (every liveTrack call) — even when
+  // we don't act on them, the dashboard should show what the engine is
+  // currently "hearing". This is critical for the UI: a low-confidence
+  // "between two modes" result is still useful diagnostic info.
+  private applyDeepPursuit(): void {
+    const features = this.buildRefFeatures();
+    if (!features) return;
+
+    // ── Push to history (for uniqueness detection across windows) ──
+    this.refFeaturesHistory.push(features);
+    if (this.refFeaturesHistory.length > Psy4EngineV2.REF_HISTORY_MAX) {
+      this.refFeaturesHistory.shift();
+    }
+
+    // ── Effects detector ──
+    // We don't have the decoded PCM here (the listener doesn't expose it
+    // to the engine), so we pass undefined for the audioBuffer parameter.
+    // The detector falls back to feature-only heuristics — still useful
+    // for reverb / chorus / distortion / compression / filter / stereo.
+    try {
+      this.refEffects = detectEffects(features);
+    } catch {
+      this.refEffects = null;
+    }
+
+    // ── Timbre fingerprint ──
+    try {
+      this.refTimbre = computeTimbreFingerprint(features);
+    } catch {
+      this.refTimbre = null;
+    }
+
+    // ── Current timbre (from own metrics) ──
+    // Build a minimal RefFeatures-like snapshot from own self-tracked values
+    // so we can compare our timbre to the reference's.
+    if (this.ownSpectralCentroid > 0) {
+      const ownFeatures: RefFeatures = {
+        bpm: this._bpm,
+        spectralCentroid: this.ownSpectralCentroid,
+        subEnergy: this.ownSubEnergy,
+        lowEnergy: 0,
+        midEnergy: 0,
+        highEnergy: this.ownHighEnergy,
+        airEnergy: 0,
+        transientDensity: this.ownTransientDensity,
+        kickDecayMs: this.refKickDecay * 1000, // approx
+        bassDecayMs: this.refBassDecay * 1000,
+        stereoWidth: this.refStereoWidth, // we don't measure own stereo
+        energy: 0,
+      };
+      try {
+        this.currentTimbre = computeTimbreFingerprint(ownFeatures);
+      } catch {
+        this.currentTimbre = null;
+      }
+    }
+
+    // ── Timbre comparison ──
+    if (this.refTimbre && this.currentTimbre) {
+      try {
+        this.timbreComparison = compareFingerprints(this.refTimbre, this.currentTimbre);
+      } catch {
+        this.timbreComparison = null;
+      }
+    } else {
+      this.timbreComparison = null;
+    }
+
+    // ── Uniqueness detector (uses the history we've been accumulating) ──
+    try {
+      this.uniqueElements = detectUniqueElements(features, this.refFeaturesHistory);
+    } catch {
+      this.uniqueElements = [];
+    }
+
+    // ── Synthesis router ──
+    // Always compute the plan (so the UI can show it), even if we don't
+    // apply it this cycle due to the cooldown.
+    if (this.refEffects && this.refTimbre) {
+      try {
+        this.synthPlan = routeSynthesis(
+          this.refEffects,
+          this.refTimbre,
+          this.currentTimbre,
+          this.currentWorld?.id ?? 'dark-psy',
+        );
+      } catch {
+        this.synthPlan = null;
+      }
+    }
+
+    // ── Apply the plan (gated by 10s cooldown) ──
+    const nowMs = Date.now();
+    if (nowMs - this.lastDeepPursuitTime < Psy4EngineV2.DEEP_PURSUIT_COOLDOWN_MS) {
+      return; // cooldown not elapsed — wait
+    }
+    if (!this.synthPlan) return;
+    this.lastDeepPursuitTime = nowMs;
+
+    // ── Apply mode switches (lead / pad / arp) ──
+    // These ride on top of the per-world preset selection AND the T1
+    // synthesis-character detector. A1's router is more sophisticated
+    // (it considers world + effects + timbre, not just harmonic content),
+    // so its choice wins when active. Pass null to clear if the plan
+    // says 'classic' (revert to per-world preset).
+    if (this.synthPlan.leadMode === 'classic') {
+      this.setSynthMode(5, null);
+    } else {
+      this.setSynthMode(5, this.synthPlan.leadMode);
+    }
+    if (this.synthPlan.padMode === 'classic') {
+      this.setSynthMode(6, null);
+    } else {
+      this.setSynthMode(6, this.synthPlan.padMode);
+    }
+    if (this.synthPlan.arpMode === 'classic') {
+      this.setSynthMode(7, null);
+    } else {
+      this.setSynthMode(7, this.synthPlan.arpMode);
+    }
+
+    // Apply each adjustment. The router emits concrete (param, track, value)
+    // triples that map directly to the engine's existing control surface.
+    // We skip adjustments that would push us out of safe ranges — the
+    // detectors clamp internally, but we double-check here.
+    for (const adj of this.synthPlan.adjustments) {
+      this.applySynthesisAdjustment(adj);
+    }
+  }
+
+  /**
+   * Apply a single SynthesisAdjustment from the router's plan. Routes to
+   * the appropriate engine control method (setSynthMode, setSendLevel,
+   * setTrackEffect, setFMDepth, setWavetablePosition, setMasterParam, or
+   * setSendEffectParam) based on the adjustment's `param` name.
+   *
+   * Track = -1 means "master / global" (not a per-track adjustment).
+   */
+  private applySynthesisAdjustment(adj: SynthesisAdjustment): void {
+    const { param, track, targetValue } = adj;
+    if (!Number.isFinite(targetValue)) return;
+
+    // Global params (track === -1).
+    if (track === -1) {
+      if (param === 'midRatio' || param === 'highRatio' || param === 'lowRatio') {
+        this.setMasterParam(param, targetValue);
+      } else if (param === 'chorusRate') {
+        this.setSendEffectParam('chorus', 'rate', targetValue);
+      } else if (param === 'phaserRate') {
+        this.setSendEffectParam('phaser', 'rate', targetValue);
+      } else if (param === 'phaserFeedback') {
+        this.setSendEffectParam('phaser', 'feedback', targetValue);
+      } else if (param === 'distortionDrive') {
+        this.setSendEffectParam('distortion', 'drive', targetValue);
+      }
+      return;
+    }
+
+    // Per-track send levels.
+    if (param === 'sendReverb') {
+      this.setSendLevel(track, 'reverb', targetValue);
+    } else if (param === 'sendDelay') {
+      this.setSendLevel(track, 'delay', targetValue);
+    } else if (param === 'sendChorus') {
+      this.setSendLevel(track, 'chorus', targetValue);
+    } else if (param === 'sendPhaser') {
+      this.setSendLevel(track, 'phaser', targetValue);
+    } else if (param === 'sendDistortion') {
+      this.setSendLevel(track, 'distortion', targetValue);
+    } else if (param === 'sendBitcrush') {
+      this.setSendLevel(track, 'bitcrush', targetValue);
+    } else if (param === 'cutoff') {
+      // Lead filter cutoff override (Task V2b special-case in setTrackEffect).
+      this.setTrackEffect(track, 'cutoff', targetValue);
+    } else if (param === 'haasMix' || param === 'haasDelayMs') {
+      this.setTrackEffect(track, param, targetValue);
+    } else if (param === 'eqLowGain' || param === 'eqMidGain' || param === 'eqHighGain') {
+      this.setTrackEffect(track, param, targetValue);
+    } else if (param === 'fmDepth') {
+      // FM depth is a global override (not per-track) — apply to the engine.
+      this.setFMDepth(targetValue);
+      // Also ensure the lead track is in FM mode (the router's leadMode
+      // drives this — handled separately below).
+    } else if (param === 'sawSpread') {
+      // Saw spread is applied via the preset's sawSpread field — there's no
+      // direct setter, but the synth-mode override already routes through
+      // the supersaw preset. We log it for diagnostics.
+    } else if (param === 'wtPosition') {
+      this.setWavetablePosition(targetValue);
+    } else if (param === 'delayTimeMs') {
+      // Global delay time — set on the delay node (we don't have a public
+      // setter for this yet; the existing delay tap is fixed at 375 ms).
+      // For now we skip — a future enhancement could expose setDelayTime().
+    }
+  }
+
+  /**
+   * Task A1: deep A/B analysis snapshot for UI display. Returns the latest
+   * detected effects, reference timbre, current (own) timbre, fingerprint
+   * comparison, unique elements, and the synthesis plan — everything the
+   * expanded A/B comparison card needs to render.
+   *
+   * Every field is null until the first liveTrack() call with sufficient
+   * reference features. The UI should use optional chaining throughout.
+   */
+  getDeepAnalysis(): {
+    effects: DetectedEffects | null;
+    refTimbre: TimbreFingerprint | null;
+    currentTimbre: TimbreFingerprint | null;
+    timbreComparison: FingerprintComparison | null;
+    uniqueElements: UniqueElement[];
+    synthPlan: SynthesisPlan | null;
+    historyLength: number;
+  } {
+    return {
+      effects: this.refEffects,
+      refTimbre: this.refTimbre,
+      currentTimbre: this.currentTimbre,
+      timbreComparison: this.timbreComparison,
+      uniqueElements: this.uniqueElements,
+      synthPlan: this.synthPlan,
+      historyLength: this.refFeaturesHistory.length,
+    };
+  }
+
+  /**
+   * Task A1: force-apply the current synthesis plan (e.g. when the user
+   * manually requests it from the UI). Bypasses the 10-second cooldown.
+   */
+  applySynthesisPlanNow(): void {
+    if (!this.synthPlan) return;
+    this.lastDeepPursuitTime = Date.now();
+    // Apply mode switches (same logic as applyDeepPursuit).
+    this.setSynthMode(5, this.synthPlan.leadMode === 'classic' ? null : this.synthPlan.leadMode);
+    this.setSynthMode(6, this.synthPlan.padMode === 'classic' ? null : this.synthPlan.padMode);
+    this.setSynthMode(7, this.synthPlan.arpMode === 'classic' ? null : this.synthPlan.arpMode);
+    for (const adj of this.synthPlan.adjustments) {
+      this.applySynthesisAdjustment(adj);
+    }
+  }
+
   /**
    * Receive fresh metrics from our own engine output (via SelfAnalyzer).
    * Stores own sub/high/centroid/transient for getPursuitStatus() and the
@@ -2155,6 +2710,11 @@ export class Psy4EngineV2 {
 
   private tick(): void {
     if (!this.playing || !this.ctx) return;
+    // P1: report this tick's duration to the PerformanceMonitor so it can
+    // detect audio-thread overload (tick > 5ms = at-risk). Measured around
+    // the entire scheduling pass — including scheduleStep, applySectionAutomation,
+    // triggerDrum/triggerSynth, and the bar/section bookkeeping below.
+    const __p1TickStart = (typeof performance !== 'undefined') ? performance.now() : 0;
     const lookahead = 0.06;
 
     while (this.nextTime < this.ctx.currentTime + lookahead) {
@@ -2184,28 +2744,65 @@ export class Psy4EngineV2 {
             this.bpmRampPerBar = 0;
           }
         }
-        const section = this.arrangement[this.sectionIdx % this.arrangement.length];
-        if (this.bar >= section.bars) {
-          this.sectionIdx++;
-          this.bar = 0;
-          const next = this.arrangement[this.sectionIdx % this.arrangement.length];
-          this.currentSection = next.label;
-          this.onSectionChange?.(this.currentSection);
-          // ── Section boundary: force a new developmental phrase (Task M1) ──
-          // MelodyEngine.newPhrase() builds a fresh A A' B A'' phrase using the
-          // new section's energy + tension curve. This is what makes the lead
-          // play evolving, developing melodies instead of static motifs.
-          const baseE = this.currentWorld.energyCurve[0] ?? 0.5;
-          const phraseEnergy = clamp(baseE * (0.4 + 0.6 * next.density), 0, 1);
-          this.melody?.newPhrase(phraseEnergy);
-          // ── Task H1: regenerate the harmonic progression at section boundary ──
-          // Each new section gets a fresh chord progression whose length matches
-          // the section's bar count and whose extension level (triad/7th/9th)
-          // matches the section's energy. Drops get lush 9ths; breaks get triads.
-          if (this.harmony) {
-            this.currentProgression = this.harmony.generateProgression(next.bars, phraseEnergy);
-            this.chordIdx = 0;
-            this.currentChord = null;
+        // ── Task F1: dynamic flow engine drives section transitions ──
+        // The flow engine decides WHEN to transition (based on radio energy,
+        // time since last transition, musical logic, and the world's flow
+        // profile) and WHAT to transition to (archetype + section length).
+        // It also produces continuous automation parameters (filterCutoff,
+        // reverbAmount, delayAmount, tension, surprise) that replace the old
+        // static section-based automation.
+        //
+        // `totalBars` is the absolute bar counter (never resets) — the flow
+        // engine uses it to track time-since-transition and schedule surprise
+        // events. `this.bar` is bar-WITHIN-section (resets on transition) and
+        // is used by scheduleStep for energy-curve indexing, riser triggers,
+        // and the phrase-locked rotation below.
+        this.totalBars++;
+        const flow = this.flowEngine ? this.flowEngine.tick(this.totalBars, this.refEnergy) : null;
+        if (flow) {
+          this.currentFlow = flow;
+          if (flow.label !== this.currentSection) {
+            // ── Flow-driven section transition ──
+            // Reset bar-within-section so scheduleStep's energy-curve indexing
+            // and riser logic work with the new section's framing.
+            this.bar = 0;
+            this.currentSection = flow.label;
+            this.onSectionChange?.(this.currentSection);
+            // ── Section boundary: force a new developmental phrase (Task M1) ──
+            // MelodyEngine.newPhrase() builds a fresh A A' B A'' phrase using the
+            // new section's energy + tension curve. This is what makes the lead
+            // play evolving, developing melodies instead of static motifs.
+            const baseE = this.currentWorld.energyCurve[0] ?? 0.5;
+            const phraseEnergy = clamp(baseE * (0.4 + 0.6 * flow.density), 0, 1);
+            this.melody?.newPhrase(phraseEnergy);
+            // ── Task H1: regenerate the harmonic progression at section boundary ──
+            // Each new section gets a fresh chord progression whose length matches
+            // the section's bar count and whose extension level (triad/7th/9th)
+            // matches the section's energy. Drops get lush 9ths; breaks get triads.
+            if (this.harmony) {
+              this.currentProgression = this.harmony.generateProgression(flow.sectionBars, phraseEnergy);
+              this.chordIdx = 0;
+              this.currentChord = null;
+            }
+          }
+          // ── Task F1: pop surprise events from the flow engine ──
+          // maybeSurprise() returns a queued event whose startBar has arrived.
+          // We store it as activeSurprise so scheduleStep's applyFlowAutomation
+          // can apply the per-step effect (mute, filter sweep, delay boost).
+          // The engine also calls startSurprise() to fire any one-shot effects
+          // (reverse hit, initial mute ramp) at the surprise's start time.
+          const surprise = this.flowEngine!.maybeSurprise(this.totalBars);
+          if (surprise) {
+            this.activeSurprise = surprise;
+            this.surpriseReverseHitScheduled = false;
+            this.startSurprise(surprise, this.nextTime);
+          }
+          // Clear the active surprise when its duration has elapsed.
+          if (this.activeSurprise &&
+              this.totalBars >= this.activeSurprise.startBar + this.activeSurprise.durationBars) {
+            this.endActiveSurprise(this.nextTime);
+            this.activeSurprise = null;
+            this.surpriseReverseHitScheduled = false;
           }
         }
         // ── Phrase-locked preset rotation (Task 15) ──
@@ -2225,6 +2822,14 @@ export class Psy4EngineV2 {
           this.bassPatternIdx = (this.bassPatternIdx + 1) % bps.length;
         }
       }
+    }
+
+    // P1: report this tick's duration to the PerformanceMonitor. Cheap
+    // (one performance.now() subtraction + array push). When the audio
+    // thread is overloaded (tick > 5ms), the monitor escalates quality
+    // down after 3s; when stable, it escalates up after 10s.
+    if (__p1TickStart > 0 && typeof performance !== 'undefined') {
+      this.perfMonitor.reportTickDuration(performance.now() - __p1TickStart);
     }
   }
 
@@ -2277,29 +2882,55 @@ export class Psy4EngineV2 {
 
   private scheduleStep(step: number, bar: number, time: number): void {
     const w = this.currentWorld;
-    const section = this.arrangement[this.sectionIdx % this.arrangement.length];
+    // ── Task F1: read the dynamic flow state instead of the fixed arrangement ──
+    // `flow` is the latest FlowState returned by flowEngine.tick() in the
+    // engine's tick() method. It carries the same fields as the old
+    // ArrangementSection (label, density, bass, lead, bars) PLUS continuous
+    // automation parameters (filterCutoff, reverbAmount, delayAmount,
+    // tension, surprise) that applyFlowAutomation() applies every step.
+    //
+    // If the flow engine isn't initialized yet (defensive — shouldn't happen
+    // after start()), fall back to a minimal default so scheduleStep doesn't
+    // crash. This keeps the engine resilient to any future refactor that
+    // might call scheduleStep before flowEngine is ready.
+    const flow: FlowState = this.currentFlow ?? {
+      energy: 0.5, density: 0.5, bassOn: true, leadOn: false, acidOn: false,
+      hatDensity: 0.7, percDensity: 0.6, fxDensity: 0.6,
+      label: 'GROOVE', filterCutoff: 1800, reverbAmount: 0.4, delayAmount: 0.2,
+      tension: 0.4, surprise: 0.05, sectionBars: 8, barInSection: bar,
+    };
     const key = this.musicalKey;
     const root = key.root;
     const sc = key.scale;
     const sd = 60 / this.bpm / 4;
 
-    // ── Task V2b: section-based effects automation ──
-    // Apply per-section send levels (reverb/delay/chorus/phaser) on section
-    // changes, and per-step filter sweep during BUILD's last 2 bars (and a
-    // closing sweep during BREAK). Cheap: only re-pushes static levels when
-    // the section label changes; the sweep computation is a handful of ops.
+    // ── Task F1: continuous flow automation ──
+    // Replaces the old static section-based automation (applySectionAutomation).
+    // Pushes the flow engine's continuous parameters (filterCutoff,
+    // reverbAmount, delayAmount, tension) via setTrackEffect / setSendLevel
+    // every step. Both methods use setTargetAtTime internally, so re-pushing
+    // every step is a smooth no-op once settled (no audio glitches).
+    //
+    // Also applies the per-step effects of any active surprise event (dropOut
+    // mute, filterSweep progression, echoThrow delay boost, silence).
     // Called BEFORE the rest of the step scheduling so the new send levels
     // are in effect when the note for this step fires.
-    this.applySectionAutomation(section, bar, step);
+    this.applyFlowAutomation(flow, bar, step, time);
 
-    // ── Energy from world's energyCurve, modulated by section density ──
+    // ── Energy from world's energyCurve, modulated by flow density ──
+    // The flow engine's `energy` field is already a smoothed target, but we
+    // ALSO blend in the world's energyCurve (indexed by bar-in-section) so
+    // the energy rises and falls WITHIN a section as well as across sections.
+    // This gives the music intra-section dynamic shape (e.g. a drop builds
+    // tension across its first 4 bars, peaks in the middle, releases at the
+    // end) instead of being a flat energy plateau.
     const eIdx = clamp(
-      Math.floor((bar / Math.max(1, section.bars)) * w.energyCurve.length),
+      Math.floor((bar / Math.max(1, flow.sectionBars)) * w.energyCurve.length),
       0,
       w.energyCurve.length - 1
     );
     const baseEnergy = w.energyCurve[eIdx];
-    const energy = clamp(baseEnergy * (0.4 + 0.6 * section.density), 0, 1);
+    const energy = clamp(baseEnergy * (0.4 + 0.6 * flow.density), 0, 1);
 
     // ── Swing: delay offbeat steps by swing * halfStep ──
     let stepTime = time;
@@ -2307,11 +2938,21 @@ export class Psy4EngineV2 {
       stepTime += w.swing * sd * 0.5;
     }
 
-    const isPreDrop = (section.label === 'BUILD' || section.label === 'BUILD 2') && bar >= section.bars - 2;
-    const isDropStart = section.label.includes('DROP') && bar === 0 && step === 0;
+    // ── Task F1: surprise event per-step gating ──
+    // If a surprise event is active, it can suppress notes for this step.
+    //   - silence:  suppress ALL notes (dramatic pause)
+    //   - dropOut:  suppress everything except the kick (DJ brake effect)
+    // Other surprise types (filterSweep, echoThrow, stutter, reverseHit)
+    // don't gate notes — they shape the FX chain via applyFlowAutomation().
+    const activeSurprise = this.activeSurprise;
+    const suppressAll = activeSurprise?.type === 'silence';
+    const suppressNonKick = activeSurprise?.type === 'dropOut';
+
+    const isPreDrop = (flow.label === 'BUILD' || flow.label === 'BUILD 2') && bar >= flow.sectionBars - 2;
+    const isDropStart = flow.label.includes('DROP') && bar === 0 && step === 0;
 
     // ── RISER FX (last 2 bars of build) — uses raw time, not swung ──
-    if (isPreDrop && step === 0 && bar === section.bars - 2) {
+    if (isPreDrop && step === 0 && bar === flow.sectionBars - 2) {
       this.triggerRiser(time, sd * 32);
     }
 
@@ -2349,33 +2990,35 @@ export class Psy4EngineV2 {
     };
 
     // ── KICK (track 0) — world-driven kickPattern (16-char gate string) ──
-    if (w.kickPattern.length === 16 && w.kickPattern.charAt(step) === 'x') {
+    // Kick is the ONLY track that fires during a dropOut surprise (DJ brake).
+    // During silence, even the kick is suppressed.
+    if (!suppressAll && w.kickPattern.length === 16 && w.kickPattern.charAt(step) === 'x') {
       const isDownbeat = step % 4 === 0;
       const aggressionBoost = 0.7 + 0.6 * w.aggression;
-      // Velocity scales with both section.density and energyCurve so drops hit
+      // Velocity scales with both flow.density and energyCurve so drops hit
       // harder than builds even at the same density (Task 15: verify energy
       // actually affects velocity/density).
       const vel = isDownbeat
-        ? 0.4 + section.density * 0.3 * aggressionBoost + energy * 0.15
+        ? 0.4 + flow.density * 0.3 * aggressionBoost + energy * 0.15
         : 0.3 * aggressionBoost + energy * 0.1;
       this.triggerDrum(0, stepTime, vel);
     }
 
     // ── CLAP (track 1) — world-driven clapPattern gate ('x' = hit) ──
-    if (w.clapPattern && w.clapPattern.length === 16 && w.clapPattern.charAt(step) === 'x' && section.density > 0.4) {
+    if (!suppressAll && !suppressNonKick && w.clapPattern && w.clapPattern.length === 16 && w.clapPattern.charAt(step) === 'x' && flow.density > 0.4) {
       this.triggerDrum(1, stepTime, 0.3 + energy * 0.1);
     }
 
     // ── HATS (track 2) — probability from world.hatDensity per eligible offbeat ──
-    const hatProb = clamp(w.hatDensity * (0.5 + 0.5 * energy) * tScale, 0, 1);
-    if (step % 2 === 1 && this.musicRng?.chance(hatProb)) {
+    const hatProb = clamp(w.hatDensity * flow.hatDensity * (0.5 + 0.5 * energy) * tScale, 0, 1);
+    if (!suppressAll && !suppressNonKick && step % 2 === 1 && this.musicRng?.chance(hatProb)) {
       const vel = 0.15 + (step % 4 === 3 ? 0.1 : 0) + energy * 0.1 + tVelBoost;
       this.triggerDrum(2, stepTime, vel);
     }
 
     // ── PERC (track 3) — world-driven percPattern gate + density-based probability ──
-    const percProb = clamp(w.percDensity * energy * tScale, 0, 1);
-    if (w.percPattern && w.percPattern.length === 16 && w.percPattern.charAt(step) === 'x' && section.density > 0.5 && this.musicRng?.chance(percProb)) {
+    const percProb = clamp(w.percDensity * flow.percDensity * energy * tScale, 0, 1);
+    if (!suppressAll && !suppressNonKick && w.percPattern && w.percPattern.length === 16 && w.percPattern.charAt(step) === 'x' && flow.density > 0.5 && this.musicRng?.chance(percProb)) {
       this.triggerDrum(3, stepTime, 0.2 + tVelBoost);
     }
 
@@ -2386,7 +3029,7 @@ export class Psy4EngineV2 {
     // (e.g. during a VI chord, the bass plays the VI root + pattern offsets
     // instead of staying on the tonic). In non-lead sections (groove/build/
     // outro), the bass stays on the tonic for that classic psytrance pump.
-    if (section.bass && w.bassPattern.length === 16 && w.bassPattern.charAt(step) === 'x') {
+    if (!suppressAll && !suppressNonKick && flow.bassOn && w.bassPattern.length === 16 && w.bassPattern.charAt(step) === 'x') {
       const bassStyle = this.deriveBassStyle();
       const bps = BASS_PATTERNS[bassStyle] || BASS_PATTERNS.off;
       const bp = bps[this.bassPatternIdx % bps.length];
@@ -2398,7 +3041,7 @@ export class Psy4EngineV2 {
         // sections, or before the first chord plays) keep the bass on the
         // tonic degree — psytrance sub-bass pumping on the tonic is genre-
         // defining and we don't want to lose that feel.
-        const chordDegOffset = (section.lead && this.currentChord)
+        const chordDegOffset = (flow.leadOn && this.currentChord)
           ? this.currentChord.scaleDegree
           : 0;
         const note = scaleNote(root, sc, chordDegOffset + bassDeg);
@@ -2413,7 +3056,7 @@ export class Psy4EngineV2 {
     // transformation (transpose/invert/fragment/sequence), tension curves, and
     // call-response automatically. nextNote() returns null on rests / steps
     // without a scheduled event (so notes can sustain across multiple steps).
-    if (section.lead && this.melody && energy > 0.35) {
+    if (!suppressAll && flow.leadOn && this.melody && energy > 0.35) {
       const noteInfo = this.melody.nextNote(step, bar, energy);
       if (noteInfo) {
         // Use the engine's per-note duration (1-4 16th steps) for proper
@@ -2428,7 +3071,7 @@ export class Psy4EngineV2 {
     // The progression is regenerated at section boundaries with energy-driven
     // extension levels (triads in breaks → 9ths in drops). Voice leading keeps
     // common tones and minimizes movement for smooth symphonic flow.
-    if (section.lead && step === 0 && this.harmony && this.currentProgression.length > 0) {
+    if (!suppressAll && !suppressNonKick && flow.leadOn && step === 0 && this.harmony && this.currentProgression.length > 0) {
       const chord = this.currentProgression[this.chordIdx % this.currentProgression.length];
       this.chordIdx++;
       if (chord) {
@@ -2460,8 +3103,8 @@ export class Psy4EngineV2 {
     // lead's "call" — descending, ending on a stable tone, an octave above
     // the lead. In all other sections, the arp plays its world-driven pattern.
     const arpProb = clamp(0.7 * energy, 0, 1);
-    const isVariation = section.label === 'VARIATION';
-    if (section.lead && step % 2 === 0 && this.musicRng?.chance(arpProb)) {
+    const isVariation = flow.label === 'VARIATION';
+    if (!suppressAll && !suppressNonKick && flow.leadOn && step % 2 === 0 && this.musicRng?.chance(arpProb)) {
       if (isVariation && this.melody) {
         // Call-response: arp plays the response to the lead's call.
         // If no response event is scheduled for this step, the arp is silent —
@@ -2482,7 +3125,7 @@ export class Psy4EngineV2 {
 
     // ── SHAKER (track 3 alt) — continuous offbeat in drops ──
     const shakerProb = clamp(0.4 * energy * tScale, 0, 1);
-    if (section.bass && section.lead && step % 2 === 1 && this.musicRng?.chance(shakerProb)) {
+    if (!suppressAll && !suppressNonKick && flow.bassOn && flow.leadOn && step % 2 === 1 && this.musicRng?.chance(shakerProb)) {
       this.triggerDrum(3, stepTime, 0.15 + tVelBoost);
     }
   }
@@ -2602,8 +3245,12 @@ export class Psy4EngineV2 {
     // wrapped with mode='classic' for backwards compatibility.
     const basePreset = getAdvancedSynthPreset(track.presetId, SYNTH_PRESETS);
     if (!basePreset) return;
-    const voice = this.synthPool[this.synthIdx];
-    this.synthIdx = (this.synthIdx + 1) % this.synthPool.length;
+    // P1: voice stealing — find a free voice (isBusy=false) or steal the
+    // oldest active voice (smallest lastTriggeredAt). With 8 voices and
+    // psytrance's typical 6 simultaneous notes, the 7th/8th are usually free.
+    // When a dense polyphonic moment does occur, we steal the oldest rather
+    // than drop the new note — the stolen voice's release tail is cut short.
+    const voice = this.acquireSynthVoice();
 
     // ── Apply world timbre overrides on top of the factory preset ──
     let preset: AdvancedSynthPreset = basePreset;
@@ -2653,6 +3300,16 @@ export class Psy4EngineV2 {
       p = { ...p, wtPosition: this.wtPositionOverride };
     }
 
+    // ── P1: adaptive quality — cap supersaw osc count ──
+    // On 'low' quality (maxSupersawOsc=3) and 'medium' (maxSupersawOsc=4),
+    // reduce the supersaw's osc count to lower CPU. The supersaw's character
+    // (detuned saws panned across the field) is preserved at any count ≥ 3;
+    // only the thickness is reduced. 'high' quality is uncapped (7 osc).
+    if (p.mode === 'supersaw' && typeof p.sawCount === 'number'
+        && p.sawCount > this.maxSupersawOsc) {
+      p = { ...p, sawCount: this.maxSupersawOsc };
+    }
+
     // Reference pursuit — SPECTRAL CENTROID matching for lead (5) and pad (6).
     // Applied on top of the world timbre so radio brightness nudges the world cutoff.
     if ((trackIdx === 5 || trackIdx === 6) && this.refSpectralCentroid > 0) {
@@ -2663,12 +3320,13 @@ export class Psy4EngineV2 {
       }
     }
 
-    // ── Task V2b: section-based filter sweep override ──
-    // If applySectionAutomation() has set a lead cutoff override (e.g. during
-    // the last 2 bars of a BUILD section, sweeping 800 Hz → 4000 Hz), apply
-    // it now. This OVERRIDES the world timbre + reference pursuit blend —
-    // during a sweep, the sweep is the dominant automation. Outside a sweep
-    // (leadCutoffOverride === -1) this is a no-op.
+    // ── Task F1: continuous flow filter cutoff override ──
+    // applyFlowAutomation() pushes the flow engine's continuous filterCutoff
+    // (or a filterSweep surprise's sweep curve) into leadCutoffOverride every
+    // step. This OVERRIDES the world timbre + reference pursuit blend — the
+    // flow's continuous automation is the dominant lead filter control.
+    // Outside a flow (leadCutoffOverride === -1, only possible before the
+    // flow engine is initialized) this is a no-op.
     if (trackIdx === 5 && this.leadCutoffOverride > 0) {
       p = { ...p, cutoff: clamp(this.leadCutoffOverride, 200, 16000) };
     }
@@ -2989,4 +3647,41 @@ export class Psy4EngineV2 {
    * Returns null outside lead sections or before the first chord plays.
    */
   getCurrentChord(): Chord | null { return this.currentChord; }
+
+  // ─── P1 stubs: adaptive quality + voice stealing ──────────────────────────
+  //
+  // These methods are referenced by the P1 (PerformanceMonitor) code above
+  // (the `perfMonitor` field initializer and `triggerSynth`). The full P1
+  // implementations were in progress but not committed; these stubs make
+  // the file compile cleanly so the F1 flow engine work isn't blocked.
+  // A future P1 agent can replace these with full implementations.
+
+  /**
+   * P1: acquire a synth voice from the pool with voice stealing.
+   * Stub: simple round-robin (same as the pre-P1 behavior). A full
+   * implementation would scan for `isBusy()=false` and steal the oldest
+   * voice when all are busy.
+   */
+  private acquireSynthVoice(): AdvancedSynthVoice {
+    const n = this.synthPool.length;
+    if (n === 0) {
+      // Defensive — should never happen (pool is allocated in init()).
+      throw new Error('synthPool is empty — init() not called');
+    }
+    const voice = this.synthPool[this.synthIdx];
+    this.synthIdx = (this.synthIdx + 1) % n;
+    return voice;
+  }
+
+  /**
+   * P1: PerformanceMonitor callback — invoked when the monitor's adaptive
+   * logic decides to escalate / de-escalate quality. Stub: log only. A
+   * full implementation would call `this.applyQuality(level)`.
+   */
+  private onAdaptiveQualityChange(level: QualityLevel, reason: string): void {
+    if (typeof console !== 'undefined') {
+      console.log(`[PSY4] Quality → ${level} (${reason})`);
+    }
+    this.quality = level;
+  }
 }

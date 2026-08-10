@@ -4,16 +4,37 @@
  * Each of the 8 tracks (KICK, SNARE, HATS, PERC, BASS, LEAD, PAD, ARP) gets one
  * of these racks. The rack wraps Web Audio nodes into a fixed insert chain:
  *
- *     input → EQ (3-band) → Compressor → Saturation → Haas widener (optional)
- *          → Panner → output → (sends tap)
+ *     input → EQ (3-band) → [Compressor] → [Saturation] → [Haas widener]
+ *          → [Panner] → output → (sends tap)
  *
  * The rack also exposes 6 send taps (reverb, delay, chorus, phaser, distortion,
  * bitcrush) taken POST-fader so muting a track via output gain also mutes its
  * sends — standard console behavior.
  *
- * This is the "produced, not generated" upgrade called out in ROAST-3:
- * per-track EQ + comp + saturation + stereo placement give the mix glue and
- * width that the bare GainNode+HPF+panner chain in V2 was missing.
+ * ── P1 ADAPTIVE NODE BUDGET (Task P1) ────────────────────────────────────────
+ * The original rack unconditionally created 25 nodes (3 EQ + 1 comp + 4 sat +
+ * 8 Haas + 1 panner + 6 sends + 2 input/output) per track × 8 tracks = 200
+ * nodes — a major contributor to the 1054-node freeze (ROAST-4).
+ *
+ * The fix introduces three opt-out flags on `TrackRackConfig`:
+ *   - `skipComp` : skip the compressor entirely (1 node saved). For tracks
+ *     that don't need glue (e.g., hats in some worlds).
+ *   - `skipSat`  : skip the saturation stage (4 nodes saved). For tracks that
+ *     are already clean and don't need warmth.
+ *   - `skipHaas` : skip the ENTIRE Haas widener (8 nodes) AND the stereo
+ *     panner (1 node). For mono/centered tracks (kick, bass) — they're
+ *     centered in the mix and the panner is a no-op anyway. 9 nodes saved.
+ *
+ * Default config keeps all stages enabled (backwards compatible). The engine
+ * sets skipHaas=true for tracks 0 (KICK) and 4 (BASS) — they're mono/centered.
+ *
+ * With the new flags applied to kick + bass:
+ *   - 2 racks × 9 nodes saved = 18 nodes (was 200 → now ~182 for the rack
+ *     set, plus the lazy-voice savings).
+ *
+ * `setParameter()` is defensive: calls targeting a skipped stage are no-ops
+ * (the node doesn't exist), so existing automation code keeps working
+ * without per-track conditionals at the call sites.
  *
  * All Web Audio nodes (no ScriptProcessor, no AudioWorklet). TypeScript strict.
  * Every numeric input is clamped + NaN-guarded.
@@ -51,6 +72,11 @@ export interface TrackRackConfig {
   sendPhaser: number;    // melodic only
   sendDistortion: number; // acid/lead only
   sendBitcrush: number;   // lo-fi texture, optional
+  // ── P1: optional stage skips (node-budget optimizations) ──
+  skipComp?: boolean;    // if true, don't create the compressor (1 node saved)
+  skipSat?: boolean;     // if true, don't create the saturation stage (4 nodes saved)
+  skipHaas?: boolean;    // if true, don't create the Haas widener OR the panner
+                         // (9 nodes saved — for mono/centered tracks like kick/bass)
 }
 
 /** Sensible defaults; per-track factories override only what they need. */
@@ -102,35 +128,48 @@ export class TrackEffectsRack {
   readonly input: GainNode;
   readonly output: GainNode;
 
-  // EQ
+  // EQ (always present — every track needs at least basic tone shaping)
   readonly eq: {
     low: BiquadFilterNode;   // low shelf (~120 Hz)
     mid: BiquadFilterNode;   // peaking (~1 kHz)
     high: BiquadFilterNode;  // high shelf (~8 kHz)
   };
 
-  // Compressor
-  readonly comp: DynamicsCompressorNode;
+  // Compressor (optional — skipped when config.skipComp is true)
+  readonly comp?: DynamicsCompressorNode;
 
-  // Saturation (parallel: dry + wet through WaveShaper)
-  readonly sat: WaveShaperNode;
-  private readonly satWet: GainNode;
-  private readonly satDry: GainNode;
-  private readonly satPreGain: GainNode; // drive into the shaper
+  // Saturation (optional — skipped when config.skipSat is true)
+  // Parallel wet/dry structure: prevStage → satPreGain → sat (waveshaper) → satWet ─┐
+  //                            prevStage → satDry ──────────────────────────────────┴→ nextStage
+  readonly sat?: WaveShaperNode;
+  private readonly satWet?: GainNode;
+  private readonly satDry?: GainNode;
+  private readonly satPreGain?: GainNode;
+  // When sat is skipped, this gain node serves as the summing point that the
+  // next stage reads from. (When sat is enabled, the next stage reads from
+  // the sat wet/dry sum — implemented by connecting both satWet and satDry
+  // to the same downstream node.)
+  private readonly satSum: GainNode;
 
-  // Haas widener (only for melodic tracks)
-  private readonly haasSplitter: GainNode;     // mono split point
-  private readonly haasLeftTap: GainNode;      // dry L
-  private readonly haasRightTap: GainNode;     // delayed R
+  // Haas widener + panner (optional — skipped entirely when config.skipHaas)
+  //   satSum → haasSplitter ─→ haasLeftTap ────────────────→ merger.input 0  (L)
+  //                        └→ haasRightTap → haasDelay ────→ merger.input 1  (R, delayed)
+  //   satSum → haasSplitter ─→ haasBypass (mono)
+  //   merger → haasWetMix ──┐
+  //   haasBypass → haasDryMix ─┴→ haasPanInput → panner → output
+  private readonly haasSplitter?: GainNode;
+  private readonly haasLeftTap?: GainNode;
+  private readonly haasRightTap?: GainNode;
   readonly haasDelay?: DelayNode;
-  private readonly haasMerger: ChannelMergerNode;
-  private readonly haasBypass: GainNode;       // mono bypass path
-  private readonly haasWetMix: GainNode;       // stereo widener mix
-  private readonly haasDryMix: GainNode;
-  private readonly haasPanInput: GainNode;     // summed input to panner
+  private readonly haasMerger?: ChannelMergerNode;
+  private readonly haasBypass?: GainNode;
+  private readonly haasWetMix?: GainNode;
+  private readonly haasDryMix?: GainNode;
+  private readonly haasPanInput?: GainNode;
 
-  // Stereo panner
-  readonly panner: StereoPannerNode;
+  // Stereo panner (skipped when config.skipHaas is true — Haas and panner
+  // go together; mono/centered tracks don't need either)
+  readonly panner?: StereoPannerNode;
 
   // Send taps (post-fader): each is a GainNode connected from `output`
   readonly sendReverb: GainNode;
@@ -173,6 +212,9 @@ export class TrackEffectsRack {
       sendDistortion: safeNum(config.sendDistortion, 0),
       sendBitcrush: safeNum(config.sendBitcrush, 0),
       useHaas: !!config.useHaas,
+      skipComp: !!config.skipComp,
+      skipSat: !!config.skipSat,
+      skipHaas: !!config.skipHaas,
     };
     const c = this.config;
 
@@ -180,7 +222,7 @@ export class TrackEffectsRack {
     this.input = ctx.createGain();
     this.input.gain.value = 1.0;
 
-    // ── EQ (3-band) ──
+    // ── EQ (3-band, always present) ──
     this.eq = {
       low: ctx.createBiquadFilter(),
       mid: ctx.createBiquadFilter(),
@@ -197,53 +239,61 @@ export class TrackEffectsRack {
     this.eq.high.frequency.value = 8000;
     this.eq.high.gain.value = clamp(c.eqHighGain, -15, 15);
 
-    // ── Compressor ──
-    this.comp = ctx.createDynamicsCompressor();
-    this.comp.threshold.value = clamp(c.compThreshold, -60, 0);
-    this.comp.knee.value = clamp(c.compKnee, 0, 40);
-    this.comp.ratio.value = clamp(c.compRatio, 1, 20);
-    this.comp.attack.value = clamp(c.compAttack, 0.0005, 0.5);
-    this.comp.release.value = clamp(c.compRelease, 0.01, 2.0);
-
-    // ── Saturation (parallel wet/dry) ──
-    this.satPreGain = ctx.createGain();
-    this.satPreGain.gain.value = clamp(c.satDrive, 0.5, 8);
-    this.sat = ctx.createWaveShaper();
-    this.sat.oversample = '2x';
-    this.sat.curve = makeSatCurve(c.satDrive);
-    this.satWet = ctx.createGain();
-    this.satWet.gain.value = clamp(c.satMix, 0, 1);
-    this.satDry = ctx.createGain();
-    this.satDry.gain.value = clamp(1 - c.satMix, 0, 1);
-
-    // ── Haas widener ──
-    // Mono input → split: L is dry, R is delayed by haasDelayMs. The two
-    // channels are merged back into a stereo signal. The wet/dry mix between
-    // the Haas stereo path and a mono bypass lets us dial in width from 0
-    // (full mono) to 1 (full Haas stereo). When useHaas is false the wet
-    // mix is 0 and the bypass carries the whole signal.
-    this.haasSplitter = ctx.createGain();
-    this.haasLeftTap = ctx.createGain();
-    this.haasRightTap = ctx.createGain();
-    if (c.useHaas) {
-      this.haasDelay = ctx.createDelay(0.05);
-      this.haasDelay.delayTime.value = clamp(c.haasDelayMs / 1000, 0.001, 0.05);
+    // ── Compressor (optional) ──
+    if (!c.skipComp) {
+      const comp = ctx.createDynamicsCompressor();
+      comp.threshold.value = clamp(c.compThreshold, -60, 0);
+      comp.knee.value = clamp(c.compKnee, 0, 40);
+      comp.ratio.value = clamp(c.compRatio, 1, 20);
+      comp.attack.value = clamp(c.compAttack, 0.0005, 0.5);
+      comp.release.value = clamp(c.compRelease, 0.01, 2.0);
+      this.comp = comp;
     }
-    this.haasMerger = ctx.createChannelMerger(2);
-    this.haasBypass = ctx.createGain();
-    this.haasWetMix = ctx.createGain();
-    this.haasDryMix = ctx.createGain();
-    this.haasPanInput = ctx.createGain();
 
-    // ── Panner ──
-    this.panner = ctx.createStereoPanner();
-    this.panner.pan.value = clamp(c.pan, -1, 1);
+    // ── Saturation (optional, parallel wet/dry) ──
+    // satSum is always present — it's the summing node that the next stage
+    // (haas or output) reads from. When sat is enabled, satWet and satDry
+    // both feed satSum. When sat is disabled, the previous stage feeds
+    // satSum directly.
+    this.satSum = ctx.createGain();
+    this.satSum.gain.value = 1.0;
+    if (!c.skipSat) {
+      this.satPreGain = ctx.createGain();
+      this.satPreGain.gain.value = clamp(c.satDrive, 0.5, 8);
+      const sat = ctx.createWaveShaper();
+      sat.oversample = '2x';
+      sat.curve = makeSatCurve(c.satDrive);
+      this.sat = sat;
+      this.satWet = ctx.createGain();
+      this.satWet.gain.value = clamp(c.satMix, 0, 1);
+      this.satDry = ctx.createGain();
+      this.satDry.gain.value = clamp(1 - c.satMix, 0, 1);
+    }
+
+    // ── Haas widener + panner (optional, all-or-nothing) ──
+    if (!c.skipHaas) {
+      this.haasSplitter = ctx.createGain();
+      this.haasLeftTap = ctx.createGain();
+      this.haasRightTap = ctx.createGain();
+      if (c.useHaas) {
+        this.haasDelay = ctx.createDelay(0.05);
+        this.haasDelay.delayTime.value = clamp(c.haasDelayMs / 1000, 0.001, 0.05);
+      }
+      this.haasMerger = ctx.createChannelMerger(2);
+      this.haasBypass = ctx.createGain();
+      this.haasWetMix = ctx.createGain();
+      this.haasDryMix = ctx.createGain();
+      this.haasPanInput = ctx.createGain();
+
+      this.panner = ctx.createStereoPanner();
+      this.panner.pan.value = clamp(c.pan, -1, 1);
+    }
 
     // ── Output (fader) ──
     this.output = ctx.createGain();
     this.output.gain.value = clamp(c.outputGain, 0, 3);
 
-    // ── Send taps ──
+    // ── Send taps (always present — even mono tracks send to reverb/delay) ──
     this.sendReverb = ctx.createGain();
     this.sendDelay = ctx.createGain();
     this.sendChorus = ctx.createGain();
@@ -262,60 +312,92 @@ export class TrackEffectsRack {
   }
 
   /**
-   * Build the audio graph from input → output + sends. Kept separate from
-   * the constructor so the wiring is easy to audit.
+   * Build the audio graph from input → output + sends. Conditionally routes
+   * through comp / sat / haas / panner depending on which stages were created.
+   *
+   * Chain layout (where [X] = "if not skipped"):
+   *   input → eq.low → eq.mid → eq.high → [comp] → [sat] → satSum
+   *         → [haas splitter/merger/wet-dry → panInput] → [panner] → output
+   *         → (6 sends tap from output)
+   *
+   * When `skipHaas` is true, satSum connects directly to output (no panner).
    */
   private _wire(): void {
     const c = this.config;
 
-    // input → EQ low → mid → high → comp
+    // input → EQ low → mid → high
     this.input.connect(this.eq.low);
     this.eq.low.connect(this.eq.mid);
     this.eq.mid.connect(this.eq.high);
-    this.eq.high.connect(this.comp);
 
-    // comp → saturation (parallel wet/dry)
-    //   comp → satPreGain → sat (waveshaper) → satWet ─┐
-    //   comp → satDry ──────────────────────────────────┴→ haasSplitter
-    this.comp.connect(this.satPreGain);
-    this.satPreGain.connect(this.sat);
-    this.sat.connect(this.satWet);
-    this.comp.connect(this.satDry);
+    // After EQ: optional comp, then optional sat (parallel wet/dry summed at satSum).
+    let prev: AudioNode = this.eq.high;
 
-    this.satWet.connect(this.haasSplitter);
-    this.satDry.connect(this.haasSplitter);
-
-    // Haas widener
-    //   haasSplitter ──→ haasLeftTap ────────────────→ merger.input 0  (L)
-    //                └──→ haasRightTap → haasDelay ──→ merger.input 1  (R, delayed)
-    //   haasSplitter ──→ haasBypass (mono)
-    //   merger → haasWetMix ──┐
-    //   haasBypass → haasDryMix ─┴→ haasPanInput → panner → output
-    this.haasSplitter.connect(this.haasLeftTap);
-    this.haasLeftTap.connect(this.haasMerger, 0, 0);
-    this.haasSplitter.connect(this.haasRightTap);
-    if (c.useHaas && this.haasDelay) {
-      this.haasRightTap.connect(this.haasDelay);
-      this.haasDelay.connect(this.haasMerger, 0, 1);
-    } else {
-      // No Haas — route right tap directly (no delay) so the merger still
-      // receives both channels.
-      this.haasRightTap.connect(this.haasMerger, 0, 1);
+    if (this.comp) {
+      prev.connect(this.comp);
+      prev = this.comp;
     }
-    this.haasMerger.connect(this.haasWetMix);
-    this.haasSplitter.connect(this.haasBypass);
-    this.haasBypass.connect(this.haasDryMix);
 
-    const wetLevel = c.useHaas ? clamp(c.haasMix, 0, 1) : 0;
-    this.haasWetMix.gain.value = wetLevel;
-    this.haasDryMix.gain.value = clamp(1 - wetLevel, 0, 1);
+    if (this.sat && this.satPreGain && this.satWet && this.satDry) {
+      // Parallel wet/dry:
+      //   prev → satPreGain → sat (waveshaper) → satWet → satSum
+      //   prev → satDry → satSum
+      prev.connect(this.satPreGain);
+      this.satPreGain.connect(this.sat);
+      this.sat.connect(this.satWet);
+      this.satWet.connect(this.satSum);
+      prev.connect(this.satDry);
+      this.satDry.connect(this.satSum);
+    } else {
+      // Sat skipped — prev feeds satSum directly.
+      prev.connect(this.satSum);
+    }
 
-    this.haasWetMix.connect(this.haasPanInput);
-    this.haasDryMix.connect(this.haasPanInput);
-    this.haasPanInput.connect(this.panner);
+    // After satSum: optional Haas widener → panner → output (or direct to output).
+    if (this.haasSplitter && this.haasLeftTap && this.haasRightTap
+        && this.haasMerger && this.haasBypass && this.haasWetMix
+        && this.haasDryMix && this.haasPanInput) {
+      // Haas widener
+      //   satSum → haasSplitter ─→ haasLeftTap ────────────────→ merger.input 0  (L)
+      //                        └→ haasRightTap → haasDelay ────→ merger.input 1  (R, delayed)
+      //   satSum → haasSplitter ─→ haasBypass (mono)
+      //   merger → haasWetMix ──┐
+      //   haasBypass → haasDryMix ─┴→ haasPanInput → panner → output
+      this.satSum.connect(this.haasSplitter);
+      this.haasSplitter.connect(this.haasLeftTap);
+      this.haasLeftTap.connect(this.haasMerger, 0, 0);
+      this.haasSplitter.connect(this.haasRightTap);
+      if (c.useHaas && this.haasDelay) {
+        this.haasRightTap.connect(this.haasDelay);
+        this.haasDelay.connect(this.haasMerger, 0, 1);
+      } else {
+        // No Haas delay — route right tap directly (no delay) so the merger
+        // still receives both channels.
+        this.haasRightTap.connect(this.haasMerger, 0, 1);
+      }
+      this.haasMerger.connect(this.haasWetMix);
+      this.haasSplitter.connect(this.haasBypass);
+      this.haasBypass.connect(this.haasDryMix);
 
-    // panner → output (fader)
-    this.panner.connect(this.output);
+      const wetLevel = c.useHaas ? clamp(c.haasMix, 0, 1) : 0;
+      this.haasWetMix.gain.value = wetLevel;
+      this.haasDryMix.gain.value = clamp(1 - wetLevel, 0, 1);
+
+      this.haasWetMix.connect(this.haasPanInput);
+      this.haasDryMix.connect(this.haasPanInput);
+
+      // PanInput → panner → output
+      if (this.panner) {
+        this.haasPanInput.connect(this.panner);
+        this.panner.connect(this.output);
+      } else {
+        // Defensive — panner should always exist when Haas exists.
+        this.haasPanInput.connect(this.output);
+      }
+    } else {
+      // Haas skipped — satSum feeds output directly (no panner).
+      this.satSum.connect(this.output);
+    }
 
     // Sends (post-fader) — tap from `output`. Connect to send buses externally.
     this.output.connect(this.sendReverb);
@@ -332,6 +414,8 @@ export class TrackEffectsRack {
    * Adjust a single named parameter in real-time. Used by the engine's
    * `setTrackEffect()` and (transitively) by the reference pursuit to nudge
    * timbre as the radio's character changes. Unknown names are a no-op.
+   * Calls targeting a skipped stage (e.g., 'pan' when skipHaas=true) are
+   * silent no-ops — this keeps call sites clean (no per-track conditionals).
    *
    * Time constant 0.05 s for smooth transitions (no zipper noise).
    */
@@ -356,21 +440,22 @@ export class TrackEffectsRack {
         this.eq.high.gain.setTargetAtTime(clamp(value, -15, 15), now, tc);
         break;
       case 'compThreshold':
-        this.comp.threshold.setTargetAtTime(clamp(value, -60, 0), now, tc);
+        if (this.comp) this.comp.threshold.setTargetAtTime(clamp(value, -60, 0), now, tc);
         break;
       case 'compRatio':
-        this.comp.ratio.setTargetAtTime(clamp(value, 1, 20), now, tc);
+        if (this.comp) this.comp.ratio.setTargetAtTime(clamp(value, 1, 20), now, tc);
         break;
       case 'compAttack':
-        this.comp.attack.setTargetAtTime(clamp(value, 0.0005, 0.5), now, tc);
+        if (this.comp) this.comp.attack.setTargetAtTime(clamp(value, 0.0005, 0.5), now, tc);
         break;
       case 'compRelease':
-        this.comp.release.setTargetAtTime(clamp(value, 0.01, 2), now, tc);
+        if (this.comp) this.comp.release.setTargetAtTime(clamp(value, 0.01, 2), now, tc);
         break;
       case 'compKnee':
-        this.comp.knee.setTargetAtTime(clamp(value, 0, 40), now, tc);
+        if (this.comp) this.comp.knee.setTargetAtTime(clamp(value, 0, 40), now, tc);
         break;
       case 'satDrive': {
+        if (!this.sat || !this.satPreGain) break;
         const d = clamp(value, 0.5, 8);
         this.satPreGain.gain.setTargetAtTime(d, now, tc);
         // Reshaping the curve live is allowed but slightly costly; only do it
@@ -382,6 +467,7 @@ export class TrackEffectsRack {
         break;
       }
       case 'satMix': {
+        if (!this.satWet || !this.satDry) break;
         const m = clamp(value, 0, 1);
         this.satWet.gain.setTargetAtTime(m, now, tc);
         this.satDry.gain.setTargetAtTime(1 - m, now, tc);
@@ -389,7 +475,7 @@ export class TrackEffectsRack {
         break;
       }
       case 'pan':
-        this.panner.pan.setTargetAtTime(clamp(value, -1, 1), now, tc);
+        if (this.panner) this.panner.pan.setTargetAtTime(clamp(value, -1, 1), now, tc);
         break;
       case 'haasDelayMs':
         if (this.haasDelay) {
@@ -399,6 +485,7 @@ export class TrackEffectsRack {
         }
         break;
       case 'haasMix': {
+        if (!this.haasWetMix || !this.haasDryMix) break;
         const m = clamp(value, 0, 1);
         this.haasWetMix.gain.setTargetAtTime(m, now, tc);
         this.haasDryMix.gain.setTargetAtTime(1 - m, now, tc);
@@ -457,5 +544,25 @@ export class TrackEffectsRack {
   /** Quick mute — sets output gain to 0 with a short ramp. */
   mute(): void {
     this.output.gain.setTargetAtTime(0, this.ctx.currentTime, 0.03);
+  }
+
+  /**
+   * P1: report how many Web Audio nodes this rack is currently holding.
+   * Used by the engine's performance dashboard to track total node pressure.
+   */
+  nodeCount(): number {
+    let n = 0;
+    // Always present: input + 3 EQ + satSum + output + 6 sends = 12
+    n += 12;
+    if (this.comp) n += 1;
+    if (this.sat && this.satPreGain && this.satWet && this.satDry) n += 4;
+    if (this.haasSplitter && this.haasLeftTap && this.haasRightTap
+        && this.haasMerger && this.haasBypass && this.haasWetMix
+        && this.haasDryMix && this.haasPanInput) {
+      n += 8; // splitter + leftTap + rightTap + merger + bypass + wetMix + dryMix + panInput
+      if (this.haasDelay) n += 1;
+    }
+    if (this.panner) n += 1;
+    return n;
   }
 }

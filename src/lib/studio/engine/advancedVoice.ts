@@ -2,20 +2,34 @@
  * AdvancedSynthVoice — drop-in replacement for PooledSynthVoice with 4 modes:
  *   - classic   : 2 osc + filter (same as PooledSynthVoice, backwards compatible)
  *   - fm        : carrier + modulator → carrier.frequency (metallic goa/acid leads)
- *   - supersaw  : 5-7 detuned saws with stereo spread (thick pads / anthemic leads)
+ *   - supersaw  : 3-7 detuned saws with stereo spread (thick pads / anthemic leads)
  *   - wavetable : 2 periodic-wave osc crossfaded by an LFO (evolving textures)
  *
- * Architecture (all nodes preallocated + persistent — zero per-note allocation):
- *   osc[0..6]  → oscGain[0..6]  → pan[0..6]  → sum → filter → vca → bus
- *   osc[1]     → modGain → osc[0].frequency            (FM modulation path)
- *   lfo        → lfoCutoffGain → filter.frequency       (cutoff LFO, classic)
- *   lfo        → lfoGainA → oscGain[0].gain             (wavetable crossfade +)
- *   lfo        → lfoGainB → oscGain[1].gain             (wavetable crossfade -)
+ * ── P1 LAZY VOICE ALLOCATION ────────────────────────────────────────────────
+ * The original implementation preallocated 7 oscillators + 7 gains + 7 panners
+ * per voice = 29 nodes × 20 voices = 580 nodes — the leading cause of the
+ * 1054-node freeze documented in ROAST-4.
  *
- * Inactive branches are silenced by setting their gain to 0 (modGain / lfoGainX /
- * oscGain[i] for unused oscillators), so a single voice graph serves all modes.
+ * The fix: only the COMMON nodes are preallocated (8 nodes). Per-oscillator
+ * nodes are allocated lazily in noteOn() based on the active mode, and torn
+ * down by panic() / deferred-deactivation once the note's release finishes.
  *
- * Voice pool: 20 voices × 7 oscillators = 140 max. Modern browsers handle this.
+ * Per-mode node budget (when active):
+ *   - classic   : 2 osc + 2 gain                  = 4 nodes  (mono)
+ *   - fm        : 2 osc + 2 gain                  = 4 nodes  (mono)
+ *   - wavetable : 2 osc + 2 gain                  = 4 nodes  (mono; rack Haas widener supplies stereo)
+ *   - supersaw  : N osc + N gain + N panner       = 3·N nodes (3..7 → 9..21 nodes)
+ *
+ * Common (always present): sum, filter, vca, modGain, lfo, lfoCutoffGain,
+ * lfoGainA, lfoGainB = 8 nodes.
+ *
+ * With pool of 8 voices: idle = 8·8 = 64 nodes. Worst case (all 8 active
+ * supersaw @ 7 osc) = 8·(8+21) = 232 nodes. Typical case (mostly idle,
+ * 2-3 active classic/FM/wavetable) = ~80-100 nodes. Down from 580. The
+ * deferred-deactivation timeout releases per-osc nodes shortly after each
+ * note's release finishes, so voices return to 8-node idle when not playing.
+ *
+ * All Web Audio nodes (no ScriptProcessor). TypeScript strict.
  */
 
 import { mtof } from './musicalGrammar';
@@ -108,10 +122,27 @@ function getPeriodicWaves(ctx: AudioContext): PeriodicWave[] {
 
 const MAX_OSC = 7;
 
+/**
+ * Per-mode osc-chain specification, computed in noteOn() from the preset.
+ *  - classic/fm/wavetable: 2 osc + 2 gain, no per-osc panners (rack panner
+ *    handles stereo placement; rack Haas widener supplies width).
+ *  - supersaw: N osc + N gain + N panner for stereo spread across the field.
+ */
+interface OscChainSpec {
+  count: number;
+  usePan: boolean;
+  mode: SynthMode;
+}
+
 export class AdvancedSynthVoice {
+  // ── Per-osc chain (lazily allocated, torn down on panic / deactivation) ──
   private osc: OscillatorNode[] = [];
   private oscGain: GainNode[] = [];
   private pan: StereoPannerNode[] = [];
+  private oscMode: SynthMode | null = null;
+  private oscUsePan = false;
+
+  // ── Common nodes (always present, allocated in constructor) ──
   private sum: GainNode;
   private filter: BiquadFilterNode;
   private vca: GainNode;
@@ -120,14 +151,28 @@ export class AdvancedSynthVoice {
   private lfoCutoffGain: GainNode;    // LFO → filter.frequency (classic cutoff LFO)
   private lfoGainA: GainNode;         // LFO → oscGain[0].gain (wavetable crossfade +)
   private lfoGainB: GainNode;         // LFO → oscGain[1].gain (wavetable crossfade -)
+
   private bus: GainNode | null = null;
   private periodicWaves: PeriodicWave[];
   private voiceIdx: number;
+  private ctx: AudioContext;
+
+  // ── Activation tracking (for voice stealing + deferred deactivation) ──
+  // noteSerial bumps on every noteOn. The deferred-deactivation timeout
+  // captures the serial at scheduling time; if the serial has bumped by
+  // the time the timeout fires, a newer noteOn has retriggered the voice
+  // and we must NOT tear down the per-osc nodes.
+  private noteSerial = 0;
+  private lastTriggerTime = 0;        // performance.now() of last noteOn
+  private busy = false;               // true between noteOn and release tail end
+  private deactivateTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(ctx: AudioContext, voiceIdx = 0) {
+    this.ctx = ctx;
     this.voiceIdx = voiceIdx;
     this.periodicWaves = getPeriodicWaves(ctx);
 
+    // ── Common nodes (8 total — down from 29) ──
     this.sum = ctx.createGain();
     this.sum.gain.value = 1;
     this.filter = ctx.createBiquadFilter();
@@ -148,42 +193,20 @@ export class AdvancedSynthVoice {
     this.lfoGainB = ctx.createGain();
     this.lfoGainB.gain.value = 0;
 
-    // Allocate per-oscillator nodes (all persistent)
-    for (let i = 0; i < MAX_OSC; i++) {
-      const osc = ctx.createOscillator();
-      osc.type = 'sawtooth';
-      osc.frequency.value = 220;
-      const g = ctx.createGain();
-      g.gain.value = 0; // silent until noteOn
-      const p = ctx.createStereoPanner();
-      p.pan.value = 0;
-      osc.connect(g);
-      g.connect(p);
-      p.connect(this.sum);
-      this.osc.push(osc);
-      this.oscGain.push(g);
-      this.pan.push(p);
-    }
-
-    // Sum → filter → VCA
+    // Sum → filter → VCA (output)
     this.sum.connect(this.filter);
     this.filter.connect(this.vca);
 
-    // FM modulation path: osc[1] (modulator) → modGain → osc[0].frequency (carrier)
-    // modGain starts at 0, so this is silent in non-FM modes.
-    this.osc[1].connect(this.modGain);
-    this.modGain.connect(this.osc[0].frequency);
-
-    // LFO branches (all start at depth 0 — silent in non-LFO modes)
+    // LFO → lfoCutoffGain → filter.frequency (always wired — silent until depth set)
     this.lfo.connect(this.lfoCutoffGain);
     this.lfoCutoffGain.connect(this.filter.frequency);
-    this.lfo.connect(this.lfoGainA);
-    this.lfoGainA.connect(this.oscGain[0].gain);
-    this.lfo.connect(this.lfoGainB);
-    this.lfoGainB.connect(this.oscGain[1].gain);
 
-    // Start persistent oscillators (never stop them — voice stealing reuses them)
-    for (const o of this.osc) o.start();
+    // LFO → lfoGainA / lfoGainB (always wired; their OUTPUTS connect to
+    // oscGain[i].gain only when wavetable mode is active — see ensureOscChain)
+    this.lfo.connect(this.lfoGainA);
+    this.lfo.connect(this.lfoGainB);
+
+    // Start the LFO (it's silent — lfoCutoffGain/lfoGainA/lfoGainB start at 0).
     this.lfo.start();
   }
 
@@ -197,8 +220,113 @@ export class AdvancedSynthVoice {
   }
 
   /**
+   * Allocate (or reallocate) the per-oscillator chain to match `spec`.
+   *
+   * If the existing chain already matches (same mode + same usePan + at least
+   * `spec.count` nodes), this is a no-op — we reuse the persistent oscillators
+   * and just reset their parameters in the caller. Otherwise we tear down the
+   * existing chain and build a fresh one.
+   *
+   * Web Audio OscillatorNodes can be start()-ed exactly once; after stop()
+   * they cannot be restarted. So whenever we tear down we MUST create new
+   * nodes — there's no way to "park" a stopped oscillator.
+   */
+  private ensureOscChain(spec: OscChainSpec): void {
+    const compatible = this.oscMode === spec.mode
+      && this.oscUsePan === spec.usePan
+      && this.osc.length >= spec.count;
+
+    if (compatible) {
+      // Reuse — silence any extra oscillators beyond spec.count (supersaw
+      // count can vary between notes; we keep the high-water mark allocated
+      // to avoid churn). The caller resets oscGain[i].gain for active oscs.
+      for (let i = spec.count; i < this.osc.length; i++) {
+        const g = this.oscGain[i].gain;
+        g.cancelScheduledValues(this.ctx.currentTime);
+        g.setValueAtTime(0, this.ctx.currentTime);
+      }
+      return;
+    }
+
+    // Incompatible — tear down + rebuild.
+    this.teardownOscChain();
+
+    for (let i = 0; i < spec.count; i++) {
+      const osc = this.ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = 220;
+      const g = this.ctx.createGain();
+      g.gain.value = 0; // silent until trigger sets the level
+      osc.connect(g);
+
+      if (spec.usePan) {
+        const p = this.ctx.createStereoPanner();
+        p.pan.value = 0;
+        g.connect(p);
+        p.connect(this.sum);
+        this.pan.push(p);
+      } else {
+        g.connect(this.sum);
+      }
+
+      osc.start();
+      this.osc.push(osc);
+      this.oscGain.push(g);
+    }
+
+    this.oscMode = spec.mode;
+    this.oscUsePan = spec.usePan;
+
+    // Mode-specific persistent wiring (must be redone after teardown because
+    // the destination nodes are gone and the source modGain/lfoGainA/B outputs
+    // were disconnected).
+    if (spec.mode === 'fm' && this.osc.length >= 2) {
+      // FM modulation path: osc[1] (modulator) → modGain → osc[0].frequency (carrier)
+      this.osc[1].connect(this.modGain);
+      this.modGain.connect(this.osc[0].frequency);
+    }
+    if (spec.mode === 'wavetable' && this.oscGain.length >= 2) {
+      // LFO crossfade: lfoGainA → oscGain[0].gain (+), lfoGainB → oscGain[1].gain (-)
+      this.lfoGainA.connect(this.oscGain[0].gain);
+      this.lfoGainB.connect(this.oscGain[1].gain);
+    }
+  }
+
+  /**
+   * Tear down the per-osc chain: disconnect every node, stop every oscillator,
+   * and let GC reclaim them. Common nodes (sum/filter/vca/modGain/lfo/...) are
+   * preserved. Safe to call when the chain is already empty (no-op).
+   */
+  private teardownOscChain(): void {
+    // Disconnect modGain's OUTPUT (it may have been routed to osc[0].frequency).
+    // Its INPUT (from osc[1]) will be cleared when we disconnect osc[1] below.
+    try { this.modGain.disconnect(); } catch { /* already disconnected */ }
+    // Disconnect lfoGainA/B OUTPUTS (they may have been routed to oscGain[i].gain).
+    try { this.lfoGainA.disconnect(); } catch { /* already disconnected */ }
+    try { this.lfoGainB.disconnect(); } catch { /* already disconnected */ }
+
+    for (const o of this.osc) {
+      try { o.stop(); } catch { /* already stopped */ }
+      try { o.disconnect(); } catch { /* already disconnected */ }
+    }
+    for (const g of this.oscGain) {
+      try { g.disconnect(); } catch { /* already disconnected */ }
+    }
+    for (const p of this.pan) {
+      try { p.disconnect(); } catch { /* already disconnected */ }
+    }
+    this.osc = [];
+    this.oscGain = [];
+    this.pan = [];
+    this.oscMode = null;
+    this.oscUsePan = false;
+  }
+
+  /**
    * Trigger a note. Drop-in replacement for PooledSynthVoice.noteOn().
    * Dispatches to mode-specific trigger based on `preset.mode`.
+   *
+   * Per-osc nodes are allocated lazily here (and torn down after release).
    */
   noteOn(
     p: AdvancedSynthPreset,
@@ -215,9 +343,17 @@ export class AdvancedSynthVoice {
     const rel = Math.max(p.rel, 0.02);
     const end = when + dur;
 
+    const mode: SynthMode = p.mode || 'classic';
+
+    // ── Compute the osc-chain spec for this mode ──
+    const spec: OscChainSpec = this.specForMode(mode, p);
+
+    // ── Allocate / reallocate per-osc nodes ──
+    this.ensureOscChain(spec);
+
     // Reset all osc gains and modulation depths at note start so leftover
     // values from a previous mode don't bleed into this note.
-    for (let i = 0; i < MAX_OSC; i++) {
+    for (let i = 0; i < this.oscGain.length; i++) {
       const g = this.oscGain[i].gain;
       g.cancelScheduledValues(when);
       g.setValueAtTime(0, when);
@@ -228,7 +364,6 @@ export class AdvancedSynthVoice {
     this.lfoGainA.gain.setValueAtTime(0, when);
     this.lfoGainB.gain.setValueAtTime(0, when);
 
-    const mode = p.mode || 'classic';
     switch (mode) {
       case 'fm':        this.triggerFM(p, when, f, vel); break;
       case 'supersaw':  this.triggerSupersaw(p, when, f, vel); break;
@@ -254,6 +389,49 @@ export class AdvancedSynthVoice {
     vca.linearRampToValueAtTime(vel * 0.5, when + atk);
     vca.setTargetAtTime(vel * 0.5 * p.sus, when + atk, Math.max(p.dec / 3, 0.01));
     vca.setTargetAtTime(0.0001, end, Math.max(rel / 3, 0.008));
+
+    // ── Schedule deferred deactivation ──
+    // After the release tail finishes, if no newer noteOn has retriggered
+    // this voice, tear down the per-osc chain to release the nodes back to
+    // GC. This is what keeps the idle voice count at 8 nodes (vs 29).
+    this.noteSerial++;
+    const mySerial = this.noteSerial;
+    this.lastTriggerTime = performance.now();
+    this.busy = true;
+    if (this.deactivateTimer !== null) {
+      clearTimeout(this.deactivateTimer);
+    }
+    // Time from "now" until the release tail is fully silent. Add a 0.5s
+    // buffer so we don't tear down during the exponential decay tail.
+    const nowToNoteStart = Math.max(when - this.ctx.currentTime, 0);
+    const releaseTail = atk + p.dec + dur + rel + 0.5;
+    const ms = Math.max((nowToNoteStart + releaseTail) * 1000, 50);
+    this.deactivateTimer = setTimeout(() => {
+      this.deactivateTimer = null;
+      if (this.noteSerial === mySerial) {
+        this.teardownOscChain();
+        this.busy = false;
+      }
+      // Else: a newer noteOn has retriggered the voice — leave the chain
+      // alone; the newer noteOn scheduled its own deactivation timeout.
+    }, ms);
+  }
+
+  /** Compute the per-mode osc-chain spec. */
+  private specForMode(mode: SynthMode, p: AdvancedSynthPreset): OscChainSpec {
+    switch (mode) {
+      case 'supersaw': {
+        const count = clamp(Math.floor(p.sawCount ?? 5), 2, MAX_OSC);
+        return { count, usePan: true, mode };
+      }
+      case 'fm':
+      case 'wavetable':
+      case 'classic':
+      default:
+        // 2 osc + 2 gain, no per-osc panners. The rack's panner + Haas
+        // widener supply stereo placement and width downstream.
+        return { count: 2, usePan: false, mode };
+    }
   }
 
   /** Classic 2-osc synth (backwards compatible with PooledSynthVoice). */
@@ -267,9 +445,6 @@ export class AdvancedSynthVoice {
 
     this.oscGain[0].gain.setValueAtTime(0.6, when);
     this.oscGain[1].gain.setValueAtTime(0.45, when);
-    // Reset panners to center (no stereo spread in classic mode)
-    this.pan[0].pan.setValueAtTime(0, when);
-    this.pan[1].pan.setValueAtTime(0, when);
 
     // Cutoff LFO
     if (p.lfoRate > 0 && p.lfoDest === 'cutoff') {
@@ -294,14 +469,12 @@ export class AdvancedSynthVoice {
     this.osc[0].frequency.setValueAtTime(f, when);
     this.osc[0].detune.setValueAtTime(0, when);
     this.oscGain[0].gain.setValueAtTime(0.5, when);
-    this.pan[0].pan.setValueAtTime(0, when);
 
     // Modulator (NOT audible — only modulates carrier frequency)
     this.osc[1].type = 'sine';
     this.osc[1].frequency.setValueAtTime(f * ratio, when);
     this.osc[1].detune.setValueAtTime(0, when);
     this.oscGain[1].gain.setValueAtTime(0, when); // silent
-    this.pan[1].pan.setValueAtTime(0, when);
 
     // FM depth envelope: 0 → peak → sustain (lower) → release
     // Peak deviation in Hz: depth * 1000 (so fmDepth=4 = ±4000 Hz peak deviation)
@@ -309,27 +482,22 @@ export class AdvancedSynthVoice {
     // Sustain depth: blends between peak (envAmt=1, full envelope effect) and
     // a steady-state value (envAmt=0, no envelope — constant modulation).
     const sustainDepth = peakDepth * (1 - envAmt) + peakDepth * p.sus * envAmt;
-    const end = when + (p.gate || 0.6) * 0; // placeholder — actual end is in noteOn
-    // We use the gate via the rel param scheduling — modGain release aligns with VCA release.
-    // The VCA release happens at `end` = when + stepDur * gate * 2 (computed in noteOn).
-    // Here we just schedule the modGain envelope to mirror the VCA envelope.
+
     const atk = Math.max(p.atk, 0.003);
     const dec = Math.max(p.dec, 0.01);
     const rel = Math.max(p.rel, 0.02);
-    const gateDur = (p.gate || 0.6) * 2; // approximate, in stepDur units (caller scales)
-    // Note: gateDur is in "stepDur-multiplier" units; noteOn scales it by stepDur.
-    // Since we don't have stepDur here, we use a generous release time that works
-    // across typical psytrance note lengths (0.1s - 2s).
-    const noteEnd = when + Math.max(gateDur * 0.15, 0.1); // best-effort; VCA.release governs actual tail
+    // The VCA release happens at `end` = when + stepDur * gate * 2 (computed
+    // in noteOn). Here we schedule the modGain envelope to mirror the VCA
+    // envelope — using a best-effort gateDur that's a fraction of the VCA's
+    // total note length (typical psytrance notes are 0.1s - 2s).
+    const gateDur = (p.gate || 0.6) * 2;
+    const noteEnd = when + Math.max(gateDur * 0.15, 0.1);
 
     this.modGain.gain.cancelScheduledValues(when);
     this.modGain.gain.setValueAtTime(0, when);
     this.modGain.gain.linearRampToValueAtTime(peakDepth, when + atk);
     this.modGain.gain.setTargetAtTime(Math.max(sustainDepth, 0.001), when + atk, dec / 3);
     this.modGain.gain.setTargetAtTime(0.0001, noteEnd, rel / 3);
-
-    // Suppress unused-variable warning for `end`
-    void end;
   }
 
   /**
@@ -337,7 +505,7 @@ export class AdvancedSynthVoice {
    * Inspired by the Roland JP-8000 — gives thick, rich, "anthemic" timbres.
    */
   private triggerSupersaw(p: AdvancedSynthPreset, when: number, f: number, vel: number): void {
-    const count = clamp(Math.floor(p.sawCount ?? 5), 2, MAX_OSC);
+    const count = clamp(Math.floor(p.sawCount ?? 5), 2, this.osc.length);
     const detune = typeof p.sawDetune === 'number' ? clamp(p.sawDetune, 0, 50) : 14;
     const spread = typeof p.sawSpread === 'number' ? clamp(p.sawSpread, 0, 1) : 0.5;
 
@@ -365,15 +533,18 @@ export class AdvancedSynthVoice {
     // Per-osc gain (normalize to prevent clipping)
     const gainPerOsc = 1 / Math.sqrt(count);
 
-    for (let i = 0; i < MAX_OSC; i++) {
+    for (let i = 0; i < this.osc.length; i++) {
       if (i < count) {
         this.osc[i].type = 'sawtooth';
         this.osc[i].frequency.setValueAtTime(f, when);
         this.osc[i].detune.setValueAtTime(detune * detuneMult[i], when);
-        this.pan[i].pan.setValueAtTime(spread * panMult[i], when);
+        if (i < this.pan.length) {
+          this.pan[i].pan.setValueAtTime(spread * panMult[i], when);
+        }
         this.oscGain[i].gain.setValueAtTime(gainPerOsc, when);
       } else {
-        // Silence unused oscillators
+        // Silence any extra oscillators beyond count (chain may have been
+        // allocated larger by a previous supersaw note with a higher count).
         this.oscGain[i].gain.setValueAtTime(0, when);
       }
     }
@@ -408,7 +579,7 @@ export class AdvancedSynthVoice {
 
     // Static crossfade based on wtPosition
     const pos = clamp(p.wtPosition ?? 0.5, 0, 1);
-    // LFO modulation depth — bounded so gain doesn't go too negative
+    // LFO modulation depth — bounded so gain doesn't go too negatively
     // (a little negative is OK for phase cancellation character, but we cap it).
     const morphRate = typeof p.wtMorphRate === 'number' && p.wtMorphRate > 0
       ? clamp(p.wtMorphRate, 0.01, 8)
@@ -422,8 +593,6 @@ export class AdvancedSynthVoice {
     this.lfo.frequency.setValueAtTime(morphRate, when);
     this.lfoGainA.gain.setValueAtTime(morphDepth, when);  // positive depth
     this.lfoGainB.gain.setValueAtTime(-morphDepth, when); // negative depth (inverted)
-    this.pan[0].pan.setValueAtTime(-0.3, when); // slight stereo placement for width
-    this.pan[1].pan.setValueAtTime(0.3, when);
   }
 
   /** Silence the voice immediately. Drop-in replacement for PooledSynthVoice.panic(). */
@@ -434,7 +603,40 @@ export class AdvancedSynthVoice {
       this.modGain.gain.cancelScheduledValues(0);
       this.modGain.gain.setValueAtTime(0, ctx.currentTime);
     } catch { /* ignore — voice may be in any state */ }
+
+    // Cancel any pending deferred deactivation — we're tearing down now.
+    if (this.deactivateTimer !== null) {
+      clearTimeout(this.deactivateTimer);
+      this.deactivateTimer = null;
+    }
+    // Bump noteSerial so any already-fired timeout becomes a no-op.
+    this.noteSerial++;
+    this.busy = false;
+    this.teardownOscChain();
   }
+
+  // ── Voice-pool / voice-stealing queries ──────────────────────────────────
+
+  /** True between noteOn and the release-tail-end deactivation. */
+  isBusy(): boolean { return this.busy; }
+
+  /** performance.now() of the last noteOn — used for oldest-first stealing. */
+  lastTriggeredAt(): number { return this.lastTriggerTime; }
+
+  /**
+   * Approximate node count currently held by this voice. Used by the engine's
+   * performance dashboard to report total live node pressure.
+   *  - Common nodes: 8 (always present)
+   *  - Per-osc nodes: osc + oscGain + (pan if usePan)
+   */
+  nodeCount(): number {
+    const common = 8;
+    const perOsc = this.osc.length + this.oscGain.length + this.pan.length;
+    return common + perOsc;
+  }
+
+  /** Current osc-chain mode (null when chain is torn down / idle). */
+  currentMode(): SynthMode | null { return this.oscMode; }
 }
 
 // ─── World-appropriate advanced presets ──────────────────────────────────────

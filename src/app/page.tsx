@@ -12,6 +12,7 @@ import {
   Zap, Brain, CheckCircle2, Music, Gauge, Waves, Sparkles, TrendingUp,
   TrendingDown, Target, ArrowUp, ArrowDown, Check, Shuffle,
   Cpu, SlidersHorizontal, Layers, Piano, ListMusic, AudioWaveform,
+  Fingerprint, ScanSearch, Wand2,
 } from 'lucide-react';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
@@ -112,6 +113,10 @@ export default function PSY4Page() {
   const [pursuitDashboard, setPursuitDashboard] = useState<any>(null);
   // Melody engine state (phrase position, tension, call-response).
   const [melodyState, setMelodyState] = useState<any>(null);
+  // ── Task A1: deep A/B analysis ──
+  // Detected effects + reference timbre + current timbre + comparison +
+  // unique elements + synthesis plan. Pulled via engine.getDeepAnalysis().
+  const [deepAnalysis, setDeepAnalysis] = useState<any>(null);
 
   // Refs
   const listenerRef = useRef<any>(null);
@@ -286,6 +291,10 @@ export default function PSY4Page() {
             if (engineRef.current?.getMelodyState) {
               setMelodyState(engineRef.current.getMelodyState());
             }
+            // ── Task A1: pull deep A/B analysis ──
+            if (engineRef.current?.getDeepAnalysis) {
+              try { setDeepAnalysis(engineRef.current.getDeepAnalysis()); } catch {}
+            }
           } catch {}
           // Track D: pull style classification + active world on every tick.
           // Optional chaining so we degrade gracefully if Track C isn't merged yet.
@@ -334,6 +343,7 @@ export default function PSY4Page() {
     setSynthChar(null); setSynthOverrides({}); setEffectsState(null);
     setCurrentChord(null); setProgressionInfo(null);
     setPursuitDashboard(null); setMelodyState(null);
+    setDeepAnalysis(null);
     prevDeltaRef.current = {};
     lastSwitchToastRef.current = '';
   }, []);
@@ -813,6 +823,424 @@ export default function PSY4Page() {
                 </TableBody>
               </Table>
               {(!refProfile || !selfMetrics) && <p className="text-[10px] text-amber-400 mt-2 font-mono">{!refProfile ? '⚠ Connect reference' : ''} {!selfMetrics ? '⚠ Start engine' : ''}</p>}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ─── DEEP A/B ANALYSIS (Task A1) ─── */}
+        {/* Massive expansion of the A/B comparison: detects EFFECTS
+            (reverb/delay/chorus/distortion/compression/filter), TIMBRE
+            fingerprints (spectral shape + harmonics + formants + signature),
+            UNIQUE ELEMENTS (risers/impacts/FX/vocal chops/glitches/stabs),
+            and the SYNTHESIS PLAN (mode routing + per-track sends + reasons).
+            Visible in analyze + train when the engine is running. */}
+        {(mode === 'analyze' || mode === 'train') && engineOn && (
+          <Card className="border-slate-800 bg-slate-900/60">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <ScanSearch className="w-4 h-4 text-fuchsia-400" />
+                DEEP A/B ANALYSIS
+                <span className="text-[10px] text-slate-500 font-mono ml-2">effects · timbre · unique · plan</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {(!deepAnalysis || (!deepAnalysis.effects && !deepAnalysis.refTimbre)) ? (
+                <div className="text-[11px] text-amber-400 font-mono py-6 text-center">
+                  ⚠ Waiting for reference features — connect a stream and the deep analysis
+                  (effects / timbre / unique elements / synthesis plan) appears here within ~10s.
+                </div>
+              ) : (
+                <>
+                  {/* ─── 1. EFFECTS ─── */}
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider font-mono mb-2 text-cyan-400 flex items-center gap-1">
+                      <Waves className="w-3 h-3" /> Effects Detection
+                    </div>
+                    {deepAnalysis.effects ? (
+                      <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                        <Table>
+                          <TableHeader>
+                            <TableRow className="border-slate-700">
+                              <TableHead className="text-slate-400 font-mono text-[10px]">EFFECT</TableHead>
+                              <TableHead className="text-fuchsia-400 font-mono text-[10px]">REFERENCE</TableHead>
+                              <TableHead className="text-cyan-400 font-mono text-[10px]">OUR ENGINE</TableHead>
+                              <TableHead className="text-amber-400 font-mono text-[10px]">DELTA</TableHead>
+                              <TableHead className="text-emerald-400 font-mono text-[10px]">MATCH</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {(() => {
+                              const e = deepAnalysis.effects;
+                              const ourEffects = deepAnalysis.currentTimbre;
+                              // Compute "our" effects proxy from the current timbre + per-track sends in pursuitDashboard.
+                              const ourReverb = pursuitDashboard?.effects?.reverbSend
+                                ? Math.max(...pursuitDashboard.effects.reverbSend.slice(5, 8).map((v: number) => v || 0))
+                                : 0;
+                              const ourDelay = pursuitDashboard?.effects?.delaySend
+                                ? Math.max(...pursuitDashboard.effects.delaySend.slice(5, 8).map((v: number) => v || 0))
+                                : 0;
+                              const ourChorus = pursuitDashboard?.effects?.chorusSend
+                                ? Math.max(...pursuitDashboard.effects.chorusSend.slice(5, 8).map((v: number) => v || 0))
+                                : 0;
+                              const ourDist = pursuitDashboard?.effects?.distortionSend
+                                ? Math.max(...pursuitDashboard.effects.distortionSend.slice(4, 8).map((v: number) => v || 0))
+                                : 0;
+                              const rows: [string, number, number, string][] = [
+                                ['Reverb',     e.reverbAmount,     ourReverb,  ''],
+                                ['Rev decay',  e.reverbDecay,      0,          's'],
+                                ['Delay',      e.delayAmount,      ourDelay,   ''],
+                                ['Delay time', e.delayTime,        0,          'ms'],
+                                ['Delay fb',   e.delayFeedback,    0,          ''],
+                                ['Chorus',     e.chorusAmount,     ourChorus,  ''],
+                                ['Chorus rate',e.chorusRate,       0,          'Hz'],
+                                ['Distortion', e.distortionAmount, ourDist,    ''],
+                                ['Compression',e.compressionAmount,0,         ''],
+                                ['Filter cut', e.filterCutoff,     0,          'Hz'],
+                                ['Filter res', e.filterResonance,  0,          ''],
+                                ['Stereo',     e.stereoWidth,      ourEffects?.spectralSpread ? Math.min(1, ourEffects.spectralSpread / 6000) : 0, ''],
+                              ];
+                              return rows.map(([label, ref, our, unit]) => {
+                                const refStr = ref > 0 ? (unit === 'Hz' || unit === 'ms' ? ref.toFixed(0) : ref.toFixed(2)) : '—';
+                                const ourStr = our > 0 ? (unit === 'Hz' || unit === 'ms' ? our.toFixed(0) : our.toFixed(2)) : '—';
+                                const delta = ref > 0 && our > 0 ? our - ref : null;
+                                const dColor = delta === null ? 'text-slate-500'
+                                  : Math.abs(delta) < 0.05 ? 'text-emerald-400'
+                                  : Math.abs(delta) < 0.15 ? 'text-amber-400'
+                                  : 'text-rose-400';
+                                const match = delta === null ? '—'
+                                  : Math.abs(delta) < 0.05 ? '✓'
+                                  : Math.abs(delta) < 0.15 ? '~'
+                                  : '✗';
+                                const matchColor = match === '✓' ? 'text-emerald-400'
+                                  : match === '~' ? 'text-amber-400'
+                                  : match === '✗' ? 'text-rose-400' : 'text-slate-500';
+                                return (
+                                  <TableRow key={label} className="border-slate-800">
+                                    <TableCell className="font-mono text-[10px] text-slate-300">{label}</TableCell>
+                                    <TableCell className="font-mono text-[10px] text-fuchsia-300">{refStr}{unit}</TableCell>
+                                    <TableCell className="font-mono text-[10px] text-cyan-300">{ourStr}{unit}</TableCell>
+                                    <TableCell className={`font-mono text-[10px] ${dColor}`}>
+                                      {delta === null ? '—' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)}${unit}`}
+                                    </TableCell>
+                                    <TableCell className={`font-mono text-[10px] font-bold ${matchColor}`}>{match}</TableCell>
+                                  </TableRow>
+                                );
+                              });
+                            })()}
+                          </TableBody>
+                        </Table>
+                        {deepAnalysis.effects.haasEffect && (
+                          <div className="text-[10px] text-fuchsia-400 font-mono mt-2">
+                            ⚡ Haas / double-track detected on reference (low correlation + wide stereo)
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-slate-500 font-mono">No effects detected yet.</div>
+                    )}
+                  </div>
+
+                  {/* ─── 2. TIMBRE FINGERPRINT ─── */}
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider font-mono mb-2 text-emerald-400 flex items-center gap-1">
+                      <Fingerprint className="w-3 h-3" /> Timbre Fingerprint
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {/* Reference vs our timbre side by side */}
+                      <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                        <Table>
+                          <TableHeader>
+                            <TableRow className="border-slate-700">
+                              <TableHead className="text-slate-400 font-mono text-[10px]">METRIC</TableHead>
+                              <TableHead className="text-fuchsia-400 font-mono text-[10px]">REF</TableHead>
+                              <TableHead className="text-cyan-400 font-mono text-[10px]">OURS</TableHead>
+                              <TableHead className="text-amber-400 font-mono text-[10px]">Δ</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {(() => {
+                              const r = deepAnalysis.refTimbre;
+                              const o = deepAnalysis.currentTimbre;
+                              if (!r) return null;
+                              const rows: [string, number, number, string, number][] = [
+                                ['Centroid',     r.spectralCentroid,    o?.spectralCentroid ?? 0,    'Hz', 200],
+                                ['Spread',       r.spectralSpread,      o?.spectralSpread ?? 0,      'Hz', 500],
+                                ['Skewness',     r.spectralSkewness,    o?.spectralSkewness ?? 0,    '',   0.3],
+                                ['Kurtosis',     r.spectralKurtosis,    o?.spectralKurtosis ?? 0,    '',   1.5],
+                                ['Flux',         r.spectralFlux,        o?.spectralFlux ?? 0,        '',   0.15],
+                                ['f0',           r.fundamentalFrequency,o?.fundamentalFrequency ?? 0,'Hz', 30],
+                                ['Inharmonicity',r.inharmonicity,       o?.inharmonicity ?? 0,       '',   0.1],
+                                ['Odd:Even',     r.oddEvenRatio,        o?.oddEvenRatio ?? 0,        '',   0.3],
+                                ['Attack',       r.attackTime,          o?.attackTime ?? 0,          'ms', 5],
+                              ];
+                              return rows.map(([label, rv, ov, unit, tol]) => {
+                                const delta = rv > 0 && ov > 0 ? ov - rv : null;
+                                const dColor = delta === null ? 'text-slate-500'
+                                  : Math.abs(delta) <= tol ? 'text-emerald-400'
+                                  : Math.abs(delta) <= tol * 3 ? 'text-amber-400'
+                                  : 'text-rose-400';
+                                return (
+                                  <TableRow key={label} className="border-slate-800">
+                                    <TableCell className="font-mono text-[10px] text-slate-300">{label}</TableCell>
+                                    <TableCell className="font-mono text-[10px] text-fuchsia-300">
+                                      {rv > 0 ? (unit === 'Hz' || unit === 'ms' ? rv.toFixed(0) : rv.toFixed(2)) : '—'}{unit}
+                                    </TableCell>
+                                    <TableCell className="font-mono text-[10px] text-cyan-300">
+                                      {ov > 0 ? (unit === 'Hz' || unit === 'ms' ? ov.toFixed(0) : ov.toFixed(2)) : '—'}{unit}
+                                    </TableCell>
+                                    <TableCell className={`font-mono text-[10px] ${dColor}`}>
+                                      {delta === null ? '—' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)}`}
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              });
+                            })()}
+                          </TableBody>
+                        </Table>
+                        {/* Signatures + formants + comparison */}
+                        <div className="mt-3 space-y-2 text-[10px] font-mono">
+                          <div className="flex flex-wrap gap-2">
+                            <span className="text-slate-500">REF sig:</span>
+                            <span className="text-fuchsia-300 font-bold">{deepAnalysis.refTimbre?.signature ?? '—'}</span>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <span className="text-slate-500">OURS sig:</span>
+                            <span className="text-cyan-300 font-bold">{deepAnalysis.currentTimbre?.signature ?? '—'}</span>
+                          </div>
+                          {deepAnalysis.refTimbre?.formants && deepAnalysis.refTimbre.formants.length > 0 && (
+                            <div className="flex flex-wrap gap-2">
+                              <span className="text-slate-500">REF formants:</span>
+                              {deepAnalysis.refTimbre.formants.map((f: any, i: number) => (
+                                <span key={i} className="text-emerald-300 px-1.5 py-0.5 bg-emerald-950 border border-emerald-800 rounded text-[9px]">
+                                  {f.freq.toFixed(0)}Hz · {(f.amp * 100).toFixed(0)}%
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Similarity + matching traits + differences */}
+                      <div className="bg-slate-950 border border-slate-800 rounded p-3 space-y-3">
+                        <div>
+                          <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Similarity</div>
+                          <div className="flex items-baseline justify-between">
+                            <span className={`text-2xl font-bold font-mono ${
+                              (deepAnalysis.timbreComparison?.similarity ?? 0) > 0.7 ? 'text-emerald-300'
+                              : (deepAnalysis.timbreComparison?.similarity ?? 0) > 0.4 ? 'text-amber-300'
+                              : 'text-rose-300'
+                            }`}>
+                              {deepAnalysis.timbreComparison ? `${Math.round(deepAnalysis.timbreComparison.similarity * 100)}%` : '—'}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">target ≥ 70%</span>
+                          </div>
+                          {deepAnalysis.timbreComparison && (
+                            <div className="mt-2">
+                              <MiniBar
+                                value={deepAnalysis.timbreComparison.similarity}
+                                max={1}
+                                color={(deepAnalysis.timbreComparison.similarity ?? 0) > 0.7 ? 'bg-emerald-500' : (deepAnalysis.timbreComparison.similarity ?? 0) > 0.4 ? 'bg-amber-500' : 'bg-rose-500'}
+                              />
+                            </div>
+                          )}
+                        </div>
+                        {deepAnalysis.timbreComparison?.matchingTraits && deepAnalysis.timbreComparison.matchingTraits.length > 0 && (
+                          <div>
+                            <div className="text-[10px] text-emerald-400 uppercase tracking-wider font-mono mb-1">Matching Traits</div>
+                            <ul className={`space-y-1 text-[10px] font-mono text-slate-300 ${scrollList}`}>
+                              {deepAnalysis.timbreComparison.matchingTraits.map((t: string, i: number) => (
+                                <li key={i} className="flex gap-1.5">
+                                  <Check className="w-3 h-3 mt-0.5 flex-shrink-0 text-emerald-400" />
+                                  <span>{t}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {deepAnalysis.timbreComparison?.differences && deepAnalysis.timbreComparison.differences.length > 0 && (
+                          <div>
+                            <div className="text-[10px] text-rose-400 uppercase tracking-wider font-mono mb-1">Differences</div>
+                            <ul className={`space-y-1 text-[10px] font-mono text-slate-300 ${scrollList}`}>
+                              {deepAnalysis.timbreComparison.differences.map((d: string, i: number) => (
+                                <li key={i} className="flex gap-1.5">
+                                  <ArrowDown className="w-3 h-3 mt-0.5 flex-shrink-0 text-rose-400" />
+                                  <span>{d}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ─── 3. UNIQUE ELEMENTS ─── */}
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider font-mono mb-2 text-amber-400 flex items-center gap-1">
+                      <Sparkles className="w-3 h-3" /> Unique Elements
+                      <span className="text-slate-500 ml-1">({deepAnalysis.uniqueElements?.length ?? 0} detected · history {deepAnalysis.historyLength ?? 0} windows)</span>
+                    </div>
+                    {deepAnalysis.uniqueElements && deepAnalysis.uniqueElements.length > 0 ? (
+                      <div className={`space-y-1.5 ${scrollList}`}>
+                        {deepAnalysis.uniqueElements.map((u: any, i: number) => {
+                          const typeColor: Record<string, string> = {
+                            riser: 'bg-emerald-950 border-emerald-700 text-emerald-300',
+                            impact: 'bg-rose-950 border-rose-700 text-rose-300',
+                            fx: 'bg-fuchsia-950 border-fuchsia-700 text-fuchsia-300',
+                            vocalChop: 'bg-cyan-950 border-cyan-700 text-cyan-300',
+                            reverseHit: 'bg-amber-950 border-amber-700 text-amber-300',
+                            glitch: 'bg-purple-950 border-purple-700 text-purple-300',
+                            sweep: 'bg-teal-950 border-teal-700 text-teal-300',
+                            stab: 'bg-orange-950 border-orange-700 text-orange-300',
+                          };
+                          return (
+                            <div key={i} className={`border rounded p-2 text-[10px] font-mono ${typeColor[u.type] || 'bg-slate-950 border-slate-700 text-slate-300'}`}>
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <span className="font-bold uppercase">{u.type}</span>
+                                <span className="opacity-70">
+                                  {(u.duration / 1000).toFixed(1)}s · {u.frequency.toFixed(0)}Hz · conf {(u.confidence * 100).toFixed(0)}%
+                                </span>
+                              </div>
+                              <div className="text-[9px] opacity-80 mt-0.5">{u.description}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-slate-500 font-mono bg-slate-950 border border-slate-800 rounded p-3">
+                        No unique elements detected yet — risers / impacts / FX sweeps / vocal chops will appear here as
+                        the engine accumulates feature history (needs ≥2 analysis windows).
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ─── 4. SYNTHESIS PLAN ─── */}
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider font-mono mb-2 text-fuchsia-400 flex items-center gap-1">
+                      <Wand2 className="w-3 h-3" /> Synthesis Plan
+                      <span className="text-slate-500 ml-1">(auto-applied every 10s · {deepAnalysis.synthPlan?.adjustments?.length ?? 0} adjustments queued)</span>
+                    </div>
+                    {deepAnalysis.synthPlan ? (
+                      <div className="space-y-3">
+                        {/* Mode routing */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          {(() => {
+                            const p = deepAnalysis.synthPlan;
+                            const modes: [string, string][] = [
+                              ['LEAD', p.leadMode],
+                              ['PAD',  p.padMode],
+                              ['ARP',  p.arpMode],
+                              ['BASS', p.bassMode],
+                            ];
+                            return modes.map(([name, m]) => (
+                              <div key={name} className="bg-slate-950 border border-slate-800 rounded p-2 text-center">
+                                <div className="text-[9px] text-slate-500 uppercase font-mono">{name}</div>
+                                <div className={`mt-1 inline-block px-1.5 py-0.5 rounded text-[10px] font-mono font-bold border ${modeColor(m)}`}>
+                                  {(m || 'classic').toUpperCase()}
+                                </div>
+                              </div>
+                            ));
+                          })()}
+                        </div>
+
+                        {/* Effect routing grid */}
+                        <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                          <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-2">Effect Routing (send levels)</div>
+                          <div className="overflow-x-auto">
+                            <Table>
+                              <TableHeader>
+                                <TableRow className="border-slate-700">
+                                  <TableHead className="text-slate-400 font-mono text-[10px] sticky left-0 bg-slate-950">SEND</TableHead>
+                                  <TableHead className="text-amber-400 font-mono text-[10px]">LEAD</TableHead>
+                                  <TableHead className="text-amber-400 font-mono text-[10px]">PAD</TableHead>
+                                  <TableHead className="text-amber-400 font-mono text-[10px]">ARP</TableHead>
+                                  <TableHead className="text-amber-400 font-mono text-[10px]">BASS</TableHead>
+                                  <TableHead className="text-amber-400 font-mono text-[10px]">DRUMS</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {(() => {
+                                  const p = deepAnalysis.synthPlan;
+                                  const rows: [string, any][] = [
+                                    ['Reverb',     p.effects.reverb],
+                                    ['Delay',      p.effects.delay],
+                                    ['Chorus',     p.effects.chorus],
+                                    ['Phaser',     p.effects.phaser],
+                                    ['Distortion', p.effects.distortion],
+                                  ];
+                                  return rows.map(([name, sends]) => {
+                                    const vals = [
+                                      sends.lead ?? 0, sends.pad ?? 0, sends.arp ?? 0,
+                                      sends.bass ?? 0, sends.drums ?? 0,
+                                    ];
+                                    return (
+                                      <TableRow key={name} className="border-slate-800">
+                                        <TableCell className="font-mono text-[10px] text-slate-300 sticky left-0 bg-slate-950">{name}</TableCell>
+                                        {vals.map((v, i) => (
+                                          <TableCell key={i} className="font-mono text-[10px]">
+                                            <div className="flex items-center gap-1.5">
+                                              <span className={v > 0.05 ? 'text-cyan-300' : 'text-slate-600'}>
+                                                {(v * 100).toFixed(0)}
+                                              </span>
+                                              <div className="w-12 h-1.5 bg-slate-800 rounded overflow-hidden">
+                                                <div
+                                                  className={`h-full rounded ${v > 0.3 ? 'bg-emerald-500' : v > 0.1 ? 'bg-amber-500' : 'bg-slate-700'}`}
+                                                  style={{ width: `${Math.min(100, v * 100).toFixed(1)}%` }}
+                                                />
+                                              </div>
+                                            </div>
+                                          </TableCell>
+                                        ))}
+                                      </TableRow>
+                                    );
+                                  });
+                                })()}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        </div>
+
+                        {/* Adjustments list with reasons */}
+                        {deepAnalysis.synthPlan.adjustments && deepAnalysis.synthPlan.adjustments.length > 0 && (
+                          <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                            <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-2">Adjustments</div>
+                            <ul className={`space-y-1 text-[10px] font-mono ${scrollList}`}>
+                              {deepAnalysis.synthPlan.adjustments.map((a: any, i: number) => {
+                                const trackName = a.track === -1 ? 'MASTER' : (TRACK_NAMES[a.track] ?? `T${a.track}`);
+                                return (
+                                  <li key={i} className="flex gap-2 items-start">
+                                    <span className="px-1.5 py-0.5 bg-slate-800 rounded text-[9px] text-slate-300 flex-shrink-0">
+                                      {trackName}
+                                    </span>
+                                    <span className="px-1.5 py-0.5 bg-slate-800 rounded text-[9px] text-fuchsia-300 flex-shrink-0">
+                                      {a.param}
+                                    </span>
+                                    <span className="text-slate-500 flex-shrink-0">
+                                      {typeof a.currentValue === 'number' && a.currentValue > 0 ? a.currentValue.toFixed(2) : '—'} → {a.targetValue.toFixed(2)}
+                                    </span>
+                                    <span className="text-slate-400">{a.reason}</span>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-slate-500 font-mono bg-slate-950 border border-slate-800 rounded p-3">
+                        No synthesis plan yet — appears once reference effects + timbre are detected.
+                      </div>
+                    )}
+                  </div>
+
+                  <p className="text-[10px] text-slate-500 font-mono">
+                    <ScanSearch className="w-3 h-3 inline mr-1" />
+                    Engine runs the effects detector + timbre fingerprint + uniqueness detector + synthesis router on every
+                    reference update (every ~10s). Modes + sends auto-apply every 10s (anti-thrash). The dashboard updates
+                    live — wait for ≥2 analysis windows for unique-element detection.
+                  </p>
+                </>
+              )}
             </CardContent>
           </Card>
         )}

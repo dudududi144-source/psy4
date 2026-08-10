@@ -1,0 +1,300 @@
+
+Changes to `/home/z/my-project/src/app/page.tsx`:
+
+CHANGE 1 — SYNTHESIS CHARACTER card (visible in `listen` + `analyze`):
+- 8-cell grid of track mode badges (KICK/SNARE/HATS/PERC/BASS/LEAD/PAD/ARP).
+- Each cell shows the effective mode: synth override first, then synthChar.tracks[idx].mode, then TRACK_DEFAULT_MODE (mirrors applyWorldPresets).
+- Color-coded badges: FM = rose, supersaw = amber, wavetable = emerald, classic = slate (NO indigo/blue).
+- "Override" badge on tracks with a live synthModeOverrides entry.
+- Two-column detail panel: detected character (mode + confidence bar) + mode-specific params (FM depth 0-8 bar / saw spread 0-1 bar / wavetable position 0-1 bar / classic description).
+- Reasons bullet list with max-h-96 overflow-y-auto + scrollList styling.
+- Falls back to "Detailed character detection unavailable" if T1 hasn't shipped getSynthesisCharacter().
+
+CHANGE 2 — EFFECTS MATRIX card (visible in `analyze`):
+- 8-row × 11-column table: TRACK, EQ LOW, EQ MID, EQ HIGH, COMP threshold, SAT drive + mini-bar, CHORUS / PHASER / DIST / REVERB / DELAY mini-bars.
+- EQ cells colored by magnitude (emerald < 1 dB, amber < 4 dB, rose ≥ 4 dB).
+- Sticky left column for track names so the table scrolls horizontally on mobile.
+- Falls back to "Effects state unavailable" with a hint that T1 will wire `getEffectsState()`.
+
+CHANGE 3 — HARMONY card (visible in `analyze`):
+- Current chord display: root note name (e.g. "A") + chord type label ("min7", "maj9", "sus4", etc.) + degree + inversion label (root/1st inv/2nd inv/3rd inv).
+- Chord notes as a flex-wrap row of MIDI→note-name badges (e.g. "A3, C4, E4, G4").
+- Progression view: chips for each chord in the current section, with the current chord highlighted in emerald.
+- Voicing: bass note + upper voices (slice(1)) as note names.
+- Falls back gracefully when getCurrentProgression() is unavailable — shows "Progression view unavailable" note but still shows the current chord.
+- Falls back to "No chord playing yet" if currentChord is null (before first lead-section bar).
+
+CHANGE 4 — DEEP PURSUIT card (visible in `analyze`, only when pursuitDashboard is populated):
+- 3-column grid of metric groups: Harmonic Content (emerald header), Transient Shape (amber header), Stereo Field (fuchsia header).
+- Each row: label, radio target, engine actual, delta, convergence arrow.
+- Delta color-coded: emerald ≤ tol, amber ≤ 3×tol, rose > 3×tol.
+- Arrow: ↗ converging (delta shrinking), ↘ diverging (delta growing), ✓ locked (within tol), · idle.
+- Only renders when T1's getPursuitDashboard() returns an object with `harmonic`/`transient`/`stereo` arrays — the existing basic REFERENCE PURSUIT card (with kick/centroid/transient/bpm rows) stays in place below for backwards compatibility.
+
+CHANGE 5 — MELODY card (visible in `analyze`):
+- 3-column grid: Phrase Position (A / A' / B / A'' + phrase counter), Tension (0-100% + bar), Call/Response (ACTIVE/idle + motif note count).
+- AudioWaveform icon next to ACTIVE state.
+- Tension bar colored fuchsia (NOT indigo/blue).
+- Falls back to "Melody state unavailable" with a hint that T1 will wire `getMelodyState()`.
+
+CHANGE 6 — Visual polish:
+- All new cards use existing shadcn Card/CardHeader/CardTitle/CardContent, Badge, and Table components.
+- Monospace `font-mono` on every numeric value (dB, Hz, %, MIDI notes, ratios).
+- Color palette: emerald (good), amber (close), rose (far), fuchsia (primary accent), cyan (engine), slate (neutral). NO indigo, NO blue.
+- Responsive: grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 for synthesis mode grid; grid-cols-1 md:grid-cols-3 for harmony/deep-pursuit/melody grids; sticky left column on effects matrix for horizontal scroll on mobile.
+- Long reasons list uses existing `scrollList` className (max-h-96 overflow-y-auto + thin scrollbar).
+- Sticky footer preserved (mt-auto on footer, min-h-screen flex flex-col on root wrapper).
+- Footer caption updated: "PSY4 · Engine V2 · Synthesis · Effects · Harmony · Deep Pursuit · Melody · Style Detection · A/B Spectral".
+
+Polling wiring:
+- Added 7 new state vars: `synthChar`, `synthOverrides`, `effectsState`, `currentChord`, `progressionInfo`, `pursuitDashboard`, `melodyState`.
+- Wired pulls in the existing `a.onMetrics` polling closure (runs ~10Hz when engine is on). All pulls are optional-chained: `if (engineRef.current?.getSynthesisCharacter) { ... }`. Each pull is wrapped in a single try/catch so a thrown error in one pull doesn't block the others.
+- `stopEngine` resets all 7 new state vars to null/empty so stale data doesn't persist after engine stop.
+- Added helpers: `midiToName(m)` (MIDI → "C4" notation), `CHORD_TYPE_LABEL` map (triad→'', maj7→'maj7', etc.), `INVERSION_LABEL` array, `TRACK_NAMES` + `TRACK_DEFAULT_MODE`, `modeColor(mode)` + `modeTextColor(mode)`, `effectiveMode(trackIdx)` (override → synthChar → default), `deltaColor(delta, tol)`, and `MiniBar` component for 0..max normalized progress bars.
+
+Constraints honored:
+- Did NOT touch the radio connect/disconnect/proxy flow, the engine start/stop, the ContinuousTrainer wiring, the style detection / auto-switch logic, the existing A/B COMPARISON, A/B SPECTRAL VISUALIZATION, REFERENCE PURSUIT, CONTINUOUS LEARNING, or LIVE METRICS cards. All existing functionality preserved.
+- TypeScript strict mode passes — `npx tsc --noEmit --skipLibCheck 2>&1 | grep "page.tsx"` returns EMPTY.
+- ESLint passes — `npx eslint src/app/page.tsx --max-warnings=999` returns EMPTY (0 errors, 0 warnings on page.tsx).
+- Dev server compiles cleanly — dev.log shows "✓ Compiled in 2.2s" with no errors after the changes.
+- Optional chaining used on every new engine method (`getSynthesisCharacter`, `getEffectsState`, `getCurrentProgression`, `getChordIdx`, `getPursuitDashboard`, `getMelodyState`) so the page renders correctly whether or not T1 has shipped them yet.
+- The `getSynthModeOverrides()`, `getCurrentChord()`, and `getHarmony()` getters are guaranteed to exist (S1/H1 work), so the SYNTHESIS card's per-track mode grid and the HARMONY card's current-chord display will always populate — even before T1 ships.
+- Color palette: NO indigo, NO blue. Emerald/amber/rose/fuchsia/cyan/slate only.
+- Sticky footer preserved (mt-auto on footer, min-h-screen flex flex-col on root wrapper).
+- Long lists: max-h-96 overflow-y-auto with custom thin scrollbar.
+
+Stage Summary:
+- The dashboard now exposes 5 new visualization panels to the user:
+    1. SYNTHESIS — per-track mode badges (FM/supersaw/wavetable/classic) + confidence + FM depth / saw spread / wavetable position bars + reasons.
+    2. EFFECTS MATRIX — 8-track × 11-column matrix of EQ/comp/sat + 5 send levels with mini-bars and magnitude-colored cells.
+    3. HARMONY — current chord (root + type + inversion), chord notes as note-name badges, progression with current-chord highlight, voicing display.
+    4. DEEP PURSUIT — 3-column target/actual/delta grid for harmonic content, transient shape, and stereo field metrics with convergence arrows.
+    5. MELODY — phrase position (A/A'/B/A''), tension %, call-response state.
+- All panels degrade gracefully when T1's getters aren't wired yet — the SYNTHESIS card shows per-track world-default modes (always works via getSynthModeOverrides), the HARMONY card shows the current chord (always works via getCurrentChord), and the others show clear "unavailable" placeholders with hints about which engine method will populate them.
+- The dashboard is fully responsive (stacks on mobile, multi-column on desktop), uses monospace for all numerics, color-codes deltas (emerald/amber/rose), and avoids indigo/blue entirely.
+- Full work record saved to /home/z/my-project/agent-ctx/I1-UI-z-ai-code.md.
+
+---
+Task ID: T1
+Agent: Z.ai Code (Spectral pursuit track)
+Task: Expand the spectral pursuit to detect harmonic content (spectral flatness/crest, HNR, inharmonicity, slope), transient shape (sharpness, decay), and stereo field (balance, correlation, M/S ratio) from the radio. Drive the new synthesis modes (FM/supersaw/wavetable from S1) and effects parameters (from E1) so the engine matches the radio's SOUND CHARACTER, not just BPM and key. Add a synthesis-mode detector (pure function) and a pursuit-dashboard data method for UI display.
+
+Work Log:
+
+T1.1 — Read the existing assets:
+- `referenceListener.ts`: ReferenceMetrics interface has spectralCentroid, spectralFlatness, spectralRolloff, transientDensity, stereoWidth, kickDecayMs, bassDecayMs, plus detectedKey/BassNote/Style. NO harmonic-content / transient-shape / stereo-field descriptors.
+- `referenceListenerV2.ts::extractFeaturesFromBuffer()`: has a real FFT pipeline (Hann window + power spectrum averaged over hops), transient detection with minGapSamples, BPM via autocorrelation, kick decay via RMS window tracking, stereo width via 1 - |L·R correlation|. The signed L·R correlation is computed but discarded (only its magnitude is used for stereoWidth).
+- `styleClassifier.ts::RefFeatures`: bpm, spectralCentroid, 5 band energies, transientDensity, kickDecayMs, bassDecayMs, stereoWidth, energy, detectedKey. NO nested subobjects.
+- `psy4EngineV2.ts::liveTrack()`: accepts the legacy fields only; stores refKickDecay, refSpectralCentroid, refTransientDensity, refSubEnergy, refHighEnergy, refBassDecay, refLowEnergy, refMidEnergy, refAirEnergy, refStereoWidth, refBpm, refEnergy, refKeyScale. Plus the existing sub/high energy balancing via trackGains[].gain.setTargetAtTime.
+- `psy4EngineV2.ts::setSynthMode/setFMDepth/setWavetablePosition` (Task S1): exposed but UNUSED by any pursuit code. The worklog explicitly noted: "The reference pursuit does NOT yet auto-detect FM/supersaw/wavetable content from the radio. Wiring this requires ... inharmonicity analysis — separate task." That task is T1.
+- `psy4EngineV2.ts::setTrackEffect/setSendLevel/setSendEffectParam/setMasterParam` (Task E1): exposed but UNUSED by any pursuit code. Same gap as S1.
+- `psy4EngineV2.ts::buildRefFeatures()`: builds the RefFeatures snapshot for the style classifier, but doesn't include any of the new timbral/shape/stereo descriptors.
+
+T1.2 — Extended ReferenceMetrics + ReferenceProfile (`referenceListener.ts`):
+- Added 9 optional fields to ReferenceMetrics: spectralCrest, hnr, inharmonicity, spectralSlopeDb, transientSharpness, transientDecayMs, stereoBalance, stereoCorrelation, msRatio. All optional so the V1 listener (which doesn't compute them) remains valid.
+- Added matching optional stat blocks ({ mean, p10, p90 }) to ReferenceProfile: spectralCrest, hnr, inharmonicity, spectralSlopeDb, transientSharpness, transientDecayMs, stereoBalance, stereoCorrelation, msRatio.
+- Fixed pre-existing TS 5.7+ Uint8Array<ArrayBuffer> tightening errors at lines 375-376 (AnalyserNode.getByteFrequencyData parameter). Changed field declarations from `Uint8Array | null` to `Uint8Array<ArrayBuffer> | null` and allocated via `new Uint8Array(new ArrayBuffer(n))`. These were pre-existing errors documented in E1's worklog ("Pre-existing TS errors in OTHER files (... referenceListener ...) are unchanged — none of these files were touched by E1"). T1 touched referenceListener.ts (to add the interface fields), so the spec's "should be empty" requirement applied; fixed them.
+
+T1.3 — Extended RefFeatures (`styleClassifier.ts`):
+- Added three optional nested subobjects to RefFeatures:
+    harmonicContent?: { flatness, crest, hnr, inharmonicity, slope }
+    transientShape?:  { sharpness, decay }
+    stereoField?:     { width, balance, correlation, msRatio }
+- All optional — the synthesis-mode detector gracefully degrades to 'classic' with confidence 0 when these are absent. Existing callers of classifyStyle() are unaffected (the new fields aren't read by the style classifier yet — that's a separate concern).
+
+T1.4 — Implemented the analysis in `referenceListenerV2.ts::extractFeaturesFromBuffer()`:
+- Spectral crest: peak magnitude / mean magnitude. Single pass over avgMag.
+- Spectral slope (dB/oct): linear regression on ln(freq) vs ln(mag), converted via `b * ln(2) * 20 / ln(10)`. Bins below 80 Hz skipped (DC/sub interference). Clamped to -36..+6.
+- Fundamental frequency (f0): Harmonic Product Spectrum — multiply downsampled spectra (depth 4) over 80-2000 Hz, pick the bin with the largest product. Used by HNR + inharmonicity.
+- HNR (0..1): sum energy in ±2-bin windows around the first 10 harmonic bins (f0, 2·f0, ..., 10·f0) divided by total spectral energy above threshold.
+- Inharmonicity (0..1): find spectral peaks (local maxima ≥ 3× mean); for each peak above f0, compute relative deviation from the nearest integer harmonic; mean deviation × 5 (so 20% deviation → 1.0).
+- Transient sharpness (0..1): for each detected transient, measure attack rise time (10%→90% of peak); sharpness = 1 - rise/30ms. Capped look-back at 30ms.
+- Transient decay (ms): for each detected transient, find time to drop to 10% of peak; averaged. Capped look-ahead at 300ms.
+- Stereo balance (-1..1): (R_energy - L_energy) / (L+R), reusing the lEnergy/rEnergy already computed for stereoWidth.
+- Stereo correlation (-1..1): the SIGNED L·R correlation (was previously only used via Math.abs for stereoWidth). Now stored as its own field.
+- M/S ratio (0..1): side energy / (mid + side) energy, computed via a strided loop (caps analysis samples at 50000 for efficiency).
+- Added module-level `clampT1(v, lo, hi)` helper that guards against NaN/Infinity (the existing inline `Math.max(0, Math.min(1, ...))` patterns don't guard NaN).
+- Updated `extractFeaturesFromBuffer()` return to include the 9 new fields.
+- Updated `updateProfile()` to include rolling stats for the 9 new fields via a new `optionalStats(key)` helper that filters out undefined/NaN values from the windows array (so older windows that don't have the new fields don't pollute the means).
+
+T1.5 — Created `synthesisDetector.ts` (~210 lines, new):
+- Pure function `detectSynthesisCharacter(features: RefFeatures): SynthesisCharacter`.
+- SynthesisCharacter interface: mode ('fm'|'supersaw'|'wavetable'|'classic'), confidence (0..1), reasons (string[] up to 4), fmDepth (0..8), sawSpread (0..1), wtPosition (0..1).
+- Detection logic — each branch contributes evidence 0..1:
+    FM: high inharmonicity (>0.30) contributes up to 0.7; high spectral crest (>5) up to 0.2; sharp transients (>0.6) up to 0.1. fmDepth derived: 0.30 inharmonicity → 2, 1.0 → 8.
+    SUPERSAW: low inharmonicity + high HNR (>0.45) up to 0.4; wide stereo (correlation 0.3-0.7 OR msRatio >0.15) up to 0.5; moderate crest (3-8) +0.1. sawSpread = 0.3 + width·0.6.
+    WAVETABLE: moderate inharmonicity (0.10-0.40) + mid HNR (0.25-0.65) +0.4; balanced slope (-10..-22 dB/oct) +0.15; width >0.3 +0.1. wtPosition derived from centroid via log-scale (400 Hz → 0, 8000 Hz → 1).
+    CLASSIC: floor of 0.15 (always wins ties); +0.2 if low inharmonicity + HNR >0.3; +0.2 if correlation >0.7 (near-mono); +0.1 if slope < -22 (very dark).
+- Picks the mode with the highest evidence; confidence = winner_ev / total_ev (normalized).
+- All inputs guarded via `num()` helper that returns 0 for missing/NaN fields. The function NEVER throws and ALWAYS returns a finite, clamped SynthesisCharacter.
+- If harmonicContent is absent entirely, returns 'classic' with confidence 0 (so the engine leaves its per-world preset selection alone).
+
+T1.6 — Wired into `psy4EngineV2.ts`:
+- Imported `detectSynthesisCharacter` + `SynthesisCharacter` from `./synthesisDetector`.
+- Added 10 new private storage fields for the extended reference metrics: refSpectralFlatness, refSpectralCrest, refHnr, refInharmonicity, refSpectralSlopeDb, refTransientSharpness, refTransientDecayMs, refStereoBalance, refStereoCorrelation, refMsRatio. All clamped on store.
+- Added synthesis-pursuit state: detectedSynthesisCharacter (SynthesisCharacter | null), lastSynthModeSwitchTime (number), SYNTH_MODE_COOLDOWN_MS = 20_000, SYNTH_CONFIDENCE_THRESHOLD = 0.5.
+- Added LUFS-history tracker for compression-pursuit proxy: recentLufsValues (number[]), LUFS_HISTORY_MAX = 8.
+- Extended `liveTrack()` parameter type with 9 new optional fields (spectralFlatness, spectralCrest, hnr, inharmonicity, spectralSlopeDb, transientSharpness, transientDecayMs, stereoBalance, stereoCorrelation, msRatio). All guarded with `isFinite()` and clamped on store.
+- `liveTrack()` now also pushes the incoming LUFS into recentLufsValues (capped at 8 entries).
+- `liveTrack()` calls two new private methods at the end: `applySynthesisPursuit()` and `applyEffectsPursuit()`.
+
+T1.7 — `applySynthesisPursuit()` (new private method):
+- Builds the RefFeatures snapshot via `buildRefFeatures()` (now extended with harmonicContent/transientShape/stereoField subobjects).
+- Calls `detectSynthesisCharacter(features)` and ALWAYS stores the result in `detectedSynthesisCharacter` (so the UI can show what the detector thinks, even when we don't act on it).
+- If confidence < 0.5: no-op (leave the per-world preset selection alone).
+- If confidence ≥ 0.5 AND the 20-second cooldown has elapsed AND mode ≠ 'classic': call `setSynthMode(5, character.mode)` (lead track). Log the switch.
+- If confidence ≥ 0.5 AND cooldown elapsed AND mode === 'classic': clear any active override via `setSynthMode(5, null)` so the per-world preset takes over.
+- Mid-cooldown: skip the mode switch but STILL tune the mode-specific parameter (FM depth / wavetable position) below.
+- Always tunes the mode-specific parameter: if mode === 'fm' && fmDepth > 0 → `setFMDepth(fmDepth)`; if mode === 'wavetable' && wtPosition ≥ 0 → `setWavetablePosition(wtPosition)`. Clears stale overrides when leaving a mode (setFMDepth(0) / setWavetablePosition(-1)).
+
+T1.8 — `applyEffectsPursuit()` (new private method):
+Drives the Task E1 effects control surface from the extended reference features. Five independent, guarded branches:
+- REVERB SEND: long kickDecay + wide stereo → boost per-track reverb sends on music bus (LEAD/PAD/ARP, +0.18 max) and atmos bus (SNARE/HATS/PERC, +0.10 max). Via `setSendLevel(ti, 'reverb', clamp(...))`.
+- BRIGHTNESS: high centroid (>3500 Hz) → boost high-shelf EQ on LEAD/ARP (+3 dB max); low centroid (<1500 Hz) → cut high-shelf on melodic, boost low-shelf on BASS (+2 dB max). Via `setTrackEffect(ti, 'eqHighGain'|'eqLowGain', ...)`.
+- AIR: high airEnergy (>0.4) → boost high-shelf on HATS (+2.5 dB + extra). Via `setTrackEffect(2, 'eqHighGain', ...)`.
+- STEREO WIDTH: low correlation (<0.5) → lengthen Haas delay on LEAD/PAD/ARP (9..22 ms) and boost Haas mix (0.5..0.9); high correlation (>0.8) → reduce Haas mix toward mono (0.2). Via `setTrackEffect(ti, 'haasDelayMs'|'haasMix', ...)`.
+- COMPRESSION: small LUFS swing (<2 dB over recent 8 windows) → push master mid ratio to 3-5:1 and high ratio to 2-3:1 (the radio is "glued"); wide swing (>6 dB) → relax mid ratio to 2:1. Via `setMasterParam('midRatio'|'highRatio', ...)`.
+- TRANSIENT SHARPNESS: sharp transients (>0.7) → boost distortion send on LEAD (+0.15 max). Via `setSendLevel(5, 'distortion', ...)`.
+
+T1.9 — `buildRefFeatures()` extended:
+- Now attaches the optional nested subobjects:
+    harmonicContent: { flatness, crest, hnr, inharmonicity, slope } — only when at least one of (crest, hnr, inharmonicity, flatness) is non-zero (so the detector can distinguish "no analysis done yet" from "analysis done, classic mode detected").
+    transientShape: { sharpness, decay } — only when at least one is non-zero.
+    stereoField: { width, balance, correlation, msRatio } — always attached (stereoWidth is always present, even if 0).
+- Removed the duplicate buildRefFeatures method (the old one without the nested subobjects is gone).
+
+T1.10 — Added 2 public methods for UI display:
+- `getSynthesisCharacter(): SynthesisCharacter | null` — returns the latest detector output (always reflects the most recent call, regardless of whether we acted on it).
+- `getPursuitDashboard()` — returns a complete dashboard object:
+    kickDecay, centroid, transientDensity, bpm, key (existing pursuit targets paired target/actual)
+    harmonicContent: { flatness, crest, hnr, inharmonicity, slope }
+    transientShape: { sharpness, decay }
+    stereoField: { width, balance, correlation, msRatio }
+    synthesis: { mode, confidence, fmDepth, sawSpread, wtPosition }
+    effects: { reverbSend, delaySend, chorusSend, phaserSend, distortionSend } (per-track arrays of current send gain values, read directly from each rack's public readonly GainNodes)
+
+T1.11 — Updated `src/app/page.tsx`:
+- Extended the `engineRef.current.liveTrack({...})` call to pass the 9 new optional fields (spectralCrest, hnr, inharmonicity, spectralSlopeDb, transientSharpness, transientDecayMs, stereoBalance, stereoCorrelation, msRatio) from the V2 listener's metrics. All optional — gracefully no-ops when the listener doesn't populate them.
+
+Verification:
+- `npx tsc --noEmit --skipLibCheck 2>&1 | grep -E "synthesisDetector|referenceListener|psy4EngineV2"` → EMPTY (zero TS errors in any touched file). Also fixed 2 pre-existing TS 5.7+ Uint8Array<ArrayBuffer> tightening errors in referenceListener.ts that were previously documented as "pre-existing" — they're now resolved since T1 touched that file.
+- `npx eslint src/lib/studio/engine/synthesisDetector.ts src/lib/studio/engine/reference/referenceListener.ts src/lib/studio/engine/reference/referenceListenerV2.ts src/lib/studio/engine/psy4EngineV2.ts src/lib/studio/engine/styleClassifier.ts src/app/page.tsx --max-warnings=999` → EXIT 0 (zero errors, zero warnings).
+- Dev server compiles cleanly (dev.log shows no errors for src/ files).
+- All 175 remaining tsc errors are in pre-existing unrelated files (examples/, scripts/, artifacts/, audit/, dsp/, forensic/, skills/, tests/) — none in any T1-touched file.
+
+Stage Summary:
+- **The pursuit engine now matches the SOUND CHARACTER of the radio, not just BPM and key.** The V2 reference listener extracts 9 new timbral descriptors (spectral crest, HNR, inharmonicity, spectral slope, transient sharpness, transient decay, stereo balance, stereo correlation, M/S ratio) on top of the existing 5 scalars (kick decay, centroid, transient density, BPM, key). All are computed from the real decoded PCM via the existing FFT pipeline — no extra AudioContext, no ScriptProcessorNode, no per-frame allocation.
+- **Synthesis mode is auto-detected from harmonic content.** The pure-function `detectSynthesisCharacter()` examines inharmonicity, HNR, spectral crest, stereo correlation, and spectral slope to pick between FM (metallic/bell), supersaw (thick/wide), wavetable (evolving), and classic (stable/narrow). When confidence > 0.5, the engine flips the LEAD track's synthesis mode in real time via `setSynthMode(5, mode)`, with a 20-second anti-thrash cooldown. FM depth and wavetable position are continuously tuned even between mode switches.
+- **Effects parameters are auto-driven by reference features.** `applyEffectsPursuit()` uses the new Task E1 control surface (setSendLevel / setTrackEffect / setMasterParam) to: boost reverb sends when the radio has a long tail + wide stereo; boost/cut high-shelf EQ based on centroid brightness; lengthen Haas delay when correlation is low; push master compressor ratio when LUFS swing is small (radio is "glued"); boost distortion send when transients are sharp.
+- **The dashboard is fully populated.** `getPursuitDashboard()` returns a complete object for UI display: existing pursuit targets paired (target/actual), the new harmonic-content / transient-shape / stereo-field snapshots, the detected synthesis character (mode + confidence + params), and per-track effect-send snapshots read directly from the rack gain nodes.
+- **All new code is non-breaking.** Existing public APIs (start, stop, liveTrack, selfTrack, applyMusicalUnderstanding, setWorld, getPursuitStatus, triggerDrum, triggerSynth signature) are preserved. The new liveTrack fields are all optional, so older callers (and the V1 listener) continue to work — the pursuit gracefully no-ops when the new features aren't present. The new methods (getSynthesisCharacter, getPursuitDashboard) are additive.
+- **The synthesis detector is a pure function** — same inputs always give the same output, no side effects, no I/O. It is trivially testable and never throws (all inputs guarded via the `num()` helper that returns 0 for missing/NaN fields).
+- **Artifacts**: `src/lib/studio/engine/synthesisDetector.ts` (new, ~210 lines), `src/lib/studio/engine/reference/referenceListenerV2.ts` (extended analysis + clampT1 helper + optionalStats in updateProfile), `src/lib/studio/engine/reference/referenceListener.ts` (extended interfaces + Uint8Array<ArrayBuffer> fix), `src/lib/studio/engine/styleClassifier.ts` (extended RefFeatures with nested subobjects), `src/lib/studio/engine/psy4EngineV2.ts` (10 new storage fields, applySynthesisPursuit + applyEffectsPursuit private methods, extended liveTrack + buildRefFeatures, getSynthesisCharacter + getPursuitDashboard public methods), `src/app/page.tsx` (extended liveTrack call to pass new metrics).
+- **REMAINING GAP (honest)**:
+  - PHYSICAL LISTENING UNVERIFIED — verification via TypeScript + ESLint pass and code audit. Cannot run dev server to actually hear the output in this environment. The signal chain is well-formed: V2 listener → extended metrics → liveTrack stores → applySynthesisPursuit calls detectSynthesisCharacter → setSynthMode/setFMDepth/setWavetablePosition flip the AdvancedSynthVoice; applyEffectsPursuit calls setSendLevel/setTrackEffect/setMasterParam which route to the TrackEffectsRack. But the audible character of each detected mode is asserted by construction, not by listening.
+  - The synthesis detector's "evolving spectral content" cue for wavetable mode is a proxy (slope + width), not a true spectral-variance-over-time measurement. A future task could track the variance of harmonicContent.crest across windows in the profile and feed that to the detector for more confident wavetable detection.
+  - The compression-pursuit proxy uses LUFS swing over recent windows (a heuristic). A true short-term LUFS measurement (e.g. via an OfflineAudioContext K-weighted RMS pass) would be more accurate but heavier.
+  - The per-track effect-send snapshot in getPursuitDashboard reads `rack.sendReverb.gain.value` directly — this is the AudioParam's current value, which may lag setTargetAtTime ramps by a few hundred ms. For UI display this is fine; for precise convergence tracking a future task could expose a `getSendLevel()` getter on the rack that returns the ramped target.
+- Full work record saved to /home/z/my-project/agent-ctx/T1-z-ai-code.md.
+
+---
+Task ID: V2
+Agent: Z.ai Code (Final polish — scheduler to Worker, section automation, melody-harmony sync)
+Task: Address the three confirmed gaps from the post-ROAST-3 audit: (1) the scheduler was still main-thread `setTimeout(15ms)` causing jitter; (2) no section-based effects automation (reverb/delay/chorus/phaser sends were static); (3) the MelodyEngine didn't query the HarmonyEngine for chord tones — the lead could play non-chord tones on strong beats, clashing with the pad.
+
+Work Log:
+
+V2.1 — Read existing assets (worklog.md ROAST-3 + E1/H1/M1/S1/T1/I1 entries + the touched files):
+- `psy4EngineV2.ts`: confirmed `scheduleNextTick()` at line 1899 used `this.timer = setTimeout(... 15)` on the main thread. The previously-built `psy4-engine.js` worklet (Task 2) was dead code — never wired into V2's main engine. The spec calls for a LIGHTER fix: move just the scheduler loop to a Web Worker (not a full worklet rewrite).
+- `psy4EngineV2.ts`: confirmed `arrangement` was an inline array literal with no exported type. No `applySectionAutomation` method existed. `setTrackEffect` routed to `racks[ti].setParameter(name, value)` but had NO 'cutoff' case — the rack doesn't have a filter (filters live in `AdvancedSynthVoice`).
+- `psy4EngineV2.ts::triggerSynth`: confirmed `leadTimbre.cutoff` (from `w.leadTimbre.cutoff * (0.7 + 0.6 * w.brightness)`) overrides the preset's cutoff, then `centroidToCutoff(this.refSpectralCentroid)` blends in 40% reference pursuit. There was no hook for a section-automation override.
+- `melodyEngine.ts`: confirmed `placeMotifInPhrase(... snapChordTones: true)` snaps to chord tones from the STATIC `PROGRESSIONS[scale]` table — NOT the live HarmonyEngine's current chord. The HarmonyEngine (Task H1) generates a different progression (voice-led, modal interchange, energy-driven extensions) so the lead's static snapping could target a chord the pad isn't actually playing. `nextNote()` did no live re-checking.
+- `harmonyEngine.ts`: confirmed `isChordTone(midi)` and `getCurrentChord()` are public — perfect hooks for the melody engine to query. No import cycle (harmonyEngine doesn't import melodyEngine).
+
+V2.2 — Created `/home/z/my-project/src/lib/studio/engine/schedulerWorker.ts` (new, ~200 lines):
+- Inline Web Worker via Blob URL — no separate public/ file needed. Worker source is a tiny string with three message types: 'start', 'stop', 'setInterval'. Uses worker-internal `setInterval(15ms)` (not chained setTimeout) because the worker thread has no other work, so the HTML5 4ms clamp doesn't apply.
+- Lazy Blob URL creation: `cachedBlobUrl` is created on first `start()` and reused across start/stop cycles (avoids leaking Blob URLs across long sessions). The URL is created via `URL.createObjectURL(new Blob([workerCode], { type: 'application/javascript' }))` and guarded with `typeof Blob/URL` checks for SSR safety.
+- `SchedulerWorker` class: `onTick` callback, `start(intervalMs)`, `stop()`, `setInterval(ms)`, `dispose()`. The Worker is created lazily inside `start()` (NOT at construction) so importing the module is SSR-safe. If `Worker` is unavailable or `new Worker()` throws (CSP, old browser), it falls back to a main-thread `setInterval` and `usesWorker` returns false. The Worker is kept alive across stop/start cycles (cheap restart — just post 'start' again).
+- Worker `onerror` handler: if the worker errors (CSP block, blob URL blocked), it tears down and falls back to `setInterval` automatically. The engine keeps running in every environment.
+
+V2.3 — Wired SchedulerWorker into `psy4EngineV2.ts`:
+- Imported `SchedulerWorker` from `./schedulerWorker`.
+- Added `private scheduler: SchedulerWorker = new SchedulerWorker();` field. The legacy `private timer: ReturnType<typeof setTimeout> | null = null;` field is kept for the (currently unused) setTimeout fallback path.
+- Replaced `scheduleNextTick()` body: `this.scheduler.onTick = () => { this.tick(); }; this.scheduler.start(15);` — was `this.timer = setTimeout(() => { this.tick(); this.scheduleNextTick(); }, 15);`.
+- `stop()` now calls `this.scheduler.stop()` in addition to the legacy `clearTimeout(this.timer)`.
+- The Worker-based scheduler reduces jitter because the worker thread is not affected by main-thread React renders, GC pauses, layout thrash, or the HTML5 4ms setTimeout clamp. The 15ms tick fires much more reliably, which matters because the scheduler's lookahead window is 60ms — at 145 BPM a 16th note is ~103ms, so a 5-15ms jitter was producing audible swing and occasional double-triggers on rolls.
+- SSR/old-browser fallback is automatic via the SchedulerWorker wrapper.
+
+V2.4 — Added lead cutoff override plumbing (V2b prerequisite):
+- New field `private leadCutoffOverride = -1;` — when > 0, overrides the lead's filter cutoff in triggerSynth (overrides BOTH world timbre AND reference pursuit blend). -1 = no override (use existing logic).
+- Extended `setTrackEffect(trackIdx, effectName, value)`: special-cases `effectName === 'cutoff'` and `trackIdx === 5` (LEAD only — the rack has no filter, so cutoff can't go through `racks[5].setParameter`). Stores the value in `leadCutoffOverride` (clamped to [200, 16000], or -1 to clear). All other effect names route to the rack as before.
+- In `triggerSynth`, after the existing timbre + reference pursuit cutoff computation, added: `if (trackIdx === 5 && this.leadCutoffOverride > 0) { p = { ...p, cutoff: clamp(this.leadCutoffOverride, 200, 16000) }; }`. The AdvancedSynthVoice.noteOn() already does an exponential filter sweep (cut*3 → cut over atk+dec*0.7), so the override value becomes the baseline cutoff for each note — successive notes with rising override values produce the signature "filter opening" sweep.
+
+V2.5 — Defined `ArrangementSection` interface + converted the inline `arrangement` array:
+- Exported `interface ArrangementSection { bars: number; density: number; bass: boolean; lead: boolean; label: string; }`.
+- Changed `private arrangement = [...]` to `private arrangement: ArrangementSection[] = [...]` — same data, now typed so `applySectionAutomation(section, ...)` has a proper signature.
+- Added `private lastAutomationSection = '';` field to track the last-applied section label (avoids spamming the audio thread with setSendLevel calls every step when the value has already settled — the rack uses setTargetAtTime(0.05s) internally so re-pushing is a no-op once settled, but tracking the label keeps the call count low).
+
+V2.6 — Added `applySectionAutomation(section, bar, step)` method (V2b):
+- Called every step from `scheduleStep()` (added `this.applySectionAutomation(section, bar, step);` as the first action, BEFORE the rest of the step scheduling — so new send levels are in effect when the step's note fires).
+- Two parts:
+  (1) Static levels — only re-pushed when `section.label !== this.lastAutomationSection`. Calls `applyStaticSectionLevels(section)` which looks up a per-section profile and pushes reverb/delay/chorus/phaser send levels for melodic (5/6/7) and atmos (1/2/3) tracks. Kick (0) and bass (4) are untouched — they need to stay punchy and centered regardless of section.
+  (2) Per-step filter sweep:
+    - BUILD section, last 2 bars: computes a linear progress (0..1) across 32 steps (2 bars × 16 steps), interpolates exponentially from 800 Hz → 4000 Hz (exponential because ears hear log-Hz), and calls `setTrackEffect(5, 'cutoff', sweepHz)`. As the override climbs, each successive lead note opens brighter — the signature psytrance filter-opening build.
+    - Outside a BUILD sweep: clears the override (`leadCutoffOverride = -1`) so the lead reverts to world timbre + reference pursuit cutoff. (Unless we're in a BREAK — see below.)
+    - BREAK section: over the section's bars, exponentially closes the lead cutoff from 1800 Hz → 600 Hz for a "filter closing" release effect that complements the high reverb (0.70) and delay (0.50) — the lead recedes into the wash.
+- Section profiles (per the task spec):
+  - INTRO       : melReverb 0.60 / melDelay 0.10 / no chorus / no phaser / atmoReverb 0.30
+  - GROOVE      : melReverb 0.40 / melDelay 0.20 / slight chorus on lead (0.20) / atmoReverb 0.22
+  - BUILD       : melReverb 0.35 / melDelay 0.30 / melChorus 0.20 / melPhaser 0.15 + per-step filter sweep
+  - DROP        : melReverb 0.25 (punchy) / melDelay 0.30 / full chorus on lead (0.35) / phaser on arp (0.30)
+  - VARIATION   : melReverb 0.35 / melDelay 0.40 (echo throws) / phaser on lead (0.25) / arp phaser 0.20
+  - BREAK       : melReverb 0.70 / melDelay 0.50 / filter closing sweep on lead
+  - FINAL DROP  : melReverb 0.20 / melDelay 0.30 / full effects (lead chorus 0.38, arp phaser 0.30)
+  - OUTRO       : same as INTRO (wash out)
+- All ramps are smooth — setSendLevel/setTrackEffect route to `racks[ti].setParameter(...)` which uses `setTargetAtTime(0.05s)` internally. No audio glitches on section changes.
+- Reset on `start()`: `lastAutomationSection = ''` and `leadCutoffOverride = -1` so the first section's static levels get pushed on the first tick and no leftover sweep from a previous session bleeds in.
+
+V2.7 — Melody-harmony synchronization (V2c):
+- In `melodyEngine.ts`: added `import type { HarmonyEngine } from './harmonyEngine';` (type-only import — no runtime cycle).
+- Added `private harmony: HarmonyEngine | null = null;` field.
+- Added `setHarmonyEngine(harmony: HarmonyEngine | null): void` — sets the link. Pass `null` to disable live snapping (revert to the static PROGRESSIONS[scale] snapping done at phrase-build time).
+- In `nextNote(step, bar, energy)`: on strong beats (`step % 4 === 0`), if `this.harmony` is set, call `snapToLiveChordTone(midi)` to re-check the note against the LIVE chord the pad is playing. On weak beats, the original note is preserved — passing tones / neighbor tones on weak beats are musically valid.
+- New private method `snapToLiveChordTone(midi)`:
+  - Queries `this.harmony.getCurrentChord()` — if null (no chord has played yet, or outside a lead section), returns the note unchanged (the static PROGRESSIONS[scale] snapping from `placeMotifInPhrase` still applies).
+  - Computes pitch classes of the live chord (chord.notes mod 12).
+  - If the note's PC is already a chord tone, returns it unchanged — preserves melodic identity.
+  - Otherwise finds the nearest chord-tone PC (chromatic distance with wraparound).
+  - Places the snapped PC at the octave closest to the original note (within a half-octave) so the melodic contour is preserved.
+  - Clamps to a sane lead range (MIDI 36-96) — never snaps above MIDI 96 (C7) or below 36 (C2).
+- This eliminates dissonance: the lead always plays a chord tone on strong beats, regardless of which chord the pad's progression has reached. The static PROGRESSIONS[scale] snapping from `placeMotifInPhrase` still runs (so the phrase has good chord-tone tendencies even before the harmony engine kicks in), but the live snapping at noteOn time is the dominant mechanism.
+
+V2.8 — Linked the engines in `psy4EngineV2.ts::refreshMusicalGenerators()`:
+- After `this.melody = new MelodyEngine(...)` and `this.harmony = new HarmonyEngine(...)`, added `this.melody.setHarmonyEngine(this.harmony);`.
+- This is called whenever the key changes (which rebuilds both engines) — so the link is automatically re-established on every key change. The link is also established at engine `init()` time (which calls `refreshMusicalGenerators()`).
+
+Verification:
+- `npx tsc --noEmit --skipLibCheck 2>&1 | grep -E "schedulerWorker|psy4EngineV2|melodyEngine|harmonyEngine"` → EMPTY (zero TS errors in any touched file).
+- `npx eslint src/lib/studio/engine/schedulerWorker.ts src/lib/studio/engine/psy4EngineV2.ts src/lib/studio/engine/melodyEngine.ts src/lib/studio/engine/harmonyEngine.ts --max-warnings=0` → EXIT 0 (zero errors, zero warnings).
+- `bun run lint 2>&1 | grep -E "schedulerWorker|psy4EngineV2|melodyEngine|harmonyEngine" | grep error` → EMPTY (no errors in any touched file; pre-existing errors in proAudioNodes/continuousTrainer/perVoiceAnalyzer/renderWorker/selfAnalyzer/tests are unchanged — none of these files were touched by V2).
+- Dev server compiles cleanly: dev.log shows "✓ Compiled in Nms" with no errors after the changes; GET / returns 200 in 91ms (compile: 6ms, render: 85ms) — incremental compile is fast.
+
+Stage Summary:
+- **PART 1 (V2a) — Scheduler moved to a Web Worker.** A new `SchedulerWorker` class wraps an inline Blob-URL Worker that posts `{type:'tick'}` messages from a separate thread. The main thread's `scheduleNextTick()` now registers `onTick = () => this.tick()` and calls `scheduler.start(15)`. Because the worker thread has no other work, its 15ms interval fires far more reliably than main-thread `setTimeout(15ms)` (which is subject to React renders, GC, layout, and the HTML5 4ms clamp). SSR/old-browser fallback is automatic — if `Worker` is unavailable, the wrapper falls back to a main-thread `setInterval`. The Worker is created lazily on first `start()` (SSR-safe module import) and kept alive across stop/start cycles (cheap restart). The legacy `setTimeout` path is preserved as a fallback but currently unused.
+- **PART 2 (V2b) — Section-based effects automation.** A new `applySectionAutomation(section, bar, step)` method is called every step from `scheduleStep()`. On section changes, it pushes per-section send levels (reverb/delay/chorus/phaser) for melodic (LEAD/PAD/ARP) and atmos (SNARE/HATS/PERC) tracks via `setSendLevel` (which uses `setTargetAtTime(0.05s)` internally for smooth, click-free ramps). Section profiles match the spec: INTRO washes (reverb 0.60), DROP stays punchy (reverb 0.25), BREAK washes hard (reverb 0.70 + delay 0.50), VARIATION gets echo throws (delay 0.40), GROOVE has slight lead chorus. The BUILD section gets a per-step filter sweep on the lead: in the last 2 bars, the cutoff ramps exponentially from 800 Hz → 4000 Hz across 32 steps via `setTrackEffect(5, 'cutoff', value)`. The BREAK section gets a closing sweep (1800 Hz → 600 Hz) for a "filter receding" release effect. All automation uses smooth ramps (no audio glitches).
+- **PART 3 (V2c) — Melody-harmony synchronization.** `MelodyEngine.setHarmonyEngine(harmony)` links the melody to the live harmony engine. In `nextNote()`, on strong beats (`step % 4 === 0`), the lead's note is re-checked against the LIVE chord the pad is playing (via `harmony.getCurrentChord()`). If the note's pitch class isn't a chord tone, it's snapped to the nearest chord-tone PC at the octave closest to the original note (preserves melodic contour). On weak beats, the original note is preserved (passing tones / neighbor tones are musically valid). This eliminates dissonance: the lead always harmonizes with the pad on strong beats, regardless of which chord the pad's progression has reached. The link is established at engine init and re-established on every key change (in `refreshMusicalGenerators()`).
+- **Constraints honored:**
+  - Did NOT break existing functionality — all existing public APIs (start, stop, liveTrack, selfTrack, applyMusicalUnderstanding, setWorld, getPursuitStatus, triggerDrum, triggerSynth signature, setTrackEffect for non-'cutoff' names, setSendLevel, setMasterParam, getSynthesisCharacter, getPursuitDashboard, getHarmony, getCurrentChord, getMelodyState if present) are preserved.
+  - The Worker is created lazily (not at module load) — SSR safe.
+  - All automation uses setTargetAtTime or gradual ramps — no audio glitches. The rack's setParameter uses setTargetAtTime(0.05s); the lead cutoff override is applied per-note via the AdvancedSynthVoice's existing exponentialRampToValueAtTime on filter.frequency; the filter sweep itself ramps exponentially (ears hear log-Hz).
+  - TypeScript strict mode passes — zero tsc errors in schedulerWorker/psy4EngineV2/melodyEngine/harmonyEngine.
+  - The 175 pre-existing tsc errors in OTHER files (proAudioNodes, continuousTrainer, perVoiceAnalyzer, renderWorker, selfAnalyzer, tests, examples, scripts, artifacts, audit, dsp, forensic, skills) are unchanged — none of these files were touched by V2.
+- **REMAINING GAP (honest):**
+  - PHYSICAL LISTENING UNVERIFIED — verification via TypeScript + ESLint pass and code audit. Cannot run dev server to actually hear the output in this environment. The signal chain is well-formed: SchedulerWorker posts ticks → tick() runs scheduleStep() → applySectionAutomation pushes send levels + computes filter sweep → triggerSynth applies leadCutoffOverride to AdvancedSynthVoice.noteOn → noteOn's exponentialRampToValueAtTime on filter.frequency produces the sweep. But the audible result of the section transitions and the sweep curve is asserted by construction, not by listening.
+  - The Worker-based scheduler reduces jitter but does not eliminate it entirely — the worker's setInterval is still subject to the underlying OS timer resolution (typically 1-5ms on modern OSes, but can be worse on Windows). A truly sample-accurate scheduler would require an AudioWorkletProcessor with a sample-count clock (the dead `psy4-engine.js` worklet attempted this). The Worker approach is the right trade-off for V2: massive jitter reduction with zero risk of breaking the existing audio graph.
+  - The melody-harmony snapping uses `step % 4 === 0` as the "strong beat" definition (every quarter note). The existing `placeMotifInPhrase` uses `stepWithinBar === 0` (downbeat) and `stepWithinBar === 8` (beat 3) — slightly different conventions. The V2c snapping is layered on top of the static snapping, so the result is: downbeat + beat 3 get snapped twice (static first, live second — the live snapping wins), beats 2 and 4 get snapped once (live only). This is more aggressive than the spec required but matches the "strong beats = step % 4 === 0" definition in the task description.
+- **Artifacts:**
+  - `src/lib/studio/engine/schedulerWorker.ts` (new, ~200 lines) — inline Blob-URL Worker wrapper with SSR fallback.
+  - `src/lib/studio/engine/psy4EngineV2.ts` (extended) — SchedulerWorker import + field; replaced setTimeout in scheduleNextTick; scheduler.stop() in stop(); leadCutoffOverride field + 'cutoff' special-case in setTrackEffect; leadCutoffOverride applied in triggerSynth; ArrangementSection interface exported; arrangement typed; lastAutomationSection + leadCutoffOverride fields; applySectionAutomation + applyStaticSectionLevels methods; applySectionAutomation called in scheduleStep; reset on start(); melody.setHarmonyEngine(harmony) in refreshMusicalGenerators.
+  - `src/lib/studio/engine/melodyEngine.ts` (extended) — type-only HarmonyEngine import; harmony field; setHarmonyEngine method; snapToLiveChordTone private method; chord-tone snapping in nextNote on strong beats.
+- Full work record saved to /home/z/my-project/agent-ctx/V2-z-ai-code.md.
