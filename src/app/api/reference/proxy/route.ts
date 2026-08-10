@@ -18,12 +18,16 @@ export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
 const STREAM_URLS: Record<string, string> = {
-  'hirschmilch': 'http://xfer.hirschmilch.de:8000/psytrance.mp3',
-  'psyndora': 'https://cast.magicstreams.gr:9111/stream/1/',
+  'psyndora-psytrance': 'https://cast.magicstreams.gr:9111/stream/1/',
   'babaganousha': 'https://babaganousha.net:8443/stream/1/',
-  'psyradio-progressive': 'http://streamer.psyradio.org:8030/;listen.mp3',
-  'psy-from-the-sky': 'http://cast.ru.eu.org/psy',
+  'psytravel': 'https://e20.yesstreaming.net:6148/stream',
+  'radiozora': 'https://trance.out.airtime.pro/trance_a',
+  'recordgoa': 'https://radiorecord.hostingradio.ru/goa96.aacp',
+  'goanight': 'https://goanight.stream.laut.fm/goanight',
+  '1fm-psytrance': 'https://strm112.1.fm/psytrance_mobile_mp3',
+  'amoris-goa': 'https://amoris.sknt.ru/goa.mp3',
   'space-unicorn': 'https://spaceunicorn.radio/stream',
+  'psyradio-progressive': 'http://streamer.psyradio.org:8030/;listen.mp3',
 };
 
 export async function GET(request: NextRequest) {
