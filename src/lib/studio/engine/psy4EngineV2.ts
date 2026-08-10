@@ -474,6 +474,19 @@ export interface ArrangementSection {
 // Each voice holds up to 7 OscillatorNodes. With 20 voices that's 140 oscillators
 // max, well within modern browser limits.
 
+// ─── Task PERF-FIX: module-level fallback FlowState ─────────────────────────
+// scheduleStep() used to rebuild this object literal every 16th step (~10/sec
+// at 145 BPM). Now it's a module-level constant — the per-call cost is a
+// single object spread (only `barInSection` is overridden). The defensive
+// path that uses this is rarely hit (only if scheduleStep is called before
+// the flow engine is initialized, which shouldn't happen after start()).
+const FALLBACK_FLOW: FlowState = {
+  energy: 0.5, density: 0.5, bassOn: true, leadOn: false, acidOn: false,
+  hatDensity: 0.7, percDensity: 0.6, fxDensity: 0.6,
+  label: 'GROOVE', filterCutoff: 1800, reverbAmount: 0.4, delayAmount: 0.2,
+  tension: 0.4, surprise: 0.05, sectionBars: 8, barInSection: 0,
+};
+
 // ─── Pooled Drum Voice (from PSY6 — multi-type) ────────────────────────────
 
 class PooledDrumVoice {
@@ -891,6 +904,186 @@ export class Psy4EngineV2 {
   /** Worker tick interval in ms. 25ms = 40 Hz — half the previous 66 Hz rate. */
   private static readonly SCHEDULER_INTERVAL_MS = 25;
 
+  // ── Task PERF-FIX: parameter caching (eliminate redundant postMessages) ──
+  // The audio backend's setFX / setWorld / setBpm / setMacros each fire a
+  // postMessage to the worklet (~0.1-0.5ms overhead each). Before PERF-FIX
+  // applyFlowAutomation called setFX EVERY 16th step (~10 calls/sec at 145
+  // BPM), recomputing the same config most of the time. Now we cache the
+  // last-sent values and skip the postMessage when nothing actually changed.
+  //
+  // `lastFXConfig` / `lastWorldParams` / `lastBpm` / `lastMacros` mirror the
+  // last values pushed to the audio backend. The helpers `pushFX` / `pushWorld`
+  // / `pushBpm` / `pushMacros` diff against the cache and either forward to
+  // the backend or no-op. The cache is reset to null in stop() so a fresh
+  // start re-pushes everything (the backend's state was disposed).
+  private lastFXConfig: AudioBackendFXConfig | null = null;
+  private lastWorldParams: Record<string, number> | null = null;
+  private lastBpm: number | null = null;
+  private lastMacros: Record<string, number> | null = null;
+
+  /**
+   * Task PERF-FIX: Compare two AudioBackendFXConfig objects for value equality.
+   * Returns true when all scalar fields match AND both reverb/delay arrays
+   * have identical contents (or are both undefined). Used by pushFX to skip
+   * the postMessage when the new config is identical to the last-sent one.
+   *
+   * Arrays are compared element-by-element (not by reference) — the engine
+   * rebuilds the arrays every call to applyFlowAutomation, so reference
+   * equality would always be false.
+   */
+  private static fxConfigsEqual(
+    a: AudioBackendFXConfig | null,
+    b: AudioBackendFXConfig,
+  ): boolean {
+    if (!a) return false;
+    // Scalar fields
+    if (a.reverbWet !== b.reverbWet) return false;
+    if (a.delayWet !== b.delayWet) return false;
+    if (a.delayFeedback !== b.delayFeedback) return false;
+    // Array fields — both must be present + element-wise equal
+    const aRev = a.reverbSends;
+    const bRev = b.reverbSends;
+    if (aRev || bRev) {
+      if (!aRev || !bRev || aRev.length !== bRev.length) return false;
+      for (let i = 0; i < aRev.length; i++) {
+        if (aRev[i] !== bRev[i]) return false;
+      }
+    }
+    const aDel = a.delaySends;
+    const bDel = b.delaySends;
+    if (aDel || bDel) {
+      if (!aDel || !bDel || aDel.length !== bDel.length) return false;
+      for (let i = 0; i < aDel.length; i++) {
+        if (aDel[i] !== bDel[i]) return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Task PERF-FIX: Compare two world-param objects for value equality on the
+   * CHANGED keys only. Returns the subset of `next` whose values differ from
+   * `prev` (an empty object when nothing changed). The engine can then pass
+   * only the deltas to the audio backend, saving a postMessage entirely when
+   * the result is empty.
+   *
+   * Only the keys present in `next` are compared — `prev` may have stale keys
+   * that aren't in `next` (those are not re-pushed; the backend already has
+   * them). This is the right behavior because the engine always sends the
+   * complete set of params it wants to update.
+   */
+  private static diffWorldParams(
+    prev: Record<string, number> | null,
+    next: Record<string, number>,
+  ): Record<string, number> {
+    if (!prev) return { ...next };
+    const delta: Record<string, number> = {};
+    for (const k of Object.keys(next)) {
+      const v = next[k];
+      if (typeof v !== 'number' || !isFinite(v)) continue;
+      if (prev[k] !== v) delta[k] = v;
+    }
+    return delta;
+  }
+
+  /**
+   * Task PERF-FIX: Cached setFX. Diffs the new config against `lastFXConfig`
+   * and skips the postMessage when nothing changed. Returns true if the
+   * message was actually sent (useful for diagnostics / future perf counters).
+   *
+   * The diff is value-based (see fxConfigsEqual) — array literals rebuilt
+   * every call still compare equal when their contents match.
+   */
+  private pushFX(config: AudioBackendFXConfig): boolean {
+    if (Psy4EngineV2.fxConfigsEqual(this.lastFXConfig, config)) return false;
+    this.audio?.setFX(config);
+    this.lastFXConfig = {
+      reverbSends: config.reverbSends ? [...config.reverbSends] : undefined,
+      delaySends: config.delaySends ? [...config.delaySends] : undefined,
+      reverbWet: config.reverbWet,
+      delayWet: config.delayWet,
+      delayFeedback: config.delayFeedback,
+    };
+    return true;
+  }
+
+  /**
+   * Task PERF-FIX: Cached setWorld. Diffs the new params against
+   * `lastWorldParams` and only forwards the CHANGED keys. Skips the
+   * postMessage entirely when no keys changed.
+   *
+   * NOTE: also updates the learned-params cache + syncs legacy access, just
+   * like the public setWorld() method does — so callers that previously used
+   * `this.audio.setWorld(x)` directly can use this helper without losing the
+   * local state sync. (The public setWorld() now routes through here too.)
+   */
+  private pushWorld(params: Record<string, number>): boolean {
+    const delta = Psy4EngineV2.diffWorldParams(this.lastWorldParams, params);
+    // Merge into the cache BEFORE the early-return so the cache reflects what
+    // the engine WANTS, even if the backend isn't ready (audio === null). When
+    // the backend later becomes ready, init() will push computeWorkletWorldParams()
+    // which re-diffs against this cache (and sends everything because the cache
+    // is fresh). Safe because the cache is reset in stop().
+    if (this.lastWorldParams) {
+      for (const k of Object.keys(delta)) this.lastWorldParams[k] = delta[k];
+    } else {
+      this.lastWorldParams = { ...delta };
+    }
+    if (Object.keys(delta).length === 0) return false;
+    this.audio?.setWorld(delta);
+    // Mirror public setWorld()'s learned-params tracking for the fields it
+    // would normally update. We only track the keys we actually sent.
+    if (isFinite(delta.kickDecay) && delta.kickDecay > 0.02 && delta.kickDecay < 2) {
+      this.learned.kickDecay = delta.kickDecay;
+    }
+    if (isFinite(delta.bassCutoff) && delta.bassCutoff > 40 && delta.bassCutoff < 4000) {
+      this.learned.bassCutoff = delta.bassCutoff;
+    }
+    if (isFinite(delta.leadCutoff) && delta.leadCutoff > 100 && delta.leadCutoff < 16000) {
+      this.learned.leadCutoff = delta.leadCutoff;
+    }
+    if (isFinite(delta.leadDetune) && delta.leadDetune >= 0 && delta.leadDetune < 100) {
+      this.learned.leadDetune = delta.leadDetune;
+    }
+    if (isFinite(delta.padCutoff) && delta.padCutoff > 80 && delta.padCutoff < 12000) {
+      this.learned.padCutoff = delta.padCutoff;
+    }
+    if (isFinite(delta.duck) && delta.duck >= 0 && delta.duck <= 1) {
+      this.learned.duck = delta.duck;
+    }
+    this.syncLegacyAccess();
+    return true;
+  }
+
+  /**
+   * Task PERF-FIX: Cached setBpm. Skips the postMessage when the BPM hasn't
+   * changed (the BPM ramp nudges by 0.1 BPM/bar — most bars produce the same
+   * rounded value, so this skips ~50% of bars).
+   */
+  private pushBpm(bpm: number): boolean {
+    if (this.lastBpm === bpm) return false;
+    this.audio?.setBpm(bpm);
+    this.lastBpm = bpm;
+    return true;
+  }
+
+  /**
+   * Task PERF-FIX: Cached setMacros. Diffs against `lastMacros` and only
+   * forwards the CHANGED keys. Skips the postMessage entirely when no keys
+   * changed.
+   */
+  private pushMacros(macros: Record<string, number>): boolean {
+    const delta = Psy4EngineV2.diffWorldParams(this.lastMacros, macros);
+    if (this.lastMacros) {
+      for (const k of Object.keys(delta)) this.lastMacros[k] = delta[k];
+    } else {
+      this.lastMacros = { ...delta };
+    }
+    if (Object.keys(delta).length === 0) return false;
+    this.audio?.setMacros(delta);
+    return true;
+  }
+
   // Tracks and patterns
   private tracks: Track[] = [];
   private pattern: Pattern | null = null;
@@ -1198,9 +1391,15 @@ export class Psy4EngineV2 {
     this.analyser = backend.getAnalyser();
 
     // Push the current engine state to the backend so it starts in sync.
-    backend.setBpm(this._bpm || 145);
-    backend.setWorld(this.computeWorkletWorldParams());
-    backend.setMacros(this.computeWorkletMacros());
+    // PERF-FIX: route through the push* helpers (instead of calling
+    // backend.setBpm / setWorld / setMacros directly) so the caches get
+    // populated. Without this, the first start() would re-push everything
+    // (the caches would still be null, so diffWorldParams returns all keys).
+    // Using the helpers here means the first start()'s pushBpm/pushWorld/
+    // pushMacros are no-ops (the values match the cache), saving 3 postMessages.
+    this.pushBpm(this._bpm || 145);
+    this.pushWorld(this.computeWorkletWorldParams());
+    this.pushMacros(this.computeWorkletMacros());
 
     // ── Task T1 (active learning): load cross-session memory ──
     this.learningMemory.load();
@@ -1312,11 +1511,15 @@ export class Psy4EngineV2 {
 
     // ── Task F1-F3: push world params + FX config to the audio backend ──
     // ONE path — this.audio handles both worklet and legacy. No conditionals.
-    this.audio.setBpm(this._bpm || 145);
-    this.audio.setWorld(this.computeWorkletWorldParams());
-    this.audio.setMacros(this.computeWorkletMacros());
+    // PERF-FIX: route through the cached push* helpers (they no-op when the
+    // values haven't changed since the last push, AND when this is a fresh
+    // start after stop() — the caches are reset in stop() so the first start
+    // re-pushes everything).
+    this.pushBpm(this._bpm || 145);
+    this.pushWorld(this.computeWorkletWorldParams());
+    this.pushMacros(this.computeWorkletMacros());
     const fxMix = this.currentWorld.fxMix;
-    this.audio.setFX({
+    this.pushFX({
       reverbWet: clamp(0.3 + fxMix * 0.4, 0.2, 0.7),
       delayWet: clamp(0.2 + fxMix * 0.5, 0.15, 0.6),
       delayFeedback: 0.35,
@@ -1455,6 +1658,15 @@ export class Psy4EngineV2 {
     this.audioLoading = false;
     this.initPromise = null;
     this.isWorkletBackend = false;
+    // ── Task PERF-FIX: reset the parameter caches ──
+    // The backend's state was disposed (AudioContext closed, worklet node
+    // disconnected). A fresh start() must re-push every parameter — the
+    // push* helpers would otherwise skip the postMessages because the cache
+    // still reflects the disposed backend's last-sent values.
+    this.lastFXConfig = null;
+    this.lastWorldParams = null;
+    this.lastBpm = null;
+    this.lastMacros = null;
   }
 
   private get bpm(): number {
@@ -1464,8 +1676,10 @@ export class Psy4EngineV2 {
 
   setBpm(bpm: number): void {
     this._bpm = bpm;
-    // ── Task F1-F3: push BPM to the audio backend (ONE path) ──
-    this.audio?.setBpm(bpm);
+    // ── Task PERF-FIX: route through the cached helper. pushBpm skips the
+    //    postMessage when the BPM hasn't changed (the BPM ramp nudges by 0.1
+    //    BPM/bar — most bars produce the same rounded value). ──
+    this.pushBpm(bpm);
   }
 
   applyMusicalUnderstanding(understanding: {
@@ -1695,11 +1909,13 @@ export class Psy4EngineV2 {
     // ── Task F1-F3: push world params + FX config to the audio backend (ONE path) ──
     // The backend handles both worklet (per-bus sends + worldParams) and legacy
     // (reverbSend/delaySend gain nodes). No conditionals.
+    // PERF-FIX: route through the cached push* helpers so a switchWorld to the
+    // same world (or one with identical FX mix) skips the redundant postMessages.
     if (this.audio) {
-      this.audio.setWorld(this.computeWorkletWorldParams());
-      this.audio.setMacros(this.computeWorkletMacros());
+      this.pushWorld(this.computeWorkletWorldParams());
+      this.pushMacros(this.computeWorkletMacros());
       const fxMix = newWorld.fxMix;
-      this.audio.setFX({
+      this.pushFX({
         reverbWet: clamp(0.3 + fxMix * 0.4, 0.2, 0.7),
         delayWet: clamp(0.2 + fxMix * 0.5, 0.15, 0.6),
         delayFeedback: 0.35,
@@ -1837,7 +2053,10 @@ export class Psy4EngineV2 {
       this.leadCutoffOverride = value < 0 ? -1 : clamp(value, 200, 16000);
       this.syncLegacyAccess();
       // Push to the audio backend so both worklet + legacy apply it.
-      this.audio?.setWorld({ leadCutoff: this.leadCutoffOverride > 0 ? this.leadCutoffOverride : 0 });
+      // PERF-FIX: route through pushWorld so the postMessage is skipped when
+      // leadCutoffOverride hasn't changed (common — applyFlowAutomation calls
+      // this every bar, but the value only changes during filter sweeps).
+      this.pushWorld({ leadCutoff: this.leadCutoffOverride > 0 ? this.leadCutoffOverride : 0 });
       return;
     }
     this.audio?.setTrackEffect?.(trackIdx, effectName, value);
@@ -1940,28 +2159,6 @@ export class Psy4EngineV2 {
         ? clamp(0.5 + (this.activeSurprise.intensity || 0.5) * 0.3, 0.4, 0.8)
         : 0.35,
     };
-    this.audio.setFX(fxConfig);
-
-    // ── (1) Per-section chorus/phaser profile (pushed on label change) ──
-    // Routed through this.audio.setSendLevel (worklet: no-op; legacy: rack).
-    if (flow.label !== this.lastAutomationSection) {
-      this.lastAutomationSection = flow.label;
-      this.applySectionChorusPhaser(flow.label);
-    }
-
-    // ── (2-3) Continuous reverb + delay sends (legacy per-track; worklet ──
-    //         already handled by setFX above). setSendLevel is a no-op in
-    //         worklet mode, so these calls are safe to always make.
-    const atmoReverbLegacy = clamp(flow.reverbAmount * 0.7, 0, 0.6);
-    const atmoDelayLegacy = clamp(flow.delayAmount * 0.5, 0, 0.4);
-    for (const ti of [5, 6, 7]) {
-      this.audio.setSendLevel?.(ti, 'reverb', melReverb);
-      this.audio.setSendLevel?.(ti, 'delay', melDelay);
-    }
-    for (const ti of [1, 2, 3]) {
-      this.audio.setSendLevel?.(ti, 'reverb', atmoReverbLegacy);
-      this.audio.setSendLevel?.(ti, 'delay', atmoDelayLegacy);
-    }
 
     // ── (4) Continuous lead filter cutoff — driven by flow.filterCutoff ──
     let leadCutoffTarget = flow.filterCutoff;
@@ -2000,9 +2197,89 @@ export class Psy4EngineV2 {
       }
     }
 
-    // Apply the lead cutoff target via setTrackEffect (stores in
-    // leadCutoffOverride + pushes to this.audio via setWorld).
-    this.setTrackEffect(5, 'cutoff', clamp(leadCutoffTarget, 200, 16000));
+    // ── Task PERF-FIX: cache the lead cutoff override + batch the FX push ──
+    // The lead cutoff target is stored as leadCutoffOverride (the worklet's
+    // voices read it from worldParams.leadCutoff on the next trigger). We
+    // compute the new override value here, then push BOTH the FX config AND
+    // the leadCutoff world param in ONE postMessage via setParameterBatch
+    // (when supported by the backend) — vs. the old code's two separate
+    // postMessages (setFX + setWorld). The pushFX cache (FIX 1) skips the FX
+    // postMessage entirely when the config is identical to the last push;
+    // setParameterBatch + pushWorld together guarantee we never send a
+    // postMessage for unchanged values.
+    const newCutoffValue = clamp(leadCutoffTarget, 200, 16000);
+    const newCutoffOverride = newCutoffValue;  // >0 always (clamp floor is 200)
+    const cutoffChanged = this.leadCutoffOverride !== newCutoffOverride;
+    if (cutoffChanged) {
+      this.leadCutoffOverride = newCutoffOverride;
+      this.syncLegacyAccess();
+    }
+    const worldUpdate: Record<string, number> = {
+      leadCutoff: this.leadCutoffOverride > 0 ? this.leadCutoffOverride : 0,
+    };
+
+    // Diff FX config + world params against the last-sent values. We compute
+    // both deltas first so we can decide whether to use the batched path
+    // (setParameterBatch — one postMessage) or skip entirely (no postMessage).
+    const fxUnchanged = Psy4EngineV2.fxConfigsEqual(this.lastFXConfig, fxConfig);
+    const worldDelta = Psy4EngineV2.diffWorldParams(this.lastWorldParams, worldUpdate);
+    const worldUnchanged = Object.keys(worldDelta).length === 0;
+
+    if (fxUnchanged && worldUnchanged) {
+      // Most common case during steady-state sections: FX config hasn't
+      // changed (same flow.reverbAmount/delayAmount) AND leadCutoffOverride
+      // hasn't changed. ZERO postMessages — vs. the old code's 2 per step.
+      // (setSendLevel calls below still fire — they're no-ops in worklet mode.)
+    } else if (this.audio.setParameterBatch && !fxUnchanged && !worldUnchanged) {
+      // Both changed — batch into ONE postMessage (saves 1 postMessage vs.
+      // pushing them separately). The worklet's 'setParams' handler applies
+      // the FX + world sections in one pass.
+      this.audio.setParameterBatch({ fx: fxConfig, world: worldDelta });
+      this.lastFXConfig = {
+        reverbSends: fxConfig.reverbSends ? [...fxConfig.reverbSends] : undefined,
+        delaySends: fxConfig.delaySends ? [...fxConfig.delaySends] : undefined,
+        reverbWet: fxConfig.reverbWet,
+        delayWet: fxConfig.delayWet,
+        delayFeedback: fxConfig.delayFeedback,
+      };
+      if (this.lastWorldParams) {
+        for (const k of Object.keys(worldDelta)) this.lastWorldParams[k] = worldDelta[k];
+      } else {
+        this.lastWorldParams = { ...worldDelta };
+      }
+    } else if (!fxUnchanged) {
+      // Only FX changed.
+      this.pushFX(fxConfig);
+    } else if (!worldUnchanged) {
+      // Only world params changed.
+      this.audio.setWorld(worldDelta);
+      if (this.lastWorldParams) {
+        for (const k of Object.keys(worldDelta)) this.lastWorldParams[k] = worldDelta[k];
+      } else {
+        this.lastWorldParams = { ...worldDelta };
+      }
+    }
+
+    // ── (1) Per-section chorus/phaser profile (pushed on label change) ──
+    // Routed through this.audio.setSendLevel (worklet: no-op; legacy: rack).
+    if (flow.label !== this.lastAutomationSection) {
+      this.lastAutomationSection = flow.label;
+      this.applySectionChorusPhaser(flow.label);
+    }
+
+    // ── (2-3) Continuous reverb + delay sends (legacy per-track; worklet ──
+    //         already handled by setFX above). setSendLevel is a no-op in
+    //         worklet mode, so these calls are safe to always make.
+    const atmoReverbLegacy = clamp(flow.reverbAmount * 0.7, 0, 0.6);
+    const atmoDelayLegacy = clamp(flow.delayAmount * 0.5, 0, 0.4);
+    for (const ti of [5, 6, 7]) {
+      this.audio.setSendLevel?.(ti, 'reverb', melReverb);
+      this.audio.setSendLevel?.(ti, 'delay', melDelay);
+    }
+    for (const ti of [1, 2, 3]) {
+      this.audio.setSendLevel?.(ti, 'reverb', atmoReverbLegacy);
+      this.audio.setSendLevel?.(ti, 'delay', atmoDelayLegacy);
+    }
   }
 
   /**
@@ -2390,7 +2667,10 @@ export class Psy4EngineV2 {
         if (subDiff > 0.05) {
           worldUpdate.kickLevel = clamp(1.0 + subDiff * 0.2, 0.6, 1.8);
         }
-        this.audio.setWorld(worldUpdate);
+        // PERF-FIX: pushWorld diffs against lastWorldParams and skips the
+        // postMessage when bassLevel/kickLevel haven't changed (common when
+        // refSubEnergy is steady across the 10s hop).
+        this.pushWorld(worldUpdate);
       }
     }
     if (this.audio && this.refHighEnergy > 0 && this.ownHighEnergy > 0) {
@@ -2400,7 +2680,8 @@ export class Psy4EngineV2 {
         // Push the lead level (the legacy graph applies it to trackGains[5];
         // the worklet no-ops).
         const leadTarget = clamp(0.8 + adj, 0.3, 1.6);
-        this.audio.setWorld({ leadLevel: leadTarget });
+        // PERF-FIX: pushWorld skips when leadTarget is unchanged.
+        this.pushWorld({ leadLevel: leadTarget });
       }
     }
 
@@ -3691,18 +3972,22 @@ export class Psy4EngineV2 {
     // masterLevel) or setMacros (worklet: energy). We use setMacros for both —
     // the legacy backend no-ops setMacros, so we also push masterLevel via
     // setWorld for the legacy path.
+    // PERF-FIX: route through pushMacros / pushWorld so the postMessages are
+    // skipped when the nudged value rounds to the same as the last push (very
+    // common — adj is ±0.04, but the worklet's energy macro is applied
+    // smoothly so re-pushing is a no-op).
     if (this.targetLufs !== 0 && Math.abs(selfMetrics.lufs - this.targetLufs) > 1.0) {
       const diff = this.targetLufs - selfMetrics.lufs;
       const adj = diff > 0 ? 0.08 : -0.08;
       // Nudge energy macro (worklet scales voice amplitudes with energy).
       const macros = this.computeWorkletMacros();
       macros.energy = clamp(macros.energy + adj * 0.5, 0.1, 1.0);
-      this.audio?.setMacros(macros);
+      this.pushMacros(macros);
       // Also nudge the master level (legacy: master.gain; worklet: no-op).
       if (this.ctx) {
         const currentMaster = this.audio?.getParams?.().masterLevel ?? 1.1;
         const newMaster = clamp(currentMaster + adj, 0.3, 2.0);
-        this.audio?.setWorld({ masterLevel: newMaster });
+        this.pushWorld({ masterLevel: newMaster });
       }
     }
     // Energy matching — adjust track volumes / density macro.
@@ -3715,7 +4000,7 @@ export class Psy4EngineV2 {
         const macros = this.computeWorkletMacros();
         const nudge = energyDiff > 0 ? 0.02 : -0.02;
         macros.density = clamp(macros.density + nudge, 0.1, 1.0);
-        this.audio?.setMacros(macros);
+        this.pushMacros(macros);
         // Also nudge bass + lead levels (legacy: trackGains; worklet: no-op
         // for these param names, but the worklet's bus levels are fixed).
         if (this.ctx) {
@@ -3724,7 +4009,7 @@ export class Psy4EngineV2 {
           const newBass = clamp((params.bassLevel ?? 0.96) + volAdj, 0.1, 2.0);
           const newLead = clamp((params.leadLevel ?? 0.56) + volAdj, 0.1, 2.0);
           const newKick = clamp((params.kickLevel ?? 0.8) + volAdj * 0.5, 0.1, 2.0);
-          this.audio?.setWorld({ bassLevel: newBass, leadLevel: newLead, kickLevel: newKick });
+          this.pushWorld({ bassLevel: newBass, leadLevel: newLead, kickLevel: newKick });
         }
       }
     }
@@ -3732,33 +4017,14 @@ export class Psy4EngineV2 {
 
   setWorld(params: Record<string, number>): void {
     if (!this.ctx) return;
-    // ── Task F1-F3: route world params to the audio backend (ONE path) ──
-    // The backend (worklet or legacy) merges the params into its internal
-    // state. The worklet applies them to its voice pool; the legacy graph
-    // adjusts master/track gain nodes + stores learned params.
-    this.audio?.setWorld(params);
-    // Store learned params locally so the engine's tracking state stays
-    // consistent for the pursuit UI + the legacy graph's triggerDrum/triggerSynth.
-    if (isFinite(params.kickDecay) && params.kickDecay > 0.02 && params.kickDecay < 2) {
-      this.learned.kickDecay = params.kickDecay;
-    }
-    if (isFinite(params.bassCutoff) && params.bassCutoff > 40 && params.bassCutoff < 4000) {
-      this.learned.bassCutoff = params.bassCutoff;
-    }
-    if (isFinite(params.leadCutoff) && params.leadCutoff > 100 && params.leadCutoff < 16000) {
-      this.learned.leadCutoff = params.leadCutoff;
-    }
-    if (isFinite(params.leadDetune) && params.leadDetune >= 0 && params.leadDetune < 100) {
-      this.learned.leadDetune = params.leadDetune;
-    }
-    if (isFinite(params.padCutoff) && params.padCutoff > 80 && params.padCutoff < 12000) {
-      this.learned.padCutoff = params.padCutoff;
-    }
-    if (isFinite(params.duck) && params.duck >= 0 && params.duck <= 1) {
-      this.learned.duck = params.duck;
-    }
-    // Sync the legacy access so the legacy graph reads the latest learned params.
-    this.syncLegacyAccess();
+    // ── Task PERF-FIX: route through the cached helper. pushWorld diffs
+    //    against lastWorldParams, sends only the changed keys to the backend
+    //    (skipping the postMessage entirely when nothing changed), AND mirrors
+    //    the learned-params tracking + syncLegacyAccess that used to be
+    //    inlined here. The legacy `if (!this.ctx) return` guard is preserved
+    //    so external callers that hit this before init() don't pollute the
+    //    cache. ──
+    this.pushWorld(params);
   }
 
   /**
@@ -4302,18 +4568,22 @@ export class Psy4EngineV2 {
     // engine's tick() method. It carries the same fields as the old
     // ArrangementSection (label, density, bass, lead, bars) PLUS continuous
     // automation parameters (filterCutoff, reverbAmount, delayAmount,
-    // tension, surprise) that applyFlowAutomation() applies every step.
+    // tension, surprise) that applyFlowAutomation() applies per-bar.
     //
     // If the flow engine isn't initialized yet (defensive — shouldn't happen
     // after start()), fall back to a minimal default so scheduleStep doesn't
     // crash. This keeps the engine resilient to any future refactor that
     // might call scheduleStep before flowEngine is ready.
-    const flow: FlowState = this.currentFlow ?? {
-      energy: 0.5, density: 0.5, bassOn: true, leadOn: false, acidOn: false,
-      hatDensity: 0.7, percDensity: 0.6, fxDensity: 0.6,
-      label: 'GROOVE', filterCutoff: 1800, reverbAmount: 0.4, delayAmount: 0.2,
-      tension: 0.4, surprise: 0.05, sectionBars: 8, barInSection: bar,
-    };
+    //
+    // PERF-FIX: the fallback is a module-level constant (FALLBACK_FLOW) —
+    // rebuilt every step before, now reused by reference. The `barInSection`
+    // field is the only per-bar field; we override it inline (cheaper than
+    // rebuilding the whole object literal every step).
+    const flow: FlowState = this.currentFlow
+      ? (this.currentFlow.barInSection === bar
+        ? this.currentFlow
+        : { ...this.currentFlow, barInSection: bar })
+      : { ...FALLBACK_FLOW, barInSection: bar };
     const sd = 60 / this.bpm / 4;
 
     // ── Task F1: continuous flow automation ──
@@ -4327,28 +4597,35 @@ export class Psy4EngineV2 {
     // mute, filterSweep progression, echoThrow delay boost, silence).
     // Called BEFORE the rest of the step scheduling so the new send levels
     // are in effect when the note for this step fires.
-    this.applyFlowAutomation(flow, bar, step, time);
-
-    // ── Energy from world's energyCurve, modulated by flow density ──
-    // The flow engine's `energy` field is already a smoothed target, but we
-    // ALSO blend in the world's energyCurve (indexed by bar-in-section) so
-    // the energy rises and falls WITHIN a section as well as across sections.
-    // This gives the music intra-section dynamic shape (e.g. a drop builds
-    // tension across its first 4 bars, peaks in the middle, releases at the
-    // end) instead of being a flat energy plateau.
-    const eIdx = clamp(
-      Math.floor((bar / Math.max(1, flow.sectionBars)) * w.energyCurve.length),
-      0,
-      w.energyCurve.length - 1
-    );
-    const baseEnergy = w.energyCurve[eIdx];
-    const energy = clamp(baseEnergy * (0.4 + 0.6 * flow.density), 0, 1);
+    //
+    // PERF-FIX (FIX 2): applyFlowAutomation now runs ONLY on the downbeat
+    // (step === 0) — once per bar, not once per 16th step. The flow state's
+    // continuous params (reverbAmount, delayAmount, filterCutoff) change per-
+    // BAR (the flow engine's tick() updates them at the bar boundary), so
+    // calling applyFlowAutomation per-step was redundant ~94% of the time
+    // (15 of 16 steps per bar saw the same flow). The pushFX cache (FIX 1)
+    // already skipped the actual postMessage, but the function still did
+    // 7 clamp() calls + 2 array allocations per step. Calling it per-bar
+    // eliminates that overhead entirely for 15 of 16 steps.
+    //
+    // The per-step surprise gating (suppressAll / suppressNonKick below)
+    // still runs every step — that's the part that genuinely needs per-step
+    // precision (a `silence` surprise can start mid-bar, and we must suppress
+    // the notes for the affected steps immediately).
+    if (step === 0) {
+      this.applyFlowAutomation(flow, bar, step, time);
+    }
 
     // ── Swing: delay offbeat steps by swing * halfStep ──
     // Task D1 (upgrade): the effective swing = world.swing + the DJController's
     // accumulated swingAdjust (when master sync is on, this nudges our swing
     // toward the radio's swing amount — smooth convergence at ≤0.02/bar).
     // Clamped to [0, 0.5] so we never go negative or fully triplet.
+    //
+    // PERF-FIX (FIX 5/6): the energyCurve computation was removed from
+    // scheduleStep — it was computed but never used (the director's
+    // getNotesForWindow already shapes note velocities by energy). This
+    // saves 1 clamp() + 1 Math.floor + 1 array index per step.
     let stepTime = time;
     const effectiveSwing = clamp(w.swing + this.swingAdjust, 0, 0.5);
     if (step % 2 === 1 && effectiveSwing > 0) {

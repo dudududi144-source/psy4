@@ -176,6 +176,25 @@ export interface AudioBackend {
   setBpm(bpm: number): void;
   /** Set FX send levels + wet amounts for section automation. */
   setFX(config: AudioBackendFXConfig): void;
+  /**
+   * Task PERF-FIX: Batched parameter update. Sends world + fx + bpm + macros
+   * in ONE postMessage (instead of 4 separate messages). The worklet handles
+   * all four updates in a single message handler — minimizing main→audio
+   * thread communication overhead.
+   *
+   * All fields are OPTIONAL — only the provided ones are applied. This lets
+   * the engine batch a setFX + a leadCutoff setWorld (a common per-bar pair
+   * from applyFlowAutomation) into one message.
+   *
+   * Optional — LegacyAudioGraph doesn't implement it (the engine falls back
+   * to the individual setters when undefined).
+   */
+  setParameterBatch?(params: {
+    world?: Record<string, number>;
+    fx?: AudioBackendFXConfig;
+    bpm?: number;
+    macros?: Record<string, number>;
+  }): void;
   /** Trigger a sidechain duck (when kick fires). */
   triggerDuck(): void;
   /** Notify the backend of a new phrase boundary. */

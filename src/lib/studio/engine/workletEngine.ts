@@ -391,6 +391,48 @@ export class WorkletEngine implements AudioBackend {
     this.node.port.postMessage({ type: 'setFX', ...config });
   }
 
+  /**
+   * Task PERF-FIX: Batched parameter update. Sends world + fx + bpm + macros
+   * in ONE postMessage. The worklet's 'setParams' handler dispatches to the
+   * same internal logic as the individual setters — but we save 3 postMessages
+   * per call (vs. calling setWorld + setFX + setBpm + setMacros separately).
+   *
+   * All fields optional — only provided ones are applied. Mirrors the
+   * AudioBackend.setParameterBatch signature.
+   *
+   * Also updates the effective params cache (so getParams() stays accurate).
+   */
+  setParameterBatch(params: {
+    world?: Record<string, number>;
+    fx?: WorkletFXConfig;
+    bpm?: number;
+    macros?: Record<string, number>;
+  }): void {
+    // Update caches first (mirror what individual setters do).
+    if (params.world) {
+      for (const k of Object.keys(params.world)) {
+        const v = params.world[k];
+        if (typeof v === 'number' && isFinite(v)) this.effectiveWorld[k] = v;
+      }
+    }
+    if (params.fx) this.effectiveFX = { ...this.effectiveFX, ...params.fx };
+    if (params.macros) {
+      for (const k of Object.keys(params.macros)) {
+        const v = params.macros[k];
+        if (typeof v === 'number' && isFinite(v)) this.effectiveMacros[k] = v;
+      }
+    }
+    if (!this.node) return;
+    // One postMessage with everything. The worklet handler applies each
+    // provided section in sequence (world → fx → bpm → macros).
+    const msg: Record<string, unknown> = { type: 'setParams' };
+    if (params.world) msg.world = params.world;
+    if (params.fx) Object.assign(msg, params.fx);
+    if (params.bpm !== undefined) msg.bpm = params.bpm;
+    if (params.macros) msg.macros = params.macros;
+    this.node.port.postMessage(msg);
+  }
+
   /** Trigger a sidechain duck (when kick fires). */
   triggerDuck(): void {
     if (!this.node) return;

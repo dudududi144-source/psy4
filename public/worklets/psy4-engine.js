@@ -1947,6 +1947,27 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         if (msg.delayWet !== undefined) this.delay.setWet(msg.delayWet);
         if (msg.delayFeedback !== undefined) this.delay.setFeedback(msg.delayFeedback);
         break;
+      case 'setParams':
+        // PERF-FIX: Batched parameter update — apply world + fx + bpm + macros
+        // in ONE message (vs. 4 separate postMessages). Each section is optional
+        // and dispatched to the same logic as the individual handlers above.
+        if (msg.world) {
+          this.worldParams = { ...this.worldParams, ...msg.world };
+        }
+        if (msg.macros) {
+          this.macros = { ...this.macros, ...msg.macros };
+        }
+        if (msg.bpm !== undefined) {
+          this.bpm = msg.bpm;
+        }
+        // FX section (reverbSends / delaySends / reverbWet / delayWet /
+        // delayFeedback) — applied via the same logic as 'setFX' above.
+        if (msg.reverbSends) this.reverbSends = msg.reverbSends;
+        if (msg.delaySends) this.delaySends = msg.delaySends;
+        if (msg.reverbWet !== undefined) this.reverb.setWet(msg.reverbWet);
+        if (msg.delayWet !== undefined) this.delay.setWet(msg.delayWet);
+        if (msg.delayFeedback !== undefined) this.delay.setFeedback(msg.delayFeedback);
+        break;
       case 'events':
         // Batch of events from main thread
         this.enqueueEvents(msg.events);
