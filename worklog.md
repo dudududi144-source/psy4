@@ -4950,3 +4950,63 @@ THE FIX: Clean architectural separation.
 - Main thread owns: musical decisions (what notes, when, what params)
 - The bridge: a clear message protocol between them
 - No conditional `if (useWorklet)` scattered everywhere — ONE path, ONE engine.
+
+---
+Task ID: RESEARCH-DEEP (codebase audit + improvement plan)
+Agent: Z.ai Code (main)
+Task: Examine ALL code, assess efficiency/correctness, plan massive improvement.
+
+AUDIT FINDINGS:
+
+1. CODE VOLUME: 34,659 lines across 125 files. psy4EngineV2 alone = 4,685 lines, 40 methods, 170 private fields. This is a GOD CLASS anti-pattern.
+
+2. DEAD CODE: 13 engine files (3,482 lines) have ZERO imports:
+   audioPerformanceMonitor, audioQualityGate, autonomousEngine, hookEngine, liveEngine, motionEngine, proAudioNodes, productionDirector, referenceAnalyzer, sampleSelector, soundBank, voiceSpecs, wavRenderer, workletDsp
+
+3. DUPLICATE CONCEPTS:
+   - grooveEngine (126 lines) + grooveEngineV2 (218 lines) — both exist, both barely used
+   - musicalMemory (279 lines) + learningMemory (260 lines) — two memory systems
+   - engineWorklet (251) + workletEngine (716) + workletDsp (302) — three worklet wrappers
+
+4. ARCHITECTURE IS GOOD: AudioBackend interface (W1) is clean. ONE interface, two implementations. No scattered conditionals. This is the RIGHT foundation.
+
+5. MUSICAL SOPHISTICATION IS REAL BUT UNDER-USED:
+   - MelodyEngine has transpose/invert/retrograde/fragment/sequence — but composeLead only uses octaveShift, not these techniques
+   - HarmonyEngine has 11 chord types + voice leading — used correctly
+   - MusicalDirector composes phrases (drums/bass/lead/pad/arp) — real composition
+   - BUT: the development techniques (transpose/invert/sequence) are defined but NOT CALLED in composeLead
+
+6. PURSUIT IS SHALLOW: 9 reference dimensions (kickDecay, centroid, transientDensity, sub/high energy, bassDecay, flatness, inharmonicity, stereoCorrelation). But NO pursuit of: harmonic content, melodic contour, rhythmic pattern, arrangement structure.
+
+7. NO MUSICAL INTELLIGENCE LAYER: The engine HEARS the radio's acoustic features but doesn't HEAR its MUSIC. It doesn't detect "the radio just played a riser" or "the radio switched to a minor key" or "the radio's lead is playing triplets". It only sees scalar features.
+
+IMPROVEMENT PLAN (massive, phased):
+
+PHASE 1: CODE HYGIENE (remove dead weight)
+- Delete 13 dead files (3,482 lines)
+- Merge grooveEngine + grooveEngineV2 → one
+- Merge musicalMemory into learningMemory
+- Remove engineWorklet + workletDsp (keep only workletEngine)
+- Result: ~5,000 lines removed, cleaner codebase
+
+PHASE 2: MUSICAL INTELLIGENCE (hear the MUSIC, not just features)
+- Build a MusicAnalyzer that detects: melodic contour, rhythmic pattern, chord changes, section boundaries, risers/drops, key modulations
+- Compare OUR music to the radio's MUSIC (not just spectral features)
+- This is the biggest gap — we match FREQUENCIES but not MUSIC
+
+PHASE 3: USE THE DEVELOPMENT TECHNIQUES
+- Wire MelodyEngine.transpose/invert/retrograde/sequence into composeLead
+- Currently the lead only gets octaveShift — missing the classical development
+- This makes the lead ACTUALLY evolve, not just repeat
+
+PHASE 4: STRUCTURAL PURSUIT
+- Pursue not just "kick decay" but "arrangement structure"
+- Detect: radio is in BUILD phase → we should BUILD
+- Detect: radio just dropped → we should DROP
+- This is what DJ software does (phrase-level sync)
+
+PHASE 5: REAL-TIME ADAPTATION
+- The engine should ADAPT its music based on what it hears
+- Radio plays a melody → we learn the contour and incorporate it
+- Radio uses a specific drum pattern → we learn and use it
+- This is true "musical learning", not just parameter matching
