@@ -148,9 +148,9 @@ export default function ReferenceTrainingPage() {
   const refAudioRef = useRef<HTMLAudioElement | null>(null);
   const [refAudioPlaying, setRefAudioPlaying] = useState(false);
 
-  // Load available streams — try API first, fall back to static JSON
+  // Load available streams — use static JSON directly (API route broken on Cloudflare edge)
   useEffect(() => {
-    fetch('/api/reference/streams')
+    fetch('/api/streams.json')
       .then(r => r.json())
       .then(data => {
         if (data.ok && data.streams) {
@@ -161,21 +161,7 @@ export default function ReferenceTrainingPage() {
           setSelectedStreamId(httpsMatch?.id || matching[0]?.id || data.streams[0].id);
         }
       })
-      .catch(() => {
-        // Fallback to static JSON (for static hosting)
-        fetch('/api/streams.json')
-          .then(r => r.json())
-          .then(data => {
-            if (data.ok && data.streams) {
-              setStreams(data.streams);
-              const matching = data.streams.filter((s: RadioStream) =>
-                s.worldMapping.includes(worldId));
-              const httpsMatch = matching.find((s: RadioStream) => s.url.startsWith('https'));
-              setSelectedStreamId(httpsMatch?.id || matching[0]?.id || data.streams[0].id);
-            }
-          })
-          .catch(() => {});
-      });
+      .catch(() => {});
   }, []);
 
   // ─── Reference listener control ──────────────────────────────────────────
@@ -760,12 +746,12 @@ export default function ReferenceTrainingPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {Object.entries(learningState.learnedKnowledge).map(([name, data]: [string, any]) => (
+                      {Object.entries(learningState.learnedKnowledge || {}).map(([name, data]: [string, any]) => (
                         <TableRow key={name} className="border-slate-800">
                           <TableCell className="font-mono text-xs text-cyan-300">{name}</TableCell>
-                          <TableCell className="font-mono text-xs text-slate-200">{data.value.toFixed(3)}</TableCell>
-                          <TableCell className="font-mono text-xs text-emerald-300">{data.score.toFixed(1)}</TableCell>
-                          <TableCell className="font-mono text-xs text-slate-400">{data.attempts}</TableCell>
+                          <TableCell className="font-mono text-xs text-slate-200">{data?.value?.toFixed(3) ?? '—'}</TableCell>
+                          <TableCell className="font-mono text-xs text-emerald-300">{data?.score?.toFixed(1) ?? '—'}</TableCell>
+                          <TableCell className="font-mono text-xs text-slate-400">{data?.attempts ?? 0}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
