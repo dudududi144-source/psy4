@@ -333,7 +333,15 @@ export default function ReferenceTrainingPage() {
         const { SelfAnalyzer } = await import('@/lib/studio/engine/reference/selfAnalyzer');
         const analyzer = new SelfAnalyzer();
         analyzer.attach(analyser, engine.ctx!);
-        analyzer.onMetrics(m => setSelfMetrics(m));
+        analyzer.onMetrics(m => {
+          setSelfMetrics(m);
+
+          // FEEDBACK LOOP: feed self-metrics back to engine for live correction
+          // This lets the engine know its OWN LUFS and adjust
+          if (engineRef.current && (engineRef.current as any).selfTrack) {
+            (engineRef.current as any).selfTrack(m);
+          }
+        });
         analyzer.start();
         selfAnalyzerRef.current = analyzer;
       }

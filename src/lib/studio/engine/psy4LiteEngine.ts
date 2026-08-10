@@ -147,38 +147,93 @@ export class Psy4LiteEngine {
       noiseData[i] = Math.random() * 2 - 1;
     }
 
-    // Master chain: sum → duck → master → analyser → destination
+    // Master chain: sum → duck → HP → multiband → saturator → limiter → tone → master → analyser → destination
     this.sum = c.createGain();
     this.duck = c.createGain();
     this.duck.gain.value = 1.0;
     this.master = c.createGain();
     this.master.gain.value = 0.7;
 
-    // Simple but effective master chain
+    // Highpass to remove subsonic
     const masterHP = c.createBiquadFilter();
     masterHP.type = 'highpass';
     masterHP.frequency.value = 25;
 
-    const comp = c.createDynamicsCompressor();
-    comp.threshold.value = -16;
-    comp.ratio.value = 4;
-    comp.attack.value = 0.006;
-    comp.release.value = 0.28;
+    // ── MULTI-BAND MASTERING (from psy — low/mid/high compressed independently) ──
+    // Crossover filters
+    const xLow = c.createBiquadFilter();
+    xLow.type = 'lowpass'; xLow.frequency.value = 120; xLow.Q.value = 0.707;
+    const xMidHP = c.createBiquadFilter();
+    xMidHP.type = 'highpass'; xMidHP.frequency.value = 120; xMidHP.Q.value = 0.707;
+    const xMidLP = c.createBiquadFilter();
+    xMidLP.type = 'lowpass'; xMidLP.frequency.value = 2500; xMidLP.Q.value = 0.707;
+    const xHigh = c.createBiquadFilter();
+    xHigh.type = 'highpass'; xHigh.frequency.value = 2500; xHigh.Q.value = 0.707;
 
+    // Per-band compressors
+    const mbLow = c.createDynamicsCompressor();
+    mbLow.threshold.value = -20; mbLow.ratio.value = 3; mbLow.knee.value = 20;
+    mbLow.attack.value = 0.01; mbLow.release.value = 0.3;
+    const mbMid = c.createDynamicsCompressor();
+    mbMid.threshold.value = -18; mbMid.ratio.value = 3; mbMid.knee.value = 20;
+    mbMid.attack.value = 0.008; mbMid.release.value = 0.25;
+    const mbHigh = c.createDynamicsCompressor();
+    mbHigh.threshold.value = -20; mbHigh.ratio.value = 2.5; mbHigh.knee.value = 20;
+    mbHigh.attack.value = 0.005; mbHigh.release.value = 0.2;
+
+    // Per-band gains
+    const gLow = c.createGain(); gLow.gain.value = 1.15;
+    const gMid = c.createGain(); gMid.gain.value = 1.0;
+    const gHigh = c.createGain(); gHigh.gain.value = 0.95;
+
+    // Sum the bands
+    const mbSum = c.createGain();
+
+    // ── SATURATION (WaveShaper — adds warmth and loudness) ──
+    const saturator = c.createWaveShaper();
+    saturator.oversample = '4x';
+    const satCurve = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) {
+      const x = (i / 512) - 1;
+      satCurve[i] = Math.tanh(x * 1.3) * 0.7 + x * 0.3; // soft clip + dry
+    }
+    saturator.curve = satCurve;
+
+    // ── TONE SHELVES (final EQ shaping) ──
+    const toneLow = c.createBiquadFilter();
+    toneLow.type = 'lowshelf'; toneLow.frequency.value = 110; toneLow.gain.value = 1.5;
+    const toneHigh = c.createBiquadFilter();
+    toneHigh.type = 'highshelf'; toneHigh.frequency.value = 8500; toneHigh.gain.value = -2;
+
+    // Limiter
     const limiter = c.createDynamicsCompressor();
-    limiter.threshold.value = -1.5;
-    limiter.ratio.value = 20;
-    limiter.attack.value = 0.001;
-    limiter.release.value = 0.12;
+    limiter.threshold.value = -1.5; limiter.ratio.value = 20;
+    limiter.attack.value = 0.001; limiter.release.value = 0.12;
 
     this.analyser = c.createAnalyser();
     this.analyser.fftSize = 2048;
 
-    // Connect: sum → duck → HP → comp → limiter → master → analyser → destination
+    // Connect master chain:
+    // sum → duck → HP → [split to 3 bands] → [compress each] → [sum] → saturator → tone → limiter → master → analyser
     this.sum.connect(this.duck);
     this.duck.connect(masterHP);
-    masterHP.connect(comp);
-    comp.connect(limiter);
+
+    // Split into 3 bands
+    masterHP.connect(xLow);
+    masterHP.connect(xMidHP);
+    xMidHP.connect(xMidLP);
+    masterHP.connect(xHigh);
+
+    // Compress each band
+    xLow.connect(mbLow); mbLow.connect(gLow); gLow.connect(mbSum);
+    xMidLP.connect(mbMid); mbMid.connect(gMid); gMid.connect(mbSum);
+    xHigh.connect(mbHigh); mbHigh.connect(gHigh); gHigh.connect(mbSum);
+
+    // Saturate → tone → limit
+    mbSum.connect(saturator);
+    saturator.connect(toneLow);
+    toneLow.connect(toneHigh);
+    toneHigh.connect(limiter);
     limiter.connect(this.master);
     this.master.connect(this.analyser);
     this.analyser.connect(c.destination);
@@ -203,7 +258,8 @@ export class Psy4LiteEngine {
     this.reverbNode.connect(this.reverbReturn);
     this.reverbReturn.connect(this.master);
 
-    // ── DELAY (ping-pong) ──
+    // ── DELAY (ping-pong with band-limited feedback — from psy) ──
+    // Band-limited = LP filter on feedback path → darker echoes (dub-style)
     this.delayNodeL = c.createDelay(0.5);
     this.delayNodeR = c.createDelay(0.5);
     this.delayNodeL.delayTime.value = 0.375;  // 3/8 at 120bpm
@@ -215,9 +271,28 @@ export class Psy4LiteEngine {
     this.delayReturn = c.createGain();
     this.delayReturn.gain.value = 0.4;
 
-    // Ping-pong: L → R → L
-    this.delayNodeL.connect(this.delayNodeR);
-    this.delayNodeR.connect(this.delayFb);
+    // Band-limiting filters on feedback path (from psy — makes echoes darker)
+    const delayFbLP_L = c.createBiquadFilter();
+    delayFbLP_L.type = 'lowpass';
+    delayFbLP_L.frequency.value = 3300;  // dark echoes
+    const delayFbLP_R = c.createBiquadFilter();
+    delayFbLP_R.type = 'lowpass';
+    delayFbLP_R.frequency.value = 3300;
+    // HP to remove mud
+    const delayFbHP_L = c.createBiquadFilter();
+    delayFbHP_L.type = 'highpass';
+    delayFbHP_L.frequency.value = 140;
+    const delayFbHP_R = c.createBiquadFilter();
+    delayFbHP_R.type = 'highpass';
+    delayFbHP_R.frequency.value = 140;
+
+    // Ping-pong with filtered feedback: L → filter → R → filter → L
+    this.delayNodeL.connect(delayFbHP_L);
+    delayFbHP_L.connect(delayFbLP_L);
+    delayFbLP_L.connect(this.delayNodeR);
+    this.delayNodeR.connect(delayFbHP_R);
+    delayFbHP_R.connect(delayFbLP_R);
+    delayFbLP_R.connect(this.delayFb);
     this.delayFb.connect(this.delayNodeL);
     this.delaySend.connect(this.delayNodeL);
     this.delayNodeL.connect(this.delayReturn);
@@ -326,6 +401,9 @@ export class Psy4LiteEngine {
     if (!this.ctx || !this.world) return;
     const t = this.ctx.currentTime;
 
+    // Set the target LUFS — selfTrack will use this to adjust master gain
+    this.targetLufs = refMetrics.lufs;
+
     // ── LUFS matching: adjust masterLevel to match reference LUFS ──
     // Our engine LUFS is typically -26, reference is -14 to -18
     // We need to boost our output
@@ -362,9 +440,37 @@ export class Psy4LiteEngine {
     }
   }
 
-  getAnalyser(): AnalyserNode | null {
-    return this.analyser;
+  /**
+   * Self-tracking — receives the engine's OWN metrics from the self-analyzer.
+   * This creates a feedback loop: the engine measures itself and adjusts.
+   */
+  selfTrack(selfMetrics: {
+    lufs: number;
+    rms: number;
+    spectralCentroid: number;
+    transientDensity: number;
+  }): void {
+    if (!this.ctx || !this.world) return;
+    const t = this.ctx.currentTime;
+
+    // Store our own LUFS for comparison with reference
+    this.ownLufs = selfMetrics.lufs;
+
+    // If we have a reference LUFS target and we're too quiet/loud, adjust
+    if (this.targetLufs !== 0 && Math.abs(selfMetrics.lufs - this.targetLufs) > 1.5) {
+      const diff = this.targetLufs - selfMetrics.lufs;
+      const adjustment = diff > 0 ? 0.03 : -0.03;
+      const currentMaster = this.world.masterLevel ?? 0.7;
+      const newMaster = Math.max(0.3, Math.min(1.5, currentMaster + adjustment));
+      this.world.masterLevel = newMaster;
+      if (this.master) this.master.gain.setTargetAtTime(newMaster, t, 0.3);
+    }
   }
+
+  private ownLufs: number = -30;
+  private targetLufs: number = 0;
+
+  getOwnLufs(): number { return this.ownLufs; }
 
   private scheduleNextTick(): void {
     if (!this.playing) return;
@@ -520,7 +626,19 @@ export class Psy4LiteEngine {
     const dur = preset.decay;
     const bassLevel = this.world.bassLevel ?? 1.0;
 
-    // Oscillator (uses preset waveform)
+    // ── SUB OSCILLATOR (from psy — adds weight below fundamental) ──
+    const subOsc = c.createOscillator();
+    const subGain = c.createGain();
+    subOsc.type = 'sine';
+    subOsc.frequency.value = f / 2;  // one octave below
+    subGain.gain.setValueAtTime(0.35 * bassLevel, time);
+    subGain.gain.exponentialRampToValueAtTime(0.001, time + dur);
+    subOsc.connect(subGain);
+    subGain.connect(this.sum!);
+    subOsc.start(time);
+    subOsc.stop(time + dur + 0.02);
+
+    // Main oscillator (uses preset waveform)
     const o = c.createOscillator();
     const g = c.createGain();
     o.type = preset.waveform;
