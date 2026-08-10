@@ -45,8 +45,8 @@ interface SynthPreset {
 }
 
 const DRUM_PRESETS: Record<string, DrumPreset> = {
-  'PS-KICK-TIGHT': { type: 'kick', tune: 0.9, decay: 0.5, tone: 1, punch: 0.85 },
-  'PS-KICK-DEEP': { type: 'kick', tune: 0.7, decay: 1.15, tone: 1, punch: 0.4 },
+  'PS-KICK-TIGHT': { type: 'kick', tune: 0.9, decay: 0.8, tone: 1, punch: 0.85 },
+  'PS-KICK-DEEP': { type: 'kick', tune: 0.7, decay: 1.4, tone: 1, punch: 0.4 },
   'PS-HAT': { type: 'hatC', tune: 1, decay: 0.32, tone: 1.5, punch: 0 },
   'PS-PERC': { type: 'tom', tune: 1.2, decay: 0.5, tone: 1, punch: 0 },
   'PS-GLITCH': { type: 'glitch', tune: 1, decay: 1.2, tone: 0.8, punch: 0 },
@@ -398,9 +398,9 @@ export class Psy4EngineV2 {
     const nd = this.noiseBuffer.getChannelData(0);
     for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
 
-    // Master chain
+    // Master chain — boosted for commercial loudness
     this.master = c.createGain();
-    this.master.gain.value = 0.85;
+    this.master.gain.value = 1.1; // was 0.85 — boost to close LUFS gap
     this.comp = c.createDynamicsCompressor();
     this.comp.threshold.value = -8;
     this.comp.knee.value = 12;
@@ -506,6 +506,8 @@ export class Psy4EngineV2 {
   private initTracks(): void {
     const names = ['KICK', 'SNARE', 'HATS', 'PERC', 'BASS', 'LEAD', 'PAD', 'ARP'];
     const presets = ['PS-KICK-TIGHT', 'TR-CLAP', 'PS-HAT', 'PS-PERC', 'PS-BASS-ROLL', 'PS-LEAD-SQUELCH', 'PS-PAD-PSYCH', 'PS-ARP-ACID'];
+    // Boosted track volumes for commercial loudness
+    const vols = [1.0, 0.6, 0.5, 0.4, 1.2, 0.7, 0.5, 0.5];
     this.tracks = [];
     for (let i = 0; i < 8; i++) {
       this.tracks.push({
@@ -513,7 +515,7 @@ export class Psy4EngineV2 {
         kind: i < 4 ? 'drum' : 'synth',
         name: names[i],
         presetId: presets[i],
-        mix: { vol: 0.8, pan: 0, mute: false, sendA: 0, sendB: 0 },
+        mix: { vol: vols[i], pan: 0, mute: false, sendA: 0, sendB: 0 },
       });
     }
   }
@@ -574,11 +576,12 @@ export class Psy4EngineV2 {
 
   selfTrack(selfMetrics: { lufs: number }): void {
     this.ownLufs = selfMetrics.lufs;
-    if (this.targetLufs !== 0 && Math.abs(selfMetrics.lufs - this.targetLufs) > 1.5) {
+    if (this.targetLufs !== 0 && Math.abs(selfMetrics.lufs - this.targetLufs) > 1.0) {
       const diff = this.targetLufs - selfMetrics.lufs;
-      const adj = diff > 0 ? 0.03 : -0.03;
-      const newMaster = clamp(this.master.gain.value + adj, 0.3, 1.5);
-      this.master.gain.setTargetAtTime(newMaster, this.ctx!.currentTime, 0.3);
+      // Faster adjustment: 0.08 per step (was 0.03) — closes gap 2.5x faster
+      const adj = diff > 0 ? 0.08 : -0.08;
+      const newMaster = clamp(this.master.gain.value + adj, 0.3, 2.0);
+      this.master.gain.setTargetAtTime(newMaster, this.ctx!.currentTime, 0.15);
     }
   }
 
@@ -674,13 +677,21 @@ export class Psy4EngineV2 {
       this.triggerDrum(3, time, 0.2);
     }
 
-    // ── BASS (track 4) — offbeat, evolving pattern ──
+    // ── BASS (track 4) — offbeat, evolving pattern with passing tones ──
     if (section.bass && step % 2 === 1) {
-      // Bass pattern: root, root, fifth, root with bar variation
-      const bassPattern = bar % 4 === 3 ? [0, 0, 3, 0] : [0, 0, 4, 0];
-      const bassDeg = bassPattern[Math.floor(step / 4) % 4];
-      const note = scaleNote(root, sc, bassDeg);
-      this.triggerSynth(4, time, note, 0.4, sd);
+      // Rich bass pattern: changes every 4 bars with passing tones and octaves
+      let bassPattern: number[];
+      const bp = bar % 8;
+      if (bp < 2) bassPattern = [0, 0, 0, 0, 0, 0, 4, 0]; // root with fifth
+      else if (bp < 4) bassPattern = [0, 0, 2, 0, 4, 0, 3, 0]; // walking
+      else if (bp < 6) bassPattern = [0, 0, 0, 7, 0, 0, 4, 3]; // octave + passing
+      else bassPattern = [0, 4, 0, 3, 0, 2, 0, 4]; // rolling
+
+      const bassDeg = bassPattern[Math.floor(step / 2) % bassPattern.length];
+      if (bassDeg >= 0) {
+        const note = scaleNote(root, sc, bassDeg);
+        this.triggerSynth(4, time, note, 0.5, sd);
+      }
     }
 
     // ── LEAD (track 5) — evolving trance motif with SPACES ──
@@ -712,18 +723,28 @@ export class Psy4EngineV2 {
       }
     }
 
-    // ── PAD (track 6) — sustained chord on bar start ──
-    if (section.lead && step === 0 && bar % 2 === 0) {
-      const chordRoot = root + 12;
-      this.triggerSynth(6, time, chordRoot, 0.2, sd * 8);
+    // ── PAD (track 6) — sustained chord every bar in drops ──
+    if (section.lead && step === 0) {
+      // Chord progression: root, IV, V, III (psytrance progression)
+      const progDegs = [0, 3, 4, 2];
+      const chordDeg = progDegs[bar % 4];
+      const chordRoot = scaleNote(root + 12, sc, chordDeg);
+      this.triggerSynth(6, time, chordRoot, 0.25, sd * 4);
+      // Also play fifth for full chord
+      this.triggerSynth(6, time + 0.01, scaleNote(root + 12, sc, chordDeg + 4), 0.15, sd * 4);
     }
 
-    // ── ARP (track 7) — rolling arp in drops ──
-    if (section.lead && step % 2 === 0 && Math.random() < 0.5) {
-      const arpDegs = [0, 2, 4, 7, 4, 2];
+    // ── ARP (track 7) — rolling arp, 70% density in drops ──
+    if (section.lead && step % 2 === 0 && Math.random() < 0.7) {
+      const arpDegs = [0, 2, 4, 7, 4, 2, 0, 7];
       const deg = arpDegs[(step / 2) % arpDegs.length];
       const note = scaleNote(root + 24, sc, deg);
-      this.triggerSynth(7, time, note, 0.2, sd);
+      this.triggerSynth(7, time, note, 0.25, sd);
+    }
+
+    // ── SHAKER (track 3 alt) — continuous offbeat in drops ──
+    if (section.bass && section.lead && step % 2 === 1 && Math.random() < 0.4) {
+      this.triggerDrum(3, time, 0.15);
     }
   }
 
