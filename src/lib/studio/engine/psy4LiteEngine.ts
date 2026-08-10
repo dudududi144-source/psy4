@@ -404,21 +404,9 @@ export class Psy4LiteEngine {
     // Set the target LUFS — selfTrack will use this to adjust master gain
     this.targetLufs = refMetrics.lufs;
 
-    // ── LUFS matching: adjust masterLevel to match reference LUFS ──
-    // Our engine LUFS is typically -26, reference is -14 to -18
-    // We need to boost our output
-    const targetLufs = refMetrics.lufs;
-    // Get our current LUFS from self-analyzer if available
-    // For now, use a heuristic: if reference is louder, boost master
-    const currentMaster = this.world.masterLevel ?? 0.7;
-    const lufsDiff = targetLufs - (-26); // assume our engine is around -26
-    if (Math.abs(lufsDiff) > 2) {
-      // Adjust master gain toward target
-      const adjustment = lufsDiff > 0 ? 0.02 : -0.02;
-      const newMaster = Math.max(0.3, Math.min(1.2, currentMaster + adjustment));
-      this.world.masterLevel = newMaster;
-      if (this.master) this.master.gain.setTargetAtTime(newMaster, t, 0.5);
-    }
+    // LUFS matching is handled by selfTrack() using the real ownLufs value.
+    // Don't duplicate it here with a hardcoded -26 assumption.
+    // selfTrack compares targetLufs vs ownLufs (measured) and adjusts.
 
     // ── Kick decay matching ──
     const refKickDecaySec = refMetrics.kickDecayMs / 1000;
@@ -501,10 +489,9 @@ export class Psy4LiteEngine {
           this.onSectionChange?.(this.currentSection);
         }
 
-        // Change sound presets every 8 bars for sonic variety
-        if (this.bar % 8 === 0 && this.bar > 0) {
+        // Change sound presets every 4 bars for faster sonic variety
+        if (this.bar % 4 === 0 && this.bar > 0) {
           this.currentPreset = (this.currentPreset + 1) % this.kickPresets.length;
-          console.log(`[Engine] Preset changed to ${this.currentPreset}`);
         }
       }
     }
@@ -530,27 +517,53 @@ export class Psy4LiteEngine {
       this.triggerBass(time, note, w.bassCutoff);
     }
 
-    // Lead — AABA motif (not random!)
-    // AABA: bars 0-1 = A (main motif), bar 2 = B (contrast), bar 3 = A' (return)
-    if (section.lead && step % 2 === 0) {
+    // Lead — evolving trance motif with SPACES and VARIATION
+    // Not 8 notes per bar — that's machine-gun, not trance
+    // Real psytrance lead: sparse, evolving, with rests and pitch variation
+    if (section.lead) {
       const key = this.musicalKey;
-      const phraseBar = bar % 4;  // 4-bar AABA phrase
+      const phraseBar = bar % 8;  // 8-bar phrase for evolution
 
-      // A section: main motif (ascending then descending)
-      // B section: contrast (higher octave, different degrees)
-      let degrees: number[];
-      if (phraseBar === 2) {
-        // B section — contrast, higher
-        degrees = [7, 10, 12, 10, 7, 5, 3, 0];
-      } else {
-        // A section — main motif
-        degrees = [0, 2, 3, 5, 3, 2, 0, -2];
+      // Lead plays only on specific steps — not every even step
+      // Creates SPACE between notes (essential for trance)
+      const leadSteps = [0, 6, 10];  // 3 notes per bar, with space
+      if (leadSteps.includes(step)) {
+        // Evolving motif: changes based on position in 8-bar phrase
+        let deg: number;
+        let dur: number;
+        let vel: number;
+
+        if (phraseBar < 2) {
+          // Bars 0-1: sparse, high notes (tension building)
+          const motif = [7, 5, 3];
+          deg = motif[leadSteps.indexOf(step)];
+          dur = 0.3;  // longer notes
+          vel = 0.25;
+        } else if (phraseBar < 4) {
+          // Bars 2-3: more active, descending (development)
+          const motif = [5, 3, 0];
+          deg = motif[leadSteps.indexOf(step)];
+          dur = 0.2;
+          vel = 0.3;
+        } else if (phraseBar < 6) {
+          // Bars 4-5: B section — contrast, higher octave
+          const motif = [10, 12, 10];
+          deg = motif[leadSteps.indexOf(step)];
+          dur = 0.15;
+          vel = 0.35;
+        } else if (phraseBar === 6) {
+          // Bar 6: resolution — return to root, sustained
+          deg = step === 0 ? 0 : step === 6 ? 2 : 0;
+          dur = 0.4;  // sustained note
+          vel = 0.4;
+        } else {
+          // Bar 7: rest bar — NO lead (creates tension for next phrase)
+          return;
+        }
+
+        const note = scaleNote(key.root + 12, key.scale, deg);
+        this.triggerLead(time, note, w.leadCutoff, dur, vel);
       }
-
-      const motifIdx = Math.floor(step / 2) % degrees.length;
-      const deg = degrees[motifIdx];
-      const note = scaleNote(key.root + 12, key.scale, deg);
-      this.triggerLead(time, note, w.leadCutoff);
     }
 
     // Hats — offbeat
@@ -662,11 +675,10 @@ export class Psy4LiteEngine {
     o.stop(time + dur + 0.02);
   }
 
-  private triggerLead(time: number, midi: number, cutoff: number): void {
+  private triggerLead(time: number, midi: number, cutoff: number, dur: number = 0.15, vel: number = 0.3): void {
     const c = this.ctx!;
     const f = mtof(midi);
     const preset = this.leadPresets[this.currentPreset];
-    const dur = 0.15;
     const leadLevel = this.world.leadLevel ?? 1.0;
 
     // Oscillators (uses preset waveform and detune)
@@ -696,7 +708,7 @@ export class Psy4LiteEngine {
     fl.Q.value = preset.q;
 
     g.gain.setValueAtTime(0, time);
-    g.gain.linearRampToValueAtTime(0.3 * leadLevel, time + 0.005);
+    g.gain.linearRampToValueAtTime(vel * leadLevel, time + 0.005);
     g.gain.exponentialRampToValueAtTime(0.001, time + dur);
 
     o1.connect(fl);
