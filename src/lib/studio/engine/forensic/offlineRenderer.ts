@@ -108,7 +108,7 @@ function getFreeVoice<T extends { active: boolean }>(pool: T[]): T {
 
 /**
  * Generate the complete musical timeline for a render.
- * This is a faithful port of psy4LiveEngine.ts step() logic.
+ * (Standalone port of the original psy4LiveEngine step() logic.)
  */
 export function generateEvents(
   seed: number,

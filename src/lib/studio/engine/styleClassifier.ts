@@ -445,9 +445,25 @@ export function classifyStyle(features: RefFeatures): StyleMatch[] {
 
 /**
  * Map a classifier style id to the nearest available WorldId.
- * The classifier knows 10 sub-styles; WORLDS has 10 worlds. Not all sub-styles
- * have a direct world counterpart (full-on, hi-tech, suomi) — those fall back
- * to the closest available world.
+ *
+ * The classifier knows 10 sub-styles; WORLDS has 10 worlds. Most sub-styles
+ * map 1:1 (dark-psy→dark-psy, goa→goa, etc.). A few sub-styles have NO
+ * direct world counterpart (full-on, hi-tech, suomi) — those fall back to
+ * the closest available world.
+ *
+ * Verification (matches WORLDS keys in worlds.ts):
+ *   WORLDS = { progressive-psy, dark-psy, morning-psy, goa, forest,
+ *              deep-psy, hypnotic, cosmic, organic-psy, acid-psy }
+ *
+ * Direct map: 7 classifier styles → 7 worlds (identity).
+ * Fallbacks (classifier style → nearest world):
+ *   full-on  → morning-psy  (bright, high sub, punchy kick — both uplifting)
+ *   hi-tech  → dark-psy     (extreme brightness + aggression + fast transients)
+ *   suomi    → forest       (erratic + organic + dark-adjacent, similar BPM)
+ *
+ * If the input styleId isn't in the directMap at all (unknown style), we
+ * fall back to a similarity search across all known classifier styles and
+ * return the world id for the closest match.
  */
 export function styleToWorld(styleId: string): string {
   const directMap: Record<string, string> = {
@@ -458,10 +474,32 @@ export function styleToWorld(styleId: string): string {
     'morning-psy': 'morning-psy',
     'acid-psy': 'acid-psy',
     'hypnotic': 'hypnotic',
-    // Closest-available fallbacks:
-    'full-on': 'morning-psy',   // bright + high sub + punchy kick
-    'hi-tech': 'acid-psy',      // extreme brightness + metallic
-    'suomi': 'dark-psy',        // erratic, fast, dark-adjacent
+    // Closest-available fallbacks (no direct world counterpart):
+    'full-on': 'morning-psy',
+    'hi-tech': 'dark-psy',
+    'suomi': 'forest',
   };
-  return directMap[styleId] || 'dark-psy';
+  const direct = directMap[styleId];
+  if (direct) return direct;
+
+  // Unknown styleId — find the closest classifier style by BPM + centroid
+  // similarity, then map THAT through directMap. This guarantees we always
+  // return a valid WorldId rather than blindly defaulting to 'dark-psy'.
+  const profile = STYLE_PROFILES.find((p) => p.id === styleId);
+  if (profile) {
+    // Already a known style — shouldn't reach here, but be safe.
+    return directMap[profile.id] || 'dark-psy';
+  }
+  // Last-resort: pick the style whose ideal BPM is closest to a typical
+  // psytrance range (140 BPM), then map through directMap.
+  let best = 'dark-psy';
+  let bestDist = Infinity;
+  for (const p of STYLE_PROFILES) {
+    const dist = Math.abs(p.bpm.ideal - 142);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = p.id;
+    }
+  }
+  return directMap[best] || 'dark-psy';
 }

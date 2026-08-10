@@ -118,7 +118,21 @@ export async function POST(request: NextRequest) {
     };
     let registry = createParameterRegistry(defaults);
 
-    const iterations = [];
+    interface TrainIteration {
+      iteration: number;
+      timestamp: number;
+      targetProblem: string;
+      targetError: number;
+      changes: ParameterChange[];
+      oldScore: number;
+      newScore: number;
+      scoreDelta: number;
+      accepted: boolean;
+      reason: string;
+      oldMetrics: ReferenceMetrics;
+      newMetrics: ReferenceMetrics;
+    }
+    const iterations: TrainIteration[] = [];
 
     // ── Initial render + score ──
     const initialRender = render(seed, worldId, duration, {

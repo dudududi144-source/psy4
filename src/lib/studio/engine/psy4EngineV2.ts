@@ -720,15 +720,44 @@ export class Psy4EngineV2 {
     styleConfidence?: number;
   }): void {
     // ── KEY PURSUIT — refresh lead/acid generators when key changes ──
-    if (understanding.key.confidence > 0.3) {
-      const newRoot = 36 + understanding.key.root;
-      const newScale = understanding.key.scale;
+    // The radio's key detector returns a CHROMATIC root (0-11, C=0..B=11).
+    // Our internal musicalKey.root is a MIDI note (typically 36-60). So we
+    // lift the chromatic root into the bass octave (36 + root) when it's in
+    // the chromatic range. If the listener ever returns a MIDI note directly
+    // (> 11), we trust it as-is. NaN/undefined confidence → no-op.
+    const k = understanding.key;
+    const conf = typeof k?.confidence === 'number' && isFinite(k.confidence) ? k.confidence : 0;
+    const rawRoot = typeof k?.root === 'number' && isFinite(k.root) ? k.root : -1;
+    if (conf > 0.2 && rawRoot >= 0) {
+      // Snap the root into the world's preferred rootRange so the engine
+      // stays in a useful octave for the current world. We pick the octave
+      // of 36 + (root mod 12) that falls inside rootRange.
+      const chroma = ((rawRoot % 12) + 12) % 12;
+      const worldRange = this.currentWorld.rootRange;
+      let newRoot: number;
+      if (rawRoot >= 12 && rawRoot >= worldRange[0] && rawRoot <= worldRange[1]) {
+        // Listener returned a MIDI note already in range — trust it.
+        newRoot = rawRoot;
+      } else {
+        // Lift chroma into an octave inside the world's rootRange.
+        const lo = worldRange[0];
+        const candidate = lo + (((chroma - (lo % 12)) + 12) % 12);
+        newRoot = candidate;
+      }
+      const newScale = (typeof k.scale === 'string' && k.scale.length > 0) ? k.scale : this.musicalKey.scale;
       const changed = newRoot !== this.musicalKey.root || newScale !== this.musicalKey.scale;
+      // ALWAYS update musicalKey first, then refresh generators — order matters
+      // so the generators pick up the new key.
       this.musicalKey = { root: newRoot, scale: newScale };
       // Also store the scale on the ref feature snapshot so the classifier
       // can use it next time it runs.
       this.refKeyScale = newScale;
-      if (changed) this.refreshMusicalGenerators();
+      if (changed) {
+        this.refreshMusicalGenerators();
+        if (typeof console !== 'undefined') {
+          console.log('[PSY4] Key updated:', this.musicalKey);
+        }
+      }
     }
 
     // ── CONTINUOUS BPM TRACKING (smooth ramp for large diffs) ──
@@ -864,6 +893,16 @@ export class Psy4EngineV2 {
    */
   private tryAutoSwitch(worldId: string, reason?: string): void {
     if (!this.ctx) return;
+    // Defensive: validate that worldId is one of the known WorldIds before
+    // attempting to switch. The classifier's styleToWorld() should always
+    // return a valid id, but we don't want a bad id to slip through and
+    // silently no-op in switchWorld().
+    if (!(worldId in WORLDS)) {
+      if (typeof console !== 'undefined') {
+        console.warn('[PSY4] tryAutoSwitch: unknown worldId', worldId);
+      }
+      return;
+    }
     const now = this.ctx.currentTime * 1000; // ms since ctx start
     if (this.lastAutoSwitchTime > 0 &&
         (now - this.lastAutoSwitchTime) < Psy4EngineV2.AUTO_SWITCH_COOLDOWN_MS) {
@@ -893,14 +932,23 @@ export class Psy4EngineV2 {
     if (!newWorld) return;
     this.currentWorld = newWorld;
 
-    // Key — only update if the world's preferred scale differs from our current
-    // one. We keep the root if it's within the world's range; otherwise we
-    // snap to the midpoint of the world's rootRange.
+    // Key — keep the root if it's within the world's range; otherwise snap to
+    // the midpoint of the world's rootRange.
     const newRoot = (this.musicalKey.root >= newWorld.rootRange[0] &&
                      this.musicalKey.root <= newWorld.rootRange[1])
       ? this.musicalKey.root
       : Math.floor((newWorld.rootRange[0] + newWorld.rootRange[1]) / 2);
-    const newScale = newWorld.defaultScale;
+    // PRESERVE the listener-detected scale if the reference listener has set
+    // one (refKeyScale) AND the new world allows that scale. This prevents
+    // switchWorld from clobbering the key pursuit when the world auto-switches
+    // (the original bug: radio detected "F major" but the engine reverted to
+    // the world's defaultScale "phrygianDominant" immediately after switching).
+    const listenerScale = this.refKeyScale;
+    const scaleAllowed = (s?: string): s is string =>
+      !!s && newWorld.scales.includes(s);
+    const newScale = scaleAllowed(listenerScale)
+      ? listenerScale
+      : newWorld.defaultScale;
     const keyChanged = newRoot !== this.musicalKey.root || newScale !== this.musicalKey.scale;
     this.musicalKey = { root: newRoot, scale: newScale };
     if (keyChanged) this.refreshMusicalGenerators();
@@ -1239,10 +1287,9 @@ export class Psy4EngineV2 {
           this.onSectionChange?.(this.currentSection);
           // Evolve lead motif at section boundaries for musical development
           this.leadMotif?.evolve();
-          // Mutate arp shape at section boundaries, rate controlled by world.evolutionRate
-          if (this.musicRng && this.musicRng.chance(this.currentWorld.evolutionRate)) {
-            this.arpIdx = (this.arpIdx + 1) % 4;
-          }
+          // (arpIdx rotation removed — base arp shape now comes from world.arpPattern;
+          //  arpIdx is retained as a field for backward compatibility but no longer
+          //  drives arp shape selection.)
         }
         // ── Phrase-locked preset rotation (Task 15) ──
         // Every 8 bars, rotate kick/bass preset between 2 variants based on
@@ -1388,8 +1435,8 @@ export class Psy4EngineV2 {
       this.triggerDrum(0, stepTime, vel);
     }
 
-    // ── CLAP (track 1) — backbeat on 2 and 4, gated by section density ──
-    if ((step === 4 || step === 12) && section.density > 0.4) {
+    // ── CLAP (track 1) — world-driven clapPattern gate ('x' = hit) ──
+    if (w.clapPattern && w.clapPattern.length === 16 && w.clapPattern.charAt(step) === 'x' && section.density > 0.4) {
       this.triggerDrum(1, stepTime, 0.3 + energy * 0.1);
     }
 
@@ -1400,9 +1447,9 @@ export class Psy4EngineV2 {
       this.triggerDrum(2, stepTime, vel);
     }
 
-    // ── PERC (track 3) — probability from world.percDensity ──
+    // ── PERC (track 3) — world-driven percPattern gate + density-based probability ──
     const percProb = clamp(w.percDensity * energy * tScale, 0, 1);
-    if (section.density > 0.5 && (step === 6 || step === 14) && this.musicRng?.chance(percProb)) {
+    if (w.percPattern && w.percPattern.length === 16 && w.percPattern.charAt(step) === 'x' && section.density > 0.5 && this.musicRng?.chance(percProb)) {
       this.triggerDrum(3, stepTime, 0.2 + tVelBoost);
     }
 
@@ -1440,16 +1487,10 @@ export class Psy4EngineV2 {
       this.triggerSynth(6, stepTime + 0.01, scaleNote(root + 12, sc, chordDeg + 4), 0.12 + energy * 0.1, sd * 4, undefined, padTimbre);
     }
 
-    // ── ARP (track 7) — generated from scale degrees, mutation from evolutionRate ──
+    // ── ARP (track 7) — world-driven arpPattern (8 scale degrees per step) ──
     const arpProb = clamp(0.7 * energy, 0, 1);
     if (section.lead && step % 2 === 0 && this.musicRng?.chance(arpProb)) {
-      const arpShapes = [
-        [0, 2, 4, 7, 4, 2, 0, 7],
-        [0, 4, 7, 4, 0, 7, 4, 0],
-        [0, 7, 4, 2, 4, 7, 12, 7],
-        [0, 2, 4, 7, 12, 7, 4, 2],
-      ];
-      const arp = arpShapes[this.arpIdx % arpShapes.length];
+      const arp = w.arpPattern || [0,2,4,7,4,2,0,7];
       const arpStep = Math.floor(step / 2) % arp.length;
       const deg = arp[arpStep];
       const note = scaleNote(root + 24, sc, deg);

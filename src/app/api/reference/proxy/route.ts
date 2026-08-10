@@ -156,7 +156,12 @@ export async function GET(request: Request) {
       audioBytes = rawBytes;
     }
 
-    return new Response(audioBytes, {
+    // Wrap the bytes in a fresh ArrayBuffer before passing to Blob — TS 5.7+
+    // requires BlobPart to be backed by an ArrayBuffer (not ArrayBufferLike),
+    // and the chunk-concatenation above produces a Uint8Array<ArrayBufferLike>.
+    const ab = new ArrayBuffer(audioBytes.byteLength);
+    new Uint8Array(ab).set(audioBytes);
+    return new Response(new Blob([ab]), {
       status: 200,
       headers: {
         'Content-Type': contentType,
