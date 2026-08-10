@@ -33,6 +33,15 @@
  * Voice ID constants mirror public/worklets/psy4-engine.js. Keep in sync.
  */
 
+import type {
+  AudioBackend,
+  AudioBackendStatus,
+  AudioBackendParams,
+  AudioBackendFXConfig,
+  SynthTimbre,
+  TriggerSynthOpts,
+} from './audioBackend';
+
 // ─── Voice IDs (mirror worklet) ────────────────────────────────────────────
 export const VOICE = {
   KICK: 0, BASS: 1, LEAD: 2, ACID: 3, PAD: 4,
@@ -76,7 +85,7 @@ export interface WorkletStats {
 }
 
 // ─── FX config (sent to worklet for section automation) ────────────────────
-export interface WorkletFXConfig {
+export interface WorkletFXConfig extends AudioBackendFXConfig {
   /** [drum, bass, music, atmos, fx] reverb send amounts 0..1. */
   reverbSends?: number[];
   /** [drum, bass, music, atmos, fx] delay send amounts 0..1. */
@@ -90,12 +99,7 @@ export interface WorkletFXConfig {
 }
 
 // ─── Status snapshot returned by getStatus() ───────────────────────────────
-export interface WorkletStatus {
-  playing: boolean;
-  /** 0..1 smoothed CPU load. */
-  cpuLoad: number;
-  /** Current active voice count. */
-  activeVoices: number;
+export interface WorkletStatus extends AudioBackendStatus {
   /** Dynamic voice ceiling (drops under overload). */
   voiceBudget: number;
 }
@@ -119,7 +123,7 @@ export interface WorkletStatus {
  * The AudioContext is created lazily inside init() (after a user gesture —
  * required by browsers for audio playback).
  */
-export class WorkletEngine {
+export class WorkletEngine implements AudioBackend {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
   private analyser: AnalyserNode | null = null;
@@ -130,6 +134,23 @@ export class WorkletEngine {
   private statsListeners: Array<(stats: WorkletStats) => void> = [];
   private moduleLoaded = false;
   private loadPromise: Promise<boolean> | null = null;
+  /**
+   * Task F1-F3: per-tick event batch builder. The engine calls
+   * triggerDrum/triggerSynth during scheduleStep(); events accumulate here.
+   * flushEvents() sends them in ONE postMessage (PSY5 batched) at the end
+   * of tick(). This is the bridge between main-thread musical logic and
+   * audio-thread DSP.
+   */
+  private eventBatch: EventBatchBuilder = new EventBatchBuilder();
+  /**
+   * Task F1-F3: effective params cache. Mirrors what we've pushed via
+   * setWorld / setFX so getParams() can return them without a round-trip
+   * to the worklet (the worklet is on the audio thread — we can't query it
+   * synchronously). Updated on every setWorld / setFX call.
+   */
+  private effectiveWorld: Record<string, number> = {};
+  private effectiveFX: AudioBackendFXConfig = {};
+  private effectiveMacros: Record<string, number> = {};
 
   /** The AudioContext (created in init()). Exposed for the facade. */
   get context(): AudioContext | null { return this.ctx; }
@@ -328,12 +349,22 @@ export class WorkletEngine {
 
   /** Set world params (kick fundamental, bass cutoff, lead detune, etc.). */
   setWorld(params: Record<string, number>): void {
+    // Task F1-F3: cache effective params so getParams() can return them
+    // without a round-trip to the audio thread.
+    for (const k of Object.keys(params)) {
+      const v = params[k];
+      if (typeof v === 'number' && isFinite(v)) this.effectiveWorld[k] = v;
+    }
     if (!this.node) return;
     this.node.port.postMessage({ type: 'world', params });
   }
 
   /** Set macro values (energy, psychedelia, darkness, density, etc.). */
   setMacros(macros: Record<string, number>): void {
+    for (const k of Object.keys(macros)) {
+      const v = macros[k];
+      if (typeof v === 'number' && isFinite(v)) this.effectiveMacros[k] = v;
+    }
     if (!this.node) return;
     this.node.port.postMessage({ type: 'macros', macros });
   }
@@ -354,6 +385,8 @@ export class WorkletEngine {
 
   /** Set FX send levels + wet amounts for section automation. */
   setFX(config: WorkletFXConfig): void {
+    // Cache for getParams().
+    this.effectiveFX = { ...this.effectiveFX, ...config };
     if (!this.node) return;
     this.node.port.postMessage({ type: 'setFX', ...config });
   }
@@ -368,6 +401,138 @@ export class WorkletEngine {
   panic(): void {
     if (!this.node) return;
     this.node.port.postMessage({ type: 'panic' });
+  }
+
+  // ─── Task F1-F3: AudioBackend note triggering ─────────────────────────
+  //
+  // The engine calls these during scheduleStep(). Events accumulate in
+  // eventBatch (PSY5 batched postMessage — minimizes main→audio thread
+  // communication). flushEvents() sends the batch at the end of tick().
+  //
+  // Track → voice ID mapping (mirror of trackToVoiceId):
+  //   0=KICK 1=CLAP 2=HAT 3=PERC 4=BASS 5=LEAD/FM 6=PAD 7=ACID/FM
+
+  /** AudioBackend: trigger a drum voice. Enqueues into eventBatch. */
+  triggerDrum(track: number, time: number, vel: number, decay?: number): void {
+    if (!this.node) return;
+    const voiceId = trackToVoiceId(track);
+    const v = Number.isFinite(vel) ? Math.max(0, Math.min(1, vel)) : 0;
+    // The worklet's kick voice takes (time, amp, fund, decay, sr) — we encode
+    // decay as the `duration` field (in seconds). Other drums use duration as
+    // a generic decay envelope length.
+    const dur = (decay !== undefined && Number.isFinite(decay) && decay > 0)
+      ? decay
+      : (track === 0 ? 0.2 : 0.15);
+    this.eventBatch.add(time, voiceId, 0, v, dur, 0);
+    // Kick triggers sidechain duck — tell the worklet.
+    if (track === 0) this.triggerDuck();
+  }
+
+  /** AudioBackend: trigger a synth voice. Enqueues into eventBatch. */
+  triggerSynth(
+    track: number,
+    time: number,
+    midi: number,
+    vel: number,
+    dur: number,
+    _timbre?: SynthTimbre,
+    opts?: TriggerSynthOpts,
+  ): void {
+    if (!this.node) return;
+    // The worklet's event format carries (time, voice, note, vel, dur, param).
+    // Per-note timbre (cutoff/res/drive) isn't in the event — the worklet's
+    // voices use their internal worldParams for cutoff. The engine pushes
+    // timbre changes via setWorld ({ leadCutoff, bassCutoff, ... }) which
+    // the worklet applies to its voice pool.
+    const fm = opts?.fm === true;
+    const voiceId: VoiceId = trackToVoiceId(track, { fmLead: fm, fmArp: fm });
+    const v = Number.isFinite(vel) ? Math.max(0, Math.min(1, vel)) : 0;
+    const note = Number.isFinite(midi) ? midi : 60;
+    const duration = (Number.isFinite(dur) && dur > 0) ? dur : 0.1;
+    // `param` encodes the FM ratio (×10) for V_FM voice; 0 otherwise.
+    const param = voiceId === VOICE.FM ? 20 : 0; // ratio 2.0
+    this.eventBatch.add(time, voiceId, note, v, duration, param);
+  }
+
+  /** AudioBackend: trigger a riser FX voice. */
+  triggerRiser(time: number, dur: number): void {
+    if (!this.node) return;
+    this.eventBatch.add(time, VOICE.RISER, 0, 0.35, dur, 0);
+  }
+
+  /** AudioBackend: trigger an impact FX voice. */
+  triggerImpact(time: number): void {
+    if (!this.node) return;
+    this.eventBatch.add(time, VOICE.IMPACT, 0, 0.7, 0.5, 0);
+  }
+
+  /** AudioBackend: trigger a reversed impact (reverseHit surprise). */
+  triggerReverseImpact(time: number, intensity: number): void {
+    if (!this.node) return;
+    const i = Number.isFinite(intensity) ? Math.max(0, Math.min(1, intensity)) : 0.5;
+    this.eventBatch.add(time, VOICE.IMPACT, 0, 0.5 * i, 0.6, 0);
+  }
+
+  /**
+   * AudioBackend: flush the accumulated event batch to the worklet.
+   * PSY5 batched postMessage — ALL step events go in ONE message (not one
+   * per event) to minimize main→audio thread communication overhead.
+   *
+   * Called by the engine at the end of tick(). The Float64Array buffer is
+   * TRANSFERRED (zero-copy) — the worklet takes ownership.
+   */
+  flushEvents(): void {
+    if (!this.node || this.eventBatch.empty) return;
+    const events = this.eventBatch.build();
+    this.eventBatch.reset();
+    if (events.length === 0) return;
+    // Transfer the underlying ArrayBuffer (zero-copy) — PSY5 optimization.
+    const buffer = events.buffer;
+    const transferList = buffer.byteLength > 0 ? [buffer] : [];
+    this.node.port.postMessage({ type: 'events', events }, transferList);
+  }
+
+  // ─── Task F1-F3: legacy-only effect methods (worklet no-ops) ──────────
+  // The worklet has its own internal DSP (Moog ladder, Schroeder reverb,
+  // bus processors). The rich effects system (E1/T1/A1 — per-track racks,
+  // multiband, send effects) is a LEGACY-ONLY construct. These methods are
+  // no-ops in worklet mode; the engine calls them unconditionally and the
+  // worklet silently ignores them. The worklet's setWorld / setFX / setMacros
+  // cover the equivalent functionality.
+
+  /** AudioBackend (worklet no-op): per-track send level. */
+  setSendLevel(_trackIdx: number, _sendName: string, _level: number): void {
+    // No-op — worklet uses setFX for reverb/delay sends per bus.
+  }
+
+  /** AudioBackend (worklet no-op): per-track effect parameter. */
+  setTrackEffect(_trackIdx: number, _effectName: string, _value: number): void {
+    // No-op — worklet uses setWorld for per-voice timbre.
+  }
+
+  /** AudioBackend (worklet no-op): global send-effect parameter. */
+  setSendEffectParam(_effectName: string, _param: string, _value: number): void {
+    // No-op — worklet has its own chorus/phaser built into the voices.
+  }
+
+  /** AudioBackend (worklet no-op): master multiband parameter. */
+  setMasterParam(_name: string, _value: number): void {
+    // No-op — worklet has its own master chain (multiband + glue + limiter).
+  }
+
+  /** AudioBackend (worklet no-op): track gain scale (surprise dropOut). */
+  setTrackGainScale(_trackIdx: number, _scale: number, _time: number): void {
+    // No-op — worklet handles dropOut via note gating in scheduleStep.
+  }
+
+  /** AudioBackend (worklet no-op): master gain scale (surprise silence). */
+  setMasterGainScale(_scale: number, _time: number): void {
+    // No-op — worklet handles silence via note gating in scheduleStep.
+  }
+
+  /** AudioBackend (worklet no-op): restore default gains (endActiveSurprise). */
+  restoreDefaults(_time: number): void {
+    // No-op — worklet's FX state is driven by setFX from applyFlowAutomation.
   }
 
   // ─── Analysis tap ─────────────────────────────────────────────────────
@@ -386,6 +551,51 @@ export class WorkletEngine {
       cpuLoad: this.stats.cpuLoad,
       activeVoices: this.stats.activeVoices,
       voiceBudget: this.stats.voiceBudget,
+    };
+  }
+
+  /**
+   * Task F1-F3: AudioBackend.getParams() — return the effective params
+   * currently pushed to the worklet. Used by the learning memory to
+   * snapshot "what the engine is actually doing right now".
+   *
+   * The worklet is on the audio thread — we can't query it synchronously.
+   * Instead we return the cached values from setWorld / setFX calls.
+   * This is an approximation (the worklet may have applied smoothing), but
+   * it's accurate enough for the learning memory's purpose (storing
+   * "good" param configurations for later recall).
+   */
+  getParams(): AudioBackendParams {
+    // Average per-bus reverb/delay sends into a single "sendReverb/sendDelay"
+    // value (the learning memory stores averaged melodic sends).
+    const reverbSends = this.effectiveFX.reverbSends;
+    const delaySends = this.effectiveFX.delaySends;
+    let sendReverb = 0;
+    let sendDelay = 0;
+    if (reverbSends && reverbSends.length >= 5) {
+      // music bus (index 2) is the main melodic treatment.
+      sendReverb = reverbSends[2] ?? 0;
+    }
+    if (delaySends && delaySends.length >= 5) {
+      sendDelay = delaySends[2] ?? 0;
+    }
+    return {
+      kickFundamental: this.effectiveWorld.kickFundamental,
+      kickDecay: this.effectiveWorld.kickDecay,
+      bassCutoff: this.effectiveWorld.bassCutoff,
+      bassResonance: this.effectiveWorld.bassResonance,
+      leadCutoff: this.effectiveWorld.leadCutoff,
+      leadDetune: this.effectiveWorld.leadDetune,
+      padCutoff: this.effectiveWorld.padCutoff,
+      padAttack: this.effectiveWorld.padAttack,
+      padDetune: this.effectiveWorld.padDetune,
+      padEvolveRate: this.effectiveWorld.padEvolveRate,
+      duck: this.effectiveWorld.duck,
+      sendReverb,
+      sendDelay,
+      reverbWet: this.effectiveFX.reverbWet,
+      delayWet: this.effectiveFX.delayWet,
+      delayFeedback: this.effectiveFX.delayFeedback,
     };
   }
 

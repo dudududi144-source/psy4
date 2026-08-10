@@ -14,7 +14,7 @@ import {
   Cpu, SlidersHorizontal, Layers, Piano, ListMusic, AudioWaveform,
   Fingerprint, ScanSearch, Wand2, Disc3, Link2, Link2Off,
   KeyRound, Drum, Flame, LayoutGrid,
-  Database, RotateCcw, Minus,
+  Database, RotateCcw, Minus, Loader2,
 } from 'lucide-react';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
@@ -82,6 +82,7 @@ export default function PSY4Page() {
 
   // Engine
   const [engineOn, setEngineOn] = useState(false);
+  const [engineLoading, setEngineLoading] = useState(false);
   const [selfMetrics, setSelfMetrics] = useState<RefMetrics | null>(null);
   const [engineState, setEngineState] = useState<{ bpm: number; key: string; section: string; style: string }>({
     bpm: 145, key: 'phrygian', section: 'INTRO', style: 'dark-psy',
@@ -247,6 +248,10 @@ export default function PSY4Page() {
 
   const startEngine = useCallback(async () => {
     try {
+      // Task F1-F3: show "Loading engine..." while the audio backend initializes.
+      // init() is now async (awaits the worklet module load, ~50-200ms). The
+      // START button is disabled + shows a spinner until the promise resolves.
+      setEngineLoading(true);
       const { Psy4EngineV2 } = await import('@/lib/studio/engine/psy4EngineV2');
       if (engineRef.current) engineRef.current.stop();
       const engine = new Psy4EngineV2();
@@ -265,9 +270,14 @@ export default function PSY4Page() {
           });
         }
       };
-      engine.start(worldId);
+      // Task F1-F3: await start() — it awaits init() internally, ensuring the
+      // worklet (or legacy graph) is fully loaded before scheduling notes.
+      // This fixes ROAST-7 bug #2: "If user clicks START before worklet loads,
+      // triggerDrum/triggerSynth silently return. No audio, no feedback."
+      await engine.start(worldId);
       engineRef.current = engine;
       setEngineOn(true);
+      setEngineLoading(false);
       setActiveWorld(engine.getCurrentWorldId?.() ?? worldId);
       setAutoSwitchActive(false);
       setEngineState({ bpm: (engine as any)._bpm || 145, key: engine.getMusicalKey()?.scale || 'phrygian', section: 'INTRO', style: worldId });
@@ -367,7 +377,10 @@ export default function PSY4Page() {
         analyzerRef.current = a;
       }
       toast.success('Engine V2 started');
-    } catch (e) { toast.error(`Engine error: ${e instanceof Error ? e.message : String(e)}`); }
+    } catch (e) {
+      setEngineLoading(false);
+      toast.error(`Engine error: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }, [worldId]);
 
   // Mirror activeWorld in a ref so the polling closure sees the latest value
@@ -726,11 +739,22 @@ export default function PSY4Page() {
             <CardContent className="space-y-2">
               <div className="flex gap-2">
                 {!engineOn ? (
-                  <Button onClick={startEngine} size="sm" className="bg-cyan-600 hover:bg-cyan-700"><Play className="w-4 h-4 mr-1" /> START</Button>
+                  <Button onClick={startEngine} size="sm" disabled={engineLoading} className="bg-cyan-600 hover:bg-cyan-700">
+                    {engineLoading ? (
+                      <><Loader2 className="w-4 h-4 mr-1 animate-spin" /> LOADING…</>
+                    ) : (
+                      <><Play className="w-4 h-4 mr-1" /> START</>
+                    )}
+                  </Button>
                 ) : (
                   <Button onClick={stopEngine} size="sm" variant="destructive"><Square className="w-4 h-4 mr-1" /> STOP</Button>
                 )}
               </div>
+              {engineLoading && !engineOn && (
+                <div className="text-[10px] font-mono text-amber-400 animate-pulse">
+                  Loading audio engine (worklet module + DSP voices)…
+                </div>
+              )}
               {engineOn && (
                 <div className="text-[10px] font-mono text-slate-400">
                   BPM: <span className="text-cyan-400">{engineState.bpm}</span> · Key: <span className="text-cyan-400">{engineState.key}</span> · Style: <span className="text-fuchsia-400">{engineState.style}</span> · Section: <span className="text-cyan-400">{engineState.section}</span>

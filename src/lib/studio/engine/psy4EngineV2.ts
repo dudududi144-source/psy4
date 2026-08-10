@@ -86,14 +86,18 @@ import {
 //    PSY5 RT-safe techniques are baked in: polynomial ftanh, 256-slot ring
 //    buffer, zero per-block allocation, dynamic voice budget, batched
 //    postMessage. ──
-import {
-  WorkletEngine,
-  EventBatchBuilder,
-  VoiceId,
-  VOICE,
-  trackToVoiceId,
-  WorkletFXConfig,
-} from './workletEngine';
+import { WorkletEngine } from './workletEngine';
+// ── Task F1-F3: clean architectural separation. ONE AudioBackend interface,
+//    TWO implementations (WorkletEngine + LegacyAudioGraph). The engine uses
+//    `this.audio: AudioBackend` everywhere — NO scattered `if (useWorklet)`
+//    conditionals. The engine owns musical logic; the backend owns audio. ──
+import type {
+  AudioBackend,
+  AudioBackendFXConfig,
+  SynthTimbre,
+  TriggerSynthOpts,
+} from './audioBackend';
+import { LegacyAudioGraph, LegacyEngineAccess } from './legacyAudioGraph';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -157,7 +161,7 @@ const LATENCY_MODE_LOOKAHEAD: Record<LatencyMode, number> = {
 //
 // Tracks: 0=KICK, 1=SNARE/CLAP, 2=HATS, 3=PERC, 4=BASS, 5=LEAD, 6=PAD, 7=ARP.
 
-function buildTrackRackConfigs(world: World): TrackRackConfig[] {
+export function buildTrackRackConfigs(world: World): TrackRackConfig[] {
   // Base configs — these give each track its core "produced" character.
   const base: TrackRackConfig[] = [
     // 0: KICK — mono/centered, heavy comp, no sends. Low-end focus.
@@ -722,90 +726,43 @@ export class Psy4EngineV2 {
   //    key changes (refreshMusicalGenerators calls director.setEngines).
   private director: MusicalDirector | null = null;
 
-  // Audio graph
-  private master!: GainNode;
-  private comp!: DynamicsCompressorNode;
-  private noiseBuffer!: AudioBuffer;
-  private delaySend!: GainNode;
-  private delay!: DelayNode;
-  private delayFb!: GainNode;
-  private delayReturn!: GainNode;
-  private reverbSend!: GainNode;
-  private reverb!: ConvolverNode;
-  private reverbReturn!: GainNode;
-  private chains: GainNode[] = [];          // rack.input per track (voices connect here)
-  private trackGains: GainNode[] = [];      // rack.output per track (fader — liveTrack/setWorld adjust this)
-  private duckGain!: GainNode;  // sidechain duck for bass track
-  private saturator!: WaveShaperNode;
-  private toneLow!: BiquadFilterNode;
-  private toneHigh!: BiquadFilterNode;
-
-  // ── Per-track effects racks (Task E1) ──
-  // Each track has a full insert chain (EQ → comp → sat → Haas → pan) plus
-  // 6 send taps. Replaces the bare GainNode+HPF+panner chain in V2.
-  private racks: TrackEffectsRack[] = [];
-
-  // ── Send buses + effects (Task E1) ──
-  // Chorus / Phaser / Distortion / Bitcrush are global SEND effects — each
-  // track's rack sends a portion to the bus, the bus feeds the effect, and
-  // the effect's output returns to the master sum.
-  private chorusSend!: GainNode;        // bus input (sums all racks' chorus sends)
-  private chorusEffect!: ChorusSend;
-  private chorusReturn!: GainNode;
-  private phaserSend!: GainNode;
-  private phaserEffect!: PhaserSend;
-  private phaserReturn!: GainNode;
-  private distortionSend!: GainNode;
-  private distortionEffect!: DistortionSend;
-  private distortionReturn!: GainNode;
-  private bitcrushSend!: GainNode;
-  private bitcrushEffect!: BitcrushSend;
-  private bitcrushReturn!: GainNode;
-
-  // ── Multiband compressor on the master bus (Task E1) ──
-  // Splits the sum into LOW / MID / HIGH, compresses each separately, and
-  // sums back. Gives the "loud, glued" commercial sound.
-  private multiband!: MultibandCompressor;
-
-  // Voice pools
-  // P1: reduced from 20 → 8 synth voices and 24 → 10 drum voices.
-  // Psytrance rarely has >6 simultaneous synth notes; the 7th/8th voices
-  // are for overlap during note transitions. Drum voice count of 10 covers
-  // kick + snare + 2 hats + 2 perc + 2 claps + 2 spare with voice stealing.
-  // Combined with lazy voice allocation (AdvancedSynthVoice), idle synth
-  // pool is 8 voices × 8 common nodes = 64 nodes (was 580).
-  private synthPool: AdvancedSynthVoice[] = [];
-  private drumPool: PooledDrumVoice[] = [];
-  private synthIdx = 0;
-  private drumIdx = 0;
-
-  // ── Task W1: unified AudioWorklet audio backend ──────────────────────────
+  // ── Task F1-F3: ONE audio backend, NO scattered conditionals ──────────────
+  // The engine owns musical logic (harmony, melody, style, learning, DJ sync,
+  // flow, director, pursuit). The backend owns audio (voices, filters, reverb,
+  // delay, master chain). The AudioBackend interface is the ONLY bridge.
   //
-  // Psy4EngineV2 is now a FACADE: musical logic (harmony, melody, style
-  // detection, learning, DJ sync, flow, director) stays on the main thread,
-  // but the actual DSP (oscillators, filters, reverb, delay, bus processing,
-  // master chain) runs inside a SINGLE AudioWorkletProcessor.
+  // At init() time, the engine decides: try WorkletEngine first (single
+  // AudioWorkletNode, 10-50x more efficient, better DSP), fall back to
+  // LegacyAudioGraph (1054-node Web Audio graph) if the worklet fails to load.
+  // Once decided, it commits for the session — no mid-session switching.
   //
-  // Why: the previous node graph (1054+ createOscillator/Gain/Filter nodes)
-  // caused latency (connection overhead + main-thread scheduling), overload
-  // (per-hit node creation + GC pressure), and inferior sound (BiquadFilter
-  // + PeriodicWave vs Moog ladder + polyBLEP). The worklet replaces ALL of
-  // that with a single AudioWorkletNode that contains 18 voice types, 5 bus
-  // processors, Schroeder reverb, ping-pong delay, and a master chain.
-  //
-  // The flag `useWorklet` defaults to true. When true, init() skips the node
-  // graph creation (saves ~1054 nodes) and instead creates a WorkletEngine.
-  // triggerDrum / triggerSynth / triggerRiser / triggerImpact route to the
-  // worklet via the event batch builder. The worklet's analyser overrides
-  // this.analyser for the UI's spectrum tap.
-  //
-  // When false (legacy / fallback), the original node graph is created and
-  // the original trigger paths execute. This is kept for debugging and for
-  // browsers that don't support AudioWorklet (rare in 2026).
-  private useWorklet = true;
-  private worklet: WorkletEngine | null = null;
-  private eventBatch: EventBatchBuilder = new EventBatchBuilder();
-  private workletReady = false;
+  // The engine calls this.audio.triggerDrum(...), this.audio.setWorld(...),
+  // this.audio.setFX(...), etc. NO `if (useWorklet)` conditionals anywhere.
+  // Both backends implement the SAME interface; the engine code is identical
+  // regardless of which backend is active.
+  private audio: AudioBackend | null = null;
+  /**
+   * The underlying WorkletEngine (when the worklet backend is active).
+   * Exposed so the UI / page.tsx can subscribe to worklet stats updates
+   * (~10 Hz) for the CPU/voice dashboard. Null when the legacy backend
+   * is active.
+   */
+  workletEngine: WorkletEngine | null = null;
+  /** True when init() has completed and the backend is ready for start(). */
+  private audioReady = false;
+  /** True when init() is in progress (UI shows "Loading engine..."). */
+  private audioLoading = false;
+  /** Cached init promise — await this to ensure init completes before start. */
+  private initPromise: Promise<void> | null = null;
+  /** True if the worklet backend is active (vs legacy). */
+  private isWorkletBackend = false;
+
+  // ── Legacy node graph fields (kept for backwards compatibility — NO LONGER ──
+  //    used directly; all access goes through this.audio). These are null in
+  //    worklet mode and in legacy mode (the LegacyAudioGraph owns the nodes).
+  //    Retained as undefined placeholders so any stray references surface as
+  //    runtime errors during the refactor transition.
+  //    TODO: remove these once all references are routed through this.audio.
 
   // ── P1: adaptive quality (Task P1) ──
   // PerformanceMonitor watches main-thread frame time + engine tick duration
@@ -1029,13 +986,44 @@ export class Psy4EngineV2 {
    */
   onWorldChange: ((worldId: string, reason?: string) => void) | null = null;
 
-  init(): void {
-    if (this.ctx) return;
+  /**
+   * Task F1-F3: Initialize the engine. Creates the AudioContext (must be
+   * from a user gesture), then tries the WorkletEngine backend first.
+   * If the worklet fails to load (50-200ms timeout, browser doesn't support
+   * AudioWorklet, file 404), falls back to the LegacyAudioGraph.
+   *
+   * ASYNC: the worklet module loads asynchronously (audioWorklet.addModule
+   * is a Promise). We AWAIT it before returning — the engine is NOT ready
+   * to start() until init() resolves. The UI should show "Loading engine..."
+   * while init() is in progress.
+   *
+   * Once init() completes, `this.audioReady` is true and `this.audio` is
+   * set to the chosen backend (WorkletEngine or LegacyAudioGraph). All
+   * subsequent triggerDrum/triggerSynth/setWorld/setFX calls go through
+   * `this.audio` — NO `if (useWorklet)` conditionals.
+   *
+   * Safe to call multiple times — subsequent calls are no-ops if already
+   * initialized (returns the cached init promise).
+   */
+  init(): Promise<void> {
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = this._doInit().catch((e) => {
+      this.audioLoading = false;
+      this.audioReady = false;
+      this.initPromise = null;
+      console.error('[PSY4 V2] init() failed:', e);
+      throw e;
+    });
+    return this.initPromise;
+  }
+
+  private async _doInit(): Promise<void> {
+    if (this.ctx && this.audioReady) return;
+    this.audioLoading = true;
+
     // Task L1: mobile auto-detect — bump 'interactive' to 'balanced' for
     // stability. Mobile devices have weaker CPUs, thermal throttling, and
-    // smaller audio buffers; 'interactive' (15ms) on a hot phone produces
-    // more drops than it's worth. The user can override via setLatencyMode()
-    // before init() to force 'interactive' on mobile.
+    // smaller audio buffers.
     if (this.latencyMode === 'interactive' && this.isMobileDevice()) {
       this.latencyMode = 'balanced';
       this.targetLookahead = LATENCY_MODE_LOOKAHEAD.balanced;
@@ -1044,294 +1032,84 @@ export class Psy4EngineV2 {
     const Ctx = window.AudioContext || (window as any).webkitAudioContext;
     const c = this.ctx = new Ctx({ latencyHint: this.latencyMode });
 
-    // ── Task W1: unified AudioWorklet audio backend ──────────────────────
-    // When useWorklet is true (default), we create a WorkletEngine that
-    // shares this AudioContext and handles ALL DSP. The legacy node graph
-    // (master chain, multiband, per-track racks, send effects, voice pools)
-    // is SKIPPED — saving ~1054 nodes and the per-hit node creation that
-    // caused latency + overload.
-    //
-    // The worklet's AudioWorkletNode connects: node → analyser → destination.
-    // That's 3 nodes total (vs 1054). The worklet internally has its own
-    // bus processors + master chain + Schroeder reverb + ping-pong delay —
-    // all running as inline DSP (no Web Audio nodes).
-    //
-    // We set this.analyser to the worklet's analyser so the UI's spectrum
-    // tap and SelfAnalyzer keep working unchanged.
-    //
-    // The worklet module loads asynchronously (audioWorklet.addModule is a
-    // Promise). Until it loads, triggerDrum/triggerSynth fall back to the
-    // legacy path (if useWorklet is false) or no-op (if useWorklet is true
-    // but workletReady is still false). Typically loads in <100ms.
-    if (this.useWorklet) {
-      this.worklet = new WorkletEngine();
-      // Kick off async init — don't await (init() is sync). The worklet
-      // becomes ready when addModule + node creation complete; triggerDrum
-      // / triggerSynth check workletReady before routing events.
-      this.worklet.init(c).then((ok) => {
-        this.workletReady = ok;
-        if (ok && this.worklet) {
-          // Override this.analyser with the worklet's analyser so the UI
-          // spectrum tap reads the worklet's output (not the legacy chain).
-          const a = this.worklet.getAnalyser();
-          if (a) this.analyser = a;
-          // Push current state to the worklet so it starts in sync.
-          this.worklet.setBpm(this._bpm || 145);
-          this.worklet.setWorld(this.computeWorkletWorldParams());
-          this.worklet.setMacros(this.computeWorkletMacros());
-          // If start() was called before the worklet loaded (typical —
-          // start() is the user-gesture entry point), tell the worklet
-          // to start now.
-          if (this.playing) this.worklet.start(this.currentWorld?.id);
-        } else {
-          // Worklet failed to load — fall back to legacy node graph on
-          // next init() call. We don't auto-retry here because addModule
-          // failures are usually permanent (worklet file 404, browser
-          // doesn't support AudioWorklet, etc.).
-          console.warn('[PSY4 V2] Worklet init failed — falling back to legacy node graph. Set engine.useWorklet=false before start() to silence this warning.');
-          this.useWorklet = false;
-          // Re-run init() synchronously to set up the legacy path.
-          // This is safe because worklet creation above is the only thing
-          // we've done so far in init(); the legacy path will create the
-          // rest of the node graph from scratch.
-          this.worklet = null;
-          this.workletReady = false;
-          // Fall through to the legacy node graph creation below.
-        }
-      }).catch(() => {
-        this.useWorklet = false;
-        this.worklet = null;
-        this.workletReady = false;
-      });
-      // When useWorklet succeeded, skip the legacy node graph creation.
-      // We still create the noiseBuffer (legacy triggerRiser/Impact use it
-      // as a fallback; small cost, ~350KB).
-      this.noiseBuffer = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
-      const nd = this.noiseBuffer.getChannelData(0);
-      for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
-      // Skip to initTracks + learning memory load (below the legacy block).
-      // We DO NOT create master/saturator/multiband/racks/sends/voice pools.
-    }
-    if (!this.useWorklet) {
-    // ── Legacy node graph (useWorklet=false OR worklet load failed) ──────
-    // This is the original 1054-node graph. Kept for fallback / debugging.
-
-    // Noise buffer
-    this.noiseBuffer = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
-    const nd = this.noiseBuffer.getChannelData(0);
-    for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
-
-    // Master chain — boosted + saturation + tone shelves (from PSY6/psy)
-    this.master = c.createGain();
-    this.master.gain.value = 1.1;
-
-    // Saturation (WaveShaper — adds warmth and loudness)
-    this.saturator = c.createWaveShaper();
-    this.saturator.oversample = '4x';
-    const satCurve = new Float32Array(1024);
-    for (let i = 0; i < 1024; i++) {
-      const x = (i / 512) - 1;
-      satCurve[i] = Math.tanh(x * 1.3) * 0.7 + x * 0.3;
-    }
-    this.saturator.curve = satCurve;
-
-    // Tone shelves (final EQ)
-    this.toneLow = c.createBiquadFilter();
-    this.toneLow.type = 'lowshelf';
-    this.toneLow.frequency.value = 110;
-    this.toneLow.gain.value = 1.5;
-    this.toneHigh = c.createBiquadFilter();
-    this.toneHigh.type = 'highshelf';
-    this.toneHigh.frequency.value = 8500;
-    this.toneHigh.gain.value = -2;
-
-    this.comp = c.createDynamicsCompressor();
-    // Comp is now a SAFETY LIMITER after the multiband — gentle ratio, fast
-    // attack, threshold just below clipping. The multiband does the heavy
-    // lifting; this catches anything that slips through.
-    this.comp.threshold.value = -3;
-    this.comp.knee.value = 6;
-    this.comp.ratio.value = 3;
-    this.comp.attack.value = 0.002;
-    this.comp.release.value = 0.15;
-    this.analyser = c.createAnalyser();
-    this.analyser.fftSize = 2048;
-
-    // Multiband compressor (Task E1) — 3-band crossover on the master bus.
-    // Splits LOW/MID/HIGH, compresses each separately, sums back. This is
-    // what gives the "loud, glued" commercial sound.
-    this.multiband = new MultibandCompressor(c, {
-      crossoverLow: 200, crossoverHigh: 2000,
-      lowThreshold: -18, lowRatio: 4,  lowAttack: 0.012, lowRelease: 0.2,  lowKnee: 6,  lowMakeup: 1.2,
-      midThreshold: -20, midRatio: 3,  midAttack: 0.008, midRelease: 0.15, midKnee: 10, midMakeup: 1.1,
-      highThreshold: -22, highRatio: 2, highAttack: 0.003, highRelease: 0.08, highKnee: 12, highMakeup: 1.0,
-    });
-
-    // Connect: master → saturator → toneLow → toneHigh → multiband → comp (safety) → analyser → destination
-    this.master.connect(this.saturator);
-    this.saturator.connect(this.toneLow);
-    this.toneLow.connect(this.toneHigh);
-    this.toneHigh.connect(this.multiband.input);
-    this.multiband.output.connect(this.comp);
-    this.comp.connect(this.analyser);
-    this.analyser.connect(c.destination);
-
-    // Delay (ping-pong with band-limited feedback)
-    this.delaySend = c.createGain();
-    this.delaySend.gain.value = 0.15;
-    this.delay = c.createDelay(0.5);
-    this.delay.delayTime.value = 0.375;
-    this.delayFb = c.createGain();
-    this.delayFb.gain.value = 0.35;
-    this.delayReturn = c.createGain();
-    this.delayReturn.gain.value = 0.5;
-    const dLP = c.createBiquadFilter();
-    dLP.type = 'lowpass';
-    dLP.frequency.value = 3300;
-    this.delaySend.connect(this.delay);
-    this.delay.connect(dLP);
-    dLP.connect(this.delayFb);
-    this.delayFb.connect(this.delay);
-    this.delay.connect(this.delayReturn);
-    this.delayReturn.connect(this.master);
-
-    // Reverb
-    this.reverbSend = c.createGain();
-    this.reverbSend.gain.value = 0.12;
-    this.reverb = c.createConvolver();
-    const irLen = Math.floor(c.sampleRate * 1.5);
-    const ir = c.createBuffer(2, irLen, c.sampleRate);
-    for (let ch = 0; ch < 2; ch++) {
-      const d = ir.getChannelData(ch);
-      for (let i = 0; i < irLen; i++) {
-        d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (c.sampleRate * 0.4));
-      }
-    }
-    this.reverb.buffer = ir;
-    this.reverbReturn = c.createGain();
-    this.reverbReturn.gain.value = 0.6;
-    this.reverbSend.connect(this.reverb);
-    this.reverb.connect(this.reverbReturn);
-    this.reverbReturn.connect(this.master);
-
-    // ── Send effects: Chorus / Phaser / Distortion / Bitcrush (Task E1) ──
-    // Each is a global SEND effect: per-track rack sends a portion to the bus
-    // gain, the bus feeds the effect input, and the effect output returns to
-    // the master sum (post-multiband-input, so sends are also compressed).
-
-    // Chorus — modulated short delays, stereo spread. For lead/pad/arp.
-    this.chorusSend = c.createGain();
-    this.chorusSend.gain.value = 1.0; // bus level; per-track sends scale this
-    this.chorusEffect = new ChorusSend(c, {
-      rate: 0.5, depth: 0.004, baseDelay: 0.012, wet: 0.6, dry: 0.7,
-    });
-    this.chorusReturn = c.createGain();
-    this.chorusReturn.gain.value = 0.5;
-    this.chorusSend.connect(this.chorusEffect.input);
-    this.chorusEffect.output.connect(this.chorusReturn);
-    this.chorusReturn.connect(this.master);
-
-    // Phaser — allpass cascade + LFO sweep. For lead/arp (psychedelic motion).
-    this.phaserSend = c.createGain();
-    this.phaserSend.gain.value = 1.0;
-    this.phaserEffect = new PhaserSend(c, {
-      rate: 0.3, depth: 0.6, baseFreq: 800, feedback: 0.4, stages: 6,
-      wet: 0.55, dry: 0.6,
-    });
-    this.phaserReturn = c.createGain();
-    this.phaserReturn.gain.value = 0.5;
-    this.phaserSend.connect(this.phaserEffect.input);
-    this.phaserEffect.output.connect(this.phaserReturn);
-    this.phaserReturn.connect(this.master);
-
-    // Distortion — hard-clip waveshaper. For acid/lead (grit).
-    this.distortionSend = c.createGain();
-    this.distortionSend.gain.value = 1.0;
-    this.distortionEffect = new DistortionSend(c, {
-      drive: 4, tone: 4000, wet: 0.5, dry: 0.5,
-    });
-    this.distortionReturn = c.createGain();
-    this.distortionReturn.gain.value = 0.4;
-    this.distortionSend.connect(this.distortionEffect.input);
-    this.distortionEffect.output.connect(this.distortionReturn);
-    this.distortionReturn.connect(this.master);
-
-    // Bitcrush — stair-step quantizer + sample-and-hold. For lo-fi texture.
-    this.bitcrushSend = c.createGain();
-    this.bitcrushSend.gain.value = 1.0;
-    this.bitcrushEffect = new BitcrushSend(c, {
-      bits: 6, holdMs: 4, tone: 2500, wet: 0.5, dry: 0.6,
-    });
-    this.bitcrushReturn = c.createGain();
-    this.bitcrushReturn.gain.value = 0.35;
-    this.bitcrushSend.connect(this.bitcrushEffect.input);
-    this.bitcrushEffect.output.connect(this.bitcrushReturn);
-    this.bitcrushReturn.connect(this.master);
-
-    // Track buses (8 tracks) — each gets a full TrackEffectsRack insert chain.
-    this.duckGain = c.createGain();
-    this.duckGain.gain.value = 1.0;
-    // duckGain connects to master ONCE (not twice — was causing feedback)
-    this.duckGain.connect(this.master);
-
-    // Build per-track rack configs from the current world. The configs encode
-    // per-track EQ/comp/sat/pan/Haas + per-track send levels + per-world
-    // modulations (dark-psy → more distortion, goa → more phaser, etc.).
-    const rackConfigs = buildTrackRackConfigs(this.currentWorld);
-    for (let i = 0; i < 8; i++) {
-      const rack = new TrackEffectsRack(c, rackConfigs[i]);
-      this.racks.push(rack);
-      // Voices connect to rack.input; liveTrack/setWorld adjust rack.output.
-      this.chains.push(rack.input);
-      this.trackGains.push(rack.output);
-
-      // Wire rack.output → (duckGain for bass | master for others).
-      // Bass goes through duckGain for sidechain ducking on kick hits.
-      if (i === 4) {
-        rack.output.connect(this.duckGain);
-      } else {
-        rack.output.connect(this.master);
-      }
-
-      // Wire all 6 send taps to the global send bus inputs.
-      // reverb/delay are the existing global buses (their gain is the master
-      // FX mix controlled by world.fxMix); chorus/phaser/distortion/bitcrush
-      // are the new Task E1 buses (their gain stays at 1.0 — per-track send
-      // gains do the scaling).
-      rack.connectSend('reverb', this.reverbSend);
-      rack.connectSend('delay', this.delaySend);
-      rack.connectSend('chorus', this.chorusSend);
-      rack.connectSend('phaser', this.phaserSend);
-      rack.connectSend('distortion', this.distortionSend);
-      rack.connectSend('bitcrush', this.bitcrushSend);
-    }
-    // duckGain already connected to master above
-
-    // Allocate voice pools (P1: 8 synth + 10 drum — down from 20 + 24).
-    // Each AdvancedSynthVoice now lazy-allocates only its 8 common nodes on
-    // construction; per-osc nodes are added on noteOn and torn down on
-    // release-tail-end. With 8 voices × 8 common = 64 idle nodes (was 580).
-    // 10 drum voices × ~8 nodes = 80 nodes; with voice stealing this covers
-    // the busiest psytrance patterns.
-    for (let i = 0; i < 8; i++) this.synthPool.push(new AdvancedSynthVoice(c, i));
-    for (let i = 0; i < 10; i++) this.drumPool.push(new PooledDrumVoice(c, this.noiseBuffer));
-    } // end if (!this.useWorklet) — legacy node graph creation block
-
-    // Initialize tracks (track state only — no audio nodes; safe for both paths)
+    // Initialize tracks (track state only — no audio nodes).
     this.initTracks();
 
+    // ── Task F1-F3: decide the audio backend ──
+    // Try WorkletEngine first (single AudioWorkletNode, 10-50x more efficient,
+    // better DSP — Moog ladder, polyBLEP, Schroeder reverb). If it fails to
+    // load (addModule 404, syntax error, browser doesn't support
+    // AudioWorklet), fall back to LegacyAudioGraph (1054-node Web Audio graph).
+    //
+    // Once decided, commit for the session — no mid-session switching. The
+    // engine calls this.audio.triggerDrum(...), this.audio.setWorld(...),
+    // etc. Both backends implement the SAME interface.
+    let backend: AudioBackend | null = null;
+
+    // Try the worklet backend.
+    try {
+      const worklet = new WorkletEngine();
+      const ok = await worklet.init(c);
+      if (ok) {
+        backend = worklet;
+        this.workletEngine = worklet;
+        this.isWorkletBackend = true;
+        if (typeof console !== 'undefined') {
+          console.log('[PSY4 V2] Audio backend: WorkletEngine (single AudioWorkletNode)');
+        }
+      }
+    } catch (e) {
+      console.warn('[PSY4 V2] WorkletEngine init threw — falling back to LegacyAudioGraph:', e);
+    }
+
+    // Fall back to the legacy graph if the worklet failed.
+    if (!backend) {
+      try {
+        const legacyEngineAccess: LegacyEngineAccess = {
+          tracks: this.tracks,
+          drumPresets: DRUM_PRESETS as Record<string, { type: string; tune: number; decay: number; tone: number; punch: number }>,
+          synthPresets: SYNTH_PRESETS as Record<string, AdvancedSynthPreset>,
+          synthModeOverrides: this.synthModeOverrides,
+          fmDepthOverride: this.fmDepthOverride,
+          wtPositionOverride: this.wtPositionOverride,
+          maxSupersawOsc: this.maxSupersawOsc,
+          leadCutoffOverride: this.leadCutoffOverride,
+        };
+        const legacy = new LegacyAudioGraph(c, this.currentWorld, legacyEngineAccess);
+        // Keep the engine access reference fresh — the engine mutates
+        // synthModeOverrides etc. over time, and the legacy graph reads
+        // them by reference. We store the access object so we can update
+        // its primitive fields when the engine's fields change.
+        this._legacyEngineAccess = legacyEngineAccess;
+        const ok = await legacy.init(c);
+        if (ok) {
+          backend = legacy;
+          this.isWorkletBackend = false;
+          if (typeof console !== 'undefined') {
+            console.warn('[PSY4 V2] Audio backend: LegacyAudioGraph (1054-node Web Audio graph — fallback)');
+          }
+        }
+      } catch (e) {
+        console.error('[PSY4 V2] LegacyAudioGraph init also failed — no audio backend available:', e);
+      }
+    }
+
+    if (!backend) {
+      this.audioLoading = false;
+      this.audioReady = false;
+      throw new Error('Failed to initialize any audio backend (worklet + legacy both failed)');
+    }
+
+    this.audio = backend;
+    this.analyser = backend.getAnalyser();
+
+    // Push the current engine state to the backend so it starts in sync.
+    backend.setBpm(this._bpm || 145);
+    backend.setWorld(this.computeWorkletWorldParams());
+    backend.setMacros(this.computeWorkletMacros());
+
     // ── Task T1 (active learning): load cross-session memory ──
-    //    Loads any patterns saved in previous sessions from localStorage.
-    //    This is what makes the engine "remember" yesterday's good params
-    //    for dark-psy at 145 BPM. The load is idempotent — calling it
-    //    multiple times is safe (subsequent loads just refresh from
-    //    localStorage, which is what we want if the user cleared it).
     this.learningMemory.load();
-    // Register a one-time beforeunload handler so the memory is flushed
-    // to localStorage when the user navigates away / closes the tab. We
-    // keep the handler reference so dispose() can remove it (avoids a
-    // leak across engine restarts, though the engine is effectively a
-    // singleton in practice).
     if (typeof window !== 'undefined' && !this.learningUnloadHandler) {
       this.learningUnloadHandler = () => {
         try { this.learningMemory.save(); } catch { /* private browsing */ }
@@ -1340,7 +1118,33 @@ export class Psy4EngineV2 {
         window.addEventListener('beforeunload', this.learningUnloadHandler);
       } catch { /* SSR / old browser — ignore */ }
     }
+
+    this.audioLoading = false;
+    this.audioReady = true;
   }
+
+  /** LegacyEngineAccess reference (kept fresh so the legacy graph reads current state). */
+  private _legacyEngineAccess: LegacyEngineAccess | null = null;
+
+  /**
+   * Sync the legacy engine access primitives when the engine's fields change.
+   * Called from setSynthMode, setFMDepth, setWavetablePosition, applyPhrasePresetRotation.
+   * The legacy graph reads these by reference (via the access object), so we
+   * update the access object's fields to mirror the engine's.
+   */
+  private syncLegacyAccess(): void {
+    if (!this._legacyEngineAccess) return;
+    this._legacyEngineAccess.synthModeOverrides = this.synthModeOverrides;
+    this._legacyEngineAccess.fmDepthOverride = this.fmDepthOverride;
+    this._legacyEngineAccess.wtPositionOverride = this.wtPositionOverride;
+    this._legacyEngineAccess.maxSupersawOsc = this.maxSupersawOsc;
+    this._legacyEngineAccess.leadCutoffOverride = this.leadCutoffOverride;
+  }
+
+  /** True when the audio backend is initialized and ready for start(). */
+  isAudioReady(): boolean { return this.audioReady; }
+  /** True when init() is in progress (UI shows "Loading engine..."). */
+  isAudioLoading(): boolean { return this.audioLoading; }
 
   private initTracks(): void {
     const names = ['KICK', 'SNARE', 'HATS', 'PERC', 'BASS', 'LEAD', 'PAD', 'ARP'];
@@ -1362,19 +1166,26 @@ export class Psy4EngineV2 {
     this.refreshMusicalGenerators();
   }
 
-  start(worldId?: string): void {
-    this.init();
-    if (this.ctx!.state === 'suspended') this.ctx!.resume();
-
-    // ── Task W1: tell the worklet to start (if ready) ──
-    // The worklet may still be loading (addModule is async). If so, init()
-    // already wired the .then() callback to call worklet.start() once loaded.
-    // If it's already ready, start it now.
-    if (this.useWorklet && this.worklet && this.workletReady) {
-      this.worklet.start(worldId);
-      this.worklet.setBpm(this._bpm || 145);
-      this.worklet.setWorld(this.computeWorkletWorldParams());
-      this.worklet.setMacros(this.computeWorkletMacros());
+  /**
+   * Task F1-F3: Start playback. ASYNC — awaits init() to ensure the audio
+   * backend is ready before starting. The UI should call `await engine.start()`
+   * and show a loading state until the promise resolves.
+   *
+   * Once started, `this.playing = true` and the scheduler begins ticking.
+   * The first step plays at ctx.currentTime + 0.04s (40ms ahead) — audible
+   * immediately, no silent period.
+   */
+  async start(worldId?: string): Promise<void> {
+    // Await init() — ensures the worklet (or legacy graph) is fully loaded
+    // before we start scheduling notes. This fixes ROAST-7 bug #2: "If user
+    // clicks START before worklet loads, triggerDrum/triggerSynth silently
+    // return. No audio, no feedback."
+    await this.init();
+    if (!this.ctx || !this.audio) {
+      throw new Error('Engine not initialized — init() failed to create an audio backend');
+    }
+    if (this.ctx.state === 'suspended') {
+      try { await this.ctx.resume(); } catch { /* user gesture required */ }
     }
 
     // ── World-driven configuration (Track A) ──
@@ -1401,43 +1212,32 @@ export class Psy4EngineV2 {
     this.applyWorldPresets();
 
     // Apply per-world send-effect settings (Task E1) — pushes per-track send
-    // levels and global effect parameters for the current world.
+    // levels and global effect parameters for the current world. Routed
+    // through this.audio (worklet: no-op; legacy: adjusts racks).
     this.applyWorldEffectSettings(this.currentWorld);
 
-    // Apply world FX mix to reverb and delay sends
-    // ── Task W1: when useWorklet, push FX config to the worklet instead of
-    // the legacy reverbSend/delaySend gain nodes (which don't exist).
+    // ── Task F1-F3: push world params + FX config to the audio backend ──
+    // ONE path — this.audio handles both worklet and legacy. No conditionals.
+    this.audio.setBpm(this._bpm || 145);
+    this.audio.setWorld(this.computeWorkletWorldParams());
+    this.audio.setMacros(this.computeWorkletMacros());
     const fxMix = this.currentWorld.fxMix;
-    if (this.useWorklet) {
-      if (this.worklet && this.workletReady) {
-        this.worklet.setFX({
-          reverbWet: clamp(0.3 + fxMix * 0.4, 0.2, 0.7),
-          delayWet: clamp(0.2 + fxMix * 0.5, 0.15, 0.6),
-          delayFeedback: 0.35,
-        });
-      }
-    } else {
-      this.reverbSend.gain.setTargetAtTime(0.04 + fxMix * 0.22, this.ctx!.currentTime, 0.05);
-      this.delaySend.gain.setTargetAtTime(0.05 + fxMix * 0.30, this.ctx!.currentTime, 0.05);
-    }
+    this.audio.setFX({
+      reverbWet: clamp(0.3 + fxMix * 0.4, 0.2, 0.7),
+      delayWet: clamp(0.2 + fxMix * 0.5, 0.15, 0.6),
+      delayFeedback: 0.35,
+    });
 
-    if (this.playing) return;
+    if (this.playing) {
+      // Already playing — just update the backend's transport state.
+      this.audio.start();
+      return;
+    }
     this.playing = true;
     this.step = 0;
     this.bar = 0;
     this.sectionIdx = 0;
     // ── Task F1: create the dynamic flow engine ──
-    // Replaces the fixed `arrangement` array with a creative, radio-responsive
-    // flow. The engine decides when to transition (based on radio energy, time
-    // since last transition, musical logic, and the world's flow profile) and
-    // produces continuous automation parameters (filterCutoff, reverbAmount,
-    // delayAmount, tension, surprise) that replace the old static section-based
-    // automation.
-    //
-    // The seed combines the world id hash, key root, and scale length so each
-    // world+key combo produces a different but reproducible flow. A fresh seed
-    // on every start() means each play-through takes a different path through
-    // the archetype graph (more creative, less formulaic).
     this.totalBars = 0;
     this.lastRefEnergyForFlow = 0;
     this.activeSurprise = null;
@@ -1448,28 +1248,18 @@ export class Psy4EngineV2 {
     this.flowEngine.setWorld(this.currentWorld);
     this.currentFlow = this.flowEngine.getCurrent();
     this.currentSection = this.currentFlow.label;
-    // Task V2b: reset section-automation state so the first section's static
-    // levels get pushed on the first tick. Also clear any leftover lead
-    // cutoff override from a previous session so the lead starts clean.
     this.lastAutomationSection = '';
     this.leadCutoffOverride = -1;
+    this.syncLegacyAccess();
     this.onSectionChange?.(this.currentSection);
     // Task L1: reset drop counters + adaptive state on a fresh start.
-    // The first step plays at ctx.currentTime + 0.04s (40ms) — slightly above
-    // the worker's 25ms tick so the first tick (which fires up to 25ms after
-    // start()) still schedules the first step in the future (15ms margin).
-    // This avoids an immediate drop on Play.
     this.droppedNotes = 0;
     this.lastDropAt = 0;
     this.lastAdaptiveCheckAt = 0;
     this.lastStabilityCheckAt = (typeof performance !== 'undefined')
       ? performance.now() : Date.now();
-    this.nextTime = this.ctx!.currentTime + 0.04;
-    // ── Task M1: prepare the first phrase so the director is ready to serve
-    // notes when tick() starts calling getNotesForWindow. We compose a phrase
-    // matching the initial flow state (character from the flow label, energy
-    // from the flow density × world energy curve). The director's
-    // advancePhrase() makes it the current phrase at nextTime. ──
+    this.nextTime = this.ctx.currentTime + 0.04;
+    // ── Task M1: prepare the first phrase ──
     if (this.director && this.currentFlow) {
       const baseE = this.currentWorld.energyCurve[0] ?? 0.5;
       const phraseEnergy = clamp(baseE * (0.4 + 0.6 * this.currentFlow.density), 0, 1);
@@ -1478,10 +1268,9 @@ export class Psy4EngineV2 {
         this.nextTime, phraseEnergy, character, this.currentWorld, this._bpm,
       );
     }
+    // ── Task F1-F3: start the audio backend's transport ──
+    this.audio.start();
     // ── Task T1 (active learning): reset the learning-loop tick timestamp ──
-    //    We start the 30s learning loop fresh on every start(). The first
-    //    sample is collected 30s after start (gives the engine + reference
-    //    time to stabilize before we measure the match score).
     this.lastLearningTickTime = Date.now();
     this.lastLearningSaveTime = Date.now();
     this.lastProactivePatternId = null;
@@ -1490,52 +1279,21 @@ export class Psy4EngineV2 {
 
   stop(): void {
     this.playing = false;
-    // Task V2a: stop the Worker-based scheduler. The SchedulerWorker keeps
-    // the underlying Worker instance alive across stop/start cycles (cheap
-    // restart) — it just stops posting ticks. We also clear the legacy
-    // `timer` field for the (currently unused) setTimeout fallback path.
+    // Task V2a: stop the Worker-based scheduler.
     this.scheduler.stop();
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-    // ── Task W1: stop the worklet + flush any pending events ──
-    if (this.useWorklet && this.worklet && this.workletReady) {
-      this.worklet.stop();
-      this.eventBatch.reset();
-    }
-    if (this.ctx && !this.useWorklet) {
-      for (const v of this.synthPool) v.panic(this.ctx);
-      for (const v of this.drumPool) v.panic(this.ctx);
+    // ── Task F1-F3: stop the audio backend (ONE path) ──
+    if (this.audio) {
+      this.audio.stop();
     }
     // ── Task D1: reset PhaseSync own-beat state ──
-    // The reference phase + syncEnabled flag are preserved (the radio is
-    // still playing and the user's toggle choice persists across restarts).
-    // We only clear the own-beat ring buffer + phase offsets + beat-drop
-    // state — these are engine-instance-specific and would be stale after
-    // a restart (the new engine instance has a different audio context).
     this.phaseSync.reset();
-    // ── Task D1 (upgrade): reset the DJController's own-state too ──
-    // Same rationale: the engine-instance-specific state (own key shift,
-    // swing adjust, push/pull offset, energy history, phrase realign
-    // pending) would be stale after a restart. The reference features +
-    // masterSync toggle are preserved (the user's choices persist).
     this.djController.reset();
     this.swingAdjust = 0;
-    // NOTE: we do NOT reverse appliedKeyShift here. The key was changed in
-    // this engine instance's musicalKey; on restart the new engine starts
-    // fresh from the world's default root, so there's nothing to reverse.
-    // We just zero the tracking counter so a subsequent master-sync disable
-    // doesn't try to reverse a shift that wasn't applied.
     this.appliedKeyShift = 0;
     // ── Task M1: reset the Musical Director's phrase state ──
-    // The director's currentPhrase / nextPhrase / phraseStartTime are all
-    // engine-instance-specific (they reference audio-context times from this
-    // session). On restart, the new engine instance gets a fresh audio
-    // context, so any cached phrase state would be stale. We reset so the
-    // next start() composes a fresh first phrase.
     this.director?.reset();
     // ── Task T1 (active learning): flush the memory to localStorage ──
-    //    We save on stop() so any patterns learned in this session persist
-    //    for the next one (in addition to the periodic 60s saves and the
-    //    beforeunload handler). Safe to call repeatedly.
     try { this.learningMemory.save(); } catch { /* private browsing */ }
   }
 
@@ -1546,10 +1304,8 @@ export class Psy4EngineV2 {
 
   setBpm(bpm: number): void {
     this._bpm = bpm;
-    // ── Task W1: push BPM to the worklet ──
-    if (this.useWorklet && this.worklet && this.workletReady) {
-      this.worklet.setBpm(bpm);
-    }
+    // ── Task F1-F3: push BPM to the audio backend (ONE path) ──
+    this.audio?.setBpm(bpm);
   }
 
   applyMusicalUnderstanding(understanding: {
@@ -1776,28 +1532,18 @@ export class Psy4EngineV2 {
     }
 
     // FX mix — smooth ramp
-    // ── Task W1: when useWorklet, push world params + FX config to the worklet ──
-    // The worklet has its own reverb/delay sends (per-bus) + its own worldParams
-    // (kickFundamental, bassCutoff, leadCutoff, etc.). We push both here so the
-    // new world takes effect immediately. The legacy reverbSend/delaySend gain
-    // nodes are only touched when useWorklet=false.
-    if (this.useWorklet) {
-      if (this.worklet && this.workletReady) {
-        this.worklet.setWorld(this.computeWorkletWorldParams());
-        this.worklet.setMacros(this.computeWorkletMacros());
-        // Initial FX config from the new world's fxMix.
-        const fxMix = newWorld.fxMix;
-        this.worklet.setFX({
-          reverbWet: clamp(0.3 + fxMix * 0.4, 0.2, 0.7),
-          delayWet: clamp(0.2 + fxMix * 0.5, 0.15, 0.6),
-          delayFeedback: 0.35,
-        });
-      }
-    } else if (this.ctx) {
-      const now = this.ctx.currentTime;
+    // ── Task F1-F3: push world params + FX config to the audio backend (ONE path) ──
+    // The backend handles both worklet (per-bus sends + worldParams) and legacy
+    // (reverbSend/delaySend gain nodes). No conditionals.
+    if (this.audio) {
+      this.audio.setWorld(this.computeWorkletWorldParams());
+      this.audio.setMacros(this.computeWorkletMacros());
       const fxMix = newWorld.fxMix;
-      this.reverbSend.gain.setTargetAtTime(0.04 + fxMix * 0.22, now, 0.5);
-      this.delaySend.gain.setTargetAtTime(0.05 + fxMix * 0.30, now, 0.5);
+      this.audio.setFX({
+        reverbWet: clamp(0.3 + fxMix * 0.4, 0.2, 0.7),
+        delayWet: clamp(0.2 + fxMix * 0.5, 0.15, 0.6),
+        delayFeedback: 0.35,
+      });
     }
 
     // Reset phrase-locked counters — start the new world's first phrase cleanly
@@ -1878,117 +1624,89 @@ export class Psy4EngineV2 {
    *
    * Safe to call before init() (no-op when racks is empty).
    */
+  /**
+   * Apply per-world send-effect settings (Task E1). Routed through this.audio
+   * (worklet: no-op; legacy: adjusts racks + global send-effect params).
+   *
+   * Safe to call before init() (no-op when this.audio is null).
+   */
   private applyWorldEffectSettings(world: World): void {
-    if (this.racks.length === 0) return;
+    if (!this.audio) return;
     const cfgs = buildTrackRackConfigs(world);
-    for (let i = 0; i < this.racks.length && i < cfgs.length; i++) {
-      const rack = this.racks[i];
+    for (let i = 0; i < cfgs.length; i++) {
       const cfg = cfgs[i];
-      // Only send levels are ramped here — tonal chain (EQ/comp/sat/pan) is
-      // set once at init() and left alone for stability.
-      rack.setParameter('sendReverb', cfg.sendReverb);
-      rack.setParameter('sendDelay', cfg.sendDelay);
-      rack.setParameter('sendChorus', cfg.sendChorus);
-      rack.setParameter('sendPhaser', cfg.sendPhaser);
-      rack.setParameter('sendDistortion', cfg.sendDistortion);
-      rack.setParameter('sendBitcrush', cfg.sendBitcrush);
+      this.audio.setSendLevel?.(i, 'reverb', cfg.sendReverb);
+      this.audio.setSendLevel?.(i, 'delay', cfg.sendDelay);
+      this.audio.setSendLevel?.(i, 'chorus', cfg.sendChorus);
+      this.audio.setSendLevel?.(i, 'phaser', cfg.sendPhaser);
+      this.audio.setSendLevel?.(i, 'distortion', cfg.sendDistortion);
+      this.audio.setSendLevel?.(i, 'bitcrush', cfg.sendBitcrush);
     }
 
     // Also nudge the global send-effect parameters based on world character.
-    if (this.chorusEffect && this.phaserEffect && this.distortionEffect && this.bitcrushEffect) {
-      // Bright worlds → faster chorus rate; dark worlds → slower.
-      const chorusRate = 0.35 + world.brightness * 0.5;
-      this.chorusEffect.setParameter('rate', chorusRate);
-      // Psychedelic worlds → faster phaser sweep + more feedback.
-      const phaserRate = 0.15 + world.psychedelia * 0.6;
-      this.phaserEffect.setParameter('rate', phaserRate);
-      this.phaserEffect.setParameter('feedback', 0.25 + world.psychedelia * 0.4);
-      // Aggressive/dark worlds → harder distortion.
-      const distDrive = 2.5 + world.aggression * 5 + world.darkness * 2;
-      this.distortionEffect.setParameter('drive', distDrive);
-      // Dark worlds → coarser bitcrush (fewer bits, longer hold).
-      const bcBits = Math.round(8 - world.darkness * 4);
-      const bcHold = 2 + world.darkness * 6;
-      this.bitcrushEffect.setParameter('bits', bcBits);
-      this.bitcrushEffect.setParameter('holdMs', bcHold);
-    }
+    // (Worklet no-ops these; legacy applies them to chorus/phaser/etc.)
+    const chorusRate = 0.35 + world.brightness * 0.5;
+    this.audio.setSendEffectParam?.('chorus', 'rate', chorusRate);
+    const phaserRate = 0.15 + world.psychedelia * 0.6;
+    this.audio.setSendEffectParam?.('phaser', 'rate', phaserRate);
+    this.audio.setSendEffectParam?.('phaser', 'feedback', 0.25 + world.psychedelia * 0.4);
+    const distDrive = 2.5 + world.aggression * 5 + world.darkness * 2;
+    this.audio.setSendEffectParam?.('distortion', 'drive', distDrive);
+    const bcBits = Math.round(8 - world.darkness * 4);
+    const bcHold = 2 + world.darkness * 6;
+    this.audio.setSendEffectParam?.('bitcrush', 'bits', bcBits);
+    this.audio.setSendEffectParam?.('bitcrush', 'holdMs', bcHold);
   }
 
   /**
    * Adjust a single per-track effect parameter in real-time (Task E1).
-   * Routes to the named rack's setParameter(). Used by the reference pursuit
-   * (and the future automated mixer) to nudge timbre as the radio's character
-   * changes. Unknown trackIdx / effectName → silent no-op.
-   *
-   * Recognized effectNames (see TrackEffectsRack.setParameter):
-   *   eqLowGain, eqMidFreq, eqMidGain, eqMidQ, eqHighGain,
-   *   compThreshold, compRatio, compAttack, compRelease, compKnee,
-   *   satDrive, satMix,
-   *   pan, haasDelayMs, haasMix,
-   *   outputGain,
-   *   sendReverb, sendDelay, sendChorus, sendPhaser, sendDistortion, sendBitcrush
+   * Routed through this.audio (worklet: no-op for rack params, but 'cutoff'
+   * for LEAD is stored as leadCutoffOverride and pushed via setWorld;
+   * legacy: adjusts the rack).
    *
    * Task V2b addition: 'cutoff' is special-cased for the LEAD track (idx 5).
-   * The lead's filter cutoff lives inside the AdvancedSynthVoice (not the
-   * rack — the rack is post-voice). So we store the override here and apply
-   * it in triggerSynth() when the lead's voice is about to fire. Pass -1
-   * to clear the override (revert to world timbre + reference pursuit blend).
-   * Any non-negative value (Hz) is clamped to [200, 16000] and used directly.
+   * The lead's filter cutoff lives inside the voice (not the rack). We store
+   * the override here and push it to the audio backend via setWorld so both
+   * worklet and legacy apply it. Pass -1 to clear the override.
    */
   setTrackEffect(trackIdx: number, effectName: string, value: number): void {
     if (!Number.isFinite(value)) return;
-    // Task V2b: lead filter cutoff override (for BUILD-section filter sweeps).
-    // Stored on the engine; applied in triggerSynth() when the lead fires.
+    // Lead filter cutoff override (for BUILD-section filter sweeps).
     if (effectName === 'cutoff') {
-      if (trackIdx !== 5) return; // only LEAD has a sweepable filter override
+      if (trackIdx !== 5) return;
       this.leadCutoffOverride = value < 0 ? -1 : clamp(value, 200, 16000);
+      this.syncLegacyAccess();
+      // Push to the audio backend so both worklet + legacy apply it.
+      this.audio?.setWorld({ leadCutoff: this.leadCutoffOverride > 0 ? this.leadCutoffOverride : 0 });
       return;
     }
-    if (trackIdx < 0 || trackIdx >= this.racks.length) return;
-    this.racks[trackIdx].setParameter(effectName, value);
+    this.audio?.setTrackEffect?.(trackIdx, effectName, value);
   }
 
   /**
-   * Adjust a per-track SEND level in real-time (Task E1). Subset of
-   * setTrackEffect() specialized for sends — handy for the arrangement
-   * engine to push more reverb in breaks, less in drops, etc.
-   *
-   *   sendName ∈ { 'reverb', 'delay', 'chorus', 'phaser', 'distortion', 'bitcrush' }
-   *   level ∈ [0, 1]
+   * Adjust a per-track SEND level in real-time (Task E1).
+   * Routed through this.audio (worklet: no-op; legacy: adjusts rack).
    */
   setSendLevel(trackIdx: number, sendName: 'reverb' | 'delay' | 'chorus' | 'phaser' | 'distortion' | 'bitcrush', level: number): void {
     if (!Number.isFinite(level)) return;
-    if (trackIdx < 0 || trackIdx >= this.racks.length) return;
-    this.racks[trackIdx].setParameter(`send${sendName.charAt(0).toUpperCase()}${sendName.slice(1)}` as any, level);
+    this.audio?.setSendLevel?.(trackIdx, sendName, level);
   }
 
   /**
-   * Adjust a global send-effect parameter (Task E1). Lets the reference
-   * pursuit or arrangement engine tweak the chorus rate / phaser feedback /
-   * distortion drive / bitcrush bits in real time.
-   *
-   *   effectName ∈ { 'chorus', 'phaser', 'distortion', 'bitcrush' }
-   *   param depends on the effect (see each class's setParameter).
+   * Adjust a global send-effect parameter (Task E1).
+   * Routed through this.audio (worklet: no-op; legacy: adjusts effect).
    */
   setSendEffectParam(effectName: 'chorus' | 'phaser' | 'distortion' | 'bitcrush', param: string, value: number): void {
     if (!Number.isFinite(value)) return;
-    switch (effectName) {
-      case 'chorus':     this.chorusEffect?.setParameter(param, value);     break;
-      case 'phaser':     this.phaserEffect?.setParameter(param, value);     break;
-      case 'distortion': this.distortionEffect?.setParameter(param, value); break;
-      case 'bitcrush':   this.bitcrushEffect?.setParameter(param, value);   break;
-    }
+    this.audio?.setSendEffectParam?.(effectName, param, value);
   }
 
   /**
    * Adjust a master multiband compressor parameter in real-time (Task E1).
-   * Recognized names: crossoverLow, crossoverHigh,
-   *   lowThreshold, lowRatio, lowAttack, lowRelease, lowKnee, lowMakeup,
-   *   midThreshold, midRatio, midAttack, midRelease, midKnee, midMakeup,
-   *   highThreshold, highRatio, highAttack, highRelease, highKnee, highMakeup.
+   * Routed through this.audio (worklet: no-op; legacy: adjusts multiband).
    */
   setMasterParam(name: string, value: number): void {
-    this.multiband?.setParameter(name, value);
+    this.audio?.setMasterParam?.(name, value);
   }
 
   // ─── Task F1: continuous flow automation (replaces V2b section automation) ──
@@ -2023,14 +1741,13 @@ export class Psy4EngineV2 {
   //
   // Tracks: 0=KICK 1=SNARE 2=HATS 3=PERC 4=BASS 5=LEAD 6=PAD 7=ARP.
   applyFlowAutomation(flow: FlowState, bar: number, step: number, time: number): void {
-    if (!this.ctx) return;
+    if (!this.ctx || !this.audio) return;
 
-    // ── Task W1: route flow automation to the worklet ──
-    // When useWorklet is true, the legacy racks are not created (this.racks
-    // is empty). setSendLevel / setTrackEffect no-op gracefully (their
-    // length-check guard returns early). We instead push a worklet.setFX()
-    // call with per-bus reverb/delay sends derived from the flow's
-    // reverbAmount / delayAmount.
+    // ── Task F1-F3: ONE path — push flow automation to this.audio ──
+    // The audio backend (worklet or legacy) handles the FX config. The worklet
+    // applies per-bus reverb/delay sends + wet amounts directly to its internal
+    // DSP. The legacy graph translates per-bus sends into per-track send levels
+    // + global wet gains. No conditionals here — both backends implement setFX.
     //
     // The worklet's 5-bus model: 0=drum 1=bass 2=music 3=atmos 4=fx.
     //   drum: low reverb (punchy), low delay
@@ -2038,112 +1755,58 @@ export class Psy4EngineV2 {
     //   music (lead/acid/fm): melReverb, melDelay (the main melodic treatment)
     //   atmos (pad/texture): atmoReverb * 1.4, atmoDelay * 1.4 (more space)
     //   fx: melReverb * 0.6, melDelay * 0.6 (some space, not too much)
-    if (this.useWorklet) {
-      const melReverb = clamp(flow.reverbAmount, 0, 0.8);
-      const atmoReverb = clamp(flow.reverbAmount * 0.7, 0, 0.6);
-      const melDelay = clamp(flow.delayAmount, 0, 0.6);
-      const atmoDelay = clamp(flow.delayAmount * 0.5, 0, 0.4);
-      const fxConfig: WorkletFXConfig = {
-        reverbSends: [
-          0.10,                      // drum — stay punchy
-          0.03,                      // bass — stay tight
-          melReverb,                 // music — lead/acid/fm
-          Math.min(0.8, atmoReverb * 1.4),  // atmos — pad/texture
-          melReverb * 0.6,           // fx
-        ],
-        delaySends: [
-          0.05,                      // drum
-          0.0,                       // bass
-          melDelay,                  // music
-          Math.min(0.6, atmoDelay * 1.4),  // atmos
-          melDelay * 0.6,            // fx
-        ],
-        // Reverb wet scales with the overall reverbAmount (more reverb = wetter returns).
-        reverbWet: clamp(0.3 + flow.reverbAmount * 0.4, 0.2, 0.7),
-        // Delay wet scales with delayAmount.
-        delayWet: clamp(0.2 + flow.delayAmount * 0.5, 0.15, 0.6),
-        // Delay feedback: slight boost during echoThrow / stutter surprises.
-        delayFeedback: this.activeSurprise?.type === 'echoThrow' || this.activeSurprise?.type === 'stutter'
-          ? clamp(0.5 + (this.activeSurprise.intensity || 0.5) * 0.3, 0.4, 0.8)
-          : 0.35,
-      };
-      if (this.worklet && this.workletReady) {
-        this.worklet.setFX(fxConfig);
-      }
-      // Still store the lead cutoff override so triggerSynth (legacy path)
-      // and the worklet param push (in computeWorkletWorldParams) can read it.
-      // For the worklet path, the lead cutoff is part of worldParams; we push
-      // it via setWorld on section changes. For continuous flow cutoff, we
-      // push it as a world param update every step (cheap — worklet merges).
-      if (this.worklet && this.workletReady) {
-        let leadCutoffTarget = flow.filterCutoff;
-        const surprise = this.activeSurprise;
-        if (surprise && surprise.type === 'filterSweep') {
-          const surpriseProgress = clamp(
-            (this.totalBars - surprise.startBar) / Math.max(1, surprise.durationBars),
-            0, 1,
-          );
-          const peakHz = clamp(2000 + surprise.intensity * 6000, 2000, 12000);
-          const baseHz = clamp(leadCutoffTarget, 400, 4000);
-          const tri = 1 - Math.abs(surpriseProgress * 2 - 1);
-          leadCutoffTarget = baseHz * Math.pow(peakHz / baseHz, tri);
-        }
-        this.leadCutoffOverride = clamp(leadCutoffTarget, 200, 16000);
-        this.worklet.setWorld({ leadCutoff: this.leadCutoffOverride });
-      }
-      return;
-    }
+    const melReverb = clamp(flow.reverbAmount, 0, 0.8);
+    const atmoReverb = clamp(flow.reverbAmount * 0.7, 0, 0.6);
+    const melDelay = clamp(flow.delayAmount, 0, 0.6);
+    const atmoDelay = clamp(flow.delayAmount * 0.5, 0, 0.4);
+    const fxConfig: AudioBackendFXConfig = {
+      reverbSends: [
+        0.10,                      // drum — stay punchy
+        0.03,                      // bass — stay tight
+        melReverb,                 // music — lead/acid/fm
+        Math.min(0.8, atmoReverb * 1.4),  // atmos — pad/texture
+        melReverb * 0.6,           // fx
+      ],
+      delaySends: [
+        0.05,                      // drum
+        0.0,                       // bass
+        melDelay,                  // music
+        Math.min(0.6, atmoDelay * 1.4),  // atmos
+        melDelay * 0.6,            // fx
+      ],
+      reverbWet: clamp(0.3 + flow.reverbAmount * 0.4, 0.2, 0.7),
+      delayWet: clamp(0.2 + flow.delayAmount * 0.5, 0.15, 0.6),
+      delayFeedback: this.activeSurprise?.type === 'echoThrow' || this.activeSurprise?.type === 'stutter'
+        ? clamp(0.5 + (this.activeSurprise.intensity || 0.5) * 0.3, 0.4, 0.8)
+        : 0.35,
+    };
+    this.audio.setFX(fxConfig);
 
     // ── (1) Per-section chorus/phaser profile (pushed on label change) ──
-    // These are timbral colors that don't benefit from continuous automation
-    // — they're either on or off for a given section type. We track the last
-    // applied label to avoid spamming the audio thread (the rack uses
-    // setTargetAtTime(0.05s) so re-pushing is a no-op once settled).
+    // Routed through this.audio.setSendLevel (worklet: no-op; legacy: rack).
     if (flow.label !== this.lastAutomationSection) {
       this.lastAutomationSection = flow.label;
       this.applySectionChorusPhaser(flow.label);
     }
 
-    // ── (2) Continuous reverb send — driven by flow.reverbAmount ──
-    // The flow engine smooths reverbAmount toward the archetype target:
-    //   BREAK → 0.70 (wash), DROP → 0.25 (punchy), INTRO → 0.60, etc.
-    // We push it to all melodic (5/6/7) and atmos (1/2/3) tracks. Kick (0)
-    // and bass (4) stay at their world defaults — they need to stay punchy.
-    const melReverb = clamp(flow.reverbAmount, 0, 0.8);
-    const atmoReverb = clamp(flow.reverbAmount * 0.7, 0, 0.6);
+    // ── (2-3) Continuous reverb + delay sends (legacy per-track; worklet ──
+    //         already handled by setFX above). setSendLevel is a no-op in
+    //         worklet mode, so these calls are safe to always make.
+    const atmoReverbLegacy = clamp(flow.reverbAmount * 0.7, 0, 0.6);
+    const atmoDelayLegacy = clamp(flow.delayAmount * 0.5, 0, 0.4);
     for (const ti of [5, 6, 7]) {
-      this.setSendLevel(ti, 'reverb', melReverb);
+      this.audio.setSendLevel?.(ti, 'reverb', melReverb);
+      this.audio.setSendLevel?.(ti, 'delay', melDelay);
     }
     for (const ti of [1, 2, 3]) {
-      this.setSendLevel(ti, 'reverb', atmoReverb);
-    }
-
-    // ── (3) Continuous delay send — driven by flow.delayAmount ──
-    // The flow engine smooths delayAmount: VARIATION → 0.45 (echo throws),
-    // BREAK → 0.50, DROP → 0.30, INTRO → 0.10. Same track routing as reverb.
-    const melDelay = clamp(flow.delayAmount, 0, 0.6);
-    const atmoDelay = clamp(flow.delayAmount * 0.5, 0, 0.4);
-    for (const ti of [5, 6, 7]) {
-      this.setSendLevel(ti, 'delay', melDelay);
-    }
-    for (const ti of [1, 2, 3]) {
-      this.setSendLevel(ti, 'delay', atmoDelay);
+      this.audio.setSendLevel?.(ti, 'reverb', atmoReverbLegacy);
+      this.audio.setSendLevel?.(ti, 'delay', atmoDelayLegacy);
     }
 
     // ── (4) Continuous lead filter cutoff — driven by flow.filterCutoff ──
-    // The flow engine smooths filterCutoff exponentially (ears hear log-Hz):
-    //   BUILD → 3500 Hz (opening), DROP → 4000 Hz (bright), BREAK → 700 Hz
-    //   (closing), INTRO → 1200 Hz. This naturally produces the signature
-    //   "filter opening" build effect and "filter closing" break release
-    //   WITHOUT hardcoded per-section sweeps — the smoothing does the work.
-    //
-    // During a filterSweep surprise, we OVERRIDE this with the surprise's
-    // own sweep curve (computed below in the surprise handling section).
     let leadCutoffTarget = flow.filterCutoff;
 
     // ── (5) Active surprise event effects ──
-    // Per-step application of the active surprise (set in tick() when
-    // maybeSurprise() returns an event).
     const surprise = this.activeSurprise;
     if (surprise) {
       const surpriseProgress = clamp(
@@ -2152,53 +1815,33 @@ export class Psy4EngineV2 {
       );
       switch (surprise.type) {
         case 'filterSweep': {
-          // Open the filter wide, then close it back — a DJ-style EQ sweep.
-          // Peak at mid-progress (intensity scales how wide the sweep goes).
           const peakHz = clamp(2000 + surprise.intensity * 6000, 2000, 12000);
           const baseHz = clamp(leadCutoffTarget, 400, 4000);
-          // Triangle: baseHz → peakHz → baseHz
           const tri = 1 - Math.abs(surpriseProgress * 2 - 1);
           leadCutoffTarget = baseHz * Math.pow(peakHz / baseHz, tri);
           break;
         }
         case 'echoThrow': {
-          // Boost the delay send + feedback for the echo throw duration.
-          // The delay feedback is on this.delayFb (set at init to 0.35).
+          // Boost delay sends for echo throws (legacy per-track; worklet
+          // already handled by setFX's delayFeedback boost above).
           const throwBoost = clamp(0.4 + surprise.intensity * 0.4, 0.4, 0.8);
-          this.setSendLevel(5, 'delay', throwBoost);     // lead echo
-          this.setSendLevel(7, 'delay', throwBoost * 0.7); // arp echo
-          if (this.delayFb) {
-            this.delayFb.gain.setTargetAtTime(
-              clamp(0.45 + surprise.intensity * 0.3, 0.4, 0.8),
-              time, 0.05,
-            );
-          }
+          this.audio.setSendLevel?.(5, 'delay', throwBoost);
+          this.audio.setSendLevel?.(7, 'delay', throwBoost * 0.7);
           break;
         }
         case 'stutter': {
-          // During a stutter, the lead retrigger is handled by the surprise
-          // start handler (startSurprise) — here we just boost the delay send
-          // so the stuttered notes echo.
-          this.setSendLevel(5, 'delay', clamp(0.5 * surprise.intensity + 0.2, 0.2, 0.7));
+          this.audio.setSendLevel?.(5, 'delay', clamp(0.5 * surprise.intensity + 0.2, 0.2, 0.7));
           break;
         }
         case 'dropOut':
         case 'silence':
         case 'reverseHit':
-          // No per-step FX change — the note gating in scheduleStep handles
-          // dropOut/silence, and reverseHit is a one-shot fired in startSurprise.
           break;
-      }
-    } else {
-      // No active surprise — relax the delay feedback back to its default.
-      if (this.delayFb) {
-        this.delayFb.gain.setTargetAtTime(0.35, time, 0.3);
       }
     }
 
-    // Apply the lead cutoff target (from flow OR from a filterSweep surprise).
-    // setTrackEffect(5, 'cutoff', ...) stores it in leadCutoffOverride, which
-    // triggerSynth reads and applies to the AdvancedSynthVoice's filter.
+    // Apply the lead cutoff target via setTrackEffect (stores in
+    // leadCutoffOverride + pushes to this.audio via setWorld).
     this.setTrackEffect(5, 'cutoff', clamp(leadCutoffTarget, 200, 16000));
   }
 
@@ -2259,83 +1902,49 @@ export class Psy4EngineV2 {
   // specific overrides here.
 
   private startSurprise(event: SurpriseEvent, time: number): void {
-    if (!this.ctx) return;
+    if (!this.ctx || !this.audio) return;
     const intensity = clamp(event.intensity, 0, 1);
 
-    // ── Task W1: route surprise one-shots to the worklet ──
+    // ── Task F1-F3: ONE path — route surprise one-shots through this.audio ──
     // Most surprise types (dropOut, silence, filterSweep, echoThrow, stutter)
     // don't need a one-shot — they're handled per-step in applyFlowAutomation
-    // (which sends setFX to the worklet) or via the scheduleStep note gating
-    // (which suppresses notes before they reach the worklet). The only
-    // surprise that needs a one-shot is reverseHit, which fires a V_IMPACT
-    // event (the worklet's impact voice is a sub boom + noise crack — close
-    // enough to a "reversed impact" for the worklet path).
-    if (this.useWorklet) {
-      if (event.type === 'reverseHit' && !this.surpriseReverseHitScheduled) {
-        if (this.worklet && this.workletReady) {
-          this.eventBatch.add(time, VOICE.IMPACT, 0, 0.5 * intensity, 0.6, 0);
-        }
-        this.surpriseReverseHitScheduled = true;
-      }
-      // stutter: triggerSynth (called below) already routes to the worklet
-      // via its useWorklet branch. No additional handling needed here.
-      if (event.type === 'stutter') {
-        const chord = this.director?.getCurrentChord() ?? this.currentChord;
-        if (chord && this.melody) {
-          const root = chord.notes[0] + 12; // one octave up
-          const stutters = 4 + Math.round(intensity * 2);
-          const s16 = 60 / this.bpm / 4;
-          for (let i = 0; i < stutters; i++) {
-            this.triggerSynth(5, time + i * s16 * 0.5, root, 0.3 + intensity * 0.2, s16, s16 * 0.4);
-          }
-        }
-      }
-      return;
-    }
-
+    // (which sends setFX to the audio backend) or via the scheduleStep note
+    // gating (which suppresses notes before they reach the backend). The only
+    // surprise that needs a one-shot is reverseHit, which fires a reverse
+    // impact via this.audio.triggerReverseImpact.
     switch (event.type) {
       case 'reverseHit': {
-        // Fire a reversed impact — a sub-boom that swells IN instead of
-        // decaying OUT. Builds tension before the next hit.
         if (!this.surpriseReverseHitScheduled) {
-          this.triggerReverseImpact(time, intensity);
+          this.audio.triggerReverseImpact(time, intensity);
           this.surpriseReverseHitScheduled = true;
         }
         break;
       }
       case 'dropOut': {
-        // DJ brake: ramp all non-kick track gains to near-zero over 50ms,
-        // hold for the duration, then ramp back (the ramp-back happens in
-        // endActiveSurprise). Kick (track 0) is NOT muted — it's the
-        // heartbeat that keeps the groove alive during the brake.
-        const muteDepth = clamp(1 - intensity * 0.95, 0.05, 0.5);
+        // DJ brake: ramp all non-kick track gains to near-zero.
+        // Routed through this.audio.setTrackGainScale (worklet: no-op —
+        // dropOut is handled by note gating in scheduleStep; legacy: adjusts
+        // trackGains).
+        const muteScale = clamp(1 - intensity * 0.95, 0.05, 0.5);
         for (let i = 1; i < 8; i++) {
-          const g = this.trackGains[i];
-          if (g) {
-            g.gain.setTargetAtTime(g.gain.value * muteDepth, time, 0.02);
-          }
+          this.audio.setTrackGainScale?.(i, muteScale, time);
         }
         break;
       }
       case 'silence': {
-        // Dramatic pause: ramp the master to near-zero. The next section's
-        // first hit (or the end-of-surprise ramp-back) will be the payoff.
-        const muteDepth = clamp(1 - intensity * 0.98, 0.02, 0.3);
-        this.master.gain.setTargetAtTime(this.master.gain.value * muteDepth, time, 0.015);
+        // Dramatic pause: ramp the master to near-zero.
+        const muteScale = clamp(1 - intensity * 0.98, 0.02, 0.3);
+        this.audio.setMasterGainScale?.(muteScale, time);
         break;
       }
       case 'stutter': {
         // Rapid lead retrigger — fire 4-6 short lead notes at the current
         // chord root. Uses triggerSynth directly so the notes go through
-        // the full voice + rack chain (with the flow's current lead timbre).
-        //
-        // Task M1: query the director's getCurrentChord() (which tracks the
-        // actual playback position) rather than this.currentChord (which is
-        // no longer updated by the director-driven scheduler). Falls back to
-        // this.currentChord if the director isn't available.
+        // the audio backend (worklet: enqueues into eventBatch; legacy: fires
+        // the AdvancedSynthVoice with the flow's current lead timbre).
         const chord = this.director?.getCurrentChord() ?? this.currentChord;
         if (chord && this.melody) {
-          const root = chord.notes[0] + 12; // one octave up
+          const root = chord.notes[0] + 12;
           const stutters = 4 + Math.round(intensity * 2);
           const s16 = 60 / this.bpm / 4;
           for (let i = 0; i < stutters; i++) {
@@ -2358,76 +1967,23 @@ export class Psy4EngineV2 {
    */
   private endActiveSurprise(time: number): void {
     if (!this.ctx) return;
-    // ── Task W1: worklet path — nothing to restore ──
-    // The worklet's FX state is driven by setFX calls from applyFlowAutomation.
-    // When the surprise ends, the next applyFlowAutomation call (with no
-    // activeSurprise) will push the default FX config, restoring reverb/delay
-    // sends to their flow-driven levels. No explicit restoration needed.
-    if (this.useWorklet) return;
-    // Restore master gain (in case of silence surprise)
-    this.master.gain.setTargetAtTime(1.1, time, 0.05);
-    // Restore track gains (in case of dropOut surprise) — ramp back to
-    // their world-default levels. The liveTrack() selfTrack loop will
-    // re-adjust these based on LUFS/energy matching, so we just need a
-    // reasonable restoration here.
-    const defaultVols = [1.0, 0.6, 0.5, 0.4, 1.2, 0.7, 0.5, 0.5];
-    for (let i = 1; i < 8; i++) {
-      const g = this.trackGains[i];
-      if (g) {
-        g.gain.setTargetAtTime(defaultVols[i], time, 0.1);
-      }
-    }
-    // Restore delay feedback (in case of echoThrow surprise)
-    if (this.delayFb) {
-      this.delayFb.gain.setTargetAtTime(0.35, time, 0.1);
-    }
+    // ── Task F1-F3: restore via this.audio (ONE path) ──
+    // Worklet: no-op (FX state is driven by setFX from applyFlowAutomation;
+    // when the surprise ends, the next setFX call restores default levels).
+    // Legacy: restores master gain, track gains, and delay feedback.
+    this.audio?.restoreDefaults?.(time);
   }
 
   /**
    * Trigger a reversed impact — a sub-boom that swells IN (opposite of the
    * normal triggerImpact which decays OUT). Used by the reverseHit surprise.
+   *
+   * Task F1-F3: delegates to this.audio.triggerReverseImpact (worklet: enqueues
+   * a V_IMPACT event; legacy: creates oscillator + noise nodes).
    */
   private triggerReverseImpact(time: number, intensity: number): void {
-    if (!this.ctx) return;
-    // ── Task W1: route to worklet V_IMPACT (when useWorklet) ──
-    if (this.useWorklet) {
-      if (this.worklet && this.workletReady) {
-        this.eventBatch.add(time, VOICE.IMPACT, 0, 0.5 * intensity, 0.6, 0);
-      }
-      return;
-    }
-    const c = this.ctx;
-    const osc = c.createOscillator();
-    osc.type = 'sine';
-    // Start low, swell up to a sub-bass peak
-    osc.frequency.setValueAtTime(35, time);
-    osc.frequency.exponentialRampToValueAtTime(120, time + 0.5);
-    const og = c.createGain();
-    // Reversed envelope: start silent, swell in, then cut
-    og.gain.setValueAtTime(0.001, time);
-    og.gain.exponentialRampToValueAtTime(0.6 * intensity, time + 0.5);
-    og.gain.setValueAtTime(0.6 * intensity, time + 0.5);
-    og.gain.exponentialRampToValueAtTime(0.001, time + 0.6);
-    osc.connect(og);
-    og.connect(this.master);
-    osc.start(time);
-    osc.stop(time + 0.7);
-
-    // Add a noise swell that builds in (reversed crack)
-    const noise = c.createBufferSource();
-    noise.buffer = this.noiseBuffer;
-    const hp = c.createBiquadFilter();
-    hp.type = 'highpass';
-    hp.frequency.value = 3000;
-    const ng = c.createGain();
-    ng.gain.setValueAtTime(0.001, time);
-    ng.gain.exponentialRampToValueAtTime(0.3 * intensity, time + 0.4);
-    ng.gain.exponentialRampToValueAtTime(0.001, time + 0.5);
-    noise.connect(hp);
-    hp.connect(ng);
-    ng.connect(this.master);
-    noise.start(time);
-    noise.stop(time + 0.6);
+    if (!this.audio) return;
+    this.audio.triggerReverseImpact(time, intensity);
   }
 
   /**
@@ -2649,32 +2205,31 @@ export class Psy4EngineV2 {
       }
     }
 
-    // ── SUB / HIGH energy balancing — smooth ramp on track gains ──
+    // ── SUB / HIGH energy balancing — routed through this.audio (ONE path) ──
     // Boost bass track (4) when ref has more sub than we do; boost lead/pad/arp
-    // (5,6,7) when ref has more high energy. Time constants 0.8-1.0s (timbre).
-    if (this.ctx) {
-      const now = this.ctx.currentTime;
-      if (this.refSubEnergy > 0 && this.ownSubEnergy > 0) {
-        const subDiff = this.refSubEnergy - this.ownSubEnergy;
-        if (Math.abs(subDiff) > 0.05) {
-          const bassAdj = clamp(subDiff * 0.4, -0.3, 0.3);
-          const bassTarget = clamp(0.8 + bassAdj, 0.3, 2.0);
-          this.trackGains[4]?.gain.setTargetAtTime(bassTarget, now, 0.8);
-          if (subDiff > 0.05) {
-            const kickTarget = clamp(1.0 + subDiff * 0.2, 0.6, 1.8);
-            this.trackGains[0]?.gain.setTargetAtTime(kickTarget, now, 0.8);
-          }
+    // (5,6,7) when ref has more high energy. The audio backend applies the
+    // levels: worklet no-ops (uses macros.energy instead); legacy adjusts
+    // trackGains. We push via setWorld so both backends see the targets.
+    if (this.audio && this.refSubEnergy > 0 && this.ownSubEnergy > 0) {
+      const subDiff = this.refSubEnergy - this.ownSubEnergy;
+      if (Math.abs(subDiff) > 0.05) {
+        const bassAdj = clamp(subDiff * 0.4, -0.3, 0.3);
+        const bassTarget = clamp(0.8 + bassAdj, 0.3, 2.0);
+        const worldUpdate: Record<string, number> = { bassLevel: bassTarget };
+        if (subDiff > 0.05) {
+          worldUpdate.kickLevel = clamp(1.0 + subDiff * 0.2, 0.6, 1.8);
         }
+        this.audio.setWorld(worldUpdate);
       }
-      if (this.refHighEnergy > 0 && this.ownHighEnergy > 0) {
-        const highDiff = this.refHighEnergy - this.ownHighEnergy;
-        if (Math.abs(highDiff) > 0.05) {
-          const adj = clamp(highDiff * 0.5, -0.3, 0.3);
-          for (const ti of [5, 6, 7]) {
-            const target = clamp(0.8 + adj, 0.3, 1.6);
-            this.trackGains[ti]?.gain.setTargetAtTime(target, now, 1.0);
-          }
-        }
+    }
+    if (this.audio && this.refHighEnergy > 0 && this.ownHighEnergy > 0) {
+      const highDiff = this.refHighEnergy - this.ownHighEnergy;
+      if (Math.abs(highDiff) > 0.05) {
+        const adj = clamp(highDiff * 0.5, -0.3, 0.3);
+        // Push the lead level (the legacy graph applies it to trackGains[5];
+        // the worklet no-ops).
+        const leadTarget = clamp(0.8 + adj, 0.3, 1.6);
+        this.audio.setWorld({ leadLevel: leadTarget });
       }
     }
 
@@ -3265,36 +2820,28 @@ export class Psy4EngineV2 {
    *   - sendLevels   : averaged across melodic tracks 5/6/7 (or 0 if no racks)
    */
   private buildCurrentEngineParams(): LearnedPatternEngineParams {
-    // Average send levels across the melodic tracks (5=LEAD, 6=PAD, 7=ARP).
-    // These are the tracks that shape the "character" of the mix — kick /
-    // bass / drums are mostly fixed by the world preset.
-    let reverb = 0, delay = 0, chorus = 0, phaser = 0;
-    let count = 0;
-    for (const ti of [5, 6, 7]) {
-      const rack = this.racks[ti];
-      if (rack) {
-        reverb += rack.sendReverb?.gain?.value ?? 0;
-        delay  += rack.sendDelay?.gain?.value  ?? 0;
-        chorus += rack.sendChorus?.gain?.value ?? 0;
-        phaser += rack.sendPhaser?.gain?.value ?? 0;
-        count++;
-      }
-    }
-    if (count > 0) {
-      reverb /= count; delay /= count; chorus /= count; phaser /= count;
-    }
+    // ── Task F1-F3: read effective params from the audio backend (ONE path) ──
+    // The backend tracks the actual send levels (worklet: from setFX; legacy:
+    // from rack send gains). This fixes ROAST-7 bug #4: "Learning memory
+    // stores zeros — snapshotEngineParams reads this.learned.kickDecay etc.
+    // but these are never set (worklet owns actual params)."
+    const audioParams = this.audio?.getParams?.() ?? {};
+    const reverb = audioParams.sendReverb ?? 0;
+    const delay = audioParams.sendDelay ?? 0;
+    const chorus = audioParams.sendChorus ?? 0;
+    const phaser = audioParams.sendPhaser ?? 0;
 
     const leadMode = this.synthModeOverrides[5] ?? 'classic';
     const padMode  = this.synthModeOverrides[6] ?? 'classic';
     const arpMode  = this.synthModeOverrides[7] ?? 'classic';
 
     return {
-      kickDecay:  this.learned.kickDecay  ?? (this.refKickDecay > 0 ? this.refKickDecay : 0.25),
-      bassCutoff: this.learned.bassCutoff ?? 0,
-      leadCutoff: this.leadCutoffOverride >= 0 ? this.leadCutoffOverride : 0,
-      leadDetune: this.learned.leadDetune ?? 0,
-      padCutoff:  this.learned.padCutoff  ?? 0,
-      duck:       this.learned.duck       ?? 0.5,
+      kickDecay:  audioParams.kickDecay ?? this.learned.kickDecay  ?? (this.refKickDecay > 0 ? this.refKickDecay : 0.25),
+      bassCutoff: audioParams.bassCutoff ?? this.learned.bassCutoff ?? 0,
+      leadCutoff: audioParams.leadCutoff ?? (this.leadCutoffOverride >= 0 ? this.leadCutoffOverride : 0),
+      leadDetune: audioParams.leadDetune ?? this.learned.leadDetune ?? 0,
+      padCutoff:  audioParams.padCutoff  ?? this.learned.padCutoff  ?? 0,
+      duck:       audioParams.duck       ?? this.learned.duck       ?? 0.5,
       synthMode: {
         lead: typeof leadMode === 'string' ? leadMode : 'classic',
         pad:  typeof padMode  === 'string' ? padMode  : 'classic',
@@ -3670,51 +3217,46 @@ export class Psy4EngineV2 {
       this.ownHighEnergy = selfMetrics.highEnergy;
     }
     // LUFS matching
-    // ── Task W1: when useWorklet, the master gain is inside the worklet.
-    // LUFS matching is approximated by adjusting the worklet's macros.energy
-    // (which scales voice amplitudes). The legacy master gain node doesn't
-    // exist when useWorklet=true.
+    // ── Task F1-F3: ONE path — push LUFS adjustments via this.audio.setMacros ──
+    // The worklet's macros.energy scales voice amplitudes; the legacy graph
+    // adjusts the master gain. Both backends handle this via setWorld (legacy:
+    // masterLevel) or setMacros (worklet: energy). We use setMacros for both —
+    // the legacy backend no-ops setMacros, so we also push masterLevel via
+    // setWorld for the legacy path.
     if (this.targetLufs !== 0 && Math.abs(selfMetrics.lufs - this.targetLufs) > 1.0) {
       const diff = this.targetLufs - selfMetrics.lufs;
       const adj = diff > 0 ? 0.08 : -0.08;
-      if (this.useWorklet) {
-        // Approximate: nudge energy macro in the same direction as the legacy
-        // master gain adjustment. The worklet's voices scale with energy.
-        if (this.worklet && this.workletReady) {
-          const macros = this.computeWorkletMacros();
-          macros.energy = clamp(macros.energy + adj * 0.5, 0.1, 1.0);
-          this.worklet.setMacros(macros);
-        }
-      } else {
-        const newMaster = clamp(this.master.gain.value + adj, 0.3, 2.0);
-        this.master.gain.setTargetAtTime(newMaster, this.ctx!.currentTime, 0.15);
+      // Nudge energy macro (worklet scales voice amplitudes with energy).
+      const macros = this.computeWorkletMacros();
+      macros.energy = clamp(macros.energy + adj * 0.5, 0.1, 1.0);
+      this.audio?.setMacros(macros);
+      // Also nudge the master level (legacy: master.gain; worklet: no-op).
+      if (this.ctx) {
+        const currentMaster = this.audio?.getParams?.().masterLevel ?? 1.1;
+        const newMaster = clamp(currentMaster + adj, 0.3, 2.0);
+        this.audio?.setWorld({ masterLevel: newMaster });
       }
     }
-    // Energy matching — adjust track volumes
-    // ── Task W1: when useWorklet, track gains are inside the worklet (per-bus).
-    // We approximate by nudging the density macro (more density = more notes =
-    // more energy). The legacy per-track gain nodes don't exist when useWorklet.
+    // Energy matching — adjust track volumes / density macro.
+    // ── Task F1-F3: ONE path — nudge density macro (worklet) + bass/kick/lead ──
+    // levels (legacy) via setWorld.
     if (this.targetEnergy > 0 && selfMetrics.energy !== undefined) {
       const energyDiff = this.targetEnergy - selfMetrics.energy;
       if (Math.abs(energyDiff) > 0.05) {
-        if (this.useWorklet) {
-          // Approximate: nudge density macro toward the target energy.
-          if (this.worklet && this.workletReady) {
-            const macros = this.computeWorkletMacros();
-            const nudge = energyDiff > 0 ? 0.02 : -0.02;
-            macros.density = clamp(macros.density + nudge, 0.1, 1.0);
-            this.worklet.setMacros(macros);
-          }
-        } else {
-          // Boost/reduce all track gains slightly
+        // Nudge density macro (worklet: more density = more notes = more energy).
+        const macros = this.computeWorkletMacros();
+        const nudge = energyDiff > 0 ? 0.02 : -0.02;
+        macros.density = clamp(macros.density + nudge, 0.1, 1.0);
+        this.audio?.setMacros(macros);
+        // Also nudge bass + lead levels (legacy: trackGains; worklet: no-op
+        // for these param names, but the worklet's bus levels are fixed).
+        if (this.ctx) {
+          const params = this.audio?.getParams?.() ?? {};
           const volAdj = energyDiff > 0 ? 0.02 : -0.02;
-          for (let i = 0; i < 8; i++) {
-            const g = this.trackGains[i];
-            if (g) {
-              const newVol = clamp(g.gain.value + volAdj, 0.1, 2.0);
-              g.gain.setTargetAtTime(newVol, this.ctx!.currentTime, 0.5);
-            }
-          }
+          const newBass = clamp((params.bassLevel ?? 0.96) + volAdj, 0.1, 2.0);
+          const newLead = clamp((params.leadLevel ?? 0.56) + volAdj, 0.1, 2.0);
+          const newKick = clamp((params.kickLevel ?? 0.8) + volAdj * 0.5, 0.1, 2.0);
+          this.audio?.setWorld({ bassLevel: newBass, leadLevel: newLead, kickLevel: newKick });
         }
       }
     }
@@ -3722,53 +3264,13 @@ export class Psy4EngineV2 {
 
   setWorld(params: Record<string, number>): void {
     if (!this.ctx) return;
-    // ── Task W1: route world params to the worklet when useWorklet ──
-    // The worklet has its own world-param schema (kickFundamental, bassCutoff,
-    // leadCutoff, leadDetune, padCutoff, etc.). We forward the params we
-    // recognize; the worklet merges them into its worldParams object.
-    if (this.useWorklet && this.worklet && this.workletReady) {
-      this.worklet.setWorld(params);
-    }
-    // ── Legacy node-graph path (only when useWorklet=false) ──
-    if (this.useWorklet) {
-      // Still store learned params (kickDecay, bassCutoff, etc.) so the
-      // engine's tracking state stays consistent for the pursuit UI.
-      if (isFinite(params.kickDecay) && params.kickDecay > 0.02 && params.kickDecay < 2) {
-        this.learned.kickDecay = params.kickDecay;
-      }
-      if (isFinite(params.bassCutoff) && params.bassCutoff > 40 && params.bassCutoff < 4000) {
-        this.learned.bassCutoff = params.bassCutoff;
-      }
-      if (isFinite(params.leadCutoff) && params.leadCutoff > 100 && params.leadCutoff < 16000) {
-        this.learned.leadCutoff = params.leadCutoff;
-      }
-      if (isFinite(params.leadDetune) && params.leadDetune >= 0 && params.leadDetune < 100) {
-        this.learned.leadDetune = params.leadDetune;
-      }
-      if (isFinite(params.padCutoff) && params.padCutoff > 80 && params.padCutoff < 12000) {
-        this.learned.padCutoff = params.padCutoff;
-      }
-      if (isFinite(params.duck) && params.duck >= 0 && params.duck <= 1) {
-        this.learned.duck = params.duck;
-      }
-      return;
-    }
-    const t = this.ctx.currentTime;
-    if (params.masterLevel !== undefined) {
-      this.master.gain.setTargetAtTime(params.masterLevel, t, 0.1);
-    }
-    if (params.bassLevel !== undefined) {
-      this.trackGains[4].gain.setTargetAtTime(params.bassLevel * 0.8, t, 0.1);
-    }
-    if (params.leadLevel !== undefined) {
-      this.trackGains[5].gain.setTargetAtTime(params.leadLevel * 0.8, t, 0.1);
-    }
-    if (params.kickLevel !== undefined) {
-      this.trackGains[0].gain.setTargetAtTime(params.kickLevel * 0.8, t, 0.1);
-    }
-    // ── Learned params from ContinuousTrainer (Task 22): store for blending ──
-    //    These are applied incrementally in triggerDrum / triggerSynth, not here,
-    //    because they affect per-voice synthesis. Guard against NaN/out-of-range.
+    // ── Task F1-F3: route world params to the audio backend (ONE path) ──
+    // The backend (worklet or legacy) merges the params into its internal
+    // state. The worklet applies them to its voice pool; the legacy graph
+    // adjusts master/track gain nodes + stores learned params.
+    this.audio?.setWorld(params);
+    // Store learned params locally so the engine's tracking state stays
+    // consistent for the pursuit UI + the legacy graph's triggerDrum/triggerSynth.
     if (isFinite(params.kickDecay) && params.kickDecay > 0.02 && params.kickDecay < 2) {
       this.learned.kickDecay = params.kickDecay;
     }
@@ -3787,6 +3289,8 @@ export class Psy4EngineV2 {
     if (isFinite(params.duck) && params.duck >= 0 && params.duck <= 1) {
       this.learned.duck = params.duck;
     }
+    // Sync the legacy access so the legacy graph reads the latest learned params.
+    this.syncLegacyAccess();
   }
 
   /**
@@ -3944,31 +3448,40 @@ export class Psy4EngineV2 {
     // only updates it between ticks, so the loop sees a stable value.
     const lookahead = this.lookahead;
 
+    // ── Task F1-F3 FIX 1: query the MusicalDirector ONCE for the full lookahead ──
+    // window (not 1 step at a time). This fixes ROAST-7 bug #1: "scheduleStep()
+    // calls director.getNotesForWindow(stepTime, stepTime + sd, ...) — a 1-step
+    // window. The director composes 'phrases' but the engine asks for them ONE
+    // 16th STEP AT A TIME."
+    //
+    // Now we ask for ALL notes in [nextTime, now + lookahead] — the full ~200ms
+    // lookahead window. The director composes a full 4-8 bar phrase internally
+    // (composePhrase is called when the phrase ends) and returns the notes that
+    // fall in our window. We pass these pre-queried notes to scheduleStep,
+    // which filters them per-step (by time range) and fires them.
+    //
+    // This is REAL phrase composition: the director composes once per 4-8 bars,
+    // and the engine fires notes as they come due within the lookahead window.
+    let windowNotes: PhraseNote[] = [];
+    if (this.director) {
+      const w = this.currentWorld;
+      const flow = this.currentFlow;
+      const baseE = w.energyCurve[0] ?? 0.5;
+      const energy = clamp(baseE * (0.4 + 0.6 * (flow?.density ?? 0.5)), 0, 1);
+      const character = labelToCharacter(flow?.label ?? 'GROOVE');
+      windowNotes = this.director.getNotesForWindow(
+        this.nextTime, now + lookahead, energy, character, w, this.bpm,
+      );
+    }
+
     while (this.nextTime < now + lookahead) {
       // Recompute s16 each step so the BPM ramp changes tempo smoothly
       // without invalidating the scheduler's lookahead window.
       const s16 = 60 / this.bpm / 4;
       // ── Task D1: apply DJ-style phase offset to the scheduled time ──
-      // The PhaseSync returns a smoothed offset (seconds) that aligns our
-      // beat grid with the radio's. We add it to nextTime when calling
-      // scheduleStep so every step fires at the phase-correct time. The
-      // offset is small (< 50 ms per step nudge) so there are no audio
-      // glitches. When sync is disabled, getPhaseOffset() returns 0.
-      //
-      // Note: we do NOT add the offset to `this.nextTime` itself — that
-      // would accumulate across steps. The offset is applied to the time
-      // passed to scheduleStep, leaving the scheduler's internal clock
-      // unchanged so the lookahead window stays valid.
-      //
-      // ── Task D1 (upgrade): also add the groove push/pull offset ──
-      // The DJController's getGrooveOffsetSec() returns the push/pull
-      // timing nudge (seconds) that makes our beats sit slightly ahead or
-      // behind the grid to match the radio's feel. When master sync is off,
-      // it returns 0. Capped at MAX_PUSH_PULL_OFFSET_MS (30ms) — always
-      // small enough to be glitch-free.
       const phaseOffset = this.phaseSync.getPhaseOffset();
       const grooveOffset = this.djController.getGrooveOffsetSec();
-      this.scheduleStep(this.step, this.bar, this.nextTime + phaseOffset + grooveOffset);
+      this.scheduleStep(this.step, this.bar, this.nextTime + phaseOffset + grooveOffset, windowNotes);
       this.step++;
       this.nextTime += s16;
       if (this.step >= 16) {
@@ -4175,12 +3688,12 @@ export class Psy4EngineV2 {
           this.phrasePresetVariant = (this.phrasePresetVariant + 1) % 2;
           this.applyPhrasePresetRotation();
           // ── Task W1: notify the worklet of the phrase boundary ──
+          // ── Task F1-F3: notify the audio backend of the phrase boundary ──
           // The worklet rotates its phrase-locked sample indices on newPhrase
           // (kick/hat/clap/perc get a fresh variant for sonic consistency
-          // within the new phrase, then variation across phrases).
-          if (this.useWorklet && this.worklet && this.workletReady) {
-            this.worklet.newPhrase();
-          }
+          // within the new phrase, then variation across phrases). The legacy
+          // backend no-ops newPhrase (no sample rotation).
+          this.audio?.newPhrase();
         }
         // Bass pattern rotates every 4 bars (kept from Track A — denser variation)
         if (this.bar % 4 === 0 && this.bar > 0) {
@@ -4191,21 +3704,16 @@ export class Psy4EngineV2 {
       }
     }
 
-    // ── Task W1: flush the event batch to the worklet ─────────────────────
+    // ── Task F1-F3: flush the event batch to the audio backend (ONE path) ──
     // PSY5 batched postMessage: ALL step events accumulated during this tick
     // (kick, bass, lead, pad, arp, hats, perc, riser, impact — typically 4-12
     // events per tick) are sent in ONE postMessage call, not one per event.
     // This minimizes main→audio thread communication overhead.
     //
-    // The Float64Array buffer is TRANSFERRED (zero-copy) — the worklet takes
-    // ownership, we detach our reference. eventBatch.build() returns a fresh
-    // array each call (per-tick allocation, ~96 bytes — negligible vs the
-    // 1054-node graph's per-hit allocation that this replaces).
-    if (this.useWorklet && this.worklet && this.workletReady && !this.eventBatch.empty) {
-      const events = this.eventBatch.build();
-      this.worklet.sendEventBatch(events);
-      this.eventBatch.reset();
-    }
+    // Worklet: flushEvents() sends the accumulated Float64Array batch via
+    // postMessage with zero-copy transfer. Legacy: flushEvents() is a no-op
+    // (events fire immediately in triggerDrum/triggerSynth).
+    this.audio?.flushEvents();
 
     // P1: report this tick's duration to the PerformanceMonitor. Cheap
     // (one performance.now() subtraction + array push). When the audio
@@ -4268,7 +3776,7 @@ export class Psy4EngineV2 {
     return 'off';
   }
 
-  private scheduleStep(step: number, bar: number, time: number): void {
+  private scheduleStep(step: number, bar: number, time: number, windowNotes: PhraseNote[] = []): void {
     const w = this.currentWorld;
     // ── Task F1: read the dynamic flow state instead of the fixed arrangement ──
     // `flow` is the latest FlowState returned by flowEngine.tick() in the
@@ -4359,21 +3867,19 @@ export class Psy4EngineV2 {
       : 1.0;
     const tVelBoost = tScale > 1 ? (tScale - 1) * 0.5 : 0;
 
-    // ── Task M1: Director-driven note scheduling ──
-    // The MusicalDirector composes full 4-8 bar phrases ahead of time with
-    // musical phrasing (build/drop/break characters), rhythmic complexity
-    // (syncopation, polyrhythm, ghost notes, triplet fills), melodic
-    // development (motif → variation → contrast → climax → resolution), and
-    // cohesive interplay between instruments.
+    // ── Task F1-F3 FIX 1: Director-driven note scheduling with a WIDE window ──
+    // The MusicalDirector composes full 4-8 bar phrases ahead of time. The
+    // tick() loop queries the director ONCE for the full lookahead window
+    // (~200ms) and passes the pre-queried notes here. We filter them for
+    // THIS step's time range [stepTime, stepTime + sd) and fire them.
     //
-    // Instead of deciding per-instrument notes step-by-step (the old "child
-    // pressing keys" approach), we ask the director for the pre-composed
-    // notes that should fire in this step's window. The director returns
-    // notes with absolute audio-context times; we fire each via
-    // triggerDrum / triggerSynth with the appropriate timbre + swing offset.
+    // This is REAL phrase composition: the director composes once per 4-8
+    // bars (composePhrase is called when the phrase ends), and the engine
+    // fires notes as they come due within the lookahead window. No more
+    // "1-step window" — the director serves the full window at once.
     //
     // The director handles:
-    //   - Which instruments play at this step (character-driven gating).
+    //   - Which instruments play (character-driven gating).
     //   - What notes they play (motif/harmony/bass-line/arp-pattern).
     //   - Velocity + duration (shaped by the phrase's energy curve).
     //   - Rhythmic complexity (ghost notes, syncopation, polyrhythm).
@@ -4386,19 +3892,17 @@ export class Psy4EngineV2 {
     //   - Reference pursuit (tVelBoost applied to drum velocities).
     //   - Phase sync (setOwnBeat when kick fires).
     //   - Timbre (computed per-track from the world).
-    if (this.director) {
-      const character = labelToCharacter(flow.label);
-      const windowNotes: PhraseNote[] = this.director.getNotesForWindow(
-        stepTime, stepTime + sd, energy, character, w, this.bpm,
-      );
+    if (windowNotes.length > 0) {
+      // Filter the pre-queried window notes for THIS step's time range.
+      // The notes have absolute audio-context times; we fire those in
+      // [stepTime, stepTime + sd).
       for (const note of windowNotes) {
+        if (note.time < stepTime || note.time >= stepTime + sd) continue;
         // Surprise gating: silence suppresses all; dropOut suppresses non-kick.
         if (suppressAll) continue;
         if (suppressNonKick && note.track !== 0) continue;
 
         // Apply swing offset to offbeat notes (step % 2 === 1).
-        // The director composes notes at step boundaries; we add the swing
-        // nudge at fire time so offbeat notes sit slightly behind the grid.
         const noteSwingOffset = (step % 2 === 1 && effectiveSwing > 0)
           ? effectiveSwing * sd * 0.5
           : 0;
@@ -4406,17 +3910,10 @@ export class Psy4EngineV2 {
 
         if (note.track < 4) {
           // ── Drum note ──
-          // Apply the reference-pursuit velocity boost to hats (2) and perc (3)
-          // so our transient density tracks the radio's. Kick (0) and clap (1)
-          // keep the director's velocity (they're tonal, not transient-shaped).
           const drumVel = (note.track === 2 || note.track === 3)
             ? clamp(note.velocity + tVelBoost, 0, 1)
             : note.velocity;
           this.triggerDrum(note.track, fireTime, drumVel);
-          // ── Task D1: report our own beat to the PhaseSync when kick fires ──
-          // The PhaseSync uses this to compute our predicted phase and align
-          // it with the radio's phase. `isDownbeat` flags bar-start kicks
-          // (step % 16 === 0) so the downbeat phase can be tracked separately.
           if (note.track === 0 && this.ctx) {
             const wallNow = (typeof performance !== 'undefined' && performance.now)
               ? performance.now() / 1000
@@ -4430,8 +3927,6 @@ export class Psy4EngineV2 {
           }
         } else {
           // ── Synth note ──
-          // Apply the per-track world timbre (cutoff/resonance/drive modulated
-          // by the world's brightness/darkness/psychedelia character).
           const timbre = this.getTimbreForTrack(note.track, w);
           this.triggerSynth(
             note.track, fireTime, note.midi, note.velocity,
@@ -4439,7 +3934,7 @@ export class Psy4EngineV2 {
           );
         }
       }
-    } else {
+    } else if (!this.director) {
       // ── Fallback: director not yet created (defensive — shouldn't happen
       // after init()). Play a minimal kick on downbeats so the engine doesn't
       // go completely silent. ──
@@ -4498,139 +3993,53 @@ export class Psy4EngineV2 {
   }
 
   private triggerDrum(trackIdx: number, time: number, vel: number, decayOverride?: number): void {
-    // ── Task W1: route to worklet when useWorklet ──────────────────────────
-    // Convert the drum track index (0=KICK 1=CLAP 2=HATS 3=PERC) to a worklet
-    // voice ID and enqueue an event. PSY5 batched postMessage: events
-    // accumulate in this.eventBatch and are flushed once per tick() (not per
-    // event). The worklet triggers a preallocated voice — zero per-hit
-    // allocation, sample-accurate timing.
-    if (this.useWorklet) {
-      if (!this.workletReady || !this.worklet) return;
-      const voiceId = trackToVoiceId(trackIdx);
-      // PSY7: clamp velocity + finite-check (prevents NaN crashes in worklet).
-      const v = Number.isFinite(vel) ? Math.max(0, Math.min(1, vel)) : 0;
-      // The worklet's kick voice takes (time, amp, fund, decay, sr) — we encode
-      // decay as the `duration` field (in seconds). Other drums use duration as
-      // a generic decay envelope length.
-      const decay = decayOverride ?? (trackIdx === 0 ? (this.learned.kickDecay ?? 0.2) : 0.15);
-      this.eventBatch.add(time, voiceId, 0, v, decay, 0);
-      // Kick triggers sidechain duck — tell the worklet.
-      if (trackIdx === 0) this.worklet.triggerDuck();
-      return;
+    // ── Task F1-F3: ONE path — route to this.audio (worklet OR legacy) ──
+    // The engine computes the final decay (pursuit + learning blending) and
+    // passes it to the audio backend. The backend fires the voice:
+    //   - Worklet: enqueues into eventBatch, flushed at end of tick().
+    //   - Legacy: fires a PooledDrumVoice immediately + ducks the bass.
+    if (!this.audio) return;
+    // Compute the final decay (pursuit + learning blending). This was
+    // previously done inside the legacy triggerDrum; now it's in the engine
+    // so both backends get the same final value.
+    let finalDecay = decayOverride;
+    if (trackIdx === 0) {
+      // Reference pursuit — KICK DECAY: blend preset decay with refKickDecay.
+      const preset = DRUM_PRESETS[this.tracks[trackIdx]?.presetId ?? ''];
+      const presetDecay = preset?.decay ?? 1;
+      if (this.refKickDecay > 0) {
+        const targetDur = clamp(this.refKickDecay, 0.05, 0.8);
+        const refDecayParam = clamp((targetDur - 0.12) / 0.5, 0.05, 4.0);
+        const blended = presetDecay * 0.5 + refDecayParam * 0.5;
+        finalDecay = (isFinite(blended) && blended > 0) ? blended : finalDecay;
+      }
+      // Learned kick decay — blend 25% on top.
+      if (this.learned.kickDecay && finalDecay !== undefined) {
+        const learnedDur = clamp(this.learned.kickDecay, 0.05, 0.8);
+        const learnedParam = clamp((learnedDur - 0.12) / 0.5, 0.05, 4.0);
+        const blended = finalDecay * 0.75 + learnedParam * 0.25;
+        finalDecay = (isFinite(blended) && blended > 0) ? blended : finalDecay;
+      }
+      // Fallback to learned/preset decay if no override.
+      if (finalDecay === undefined) {
+        finalDecay = this.learned.kickDecay ?? presetDecay;
+      }
     }
-    const track = this.tracks[trackIdx];
-    if (track.mix.mute) return;
-    const preset = DRUM_PRESETS[track.presetId];
-    if (!preset) return;
-    const voice = this.drumPool[this.drumIdx];
-    this.drumIdx = (this.drumIdx + 1) % this.drumPool.length;
-
-    // Reference pursuit — KICK DECAY: blend preset decay with refKickDecay.
-    // The kick dur formula is `dur = 0.12 + 0.5 * decay`, so to hit a target
-    // seconds T the equivalent decay param is `(T - 0.12) / 0.5`. We blend
-    // 50/50 with the preset decay so the kick keeps its tonal character but
-    // adopts the reference's tail length.
-    let effectiveDecayOverride = decayOverride;
-    if (trackIdx === 0 && this.refKickDecay > 0) {
-      const targetDur = clamp(this.refKickDecay, 0.05, 0.8);
-      const refDecayParam = clamp((targetDur - 0.12) / 0.5, 0.05, 4.0);
-      const blended = preset.decay * 0.5 + refDecayParam * 0.5;
-      effectiveDecayOverride = (isFinite(blended) && blended > 0) ? blended : undefined;
-    }
-    // Learned kick decay (from ContinuousTrainer offline optimization) — blend 25%
-    // on top of the reference-pursued decay. This lets the trainer nudge the kick
-    // tail toward an optimized value without fighting the live reference pursuit.
-    if (trackIdx === 0 && this.learned.kickDecay && effectiveDecayOverride !== undefined) {
-      const learnedDur = clamp(this.learned.kickDecay, 0.05, 0.8);
-      const learnedParam = clamp((learnedDur - 0.12) / 0.5, 0.05, 4.0);
-      const blended = effectiveDecayOverride * 0.75 + learnedParam * 0.25;
-      effectiveDecayOverride = (isFinite(blended) && blended > 0) ? blended : effectiveDecayOverride;
-    }
-
-    voice.hit(preset, time, vel * track.mix.vol, this.chains[trackIdx], effectiveDecayOverride);
-
-    // Sidechain: when kick fires, duck the bass
-    if (trackIdx === 0 && this.duckGain && this.ctx) {
-      this.duckGain.gain.cancelScheduledValues(time);
-      // Blend learned duck depth (from trainer) with the default 0.4 — trainer
-      // can push the sidechain deeper (up to 0.7) or shallower for groove control.
-      const duckDepth = this.learned.duck !== undefined
-        ? clamp(0.4 * 0.6 + this.learned.duck * 0.7 * 0.4, 0.15, 0.7)
-        : 0.4;
-      this.duckGain.gain.setValueAtTime(1 - duckDepth, time);
-      this.duckGain.gain.linearRampToValueAtTime(1.0, time + 0.25); // 250ms recovery
-    }
+    this.audio.triggerDrum(trackIdx, time, vel, finalDecay);
   }
 
   private triggerRiser(time: number, dur: number): void {
-    // ── Task W1: route to worklet FX voice (V_RISER) ──
-    // The worklet's FXVoice has a dedicated riser implementation: noise
-    // through a filter that opens from 200Hz to 8000Hz + amplitude rise.
-    // PSY5 batched: enqueues into eventBatch, flushed at end of tick().
-    if (this.useWorklet) {
-      if (!this.workletReady || !this.worklet) return;
-      this.eventBatch.add(time, VOICE.RISER, 0, 0.35, dur, 0);
-      return;
-    }
-    if (!this.ctx) return;
-    const c = this.ctx;
-    // Noise through filter that opens up
-    const noise = c.createBufferSource();
-    noise.buffer = this.noiseBuffer;
-    noise.loop = true;
-    const filter = c.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(200, time);
-    filter.frequency.exponentialRampToValueAtTime(8000, time + dur);
-    filter.Q.value = 2;
-    const gain = c.createGain();
-    gain.gain.setValueAtTime(0.001, time);
-    gain.gain.exponentialRampToValueAtTime(0.3, time + dur);
-    gain.gain.exponentialRampToValueAtTime(0.001, time + dur + 0.1);
-    noise.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.master);
-    noise.start(time);
-    noise.stop(time + dur + 0.2);
+    // ── Task F1-F3: ONE path — route to this.audio.triggerRiser ──
+    // Worklet: enqueues a V_RISER event. Legacy: creates a noise+filter+gain
+    // node graph for the riser effect.
+    this.audio?.triggerRiser(time, dur);
   }
 
   private triggerImpact(time: number): void {
-    // ── Task W1: route to worklet FX voice (V_IMPACT) ──
-    // The worklet's FXVoice has a dedicated impact implementation: sub sine
-    // boom (120Hz → 35Hz exp decay) + noise burst (20ms crack) + saturation.
-    if (this.useWorklet) {
-      if (!this.workletReady || !this.worklet) return;
-      this.eventBatch.add(time, VOICE.IMPACT, 0, 0.7, 0.5, 0);
-      return;
-    }
-    if (!this.ctx) return;
-    const c = this.ctx;
-    // Sub boom + noise crack
-    const osc = c.createOscillator();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(120, time);
-    osc.frequency.exponentialRampToValueAtTime(35, time + 0.5);
-    const og = c.createGain();
-    og.gain.setValueAtTime(0.8, time);
-    og.gain.exponentialRampToValueAtTime(0.001, time + 0.6);
-    osc.connect(og);
-    og.connect(this.master);
-    osc.start(time);
-    osc.stop(time + 0.7);
-
-    const noise = c.createBufferSource();
-    noise.buffer = this.noiseBuffer;
-    const hp = c.createBiquadFilter();
-    hp.type = 'highpass';
-    hp.frequency.value = 3000;
-    const ng = c.createGain();
-    ng.gain.setValueAtTime(0.4, time);
-    ng.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
-    noise.connect(hp);
-    hp.connect(ng);
-    ng.connect(this.master);
-    noise.start(time);
-    noise.stop(time + 0.1);
+    // ── Task F1-F3: ONE path — route to this.audio.triggerImpact ──
+    // Worklet: enqueues a V_IMPACT event. Legacy: creates a sub-boom oscillator
+    // + noise burst node graph.
+    this.audio?.triggerImpact(time);
   }
 
   private triggerSynth(
@@ -4642,183 +4051,61 @@ export class Psy4EngineV2 {
     dur?: number,
     timbre?: { cutoff?: number; res?: number; drive?: number }
   ): void {
-    // ── Task W1: route to worklet when useWorklet ──────────────────────────
-    // Convert the synth track index (4=BASS 5=LEAD 6=PAD 7=ARP) + MIDI note
-    // + velocity + duration into a worklet event. The worklet has dedicated
-    // voice classes (BassVoice, LeadVoice, PadVoice, AcidVoice, FMVoice) —
-    // each with its own Moog ladder + polyBLEP DSP. Sound quality is BETTER
-    // than the legacy AdvancedSynthVoice (which used BiquadFilter + osc).
-    //
-    // The worklet's voice IDs use a different numbering, so we map via
-    // trackToVoiceId(). For lead/arp, we check the synthModeOverrides to
-    // decide between V_LEAD/V_ACID and V_FM (PSY3 FM acid voice).
-    //
-    // PSY5 batched: events accumulate in eventBatch, flushed once per tick().
-    if (this.useWorklet) {
-      if (!this.workletReady || !this.worklet) return;
-      const fmLead = this.synthModeOverrides[trackIdx] === 'fm';
-      const fmArp = this.synthModeOverrides[trackIdx] === 'fm';
-      const voiceId: VoiceId = trackToVoiceId(trackIdx, { fmLead, fmArp });
-      // PSY7: clamp velocity + finite-check (prevents NaN crashes in worklet).
-      const v = Number.isFinite(vel) ? Math.max(0, Math.min(1, vel)) : 0;
-      const note = Number.isFinite(midi) ? midi : 60;
-      // Duration: prefer the explicit `dur` (from the director's note.duration),
-      // fall back to stepDur * 0.5 (legacy gate = 0.5).
-      const duration = (dur !== undefined && Number.isFinite(dur) && dur > 0)
-        ? dur
-        : Math.max(0.05, stepDur * 0.5);
-      // `param` encodes the FM ratio (×10) for V_FM voice; 0 otherwise.
-      const param = voiceId === VOICE.FM ? 20 : 0; // ratio 2.0
-      this.eventBatch.add(time, voiceId, note, v, duration, param);
-      return;
-    }
-    const track = this.tracks[trackIdx];
-    if (track.mix.mute) return;
-    // Lookup via getAdvancedSynthPreset so ADVANCED_PRESETS (FM/supersaw/wavetable)
-    // are returned with their `mode` field set, and legacy SYNTH_PRESETS are
-    // wrapped with mode='classic' for backwards compatibility.
-    const basePreset = getAdvancedSynthPreset(track.presetId, SYNTH_PRESETS);
-    if (!basePreset) return;
-    // P1: voice stealing — find a free voice (isBusy=false) or steal the
-    // oldest active voice (smallest lastTriggeredAt). With 8 voices and
-    // psytrance's typical 6 simultaneous notes, the 7th/8th are usually free.
-    // When a dense polyphonic moment does occur, we steal the oldest rather
-    // than drop the new note — the stolen voice's release tail is cut short.
-    const voice = this.acquireSynthVoice();
-
-    // ── Apply world timbre overrides on top of the factory preset ──
-    let preset: AdvancedSynthPreset = basePreset;
-    if (timbre) {
-      preset = {
-        ...basePreset,
-        cutoff: timbre.cutoff !== undefined ? clamp(timbre.cutoff, 60, 16000) : basePreset.cutoff,
-        res: timbre.res !== undefined ? clamp(timbre.res, 0.2, 24) : basePreset.res,
-      };
-    }
-
-    let p: AdvancedSynthPreset = dur ? { ...preset, gate: dur / (stepDur * 2) } : preset;
-
-    // ── Task S1: synth mode overrides (reference pursuit can switch modes) ──
-    // If a per-track override is set, replace the preset's mode and fill in
-    // sensible defaults for any mode-specific params that aren't already set.
-    const overrideMode = this.synthModeOverrides[trackIdx];
-    if (overrideMode && overrideMode !== p.mode) {
-      p = { ...p, mode: overrideMode };
-      // Provide defaults for the new mode so the AdvancedSynthVoice has values
-      // to work with. These are only applied if the preset didn't already set
-      // them (so a world's pad preset won't have its sawCount clobbered when
-      // the pursuit flips it to supersaw, for example — but a classic bass
-      // preset flipped to FM needs fmRatio/fmDepth/fmEnvAmount filled in).
-      if (overrideMode === 'fm') {
-        if (p.fmRatio === undefined) p.fmRatio = 2;
-        if (p.fmDepth === undefined) p.fmDepth = 4;
-        if (p.fmEnvAmount === undefined) p.fmEnvAmount = 0.6;
-      } else if (overrideMode === 'supersaw') {
-        if (p.sawCount === undefined) p.sawCount = 5;
-        if (p.sawDetune === undefined) p.sawDetune = 12;
-        if (p.sawSpread === undefined) p.sawSpread = 0.5;
-      } else if (overrideMode === 'wavetable') {
-        if (p.wtPosition === undefined) p.wtPosition = 0.5;
-        if (p.wtMorphRate === undefined) p.wtMorphRate = 0.3;
-      }
-    }
-
-    // ── Task S1: real-time modulation overrides (setFMDepth / setWavetablePosition) ──
-    // Applied on top of the preset's mode-specific params so the reference
-    // pursuit can dynamically tune FM depth or wavetable position to match the
-    // radio's timbre without changing the world's preset selection.
-    if (this.fmDepthOverride > 0 && p.mode === 'fm') {
-      p = { ...p, fmDepth: this.fmDepthOverride };
-    }
-    if (this.wtPositionOverride >= 0 && p.mode === 'wavetable') {
-      p = { ...p, wtPosition: this.wtPositionOverride };
-    }
-
-    // ── P1: adaptive quality — cap supersaw osc count ──
-    // On 'low' quality (maxSupersawOsc=3) and 'medium' (maxSupersawOsc=4),
-    // reduce the supersaw's osc count to lower CPU. The supersaw's character
-    // (detuned saws panned across the field) is preserved at any count ≥ 3;
-    // only the thickness is reduced. 'high' quality is uncapped (7 osc).
-    if (p.mode === 'supersaw' && typeof p.sawCount === 'number'
-        && p.sawCount > this.maxSupersawOsc) {
-      p = { ...p, sawCount: this.maxSupersawOsc };
-    }
-
+    // ── Task F1-F3: ONE path — route to this.audio.triggerSynth ──
+    // The engine computes the final timbre (world + pursuit + learning + flow
+    // override) and passes it to the audio backend. The backend fires the voice:
+    //   - Worklet: enqueues into eventBatch (uses worldParams for cutoff; the
+    //     timbre arg is ignored — the worklet's voices use their internal state).
+    //   - Legacy: fires an AdvancedSynthVoice with the timbre applied to the
+    //     preset's cutoff/res, plus synth mode overrides + learned params.
+    if (!this.audio) return;
+    // Compute the final timbre (pursuit + learning + flow override). This was
+    // previously done inside the legacy triggerSynth; now it's in the engine
+    // so both backends get the same final values.
+    let finalTimbre = timbre ? { ...timbre } : undefined;
     // Reference pursuit — SPECTRAL CENTROID matching for lead (5) and pad (6).
-    // Applied on top of the world timbre so radio brightness nudges the world cutoff.
     if ((trackIdx === 5 || trackIdx === 6) && this.refSpectralCentroid > 0) {
       const targetCut = centroidToCutoff(this.refSpectralCentroid);
-      const blended = preset.cutoff * 0.6 + targetCut * 0.4;
+      const baseCut = finalTimbre?.cutoff ?? 1500;
+      const blended = baseCut * 0.6 + targetCut * 0.4;
       if (isFinite(blended) && blended > 60) {
-        p = { ...p, cutoff: clamp(blended, 200, 12000) };
+        finalTimbre = { ...finalTimbre, cutoff: clamp(blended, 200, 12000) };
       }
     }
-
-    // ── Task F1: continuous flow filter cutoff override ──
-    // applyFlowAutomation() pushes the flow engine's continuous filterCutoff
-    // (or a filterSweep surprise's sweep curve) into leadCutoffOverride every
-    // step. This OVERRIDES the world timbre + reference pursuit blend — the
-    // flow's continuous automation is the dominant lead filter control.
-    // Outside a flow (leadCutoffOverride === -1, only possible before the
-    // flow engine is initialized) this is a no-op.
+    // Flow filter cutoff override (lead only).
     if (trackIdx === 5 && this.leadCutoffOverride > 0) {
-      p = { ...p, cutoff: clamp(this.leadCutoffOverride, 200, 16000) };
+      finalTimbre = { ...finalTimbre, cutoff: clamp(this.leadCutoffOverride, 200, 16000) };
     }
-
-    // Reference pursuit — BASS DECAY matching for bass (4).
-    if (trackIdx === 4 && this.refBassDecay > 0) {
-      const desiredGate = clamp(this.refBassDecay / Math.max(stepDur * 2, 0.01), 0.05, 2.5);
-      const blended = preset.gate * 0.7 + desiredGate * 0.3;
-      if (isFinite(blended) && blended > 0) {
-        p = { ...p, gate: clamp(blended, 0.05, 2.5) };
-      }
-    }
-
-    // ── Learned params from ContinuousTrainer (Task 22) ──
-    //    Blend 30% learned cutoff on top of world + reference pursuit.
-    //    This lets the offline optimizer steer timbre toward an accepted
-    //    configuration without overriding the live reference pursuit.
+    // Learned params — blend 30% on top.
     if (trackIdx === 4 && this.learned.bassCutoff) {
-      const blended = p.cutoff * 0.7 + this.learned.bassCutoff * 0.3;
-      if (isFinite(blended) && blended > 40) p = { ...p, cutoff: clamp(blended, 60, 4000) };
+      const baseCut = finalTimbre?.cutoff ?? 500;
+      const blended = baseCut * 0.7 + this.learned.bassCutoff * 0.3;
+      if (isFinite(blended) && blended > 40) {
+        finalTimbre = { ...finalTimbre, cutoff: clamp(blended, 60, 4000) };
+      }
     }
     if (trackIdx === 5 && this.learned.leadCutoff) {
-      const blended = p.cutoff * 0.7 + this.learned.leadCutoff * 0.3;
-      if (isFinite(blended) && blended > 100) p = { ...p, cutoff: clamp(blended, 200, 16000) };
+      const baseCut = finalTimbre?.cutoff ?? 1800;
+      const blended = baseCut * 0.7 + this.learned.leadCutoff * 0.3;
+      if (isFinite(blended) && blended > 100) {
+        finalTimbre = { ...finalTimbre, cutoff: clamp(blended, 200, 16000) };
+      }
     }
     if (trackIdx === 6 && this.learned.padCutoff) {
-      const blended = p.cutoff * 0.7 + this.learned.padCutoff * 0.3;
-      if (isFinite(blended) && blended > 80) p = { ...p, cutoff: clamp(blended, 150, 12000) };
+      const baseCut = finalTimbre?.cutoff ?? 1000;
+      const blended = baseCut * 0.7 + this.learned.padCutoff * 0.3;
+      if (isFinite(blended) && blended > 80) {
+        finalTimbre = { ...finalTimbre, cutoff: clamp(blended, 150, 12000) };
+      }
     }
-    // Learned lead detune — nudge the osc2 detune toward the optimized value.
-    if (trackIdx === 5 && this.learned.leadDetune !== undefined) {
-      const blended = (p.detune || 0) * 0.7 + this.learned.leadDetune * 0.3;
-      if (isFinite(blended) && blended >= 0) p = { ...p, detune: clamp(blended, 0, 50) };
-    }
-
-    // Drive scales the voice velocity (per-voice drive isn't a SynthPreset field)
-    const driveBoost = timbre?.drive ? clamp(timbre.drive / 1.5, 0.5, 1.8) : 1;
-    voice.noteOn(p, time, midi, vel * track.mix.vol * driveBoost, stepDur, this.chains[trackIdx]);
-
-    // Add sub oscillator for bass track (sine one octave below)
-    if (trackIdx === 4 && this.ctx) {
-      const subFreq = mtof(midi - 12); // one octave below
-      const subOsc = this.ctx.createOscillator();
-      const subGain = this.ctx.createGain();
-      subOsc.type = 'sine';
-      subOsc.frequency.value = subFreq;
-      // When chasing ref bass decay, lengthen the sub-osc tail to match.
-      const baseDur = dur || stepDur * 0.3;
-      const subDecay = (this.refBassDecay > 0)
-        ? clamp(baseDur * 0.5 + this.refBassDecay * 0.5, 0.05, 1.5)
-        : baseDur + 0.05;
-      subGain.gain.setValueAtTime(0.5 * track.mix.vol * driveBoost, time);
-      subGain.gain.exponentialRampToValueAtTime(0.001, time + subDecay);
-      subOsc.connect(subGain);
-      subGain.connect(this.chains[4]);
-      subOsc.start(time);
-      subOsc.stop(time + subDecay + 0.02);
-    }
+    // Compute the final duration.
+    const finalDur = (dur !== undefined && Number.isFinite(dur) && dur > 0)
+      ? dur
+      : Math.max(0.05, stepDur * 0.5);
+    // FM mode flag (worklet selects V_FM voice).
+    const fm = this.synthModeOverrides[trackIdx] === 'fm';
+    const opts: TriggerSynthOpts = { stepDur, fm };
+    this.audio.triggerSynth(trackIdx, time, midi, vel, finalDur, finalTimbre as SynthTimbre | undefined, opts);
   }
 
   // ─── Task S1: Advanced synthesis control surface ──────────────────────────
@@ -5009,20 +4296,23 @@ export class Psy4EngineV2 {
     const status = this.getPursuitStatus();
 
     // ── Per-track effect-send snapshot ──
-    // We read each rack's current send gain. The rack exposes the GainNode
-    // directly (sendReverb, sendDelay, etc.) so we can read .gain.value.
+    // Task F1-F3: read from this.audio.getParams() (ONE path). The backend
+    // tracks the actual send levels (worklet: from setFX; legacy: from rack
+    // send gains). For per-track granularity, we approximate: the worklet
+    // returns the music-bus send (index 2); the legacy returns the averaged
+    // melodic send. We fill all 8 tracks with the same value for the UI.
+    const audioParams = this.audio?.getParams?.() ?? {};
     const reverbSend: number[] = [];
     const delaySend: number[] = [];
     const chorusSend: number[] = [];
     const phaserSend: number[] = [];
     const distortionSend: number[] = [];
-    for (let i = 0; i < this.racks.length; i++) {
-      const rack = this.racks[i];
-      reverbSend.push(rack ? rack.sendReverb.gain.value : 0);
-      delaySend.push(rack ? rack.sendDelay.gain.value : 0);
-      chorusSend.push(rack ? rack.sendChorus.gain.value : 0);
-      phaserSend.push(rack ? rack.sendPhaser.gain.value : 0);
-      distortionSend.push(rack ? rack.sendDistortion.gain.value : 0);
+    for (let i = 0; i < 8; i++) {
+      reverbSend.push(audioParams.sendReverb ?? 0);
+      delaySend.push(audioParams.sendDelay ?? 0);
+      chorusSend.push(audioParams.sendChorus ?? 0);
+      phaserSend.push(audioParams.sendPhaser ?? 0);
+      distortionSend.push(0); // not tracked in AudioBackendParams
     }
 
     const synth = this.detectedSynthesisCharacter;
@@ -5240,13 +4530,12 @@ export class Psy4EngineV2 {
     const totalLatencyMs = outputLatency * 1000 + schedulingLatencyMs;
     const now = (typeof performance !== 'undefined') ? performance.now() : Date.now();
     const stable = this.droppedNotes === 0 || (now - this.lastDropAt) > 5000;
-    // ── Task W1: when useWorklet, pull CPU load from the worklet's stats ──
+    // ── Task F1-F3: pull CPU load from the audio backend (ONE path) ──
     // The worklet reports a smoothed cpuLoad (0..1) based on actual process()
-    // duration. This is more accurate than the legacy PerformanceMonitor's
-    // main-thread frame-time heuristic.
-    const cpuLoad = this.useWorklet && this.worklet
-      ? this.worklet.getStatus().cpuLoad
-      : this.cpuLoad;
+    // duration. The legacy backend returns 0 (no CPU monitor); we fall back
+    // to the PerformanceMonitor's main-thread frame-time heuristic.
+    const backendCpu = this.audio?.getStatus?.().cpuLoad ?? 0;
+    const cpuLoad = backendCpu > 0 ? backendCpu : this.cpuLoad;
     return {
       outputLatencyMs: outputLatency * 1000,
       schedulingLatencyMs,
@@ -5370,20 +4659,16 @@ export class Psy4EngineV2 {
   // A future P1 agent can replace these with full implementations.
 
   /**
-   * P1: acquire a synth voice from the pool with voice stealing.
-   * Stub: simple round-robin (same as the pre-P1 behavior). A full
-   * implementation would scan for `isBusy()=false` and steal the oldest
-   * voice when all are busy.
+   * Task F1-F3: acquire a synth voice from the pool with voice stealing.
+   *
+   * This method is retained for backwards compatibility but is now a NO-OP —
+   * the legacy synth pool moved into LegacyAudioGraph. The engine no longer
+   * acquires voices directly; it delegates to this.audio.triggerSynth().
+   *
+   * Kept so any stray references don't break compilation. Returns undefined.
    */
-  private acquireSynthVoice(): AdvancedSynthVoice {
-    const n = this.synthPool.length;
-    if (n === 0) {
-      // Defensive — should never happen (pool is allocated in init()).
-      throw new Error('synthPool is empty — init() not called');
-    }
-    const voice = this.synthPool[this.synthIdx];
-    this.synthIdx = (this.synthIdx + 1) % n;
-    return voice;
+  private acquireSynthVoice(): AdvancedSynthVoice | undefined {
+    return undefined;
   }
 
   /**

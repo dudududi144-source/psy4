@@ -4909,3 +4909,44 @@ Stage Summary:
   - `src/lib/studio/engine/workletEngine.ts` (new, ~370 lines) — WorkletEngine class (init/start/stop/sendEventBatch/setWorld/setMacros/setBpm/newPhrase/setFX/triggerDuck/panic/triggerImmediate/getAnalyser/getStatus/getFullStats/onStats/dispose), VoiceId/VOICE/trackToVoiceId, WorkletStats/WorkletFXConfig/WorkletStatus interfaces, EventBatchBuilder class (preallocated Float64Array, PSY7 clamp + finite-check).
   - `src/lib/studio/engine/psy4EngineV2.ts` (extended, 4900→5400 lines) — WorkletEngine + EventBatchBuilder + VoiceId/VOICE/trackToVoiceId/WorkletFXConfig imports; useWorklet/worklet/eventBatch/workletReady fields; init() creates WorkletEngine sharing the AudioContext, skips legacy node graph when useWorklet; start()/stop()/setBpm() push to worklet; triggerDrum/triggerSynth/triggerRiser/triggerImpact/triggerReverseImpact route to worklet eventBatch; startSurprise/endActiveSurprise guard for useWorklet; applyFlowAutomation sends worklet.setFX + worklet.setWorld({leadCutoff}); setWorld forwards to worklet; switchWorld pushes world params + FX config; selfTrack approximates LUFS/energy via macros; tick() flushes eventBatch at end + worklet.newPhrase() on phrase boundaries; getLatencyStatus pulls cpuLoad from worklet; new computeWorkletWorldParams + computeWorkletMacros helpers. Legacy node graph code preserved in `if (!this.useWorklet) { ... }` blocks for fallback.
 - Full work record saved to /home/z/my-project/agent-ctx/W1-z-ai-code.md.
+
+---
+Task ID: ROAST-7 (brutal self-roast on actual code)
+Agent: Z.ai Code (main)
+
+ROAST FINDINGS (code-verified, not claims):
+
+1. MUSICAL DIRECTOR IS A LIE.
+   scheduleStep() calls `director.getNotesForWindow(stepTime, stepTime + sd, ...)` — a 1-step window. The director composes "phrases" but the engine asks for them ONE 16th STEP AT A TIME. The "phrase composition" is fake — it's the same step-by-step decision, just wrapped. The director's `composePhrase` method (which composes 4-8 bars) is NEVER CALLED. The engine asks for notes window-by-window, defeating the entire purpose.
+
+2. WORKLET ROUTING IS FRAGILE.
+   `workletReady` starts false. `init()` kicks off async `worklet.init(c)` but doesn't await. If the user clicks START before the worklet loads (typical — addModule takes 50-200ms), `triggerDrum`/`triggerSynth` hit `if (!this.workletReady || !this.worklet) return;` — SILENT. The engine appears to "start" but produces NO AUDIO until the worklet finishes loading. No fallback, no user feedback.
+
+3. NO GRACEFUL DEGRADATION.
+   If the worklet fails to load (browser doesn't support AudioWorklet, file 404, syntax error), `useWorklet` flips to false but the legacy node graph was NEVER CREATED (init skipped it). The engine is stuck: no worklet, no nodes, no sound. No error to the user.
+
+4. MUSICAL DIRECTOR + SCHEDULESTEP DUPLICATION.
+   The engine has BOTH:
+   - scheduleStep() with its own kick/bass/lead/arp/pad logic (step % 4, w.kickPattern.charAt(step), etc.)
+   - MusicalDirector.getNotesForWindow() which ALSO composes kick/bass/lead/arp/pad
+   The director path (lines 4391-4470) fires notes, but scheduleStep's other logic (risers, impacts, surprises, phase sync) also runs. There's no clear separation. It's a tangled mess.
+
+5. LEARNING MEMORY HAS NO INPUT.
+   LearningMemory.storePattern() is called from a 30s loop, but what engineParams does it store? `snapshotEngineParams()` reads `this.learned.kickDecay`, `this.leadCutoffOverride`, `this.synthModeOverrides` — but in worklet mode, these are NEVER SET (the worklet owns the actual params). The learning memory stores zeros.
+
+6. PURSUIT IS DISCONNECTED IN WORKLET MODE.
+   `liveTrack()` adjusts `this.trackGains[4].gain.setTargetAtTime(...)` — but in worklet mode, trackGains doesn't exist (legacy node graph not created). The reference pursuit silently no-ops. The worklet has its own params (setWorld) but liveTrack doesn't call worklet.setWorld with the adjusted values.
+
+7. EFFECTS RACK + MULTIBAND ARE DEAD IN WORKLET MODE.
+   In worklet mode, TrackEffectsRack, multiband compressor, send effects (chorus/phaser/distortion/bitcrush) are NEVER CREATED. The worklet has its own internal DSP, but the rich effects system we built (E1, T1, A1) is completely bypassed. The "DEEP A/B ANALYSIS" card shows data from detectors that run on reference features, but the engine can't ACT on that data because the effects don't exist.
+
+8. GIT TOKEN EXPIRED.
+   Can't push to GitHub. The last 3 commits (ROAST-6) are local only.
+
+ROOT CAUSE: The worklet migration was done as a "facade" but the facade doesn't actually delegate — it conditionally routes audio to the worklet but leaves all the musical logic (pursuit, learning, effects) pointing at the legacy node graph that doesn't exist in worklet mode. The result: a broken hybrid where nothing works correctly.
+
+THE FIX: Clean architectural separation.
+- Worklet owns: ALL audio (voices, effects, master, pursuit adjustments)
+- Main thread owns: musical decisions (what notes, when, what params)
+- The bridge: a clear message protocol between them
+- No conditional `if (useWorklet)` scattered everywhere — ONE path, ONE engine.
