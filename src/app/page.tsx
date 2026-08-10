@@ -59,8 +59,8 @@ export default function PSY4Page() {
   // Engine
   const [engineOn, setEngineOn] = useState(false);
   const [selfMetrics, setSelfMetrics] = useState<RefMetrics | null>(null);
-  const [engineState, setEngineState] = useState<{ bpm: number; key: string; section: string }>({
-    bpm: 145, key: 'phrygian', section: 'INTRO',
+  const [engineState, setEngineState] = useState<{ bpm: number; key: string; section: string; style: string }>({
+    bpm: 145, key: 'phrygian', section: 'INTRO', style: 'dark-psy',
   });
 
   // Learning
@@ -153,8 +153,14 @@ export default function PSY4Page() {
         a.onMetrics(m => {
           setSelfMetrics(m);
           a.setEngineBpm((engineRef.current as any)?._bpm || 145);
-          if (engineRef.current?.selfTrack) engineRef.current.selfTrack(m);
-          setEngineState(prev => ({ ...prev, bpm: (engineRef.current as any)?._bpm || prev.bpm, key: engineRef.current?.getMusicalKey()?.scale || prev.key }));
+          if (engineRef.current?.selfTrack) engineRef.current.selfTrack({ lufs: m.lufs, energy: m.energy });
+          const refM = refMetrics;
+          setEngineState(prev => ({
+            ...prev,
+            bpm: (engineRef.current as any)?._bpm || prev.bpm,
+            key: engineRef.current?.getMusicalKey()?.scale || prev.key,
+            style: refM?.detectedStyle?.style || prev.style,
+          }));
         });
         a.start();
         analyzerRef.current = a;
@@ -292,7 +298,7 @@ export default function PSY4Page() {
               </div>
               {engineOn && (
                 <div className="text-[10px] font-mono text-slate-400">
-                  BPM: <span className="text-cyan-400">{engineState.bpm}</span> · Key: <span className="text-cyan-400">{engineState.key}</span> · Section: <span className="text-cyan-400">{engineState.section}</span>
+                  BPM: <span className="text-cyan-400">{engineState.bpm}</span> · Key: <span className="text-cyan-400">{engineState.key}</span> · Style: <span className="text-fuchsia-400">{engineState.style}</span> · Section: <span className="text-cyan-400">{engineState.section}</span>
                 </div>
               )}
             </CardContent>

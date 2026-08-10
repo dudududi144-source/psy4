@@ -1,125 +1,15 @@
 {
   "ok": true,
   "streams": [
-    {
-      "id": "psyndora-psytrance",
-      "name": "Psyndora Psytrance",
-      "url": "https://cast.magicstreams.gr:9111/stream/1/",
-      "format": "mp3",
-      "bitrate": 128,
-      "genre": "Psytrance / Progressive / Goa / Full-On",
-      "worldMapping": ["progressive-psy", "goa", "acid-psy", "morning-psy"],
-      "hasMetadata": true,
-      "priority": 1,
-      "notes": "HTTPS — broad genre coverage"
-    },
-    {
-      "id": "babaganousha",
-      "name": "Babaganousha Radio",
-      "url": "https://babaganousha.net:8443/stream/1/",
-      "format": "mp3",
-      "bitrate": 128,
-      "genre": "Psychedelic / Psytrance / Goa",
-      "worldMapping": ["goa", "cosmic", "progressive-psy"],
-      "hasMetadata": true,
-      "priority": 1,
-      "notes": "HTTPS — established station, very stable"
-    },
-    {
-      "id": "psytravel",
-      "name": "Psychedelic Travel Radio",
-      "url": "https://e20.yesstreaming.net:6148/stream",
-      "format": "mp3",
-      "bitrate": 320,
-      "genre": "Forest / Progressive Psytrance",
-      "worldMapping": ["forest", "progressive-psy", "dark-psy"],
-      "hasMetadata": true,
-      "priority": 1,
-      "notes": "HTTPS 320kbps — high quality"
-    },
-    {
-      "id": "radiozora",
-      "name": "RadiOzora Trance",
-      "url": "https://trance.out.airtime.pro/trance_a",
-      "format": "mp3",
-      "bitrate": 192,
-      "genre": "Darkpsy / Full-On / Progressive",
-      "worldMapping": ["dark-psy", "goa", "progressive-psy"],
-      "hasMetadata": true,
-      "priority": 1,
-      "notes": "Ozora festival radio — high quality"
-    },
-    {
-      "id": "recordgoa",
-      "name": "Record Goa Psy",
-      "url": "https://radiorecord.hostingradio.ru/goa96.aacp",
-      "format": "aac",
-      "bitrate": 96,
-      "genre": "Goa / Psy Trance",
-      "worldMapping": ["goa", "acid-psy"],
-      "hasMetadata": true,
-      "priority": 1,
-      "notes": "Radio Record Russia — Goa channel"
-    },
-    {
-      "id": "goanight",
-      "name": "Goanight",
-      "url": "https://goanight.stream.laut.fm/goanight",
-      "format": "mp3",
-      "bitrate": 128,
-      "genre": "Goa / Psytrance",
-      "worldMapping": ["goa", "cosmic"],
-      "hasMetadata": true,
-      "priority": 1,
-      "notes": "HTTPS — Goa focused"
-    },
-    {
-      "id": "1fm-psytrance",
-      "name": "1.FM Psytrance",
-      "url": "https://strm112.1.fm/psytrance_mobile_mp3",
-      "format": "mp3",
-      "bitrate": 192,
-      "genre": "Psytrance / Full-On",
-      "worldMapping": ["progressive-psy", "morning-psy", "acid-psy"],
-      "hasMetadata": true,
-      "priority": 1,
-      "notes": "1.FM network — reliable"
-    },
-    {
-      "id": "amoris-goa",
-      "name": "Anima Amoris Goa",
-      "url": "https://amoris.sknt.ru/goa.mp3",
-      "format": "mp3",
-      "bitrate": 128,
-      "genre": "Goa / Psy Trance",
-      "worldMapping": ["goa", "dark-psy", "forest"],
-      "hasMetadata": false,
-      "priority": 1,
-      "notes": "HTTPS — Goa/Psy dedicated"
-    },
-    {
-      "id": "space-unicorn",
-      "name": "Space Unicorn Radio",
-      "url": "https://spaceunicorn.radio/stream",
-      "format": "mp3",
-      "bitrate": 192,
-      "genre": "Trance & PsyTrance",
-      "worldMapping": ["progressive-psy", "morning-psy"],
-      "hasMetadata": false,
-      "priority": 2,
-      "notes": "Higher bitrate, broader genre"
-    },
-    {
-      "id": "psyradio-progressive",
-      "name": "psyradio.fm Progressive",
-      "url": "http://streamer.psyradio.org:8030/;listen.mp3",
-      "format": "mp3",
-      "bitrate": 128,
-      "genre": "Progressive Psytrance",
-      "worldMapping": ["progressive-psy", "deep-psy", "hypnotic"],
-      "hasMetadata": true,
-      "priority": 2,
-      "notes": "Dedicated progressive psytrance channel (HTTP — needs proxy)"
-    }
+    {"id":"psyndora-psytrance","name":"Psyndora Psytrance","url":"https://cast.magicstreams.gr:9111/stream/1/","format":"mp3","bitrate":128,"genre":"Psytrance / Progressive / Goa / Full-On","worldMapping":["progressive-psy","goa","acid-psy","morning-psy"],"hasMetadata":true,"priority":1,"notes":"Broadest genre coverage"},
+    {"id":"babaganousha","name":"Babaganousha Radio","url":"https://babaganousha.net:8443/stream/1/","format":"mp3","bitrate":128,"genre":"Psychedelic / Psytrance / Goa","worldMapping":["goa","cosmic","progressive-psy"],"hasMetadata":true,"priority":1,"notes":"Goa-focused"},
+    {"id":"psytravel","name":"Psychedelic Travel Radio","url":"https://e20.yesstreaming.net:6148/stream","format":"mp3","bitrate":320,"genre":"Psychedelic Trance / Forest","worldMapping":["forest","dark-psy","progressive-psy"],"hasMetadata":true,"priority":1,"notes":"320kbps forest/dark"},
+    {"id":"radiozora","name":"RadiOzora Trance","url":"https://trance.out.airtime.pro/trance_a","format":"mp3","bitrate":192,"genre":"Trance / Darkpsy / Full-On","worldMapping":["dark-psy","goa","progressive-psy","morning-psy"],"hasMetadata":true,"priority":1,"notes":"Ozora festival radio"},
+    {"id":"recordgoa","name":"Record Goa Psy","url":"https://radiorecord.hostingradio.ru/goa96.aacp","format":"aac","bitrate":96,"genre":"Goa / Psy Trance","worldMapping":["goa","acid-psy"],"hasMetadata":true,"priority":1,"notes":"Radio Record Russia Goa"},
+    {"id":"goanight","name":"Goanight","url":"https://goanight.stream.laut.fm/goanight","format":"mp3","bitrate":128,"genre":"Goa / Minimal","worldMapping":["goa","deep-psy","hypnotic"],"hasMetadata":true,"priority":1,"notes":"Goa with minimal"},
+    {"id":"1fm-psytrance","name":"1.FM Psytrance","url":"https://strm112.1.fm/psytrance_mobile_mp3","format":"mp3","bitrate":192,"genre":"Psytrance / Full-On","worldMapping":["progressive-psy","morning-psy","acid-psy"],"hasMetadata":true,"priority":1,"notes":"Full-on and progressive"},
+    {"id":"amoris-goa","name":"Anima Amoris Goa","url":"https://amoris.sknt.ru/goa.mp3","format":"mp3","bitrate":128,"genre":"Goa / Dark Psy","worldMapping":["goa","dark-psy","forest"],"hasMetadata":false,"priority":1,"notes":"Goa/dark psy underground"},
+    {"id":"space-unicorn","name":"Space Unicorn Radio","url":"https://spaceunicorn.radio/stream","format":"mp3","bitrate":192,"genre":"Trance & PsyTrance","worldMapping":["progressive-psy","morning-psy"],"hasMetadata":false,"priority":2,"notes":"Broader trance"},
+    {"id":"psyradio-progressive","name":"psyradio.fm Progressive","url":"http://streamer.psyradio.org:8030/;listen.mp3","format":"mp3","bitrate":128,"genre":"Progressive Psytrance","worldMapping":["progressive-psy","deep-psy","hypnotic"],"hasMetadata":true,"priority":2,"notes":"Progressive (HTTP)"}
   ]
 }

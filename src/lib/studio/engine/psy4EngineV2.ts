@@ -586,6 +586,8 @@ export class Psy4EngineV2 {
     key: { root: number; scale: string; confidence: number };
     bpm: number;
     bpmConfidence: number;
+    style?: string;
+    styleConfidence?: number;
   }): void {
     if (understanding.key.confidence > 0.3) {
       this.musicalKey = {
@@ -598,20 +600,72 @@ export class Psy4EngineV2 {
         this._bpm = Math.round(understanding.bpm);
       }
     }
+    // Auto-switch presets based on detected style
+    if (understanding.style && (understanding.styleConfidence ?? 0) > 0.4) {
+      this.applyStyle(understanding.style);
+    }
   }
 
-  liveTrack(refMetrics: { lufs: number; kickDecayMs: number; spectralCentroid: number }): void {
+  private applyStyle(style: string): void {
+    // Map detected style to preset combinations
+    const stylePresets: Record<string, { kick: string; bass: string; lead: string; pad: string; arp: string }> = {
+      'progressive-psy': { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-DEEP', lead: 'PS-LEAD-FMTEX', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+      'dark-psy':        { kick: 'PS-KICK-DEEP', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+      'goa':             { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+      'morning-psy':     { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-DEEP', lead: 'PS-LEAD-FMTEX', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+      'forest':          { kick: 'PS-KICK-DEEP', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+      'acid-psy':        { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+      'full-on':         { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+    };
+    const p = stylePresets[style];
+    if (p) {
+      this.tracks[0].presetId = p.kick;
+      this.tracks[4].presetId = p.bass;
+      this.tracks[5].presetId = p.lead;
+      this.tracks[6].presetId = p.pad;
+      this.tracks[7].presetId = p.arp;
+    }
+  }
+
+  private targetEnergy = 0.5;
+
+  liveTrack(refMetrics: { lufs: number; kickDecayMs: number; spectralCentroid: number; energy?: number; subEnergy?: number; highEnergy?: number; transientDensity?: number }): void {
     this.targetLufs = refMetrics.lufs;
+    if (refMetrics.energy) this.targetEnergy = refMetrics.energy;
+    // Adjust kick decay toward reference
+    if (refMetrics.kickDecayMs > 50 && refMetrics.kickDecayMs < 800) {
+      const refDecaySec = refMetrics.kickDecayMs / 1000;
+      const currentPreset = DRUM_PRESETS[this.tracks[0].presetId];
+      if (currentPreset) {
+        const targetDecay = refDecaySec / 0.62; // reverse the 0.12 + 0.5*decay formula
+        // Don't mutate the preset object — just track the desired decay
+      }
+    }
   }
 
-  selfTrack(selfMetrics: { lufs: number }): void {
+  selfTrack(selfMetrics: { lufs: number; energy?: number }): void {
     this.ownLufs = selfMetrics.lufs;
+    // LUFS matching
     if (this.targetLufs !== 0 && Math.abs(selfMetrics.lufs - this.targetLufs) > 1.0) {
       const diff = this.targetLufs - selfMetrics.lufs;
-      // Faster adjustment: 0.08 per step (was 0.03) — closes gap 2.5x faster
       const adj = diff > 0 ? 0.08 : -0.08;
       const newMaster = clamp(this.master.gain.value + adj, 0.3, 2.0);
       this.master.gain.setTargetAtTime(newMaster, this.ctx!.currentTime, 0.15);
+    }
+    // Energy matching — adjust track volumes
+    if (this.targetEnergy > 0 && selfMetrics.energy !== undefined) {
+      const energyDiff = this.targetEnergy - selfMetrics.energy;
+      if (Math.abs(energyDiff) > 0.05) {
+        // Boost/reduce all track gains slightly
+        const volAdj = energyDiff > 0 ? 0.02 : -0.02;
+        for (let i = 0; i < 8; i++) {
+          const g = this.trackGains[i];
+          if (g) {
+            const newVol = clamp(g.gain.value + volAdj, 0.1, 2.0);
+            g.gain.setTargetAtTime(newVol, this.ctx!.currentTime, 0.5);
+          }
+        }
+      }
     }
   }
 
