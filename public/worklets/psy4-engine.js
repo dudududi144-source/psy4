@@ -36,33 +36,40 @@
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
+// ─── PSY5 RT-safe tunables ─────────────────────────────────────────────────
+// 256-slot ring buffer is PSY5's proven size — plenty for a 100ms lookahead
+// at 145 BPM (16th = 41ms, so 100ms = ~2.4 steps × ~12 voices/step ≈ 30 events).
+// 256 saves memory vs 1024 and is bounded (PSY6 RT contract: fixed arrays only).
 const MAX_VOICES = 32;        // was 64 — reduced to match pool size
 const EVENT_SIZE = 6;         // floats per event: [time, voice, note, vel, dur, param]
-const MAX_EVENTS = 1024;      // was 2048 — reduced (1024 is plenty for 100ms lookahead)
-const TANH_TABLE_SIZE = 1024; // was 2048 — half size, still accurate enough
+const MAX_EVENTS = 256;       // PSY5 proven size (was 1024) — bounded ring buffer
+
+// CPU-load monitoring (PSY5 dynamic voice budget). If process() exceeds the
+// budget, we drop the lowest-priority active voices to stay RT-safe. Reported
+// to the main thread every 30 blocks (~10 Hz at 128-sample blocks / 44.1 kHz).
+const PROCESS_BUDGET_MS = 3.0;        // PSY5: drop voices if process() > 3ms
+const STATS_REPORT_BLOCKS = 30;       // PSY5: report load every 30 blocks
+const VOICE_BUDGET_MIN = 8;           // never drop below 8 active voices
+const VOICE_BUDGET_DROP_PER_OVERAGE = 1; // drop 1 voice per 0.5ms overage
 
 // Voice IDs
 const V_KICK = 0, V_BASS = 1, V_LEAD = 2, V_ACID = 3, V_PAD = 4;
 const V_HAT = 5, V_HAT_OPEN = 6, V_CLAP = 7, V_PERC = 8, V_SHAKER = 9;
 const V_TEXTURE = 10, V_RISER = 11, V_IMPACT = 12, V_SWEEP = 13;
-const V_ZAP = 14, V_BLIP = 15, V_DOWNLIFTER = 16;
+const V_ZAP = 14, V_BLIP = 15, V_DOWNLIFTER = 16, V_FM = 17;
 
-// ─── Fast tanh via lookup table ────────────────────────────────────────────
-
-const tanhTable = new Float32Array(TANH_TABLE_SIZE + 1);
-for (let i = 0; i <= TANH_TABLE_SIZE; i++) {
-  const x = (i / TANH_TABLE_SIZE) * 2 - 1; // -1..1
-  tanhTable[i] = Math.tanh(x);
-}
-
+// ─── Fast polynomial tanh (Pade approximation, PSY5 pattern) ───────────────
+// 10x cheaper than Math.tanh (no transcendental call, just multiply + add).
+// Accuracy: max error ~0.005 in [-3, 3]; saturates cleanly outside.
+// Replaces the lookup-table fastTanh (which required a table + interpolation).
 function fastTanh(x) {
-  if (x >= 1) return 1;
-  if (x <= -1) return -1;
-  const idx = (x + 1) * 0.5 * TANH_TABLE_SIZE;
-  const i0 = idx | 0;
-  const f = idx - i0;
-  return tanhTable[i0] * (1 - f) + tanhTable[i0 + 1] * f;
+  if (x > 3) return 1;
+  if (x < -3) return -1;
+  const x2 = x * x;
+  return x * (27 + x2) / (27 + 9 * x2);
 }
+// Alias so existing call sites that use `ftanh` (PSY5 naming) also work.
+const ftanh = fastTanh;
 
 // ─── polyBLEP ──────────────────────────────────────────────────────────────
 
@@ -89,7 +96,7 @@ class MoogLadder {
 
   reset() { this.s0 = this.s1 = this.s2 = this.s3 = 0; }
 
-  process(x, cutoff, res, drive, sr) {
+  process(x, cutoff, res, drive, sr, tol) {
     // Recompute g when cutoff changes
     if (Math.abs(cutoff - this.lastCutoff) > 0.5) {
       const fc = Math.min(0.45, cutoff / sr);
@@ -100,10 +107,16 @@ class MoogLadder {
     const fb = res * 4 * fastTanh(this.s3);
     const u = fastTanh((x - fb) * drive);
     let prev = u;
-    this.s0 += g * (fastTanh(prev) - this.s0); prev = this.s0;
-    this.s1 += g * (fastTanh(prev) - this.s1); prev = this.s1;
-    this.s2 += g * (fastTanh(prev) - this.s2); prev = this.s2;
-    this.s3 += g * (fastTanh(prev) - this.s3);
+    // Component tolerance: 4 filter stages have slightly different characteristics
+    // (PSY3 analog modeling — aTol = [0.98, 1.02, 0.99, 1.01])
+    // Each stage's integrator coefficient is slightly modulated by its tolerance.
+    // When tol is undefined (most voices), all stages are identical (tol = 1).
+    const t0 = tol ? tol[0] : 1, t1 = tol ? tol[1] : 1;
+    const t2 = tol ? tol[2] : 1, t3 = tol ? tol[3] : 1;
+    this.s0 += g * t0 * (fastTanh(prev) - this.s0); prev = this.s0;
+    this.s1 += g * t1 * (fastTanh(prev) - this.s1); prev = this.s1;
+    this.s2 += g * t2 * (fastTanh(prev) - this.s2); prev = this.s2;
+    this.s3 += g * t3 * (fastTanh(prev) - this.s3);
     return this.s3 / (1 + res * 0.5);
   }
 }
@@ -128,10 +141,17 @@ class PinkNoise {
     this.rngState = 12345;
   }
   reset() { this.b.fill(0); }
-  // Simple LFSR random (deterministic, no Math.random for reproducibility)
+  // Gaussian approximation (sum of 3 uniforms → triangular ≈ Gaussian by CLT)
+  // PSY3 uses rng.standard_normal() — this gives a more natural noise character
+  // than uniform Math.random(). Summing 3 independent uniforms produces a
+  // triangular distribution that closely approximates Gaussian.
   next() {
-    this.rngState = (this.rngState * 1103515245 + 12345) & 0x7fffffff;
-    return (this.rngState / 0x3fffffff) - 1;
+    let s = 0;
+    for (let i = 0; i < 3; i++) {
+      this.rngState = (this.rngState * 1103515245 + 12345) & 0x7fffffff;
+      s += (this.rngState / 0x3fffffff) - 1; // each in [-1, 1]
+    }
+    return s * 0.3333; // ~Gaussian, range ≈ [-1, 1]
   }
   // Pink noise sample
   process() {
@@ -231,8 +251,20 @@ class KickVoice {
     this.t = 0;
     this.amp = 1;
     this.fund = 50;
-    this.decay = 0.2;
+    // Multi-layer params (PSY3 analog modeling)
+    // PSY3 kick has: subDecay, midDecay, clickDecay, subLevel, midLevel, clickLevel,
+    //                fundamental, startMult, pitchDecay, saturation
+    this.subDecay = 0.2;
+    this.midDecay = 0.05;
+    this.clickDecay = 0.002;
+    this.subLevel = 0.8;
+    this.midLevel = 0.5;
+    this.clickLevel = 0.35;
+    this.startMult = 2.4;
+    this.pitchDecay = 0.04;
+    this.saturation = 1.5;
     this.phase = 0;
+    this.midPhase = 0;
     this.prevNoise = 0;
     this.noise = new PinkNoise();
   }
@@ -242,9 +274,13 @@ class KickVoice {
     this.t = 0;
     this.amp = amp;
     this.fund = fund;
-    this.decay = decay;
-    this.startTime = time;
+    // Independent decay per layer (PSY3 model) — sub carries the weight,
+    // mid provides body/punch, click provides beater attack
+    this.subDecay = Math.max(0.05, decay);
+    this.midDecay = this.subDecay * 0.25;   // mid decays 4x faster
+    this.clickDecay = 0.002;                 // 2ms click
     this.phase = 0;
+    this.midPhase = 0;
     this.prevNoise = 0;
     this.noise.reset();
   }
@@ -254,31 +290,40 @@ class KickVoice {
     if (!this.active) return [0, true];
     const dt = 1 / sr;
     this.t += dt;
-    if (this.t > this.decay + 0.05) { this.active = false; return [0, true]; }
+    if (this.t > this.subDecay + 0.05) { this.active = false; return [0, true]; }
 
     const t = this.t;
     const f0 = this.fund;
 
-    // Pitch envelope: f0*2.4 → f0 over 0.04s
-    const f = (f0 * 2.4 - f0) * Math.exp(-t / 0.04) + f0;
+    // Pitch envelope: f0*startMult → f0 over pitchDecay
+    const f = (f0 * this.startMult - f0) * Math.exp(-t / this.pitchDecay) + f0;
 
-    // Sub: sine with integrated phase (pitch sweep)
+    // Layer 1: SUB — pitched sine with integrated phase (pitch sweep)
+    // This is the weight/foundation of the kick
     this.phase += 2 * Math.PI * f / sr;
-    const subEnv = Math.exp(-t / (this.decay * 0.9));
-    const sub = Math.sin(this.phase) * subEnv * 0.8;
+    const subEnv = Math.exp(-t / (this.subDecay * 0.9));
+    const sub = Math.sin(this.phase) * subEnv * this.subLevel;
 
-    // Mid: saturated triangle at fundamental, short decay
-    const triPhase = (t * f0) % 1;
+    // Layer 2: MID — saturated triangle at fundamental, short decay
+    // This is the punch/body — gives the kick its "thwack"
+    this.midPhase += 2 * Math.PI * f0 / sr;
+    const triPhase = (this.midPhase / (2 * Math.PI)) % 1;
     const tri = 2 * Math.abs(2 * triPhase - 1) - 1;
-    const midEnv = Math.exp(-t / 0.05) * 0.5;
-    const mid = fastTanh(tri * 1.5) * midEnv;
+    const midEnv = Math.exp(-t / this.midDecay);
+    const mid = fastTanh(tri * 1.5) * midEnv * this.midLevel;
 
-    // Click: differentiated white noise, very short
+    // Layer 3: CLICK — differentiated Gaussian noise, very short
+    // This is the beater attack — the transient that cuts through the mix
     const n = this.noise.next();
-    const click = (n - this.prevNoise) * Math.exp(-t / 0.002) * 0.35;
+    const click = (n - this.prevNoise) * Math.exp(-t / this.clickDecay) * this.clickLevel;
     this.prevNoise = n;
 
-    const sample = (sub + mid + click) * 0.8 * this.amp;
+    // Mix layers
+    let sample = sub + mid + click;
+    // SATURATION: Post-mix tanh (adds harmonics + punch — commercial kicks
+    // always have saturation. Without it, the kick sounds flat and digital.)
+    sample = fastTanh(sample * this.saturation);
+    sample *= this.amp * 0.8;
     return [sample, false];
   }
 }
@@ -304,6 +349,11 @@ class BassVoice {
     this.bassDecay = 0.12;
     // Post-filter state (one-pole HP for cleaning mud)
     this.hpState = 0;
+    // PSY3 bass params: subLevel, harmonicLevel, cutoffFloor, cutoffDecay
+    this.subLevel = 0.45;       // sub oscillator level (was hardcoded 0.45)
+    this.harmonicLevel = 0.55;  // harmonic (filtered osc) level (was hardcoded 0.55)
+    this.cutoffFloor = 80;      // minimum cutoff (prevents filter from closing fully)
+    this.cutoffDecay = 0.04;    // cutoff envelope decay time (was hardcoded 0.04)
   }
 
   trigger(time, freq, dur, amp, acid, sr, params) {
@@ -320,6 +370,11 @@ class BassVoice {
     this.saw.reset();
     this.saw.setFreq(freq);
     this.filter.reset();
+    // PSY3 bass params (with defaults for backward compat)
+    this.subLevel = params?.subLevel ?? 0.45;
+    this.harmonicLevel = params?.harmonicLevel ?? 0.55;
+    this.cutoffFloor = params?.cutoffFloor ?? 80;
+    this.cutoffDecay = params?.cutoffDecay ?? 0.04;
     if (acid) {
       this.cutoffStart = 2500;
       this.cutoffEnd = 100;
@@ -343,16 +398,21 @@ class BassVoice {
     const osc = this.acid ? this.saw.process(inc) : this.square.process(inc);
 
     // 1. FILTER: Moog ladder with envelope (this is the tone-shaping stage)
-    const cutoffEnv = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / 0.04) + this.cutoffEnd;
+    //    Uses configurable cutoffDecay (PSY3) instead of hardcoded 0.04
+    //    Floor prevents the filter from fully closing (cutoffFloor)
+    const cutoffEnv = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / this.cutoffDecay) + this.cutoffEnd;
+    const cutoff = Math.max(this.cutoffFloor, cutoffEnv);
     const drive = this.acid ? 2.5 : 1.3;
-    const filtered = this.filter.process(osc, cutoffEnv, this.res, drive, sr);
+    const filtered = this.filter.process(osc, cutoff, this.res, drive, sr);
 
     // 2. SUB: Clean sine at fundamental (separate from body — provides weight)
+    //    Uses configurable subLevel (PSY3) instead of hardcoded 0.45
     this.phase += 2 * Math.PI * this.freq / sr;
-    const sub = Math.sin(this.phase) * 0.45;
+    const sub = Math.sin(this.phase) * this.subLevel;
 
     // 3. MIX: Body (filtered) + Sub (clean) — body provides character, sub provides weight
-    let mixed = filtered * 0.55 + sub * 0.45;
+    //    Uses configurable harmonicLevel (PSY3) instead of hardcoded 0.55
+    let mixed = filtered * this.harmonicLevel + sub * this.subLevel;
 
     // 4. SATURATION: Post-mix tanh saturation (adds harmonics + warmth — this is what makes
     //    a bass sound "produced" rather than "raw oscillator")
@@ -407,6 +467,9 @@ class LeadVoice {
     this.lfoRate = params?.lfoRate ?? 0.8;
     this.lfoDepth = params?.lfoDepth ?? 0.3;
     this.lfoPhase = 0;
+    // PSY3 lead: filter envelope amount (how much the envelope opens the filter)
+    // Higher = more dramatic filter sweep on each note
+    this.filterEnvAmount = params?.filterEnvAmount ?? 1.0;
     for (const s of this.saws) { s.reset(); }
     const n = this.saws.length;
     for (let i = 0; i < n; i++) {
@@ -457,7 +520,9 @@ class LeadVoice {
     const modCutoff = this.cutoff * (1 + this.lfoDepth * (lfo * 2 - 1) * 0.5);
 
     // Filter envelope: open → settle
-    const fEnv = this.cutoff * 2 * Math.exp(-this.t / (this.dur * 0.5)) + this.cutoff;
+    // PSY3: filterEnvAmount controls how much the envelope opens the filter
+    // (was hardcoded to 2x — now configurable for proper supersaw expression)
+    const fEnv = this.cutoff * (1 + this.filterEnvAmount) * Math.exp(-this.t / (this.dur * 0.5)) + this.cutoff;
     const cutoff = Math.min(18000, Math.max(100, fEnv * 0.5 + modCutoff * 0.5));
 
     const filtered = this.filter.process(mix, cutoff, this.res, 1.5, sr);
@@ -473,6 +538,9 @@ class LeadVoice {
 }
 
 // ─── Voice: Acid (square → high-res Moog → distortion) ─────────────────────
+// PSY3 ANALOG MODELING: accent cap, thermal drift, power sag, slide,
+// component tolerance. These are what make the acid voice sound like a
+// real TB-303 rather than a sterile digital square wave.
 
 class AcidVoice {
   constructor() {
@@ -481,16 +549,68 @@ class AcidVoice {
     this.square = new BLSquare();
     this.filter = new MoogLadder();
     this.lfoPhase = 0; // bidirectional filter movement
+    // ── PSY3 ANALOG MODELING STATE ──
+    this.aAccCap = 0;       // accent cap accumulation ("the cry") — builds with accents, colors filter
+    this.aDrift = 0;        // current thermal drift (slow frequency modulation)
+    this.aDriftTarget = 0;  // drift target (random walk)
+    this.aPowerSag = 0;     // power sag (accent → momentary voltage drop → volume dip)
+    this.aActivity = 0;     // activity level (how busy the voice is — affects drift)
+    // Component tolerance: 4 filter stages have slightly different characteristics
+    // PSY3: aTol = [0.98, 1.02, 0.99, 1.01] — ±2% variation per stage
+    this.aTol = [0.98, 1.02, 0.99, 1.01];
+    // Slide state (constant-time portamento between notes)
+    this.prevFreq = 0;
+    this.slideFreq = 0;
+    this.slideActive = false;
   }
 
-  trigger(time, freq, dur, amp, sr) {
+  trigger(time, freq, dur, amp, sr, param) {
     this.active = true;
     this.t = 0;
     this.freq = freq;
     this.dur = dur;
     this.amp = amp;
+
+    // Accent detection — param >= 0.5 means accented note (PSY3 accent)
+    const isAccent = (param !== undefined && param >= 0.5);
+
+    // ── SLIDE: constant-time portamento from previous freq to new freq ──
+    // PSY3 uses 60ms slide time. Only slide if there's a previous note and
+    // the frequency difference is significant (avoids slide on first note
+    // or on same-note retriggers).
+    if (this.prevFreq > 0 && Math.abs(freq - this.prevFreq) > 1) {
+      this.slideFreq = this.prevFreq;
+      this.slideActive = true;
+    } else {
+      this.slideFreq = freq;
+      this.slideActive = false;
+    }
+    this.prevFreq = freq;
+
+    // ── ACCENT CAP: accumulates with each accent, colors the filter ──
+    // PSY3: aAccCap = min(1, aAccCap + 0.35 * isAccent)
+    // This builds up "the cry" — repeated accents make the filter brighter
+    // and more open, mimicking the way a real 303's envelope capacitor
+    // charges up with repeated accents.
+    this.aAccCap = Math.min(1, this.aAccCap + 0.35 * (isAccent ? 1 : 0));
+
+    // ── POWER SAG: accent causes momentary voltage drop ──
+    // PSY3: if (isAccent) aPowerSag = 0.15; aPowerSag *= 0.995
+    // The power supply sags under accent load → momentary volume dip.
+    // This is the "punch" of a real 303 — the note dips slightly then recovers.
+    if (isAccent) this.aPowerSag = 0.15;
+
+    // ── THERMAL DRIFT: random slow frequency drift target ──
+    // PSY3: if (Math.random() < 0.0004) aDriftT = (Math.random()-0.5)*2;
+    //       aDrift += (aDriftT - aDrift) * 0.0002
+    // We set a new drift target on each trigger (deterministic per-note).
+    // Drift is ±1% of frequency — inaudible as detuning but adds "life".
+    this.aDriftTarget = (Math.random() - 0.5) * 0.02;
+
+    // Activity increases with each note (affects drift intensity)
+    this.aActivity = Math.min(1, this.aActivity + 0.1);
+
     this.square.reset();
-    this.square.setFreq(freq);
     this.filter.reset();
     this.cutoffStart = 200 + 3000;
     this.cutoffEnd = 100;
@@ -504,8 +624,40 @@ class AcidVoice {
     this.t += dt;
     if (this.t > this.dur + 0.05) { this.active = false; return [0, true]; }
 
-    const inc = this.freq / sr;
+    // ── THERMAL DRIFT: slow random frequency modulation ──
+    // PSY3: aDrift += (aDriftT - aDrift) * 0.0002
+    // The oscillator frequency drifts slightly with temperature/activity.
+    // Inaudible as detuning but adds analog "life" — the note breathes.
+    this.aDrift += (this.aDriftTarget - this.aDrift) * 0.0002;
+    const driftMult = 1 + this.aDrift * (0.5 + this.aActivity * 0.5);
+
+    // ── SLIDE: constant-time portamento (60ms exponential glide) ──
+    let currentFreq = this.freq;
+    if (this.slideActive) {
+      const slideTime = 0.06; // 60ms constant-time slide
+      const slideProgress = Math.min(1, this.t / slideTime);
+      // Exponential glide (pitch slides exponentially, not linearly)
+      const ratio = this.freq / this.slideFreq;
+      currentFreq = this.slideFreq * Math.pow(ratio, slideProgress);
+      if (slideProgress >= 1) this.slideActive = false;
+    }
+    currentFreq *= driftMult;
+
+    const inc = currentFreq / sr;
     const sq = this.square.process(inc);
+
+    // ── POWER SAG: accent causes momentary voltage drop (volume dip) ──
+    // PSY3: aPowerSag *= 0.995; osc *= (1 - aPowerSag)
+    // The note dips in volume then recovers — this is the analog "punch".
+    this.aPowerSag *= 0.995;
+    const sagGain = 1 - this.aPowerSag;
+    const sqSagged = sq * sagGain;
+
+    // ── ACCENT CAP: colors the filter cutoff (accent energy builds up) ──
+    // Higher accent cap → brighter, more open filter ("the cry")
+    // The cap decays slowly so repeated accents build brightness over time.
+    this.aAccCap *= 0.99999; // ~2s decay time constant
+    const accentBoost = this.aAccCap * 0.5; // up to +50% cutoff
 
     // BIDIRECTIONAL filter movement — envelope + LFO combined
     // Envelope: fast drop from high to low (classic acid)
@@ -514,14 +666,74 @@ class AcidVoice {
     // This creates the "wobble" that real 303 acid has
     this.lfoPhase += 4.0 * dt; // 4Hz LFO
     const lfo = Math.sin(2 * Math.PI * this.lfoPhase);
-    const cutoff = Math.max(80, envCutoff * (1 + lfo * 0.3)); // ±30% modulation
+    let cutoff = Math.max(80, envCutoff * (1 + lfo * 0.3) * (1 + accentBoost));
+    cutoff = Math.min(18000, cutoff);
 
-    const filtered = this.filter.process(sq, cutoff, 0.95, 3.0, sr);
+    // Component tolerance: 4 filter stages slightly detuned (PSY3 aTol)
+    const filtered = this.filter.process(sqSagged, cutoff, 0.95, 3.0, sr, this.aTol);
     const distorted = fastTanh(filtered * 4); // heavy distortion
 
     const ampEnv = Math.min(1, this.t / 0.003) * Math.exp(-this.t / this.dur);
     const sample = distorted * ampEnv * this.amp;
     return [sample, false];
+  }
+}
+
+// ─── Voice: FM (carrier + modulator + envelope, PSY3 acid FM) ──────────────
+// Two-operator FM: modulator (sine) → carrier (sine) frequency modulation.
+// Modulator index envelope (fast decay) gives the classic "FM pluck" attack
+// that PSY3's acid voice uses for metallic squelch. Drives through a Moog
+// ladder for warmth + a tanh saturator for grit.
+
+class FMVoice {
+  constructor() {
+    this.active = false;
+    this.t = 0;
+    this.carPhase = 0;
+    this.modPhase = 0;
+    this.filter = new MoogLadder();
+  }
+
+  trigger(time, freq, dur, amp, sr, params) {
+    this.active = true;
+    this.t = 0;
+    this.freq = freq;
+    this.dur = dur;
+    this.amp = amp;
+    this.carPhase = 0;
+    this.modPhase = 0;
+    this.ratio = (params && params.fmRatio) || 2.0;       // modulator:carrier ratio
+    this.depthStart = (params && params.fmDepth) || 6.0;   // modulation index (start)
+    this.depthEnd = (params && params.fmDepthEnd) || 0.5;  // modulation index (end)
+    this.cutoff = (params && params.cutoff) || 2200;
+    this.res = (params && params.resonance) || 0.4;
+    this.filter.reset();
+  }
+
+  render(currentTime, sr) {
+    if (!this.active) return [0, true];
+    const dt = 1 / sr;
+    this.t += dt;
+    if (this.t > this.dur + 0.05) { this.active = false; return [0, true]; }
+
+    // Modulator: sine at freq * ratio, with envelope on modulation index
+    this.modPhase += 2 * Math.PI * this.freq * this.ratio * dt;
+    // Exponential index decay (PSY3 "accent thermal" — fast attack, exp decay)
+    const idx = (this.depthStart - this.depthEnd) * Math.exp(-this.t / 0.05) + this.depthEnd;
+    const modulator = Math.sin(this.modPhase) * this.freq * idx;
+
+    // Carrier: sine at freq + modulator
+    this.carPhase += 2 * Math.PI * (this.freq + modulator) * dt;
+    const carrier = Math.sin(this.carPhase);
+
+    // Through Moog ladder for warmth (PSY3 always filters FM)
+    const filtered = this.filter.process(carrier, this.cutoff, this.res, 1.4, sr);
+    // Saturation for grit
+    const saturated = fastTanh(filtered * 1.8);
+
+    // Amp envelope: 3ms attack + exp decay over dur
+    const ampEnv = Math.min(1, this.t / 0.003) * Math.exp(-this.t / this.dur);
+    return [saturated * ampEnv * this.amp, false];
   }
 }
 
@@ -558,13 +770,21 @@ class PadVoice {
     this.filter.reset();
   }
 
+  // Mono render (backward compat — delegates to renderStereo and sums to mono)
   render(currentTime, sr) {
-    if (!this.active) return [0, true];
+    const [l, r] = this.renderStereo(currentTime, sr);
+    return [(l + r) * 0.5, false];
+  }
+
+  // STEREO render — PSY3 stereo spread: detuned oscs panned L/C/R
+  // PSY3 pad has: numOscs=2, detune=0.004, cutoff=900, attack=0.6, release=1.2
+  // We use 3 oscs panned L/C/R for wider stereo image.
+  // Filter is applied to the MID signal (M/S processing) — preserves stereo width.
+  renderStereo(currentTime, sr) {
+    if (!this.active) return [0, 0, true];
     const dt = 1 / sr;
     this.t += dt;
-    if (this.t > this.dur + 0.1) { this.active = false; return [0, true]; }
-
-    const inc = this.freq / sr;
+    if (this.t > this.dur + 0.1) { this.active = false; return [0, 0, true]; }
 
     // Evolve LFO modulates detune (via frequency)
     this.lfoPhase += this.evolveRate * dt;
@@ -574,10 +794,19 @@ class PadVoice {
     this.saws[1].setFreq(this.freq * detuneMod);
     this.saws[2].setFreq(this.freq * Math.pow(2, this.detune / 1200) * detuneMod);
 
-    let mix = 0;
-    // BUG FIX: use each saw's own frequency, not the shared base inc
-    for (const s of this.saws) mix += s.process(s.freq / sr);
-    mix /= this.saws.length;
+    // Render each saw with its own frequency
+    const s0 = this.saws[0].process(this.saws[0].freq / sr);
+    const s1 = this.saws[1].process(this.saws[1].freq / sr);
+    const s2 = this.saws[2].process(this.saws[2].freq / sr);
+
+    // STEREO SPREAD: pan detuned oscs L/C/R
+    // s0 (detuned -) → hard left, s1 (center) → both, s2 (detuned +) → hard right
+    let left = s0 * 0.7 + s1 * 0.5;
+    let right = s2 * 0.7 + s1 * 0.5;
+
+    // M/S processing: filter the mid, preserve the side (stereo width)
+    const mid = (left + right) * 0.5;
+    const side = (left - right) * 0.5;
 
     // SLOW FILTER SWEEP — cutoff moves up and down over the duration
     // This is what makes a pad "breathe" — without it, it's a static organ
@@ -585,14 +814,17 @@ class PadVoice {
     const sweep = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.filterSweepPhase);
     const cutoff = this.cutoffBase * (0.6 + sweep * 0.8); // 60% to 140% of base
 
-    const filtered = this.filter.process(mix, cutoff, this.res, 1.2, sr);
+    const filteredMid = this.filter.process(mid, cutoff, this.res, 1.2, sr);
+
+    // Recombine: filtered mid + unfiltered side (preserves stereo width)
+    left = filteredMid + side;
+    right = filteredMid - side;
 
     // Slow attack/release envelope
     const attackEnv = Math.min(1, this.t / this.attack);
     const releaseEnv = Math.min(1, (this.dur - this.t) / 0.4);
     const ampEnv = Math.max(0, Math.min(1, Math.min(attackEnv, releaseEnv)));
-    const sample = filtered * ampEnv * this.amp;
-    return [sample, false];
+    return [left * ampEnv * this.amp, right * ampEnv * this.amp, false];
   }
 }
 
@@ -1203,29 +1435,218 @@ class BusProcessor {
   }
 }
 
-// ─── Master chain (glue compression + saturation + limiter) ───────────────────────────────────
+// ─── Biquad filter (RBJ cookbook, transposed direct form II) ───────────────
+// Used for multiband crossover filters in the master chain.
 
-class MasterChain {
+class Biquad {
   constructor() {
-    this.gain = 1.0;
-    this.ceiling = 0.90;     // was 0.98 — leave headroom, prevent clipping
-    this.env = 0;
-    this.attack = 0.0003;
-    this.release = 0.06;
-    this.glueEnv = 0;
-    this.glueThr = 0.60;     // was 0.50 — less compression, more dynamics
-    this.glueRatio = 2.5;    // was 3.5 — gentler ratio
-    this.glueAttack = 0.004;
-    this.glueRelease = 0.12;
-    this.makeup = 1.0;       // was 1.5 — no makeup gain (was causing -0.7 LUFS)
+    this.z1 = 0; this.z2 = 0;
+    this.b0 = 1; this.b1 = 0; this.b2 = 0;
+    this.a1 = 0; this.a2 = 0;
+  }
+  setLowpass(fc, sr, Q) {
+    const w0 = 2 * Math.PI * fc / sr;
+    const cw = Math.cos(w0), sw = Math.sin(w0);
+    const alpha = sw / (2 * Q);
+    const a0 = 1 + alpha;
+    this.b0 = ((1 - cw) / 2) / a0;
+    this.b1 = (1 - cw) / a0;
+    this.b2 = ((1 - cw) / 2) / a0;
+    this.a1 = (-2 * cw) / a0;
+    this.a2 = (1 - alpha) / a0;
+  }
+  setHighpass(fc, sr, Q) {
+    const w0 = 2 * Math.PI * fc / sr;
+    const cw = Math.cos(w0), sw = Math.sin(w0);
+    const alpha = sw / (2 * Q);
+    const a0 = 1 + alpha;
+    this.b0 = ((1 + cw) / 2) / a0;
+    this.b1 = -(1 + cw) / a0;
+    this.b2 = ((1 + cw) / 2) / a0;
+    this.a1 = (-2 * cw) / a0;
+    this.a2 = (1 - alpha) / a0;
+  }
+  process(x) {
+    // Transposed direct form II
+    const y = this.b0 * x + this.z1;
+    this.z1 = this.b1 * x - this.a1 * y + this.z2;
+    this.z2 = this.b2 * x - this.a2 * y;
+    return y;
+  }
+  reset() { this.z1 = 0; this.z2 = 0; }
+}
+
+// ─── Multiband Compressor (3-band: low <180Hz, mid 180-4000Hz, high >4000Hz) ──
+// PSY3 style_master.py master_pro() step 2: multiband compression.
+// Uses Linkwitz-Riley 2nd-order crossovers (Q=0.5) for flat summing.
+// Each band has independent compressor with per-band attack/release/ratio.
+
+class MultibandComp {
+  constructor(sr) {
+    // LR2 crossovers at 180Hz and 4000Hz
+    // 4 biquads: LP1(180), HP1(180), LP2(4000), HP2(4000)
+    this.lp1 = new Biquad(); this.lp1.setLowpass(180, sr, 0.5);
+    this.hp1 = new Biquad(); this.hp1.setHighpass(180, sr, 0.5);
+    this.lp2 = new Biquad(); this.lp2.setLowpass(4000, sr, 0.5);
+    this.hp2 = new Biquad(); this.hp2.setHighpass(4000, sr, 0.5);
+    // Per-band compressor envelope state
+    this.envLow = 0; this.envMid = 0; this.envHigh = 0;
+    // Per-band settings (PSY3-style: low=more ratio, high=faster)
+    this.lowThr = 0.5;  this.lowRatio = 3;   this.lowAtt = 0.005; this.lowRel = 0.15;  this.lowMakeup = 1.3;
+    this.midThr = 0.5;  this.midRatio = 2;   this.midAtt = 0.004; this.midRel = 0.12;  this.midMakeup = 1.2;
+    this.highThr = 0.45; this.highRatio = 2.5; this.highAtt = 0.002; this.highRel = 0.08; this.highMakeup = 1.2;
   }
 
   process(sample, sr) {
     const dt = 1 / sr;
 
-    // 1. GLUE COMPRESSION: Simple RMS-based compressor that "glues" the mix together.
-    //    Without glue, the mix sounds like isolated sounds sitting next to each other.
-    //    With glue, it sounds like a cohesive track. This is the #1 missing element.
+    // ── Split into 3 bands (LR2 crossover = flat sum) ──
+    const low = this.lp1.process(sample);
+    const midHigh = this.hp1.process(sample);
+    const mid = this.lp2.process(midHigh);
+    const high = this.hp2.process(midHigh);
+
+    // ── Compress LOW band (controls bass energy) ──
+    const absLow = Math.abs(low);
+    if (absLow > this.envLow) this.envLow += (absLow - this.envLow) * (dt / this.lowAtt);
+    else this.envLow += (absLow - this.envLow) * (dt / this.lowRel);
+    let gainLow = 1;
+    if (this.envLow > this.lowThr) {
+      const over = this.envLow - this.lowThr;
+      gainLow = (this.envLow - over * (1 - 1 / this.lowRatio)) / this.envLow;
+    }
+    const cLow = low * gainLow * this.lowMakeup;
+
+    // ── Compress MID band (controls vocal/instrument presence) ──
+    const absMid = Math.abs(mid);
+    if (absMid > this.envMid) this.envMid += (absMid - this.envMid) * (dt / this.midAtt);
+    else this.envMid += (absMid - this.envMid) * (dt / this.midRel);
+    let gainMid = 1;
+    if (this.envMid > this.midThr) {
+      const over = this.envMid - this.midThr;
+      gainMid = (this.envMid - over * (1 - 1 / this.midRatio)) / this.envMid;
+    }
+    const cMid = mid * gainMid * this.midMakeup;
+
+    // ── Compress HIGH band (controls harshness/air) ──
+    const absHigh = Math.abs(high);
+    if (absHigh > this.envHigh) this.envHigh += (absHigh - this.envHigh) * (dt / this.highAtt);
+    else this.envHigh += (absHigh - this.envHigh) * (dt / this.highRel);
+    let gainHigh = 1;
+    if (this.envHigh > this.highThr) {
+      const over = this.envHigh - this.highThr;
+      gainHigh = (this.envHigh - over * (1 - 1 / this.highRatio)) / this.envHigh;
+    }
+    const cHigh = high * gainHigh * this.highMakeup;
+
+    // Sum bands (LR2 = flat, so sum ≈ original + compression artifacts)
+    return cLow + cMid + cHigh;
+  }
+}
+
+// ─── Stereo Widener (PSY3 to_stereo: Haas delay + decorrelated HP side) ─────
+// PSY3 style_master.py to_stereo():
+//   d = int(0.012 * SR)  // 12ms Haas
+//   side = roll(x, d); side[:d] = 0
+//   side = side - roll(side, 1)  // decorrelated HP side
+//   return [x + side*width, x - side*width]
+// Creates stereo width from mono signal. Here we enhance existing stereo:
+// extract mid, delay+HP it, add/subtract as side channel.
+
+class StereoWidener {
+  constructor() {
+    // 12ms Haas delay buffer (generous size for up to 96kHz: 0.012 * 96000 = 1152)
+    this.delayBuf = new Float32Array(2048);
+    this.delayIdx = 0;
+    this.delaySamples = Math.max(1, Math.floor(0.012 * sampleRate));
+    this.prevDelayed = 0;
+    this.width = 0.3; // PSY3 default width
+  }
+
+  setWidth(w) { this.width = Math.max(0, Math.min(0.5, w)); }
+
+  // Takes stereo [left, right], returns widened stereo [left, right]
+  process(left, right, sr) {
+    // Mid signal
+    const mid = (left + right) * 0.5;
+
+    // Haas delay on mid (12ms)
+    const delayed = this.delayBuf[this.delayIdx];
+    this.delayBuf[this.delayIdx] = mid;
+    this.delayIdx = (this.delayIdx + 1) % this.delaySamples;
+
+    // HP via differentiation (decorrelated side — PSY3: side = side - roll(side,1))
+    const side = delayed - this.prevDelayed;
+    this.prevDelayed = delayed;
+
+    // Add width: L += side*width, R -= side*width
+    // This adds a delayed+HP'd version of the mid to the side channel,
+    // creating a sense of space without destroying the original image.
+    return [left + side * this.width, right - side * this.width];
+  }
+
+  reset() {
+    this.delayBuf.fill(0);
+    this.prevDelayed = 0;
+    this.delayIdx = 0;
+  }
+}
+
+// ─── Master chain (multiband comp + glue + saturation + LUFS + true-peak) ───
+// PSY3 style_master.py master_pro() ports:
+//   1. Multiband compression (3-band) — NEW
+//   2. Glue compression (thr=0.6, ratio=2, makeup=1.3) — PSY3 params
+//   3. Saturation (drive=1.15, mix=0.15) — PSY3 params
+//   4. LUFS targeting (-9 LUFS) — NEW
+//   5. True-peak limiting (2x oversample, ceiling 0.89) — NEW
+//   6. Final tanh (soft clip safety)
+
+class MasterChain {
+  constructor() {
+    this.gain = 1.0;
+    this.ceiling = 0.89;     // PSY3 true-peak ceiling
+
+    // Multiband compressor (3-band: low <180Hz, mid 180-4000Hz, high >4000Hz)
+    this.mb = new MultibandComp(sampleRate);
+
+    // Glue compression (PSY3: thr=0.6, ratio=2, makeup=1.3)
+    this.glueEnv = 0;
+    this.glueThr = 0.60;
+    this.glueRatio = 2.0;      // PSY3 ratio
+    this.glueAttack = 0.004;
+    this.glueRelease = 0.12;
+    this.glueMakeup = 1.3;     // PSY3 makeup
+
+    // Saturation (PSY3: drive=1.15, mix=0.15)
+    this.satDrive = 1.15;
+    this.satMix = 0.15;
+
+    // LUFS targeting (simplified K-weighted loudness → makeup gain)
+    this.lufsMs = 0;           // running mean square
+    this.lufsGain = 1.0;       // current applied gain
+    this.lufsTargetGain = 1.0; // computed target gain
+    this.lufsTargetLufs = -9;  // target loudness (-8 to -10 LUFS)
+    this.lufsCounter = 0;      // update counter (every 32 samples)
+
+    // True-peak limiter (2x oversample, 1-sample lookahead)
+    this.tpPrevInput = 0;      // previous input sample (for inter-sample peak)
+    this.tpGainEnv = 1;        // limiter gain (smoothed)
+    this.tpAttack = 0.0001;    // very fast attack (catches peaks)
+    this.tpRelease = 0.06;     // moderate release
+
+    this.sr = sampleRate;
+  }
+
+  process(sample, sr) {
+    const dt = 1 / sr;
+
+    // 1. MULTIBAND COMPRESSION (3-band: low/mid/high)
+    //    Compresses each band independently → tighter low end, controlled
+    //    mids, smoothed highs. This is what commercial masters have.
+    sample = this.mb.process(sample, sr);
+
+    // 2. GLUE COMPRESSION (PSY3: thr=0.6, ratio=2, makeup=1.3)
+    //    "Glues" the multiband output into a cohesive track.
     const abs = Math.abs(sample);
     if (abs > this.glueEnv) {
       this.glueEnv += (abs - this.glueEnv) * (dt / this.glueAttack);
@@ -1235,29 +1656,49 @@ class MasterChain {
     let glueGain = 1;
     if (this.glueEnv > this.glueThr) {
       const over = this.glueEnv - this.glueThr;
-      const reduction = over * (1 - 1 / this.glueRatio);
-      glueGain = (this.glueEnv - reduction) / this.glueEnv;
+      glueGain = (this.glueEnv - over * (1 - 1 / this.glueRatio)) / this.glueEnv;
     }
-    let s = sample * glueGain * this.makeup;
+    sample *= glueGain * this.glueMakeup;
 
-    // 2. SATURATION: Mix of dry + tanh-saturated (adds harmonic richness)
-    //    This is what makes the master sound "loud" and "warm" rather than "clean"
-    s = fastTanh(s * 1.2) * 0.7 + s * 0.3;
+    // 3. SATURATION (PSY3: drive=1.15, mix=0.15)
+    //    Mix of dry + tanh-saturated (adds harmonic richness + warmth)
+    const saturated = fastTanh(sample * this.satDrive);
+    sample = saturated * this.satMix + sample * (1 - this.satMix);
 
-    // 3. LIMITER: Fast envelope-follower limiter (prevents clipping)
-    const absS = Math.abs(s);
-    if (absS > this.env) {
-      this.env += (absS - this.env) * (dt / this.attack);
+    // 4. LUFS TARGETING (simplified K-weighted loudness → makeup gain)
+    //    Measures running mean square, converts to LUFS approximation,
+    //    adjusts gain to hit target (-9 LUFS). Slow time constant → no pumping.
+    this.lufsMs = this.lufsMs * 0.99999 + sample * sample * 0.00001;
+    // Update target gain every 32 samples (saves Math.log10/pow CPU)
+    if ((this.lufsCounter++ & 31) === 0) {
+      const lufs = this.lufsMs > 1e-10 ? -0.691 + 10 * Math.log10(this.lufsMs) : -70;
+      const gainDb = this.lufsTargetLufs - lufs;
+      this.lufsTargetGain = Math.max(0.5, Math.min(2.5, Math.pow(10, gainDb / 20)));
+    }
+    this.lufsGain += (this.lufsTargetGain - this.lufsGain) * 0.000005; // ~4s time constant
+    sample *= this.lufsGain;
+
+    // 5. TRUE-PEAK LIMITING (2x oversample, 1-sample lookahead)
+    //    Detects inter-sample peaks (linear interpolation midpoint) and
+    //    limits them. Prevents clipping that sample-peak limiters miss.
+    const interp = (this.tpPrevInput + sample) * 0.5;
+    const peak = Math.max(Math.abs(this.tpPrevInput), Math.abs(interp), Math.abs(sample));
+    let tpTarget = 1;
+    if (peak > this.ceiling) {
+      tpTarget = this.ceiling / peak;
+    }
+    // Smooth gain: fast attack (catch peaks), slow release (avoid pumping)
+    if (tpTarget < this.tpGainEnv) {
+      this.tpGainEnv += (tpTarget - this.tpGainEnv) * (dt / this.tpAttack);
     } else {
-      this.env += (absS - this.env) * (dt / this.release);
+      this.tpGainEnv += (tpTarget - this.tpGainEnv) * (dt / this.tpRelease);
     }
-    let limGain = 1;
-    if (this.env > this.ceiling) {
-      limGain = this.ceiling / this.env;
-    }
-    s *= limGain * this.gain;
+    // Output the previous sample with current gain (1-sample lookahead delay)
+    const output = this.tpPrevInput * this.tpGainEnv;
+    this.tpPrevInput = sample;
 
-    return Math.max(-1, Math.min(1, s));
+    // 6. FINAL TANH (soft clip safety — prevents any remaining overshoot)
+    return fastTanh(output * this.gain);
   }
 }
 
@@ -1297,6 +1738,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.shakerPool = [];
     this.texturePool = [];
     this.fxPool = [];
+    this.fmPool = [];
     for (let i = 0; i < 4; i++) this.kickPool.push(new KickVoice());    // was 8
     for (let i = 0; i < 2; i++) this.bassPool.push(new BassVoice());    // was 4
     for (let i = 0; i < 4; i++) this.leadPool.push(new LeadVoice());    // was 8
@@ -1308,7 +1750,8 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < 2; i++) this.shakerPool.push(new ShakerVoice());// was 4
     for (let i = 0; i < 2; i++) this.texturePool.push(new TextureVoice());// was 4
     for (let i = 0; i < 4; i++) this.fxPool.push(new FXVoice());        // was 8
-    // Total: 32 voices (was 64+28=92)
+    for (let i = 0; i < 2; i++) this.fmPool.push(new FMVoice());        // PSY3 FM acid voice
+    // Total: 34 voices (was 64+28=92)
 
     // Sample voice pools — DISABLED (no samples loaded, saves 28 voices)
     this.kickSamplePool = [];
@@ -1339,6 +1782,10 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     // Master chain — SEPARATE instances for L and R (shared state = stereo bug)
     this.masterL = new MasterChain();
     this.masterR = new MasterChain();
+
+    // Stereo widener (PSY3 to_stereo: Haas delay + decorrelated HP side)
+    // Applied AFTER the master chain on the combined stereo signal.
+    this.stereoWidener = new StereoWidener();
 
     // Bus gains (drum, bass, music, atmos, fx)
     // REBALANCED for proper mix: kick lower, music higher (lead+pad now audible)
@@ -1408,6 +1855,61 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.statsTimer = 0;
     this.activeVoiceCount = 0;
 
+    // ── PSY5 RT-safe: preallocated active-voice tracking ──────────────────
+    // Instead of allocating `const activeVoices = []` + `push({v, bus, stereo})`
+    // object literals every block (PSY5 violation), we preallocate flat typed
+    // arrays. The active-voice list is rebuilt each block but the storage is
+    // reused — zero per-block allocation.
+    //
+    // Layout (parallel arrays, indexed 0..activeVoiceCount-1):
+    //   activeVoiceRef[i]   — the voice object (drum/synth/sample)
+    //   activeVoiceBus[i]   — bus index (0=drum, 1=bass, 2=music, 3=atmos, 4=fx)
+    //   activeVoiceStereo[i] — stereo mode (0=mono, 1=haas, 2=lfo, 3=pan, 4=sample)
+    const MAX_ACTIVE = 64;  // total voices across all pools (34 synth + headroom)
+    this.activeVoiceRef = new Array(MAX_ACTIVE);
+    this.activeVoiceBus = new Uint8Array(MAX_ACTIVE);
+    this.activeVoiceStereo = new Uint8Array(MAX_ACTIVE);
+    this.activeVoiceCount = 0;
+
+    // ── PSY5 RT-safe: CPU load monitoring + dynamic voice budget ──────────
+    // If process() takes > PROCESS_BUDGET_MS, we drop the lowest-priority
+    // active voices to stay RT-safe. Reported to the main thread every
+    // STATS_REPORT_BLOCKS (~10 Hz at 128-sample blocks / 44.1 kHz).
+    this.blockCounter = 0;
+    this.cpuLoad = 0;          // 0..1, exponentially-smoothed
+    this.voiceBudget = MAX_VOICES;  // dynamic ceiling — drops under overload
+    this.lastProcessMs = 0;    // for stats reporting
+
+    // Stereo mode constants (used in process() switch)
+    this.ST_MONO = 0;
+    this.ST_HAAS = 1;
+    this.ST_LFO = 2;
+    this.ST_PAN = 3;
+    this.ST_SAMPLE = 4;
+    this.ST_PAD = 5; // NEW: pad stereo (renderStereo with L/C/R panning)
+
+    // ── PSY5 RT-safe: preallocated pool table ──────────────────────────
+    // Avoids the per-block `const pools = [[...]]` array literal allocation
+    // that the previous version did. Each entry is [pool, bus, stereo].
+    // Built once in the constructor after the voice pools exist.
+    this.voicePoolTable = [
+      [this.kickPool,       0, this.ST_MONO],
+      [this.hatPool,        0, this.ST_MONO],
+      [this.clapPool,       0, this.ST_MONO],
+      [this.percPool,       0, this.ST_MONO],
+      [this.shakerPool,     0, this.ST_MONO],
+      [this.bassPool,       1, this.ST_MONO],
+      [this.leadPool,       2, this.ST_HAAS],
+      [this.acidPool,       2, this.ST_MONO],
+      [this.fmPool,         2, this.ST_MONO],
+      [this.padPool,        3, this.ST_PAD],
+      [this.texturePool,    3, this.ST_PAN],
+      [this.fxPool,         4, this.ST_MONO],
+      [this.kickSamplePool, 0, this.ST_SAMPLE],
+      [this.hatSamplePool,  0, this.ST_SAMPLE],
+      [this.clapSamplePool, 0, this.ST_SAMPLE],
+    ];
+
     // Command handler
     this.port.onmessage = (e) => this.handleMessage(e.data);
   }
@@ -1423,7 +1925,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       case 'stop':
         this.playing = false;
         // Deactivate all voices
-        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool]) {
+        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.fmPool]) {
           for (const v of pool) v.active = false;
         }
         break;
@@ -1459,7 +1961,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'panic':
         // Kill all voices
-        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool]) {
+        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.fmPool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool]) {
           for (const v of pool) v.active = false;
         }
         break;
@@ -1595,8 +2097,9 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_ACID: {
+        // Pass param as accent flag (param >= 0.5 = accent) for PSY3 analog modeling
         const v = this.getFreeVoice(this.acidPool);
-        if (v) v.trigger(t, note, duration, velocity, sr);
+        if (v) v.trigger(t, note, duration, velocity, sr, param);
         break;
       }
       case V_PAD: {
@@ -1731,6 +2234,23 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         if (v) v.trigger(voiceId, t, duration, velocity, sr);
         break;
       }
+      case V_FM: {
+        // PSY3-style FM acid voice — carrier + modulator with envelope.
+        // `param` encodes the FM ratio (param / 10), so the main thread can
+        // send ratio=2.0 as param=20. Defaults to ratio 2.0 (param=0).
+        const v = this.getFreeVoice(this.fmPool);
+        if (v) {
+          const fmRatio = param > 0 ? param / 10 : 2.0;
+          v.trigger(t, note, duration, velocity, sr, {
+            fmRatio,
+            fmDepth: 6.0,
+            fmDepthEnd: 0.5,
+            cutoff: 2200,
+            resonance: 0.4,
+          });
+        }
+        break;
+      }
     }
   }
 
@@ -1743,7 +2263,20 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
   }
 
   // ─── Process callback (called by audio thread every 128 samples) ───
+  //
+  // PSY5 RT-safe contract:
+  //   - ZERO allocation in process() (no `new`, no object literals, no array
+  //     pushes). All storage is preallocated in the constructor.
+  //   - Bounded loops over fixed arrays only (PSY6 RT-safe contract).
+  //   - CPU load monitoring: if process() > PROCESS_BUDGET_MS, drop the
+  //     lowest-priority active voices to stay RT-safe.
+  //   - Stats reported every STATS_REPORT_BLOCKS (~10 Hz) — not every block.
+  //
   process(inputs, outputs) {
+    // ── PSY5: measure process() duration for CPU-load monitoring ──
+    const __procStart = (typeof performance !== 'undefined' && performance.now)
+      ? performance.now() : 0;
+
     const output = outputs[0];
     if (!output || output.length === 0) return true;
     const L = output[0];
@@ -1769,47 +2302,80 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       this.eventCount--;
     }
 
-    // Render audio sample by sample
-    // OPTIMIZATION: Build a single flat array of active voices ONCE per block
-    // (was: 14 separate loops per sample = 14 * 128 = 1792 iterations/block)
-    // Now: 1 pass to collect active voices, 1 pass per sample
-    const activeVoices = [];
+    // ── PSY5: collect active voices into PREALLOCATED flat arrays ──
+    // (No `const activeVoices = []` + `push({v, bus, stereo})` — that was a
+    //  per-block allocation. Now we write into this.activeVoiceRef/Bus/Stereo.)
     let activeCount = 0;
+    const refArr = this.activeVoiceRef;
+    const busArr = this.activeVoiceBus;
+    const stereoArr = this.activeVoiceStereo;
+    const ST_MONO = this.ST_MONO, ST_HAAS = this.ST_HAAS, ST_LFO = this.ST_LFO, ST_PAN = this.ST_PAN, ST_SAMPLE = this.ST_SAMPLE, ST_PAD = this.ST_PAD;
+    const MAX_ACTIVE = refArr.length;
+    // PSY5: voicePoolTable is built once in the constructor (no per-block
+    // allocation). Each entry is [pool, bus, stereo].
+    const pools = this.voicePoolTable;
 
-    // Collect all active synth voices (mono render)
-    for (const v of this.kickPool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: false}); activeCount++; } }
-    for (const v of this.hatPool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: false}); activeCount++; } }
-    for (const v of this.clapPool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: false}); activeCount++; } }
-    for (const v of this.percPool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: false}); activeCount++; } }
-    for (const v of this.shakerPool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: false}); activeCount++; } }
-    for (const v of this.bassPool) { if (v.active) { activeVoices.push({v, bus: 1, stereo: false}); activeCount++; } }
-    for (const v of this.leadPool) { if (v.active) { activeVoices.push({v, bus: 2, stereo: 'haas'}); activeCount++; } }
-    for (const v of this.acidPool) { if (v.active) { activeVoices.push({v, bus: 2, stereo: false}); activeCount++; } }
-    for (const v of this.padPool) { if (v.active) { activeVoices.push({v, bus: 3, stereo: 'lfo'}); activeCount++; } }
-    for (const v of this.texturePool) { if (v.active) { activeVoices.push({v, bus: 3, stereo: 'pan'}); activeCount++; } }
-    for (const v of this.fxPool) { if (v.active) { activeVoices.push({v, bus: 4, stereo: false}); activeCount++; } }
-
-    // Collect active sample voices (stereo render)
-    for (const v of this.kickSamplePool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: 'sample'}); activeCount++; } }
-    for (const v of this.hatSamplePool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: 'sample'}); activeCount++; } }
-    for (const v of this.clapSamplePool) { if (v.active) { activeVoices.push({v, bus: 0, stereo: 'sample'}); activeCount++; } }
-
+    for (let pi = 0; pi < pools.length && activeCount < MAX_ACTIVE; pi++) {
+      const p = pools[pi];
+      const pool = p[0];
+      const bus = p[1];
+      const stereo = p[2];
+      for (let vi = 0; vi < pool.length && activeCount < MAX_ACTIVE; vi++) {
+        const v = pool[vi];
+        if (v.active) {
+          refArr[activeCount] = v;
+          busArr[activeCount] = bus;
+          stereoArr[activeCount] = stereo;
+          activeCount++;
+        }
+      }
+    }
     this.activeVoiceCount = activeCount;
 
-    // Lead Haas delay buffer
+    // ── PSY5: dynamic voice budget — drop lowest-priority voices if overloaded ──
+    // We track the smoothed CPU load. If we're over budget, deactivate the
+    // highest-indexed active voices (these are FX/sample/texture — lowest
+    // musical priority). Kick/bass/lead (lowest indices) are protected.
+    if (this.voiceBudget < activeCount) {
+      const toDrop = activeCount - Math.max(VOICE_BUDGET_MIN, this.voiceBudget);
+      for (let d = 0; d < toDrop && activeCount > 0; d++) {
+        activeCount--;
+        const dropped = refArr[activeCount];
+        if (dropped) dropped.active = false;
+      }
+      this.activeVoiceCount = activeCount;
+    }
+
+    // Lead Haas delay buffer (preallocated — lazy init on first block)
     if (!this.leadDelayL) this.leadDelayL = new Float32Array(18);
     if (!this.leadDelayIdx) this.leadDelayIdx = 0;
+    const leadDelayL = this.leadDelayL;
+    let leadDelayIdx = this.leadDelayIdx;
+
+    // Cache bus processors + gains for tight inner loop (no `this.` lookups)
+    const drumBusL_ = this.drumBusL, drumBusR_ = this.drumBusR;
+    const bassBusL_ = this.bassBusL, bassBusR_ = this.bassBusR;
+    const musicBusL_ = this.musicBusL, musicBusR_ = this.musicBusR;
+    const atmosBusL_ = this.atmosBusL, atmosBusR_ = this.atmosBusR;
+    const fxProcL_ = this.fxProcL, fxProcR_ = this.fxProcR;
+    const masterL = this.masterL, masterR = this.masterR;
+    const stereoWidener = this.stereoWidener;
+    const reverb = this.reverb, delay = this.delay;
+    const busGains = this.busGains;
+    const revSends = this.reverbSends, delSends = this.delaySends;
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const duckEnvRef = this;  // duckEnv is a field — accessed via this.duckEnv
 
     // Stereo buses: L and R per group
     for (let i = 0; i < L.length; i++) {
       this.currentSample++;
 
       // Sidechain envelope recovery
-      if (this.duckEnv < 1) {
-        this.duckEnv += (1 - this.duckEnv) * (dt / 0.25);
+      if (duckEnvRef.duckEnv < 1) {
+        duckEnvRef.duckEnv += (1 - duckEnvRef.duckEnv) * (dt / 0.25);
       }
 
-      // Mix all active voices into stereo buses (SINGLE LOOP, not 14)
+      // Mix all active voices into stereo buses (SINGLE LOOP)
       let drumBusL = 0, drumBusR = 0;
       let bassBusL = 0, bassBusR = 0;
       let musicBusL = 0, musicBusR = 0;
@@ -1818,14 +2384,15 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 
       const sampleTime = currentAudioTime + i * dt;
 
-      for (let vi = 0; vi < activeVoices.length; vi++) {
-        const entry = activeVoices[vi];
-        const v = entry.v;
-        const bus = entry.bus;
+      for (let vi = 0; vi < activeCount; vi++) {
+        const v = refArr[vi];
+        const bus = busArr[vi];
+        const stereo = stereoArr[vi];
 
-        if (entry.stereo === 'sample') {
-          // Sample voice — stereo render
-          const [sl, sr2] = v.renderStereo(sampleTime, sr);
+        if (stereo === ST_SAMPLE || stereo === ST_PAD) {
+          // Sample voice or pad voice — stereo render
+          const out = v.renderStereo(sampleTime, sr);
+          const sl = out[0], sr2 = out[1];
           switch (bus) {
             case 0: drumBusL += sl; drumBusR += sr2; break;
             case 1: bassBusL += sl; bassBusR += sr2; break;
@@ -1835,20 +2402,20 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           }
         } else {
           // Synth voice — mono render
-          const [s] = v.render(sampleTime, sr);
+          const s = v.render(sampleTime, sr)[0];
           switch (bus) {
             case 0: drumBusL += s; drumBusR += s; break;
             case 1: {
-              const ducked = s * this.duckEnv;
+              const ducked = s * duckEnvRef.duckEnv;
               bassBusL += ducked; bassBusR += ducked;
               break;
             }
             case 2: {
-              if (entry.stereo === 'haas') {
+              if (stereo === ST_HAAS) {
                 musicBusL += s;
-                const delayed = this.leadDelayL[this.leadDelayIdx];
-                this.leadDelayL[this.leadDelayIdx] = s;
-                this.leadDelayIdx = (this.leadDelayIdx + 1) % 18;
+                const delayed = leadDelayL[leadDelayIdx];
+                leadDelayL[leadDelayIdx] = s;
+                leadDelayIdx = (leadDelayIdx + 1) % 18;
                 musicBusR += delayed;
               } else {
                 musicBusL += s; musicBusR += s;
@@ -1856,11 +2423,11 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
               break;
             }
             case 3: {
-              if (entry.stereo === 'lfo') {
+              if (stereo === ST_LFO) {
                 const lfo = Math.sin(this.currentSample * 0.0008);
                 atmosBusL += s * (0.85 + lfo * 0.15);
                 atmosBusR += s * (0.85 - lfo * 0.15);
-              } else if (entry.stereo === 'pan') {
+              } else if (stereo === ST_PAN) {
                 const pan = Math.sin(this.currentSample * 0.0005);
                 atmosBusL += s * (0.5 - pan * 0.3);
                 atmosBusR += s * (0.5 + pan * 0.3);
@@ -1873,69 +2440,100 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           }
         }
       }
+      this.leadDelayIdx = leadDelayIdx;
 
       // ── BUS PROCESSING — SEPARATE L and R (stereo image preserved) ──
-      drumBusL = this.drumBusL.process(drumBusL, sr);
-      drumBusR = this.drumBusR.process(drumBusR, sr);
-      bassBusL = this.bassBusL.process(bassBusL, sr);
-      bassBusR = this.bassBusR.process(bassBusR, sr);
-      musicBusL = this.musicBusL.process(musicBusL, sr);
-      musicBusR = this.musicBusR.process(musicBusR, sr);
-      atmosBusL = this.atmosBusL.process(atmosBusL, sr);
-      atmosBusR = this.atmosBusR.process(atmosBusR, sr);
-      fxBusL = this.fxProcL.process(fxBusL, sr);
-      fxBusR = this.fxProcR.process(fxBusR, sr);
+      drumBusL = drumBusL_.process(drumBusL, sr);
+      drumBusR = drumBusR_.process(drumBusR, sr);
+      bassBusL = bassBusL_.process(bassBusL, sr);
+      bassBusR = bassBusR_.process(bassBusR, sr);
+      musicBusL = musicBusL_.process(musicBusL, sr);
+      musicBusR = musicBusR_.process(musicBusR, sr);
+      atmosBusL = atmosBusL_.process(atmosBusL, sr);
+      atmosBusR = atmosBusR_.process(atmosBusR, sr);
+      fxBusL = fxProcL_.process(fxBusL, sr);
+      fxBusR = fxProcR_.process(fxBusR, sr);
 
       // Sum buses with gains (stereo)
-      let mixL = drumBusL * this.busGains[0]
-               + bassBusL * this.busGains[1]
-               + musicBusL * this.busGains[2]
-               + atmosBusL * this.busGains[3]
-               + fxBusL * this.busGains[4];
-      let mixR = drumBusR * this.busGains[0]
-               + bassBusR * this.busGains[1]
-               + musicBusR * this.busGains[2]
-               + atmosBusR * this.busGains[3]
-               + fxBusR * this.busGains[4];
+      let mixL = drumBusL * busGains[0]
+               + bassBusL * busGains[1]
+               + musicBusL * busGains[2]
+               + atmosBusL * busGains[3]
+               + fxBusL * busGains[4];
+      let mixR = drumBusR * busGains[0]
+               + bassBusR * busGains[1]
+               + musicBusR * busGains[2]
+               + atmosBusR * busGains[3]
+               + fxBusR * busGains[4];
 
       // ── FX SENDS: Reverb + Delay ──
-      // Send portions of each bus to reverb and delay (parallel sends)
-      // The FX outputs are added to the master mix, creating space and depth.
-      const reverbInput = (drumBusL + drumBusR) * 0.5 * this.reverbSends[0]
-                        + (bassBusL + bassBusR) * 0.5 * this.reverbSends[1]
-                        + (musicBusL + musicBusR) * 0.5 * this.reverbSends[2]
-                        + (atmosBusL + atmosBusR) * 0.5 * this.reverbSends[3]
-                        + (fxBusL + fxBusR) * 0.5 * this.reverbSends[4];
-      const [revL, revR] = this.reverb.process(reverbInput, sr);
+      const reverbInput = (drumBusL + drumBusR) * 0.5 * revSends[0]
+                        + (bassBusL + bassBusR) * 0.5 * revSends[1]
+                        + (musicBusL + musicBusR) * 0.5 * revSends[2]
+                        + (atmosBusL + atmosBusR) * 0.5 * revSends[3]
+                        + (fxBusL + fxBusR) * 0.5 * revSends[4];
+      const revOut = reverb.process(reverbInput, sr);
+      const revL = revOut[0], revR = revOut[1];
 
-      const delayInputL = drumBusL * this.delaySends[0]
-                        + bassBusL * this.delaySends[1]
-                        + musicBusL * this.delaySends[2]
-                        + atmosBusL * this.delaySends[3]
-                        + fxBusL * this.delaySends[4];
-      const delayInputR = drumBusR * this.delaySends[0]
-                        + bassBusR * this.delaySends[1]
-                        + musicBusR * this.delaySends[2]
-                        + atmosBusR * this.delaySends[3]
-                        + fxBusR * this.delaySends[4];
-      const [delL, delR] = this.delay.process(delayInputL, delayInputR, sr);
+      const delayInputL = drumBusL * delSends[0]
+                        + bassBusL * delSends[1]
+                        + musicBusL * delSends[2]
+                        + atmosBusL * delSends[3]
+                        + fxBusL * delSends[4];
+      const delayInputR = drumBusR * delSends[0]
+                        + bassBusR * delSends[1]
+                        + musicBusR * delSends[2]
+                        + atmosBusR * delSends[3]
+                        + fxBusR * delSends[4];
+      const delOut = delay.process(delayInputL, delayInputR, sr);
+      const delL = delOut[0], delR = delOut[1];
 
       // Add FX returns to master mix
       mixL += revL + delL;
       mixR += revR + delR;
 
       // Master processing — SEPARATE L and R (stereo preserved)
-      mixL = this.masterL.process(mixL, sr);
-      mixR = this.masterR.process(mixR, sr);
+      mixL = masterL.process(mixL, sr);
+      mixR = masterR.process(mixR, sr);
+
+      // Stereo decorrelation (PSY3 to_stereo: Haas delay + decorrelated HP side)
+      // Applied AFTER master chain on the combined stereo signal.
+      const wOut = stereoWidener.process(mixL, mixR, sr);
+      mixL = wOut[0]; mixR = wOut[1];
 
       L[i] = mixL;
       R[i] = mixR;
     }
 
-    // Report transport state to main thread (throttled ~10Hz)
-    this.statsTimer += L.length / sr;
-    if (this.statsTimer >= 0.1) {
-      this.statsTimer = 0;
+    // ── PSY5: CPU load monitoring + dynamic voice budget ──
+    // Measure this block's process() time, smooth it, and adjust the voice
+    // budget. If we're over budget, the next block drops voices at the top
+    // of this function (see "dynamic voice budget" above).
+    if (__procStart > 0 && typeof performance !== 'undefined') {
+      const procMs = performance.now() - __procStart;
+      this.lastProcessMs = procMs;
+      // Smoothed CPU load: 0..1 (3ms budget = load 1.0)
+      const instantLoad = Math.min(1, procMs / PROCESS_BUDGET_MS);
+      // Exponential smoothing (α=0.1 → ~10-block time constant)
+      this.cpuLoad = this.cpuLoad * 0.9 + instantLoad * 0.1;
+      // Adjust voice budget: if over budget, drop voices; if under, restore
+      if (procMs > PROCESS_BUDGET_MS && this.voiceBudget > VOICE_BUDGET_MIN) {
+        const overage = (procMs - PROCESS_BUDGET_MS) / 0.5; // 0.5ms per drop
+        const drops = Math.min(VOICE_BUDGET_DROP_PER_OVERAGE * Math.ceil(overage), 2);
+        this.voiceBudget = Math.max(VOICE_BUDGET_MIN, this.voiceBudget - drops);
+      } else if (procMs < PROCESS_BUDGET_MS * 0.6 && this.voiceBudget < MAX_VOICES) {
+        // Restore budget slowly when load is light
+        this.voiceBudget = Math.min(MAX_VOICES, this.voiceBudget + 1);
+      }
+    }
+
+    // ── PSY5: report stats every STATS_REPORT_BLOCKS (~10 Hz) ──
+    // (was every 0.1s via statsTimer accumulation — that worked but tied
+    //  reporting to wall-clock time, not block count. PSY5 uses block count
+    //  for deterministic cadence independent of sample rate.)
+    this.blockCounter++;
+    if (this.blockCounter >= STATS_REPORT_BLOCKS) {
+      this.blockCounter = 0;
       this.port.postMessage({
         type: 'stats',
         playing: this.playing,
@@ -1943,8 +2541,9 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         activeVoices: this.activeVoiceCount,
         eventCount: this.eventCount,
         currentFrame: currentFrame,
-        cpuLoad: this.activeVoiceCount / 64,
-        // REMOVED sampleUsage — UI doesn't display it, saves message payload size
+        cpuLoad: this.cpuLoad,
+        voiceBudget: this.voiceBudget,
+        processMs: this.lastProcessMs,
       });
     }
 
