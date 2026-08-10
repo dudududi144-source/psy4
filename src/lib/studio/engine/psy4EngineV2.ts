@@ -1383,14 +1383,39 @@ export class Psy4EngineV2 {
     this.scheduleNextTick();
   }
 
-  stop(): void {
+  /**
+   * Stop playback + FULLY dispose the audio backend (Task F1-FIX-LOOP).
+   *
+   * ASYNC — awaits `this.audio.dispose?.()` (which closes the AudioWorkletNode
+   * port + disconnects the analyser) AND `this.ctx.close()` (the engine owns
+   * the AudioContext). This is critical for the singleton guard in page.tsx:
+   * startEngine awaits `oldEngine.stop()` before creating a new engine, so the
+   * old AudioContext is fully closed (and its worklet node + analyser fully
+   * disconnected) BEFORE the new engine's `_doInit()` creates a new ctx.
+   *
+   * Without this, the old AudioContext stays open (browsers cap the number of
+   * simultaneous contexts — usually 6) and the old AudioWorkletNode keeps
+   * running its process() callback, burning CPU. This was ROAST-8 root cause
+   * #1 + #4: 6 backends created from one START click.
+   *
+   * After stop() resolves, the engine instance is fully disposed — `this.ctx`,
+   * `this.audio`, `this.workletEngine`, and `this.analyser` are all null. The
+   * engine cannot be restarted; create a new Psy4EngineV2 instance instead.
+   * (page.tsx always creates a fresh instance on START.)
+   */
+  async stop(): Promise<void> {
     this.playing = false;
     // Task V2a: stop the Worker-based scheduler.
     this.scheduler.stop();
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-    // ── Task F1-F3: stop the audio backend (ONE path) ──
+    // ── Task F1-F3 + F1-FIX-LOOP: dispose the audio backend (ONE path) ──
+    // stop() sends the 'stop' message to the worklet (deactivates voices);
+    // dispose() disconnects the AudioWorkletNode + analyser and closes the
+    // MessagePort. Both are awaited so the new engine (created by startEngine
+    // after this resolves) doesn't race with the old backend's teardown.
     if (this.audio) {
-      this.audio.stop();
+      try { this.audio.stop(); } catch { /* backend already stopped */ }
+      try { await this.audio.dispose?.(); } catch { /* dispose best-effort */ }
     }
     // ── Task D1: reset PhaseSync own-beat state ──
     this.phaseSync.reset();
@@ -1410,6 +1435,26 @@ export class Psy4EngineV2 {
     // (the whole point of adaptive learning). We only persist the latest
     // state so the next session picks up where this one left off.
     try { this.vocabularyLearner.save(); } catch { /* private browsing */ }
+    // ── F1-FIX-LOOP: close the AudioContext (the engine owns it). ──
+    // WorkletEngine.dispose() may have already closed it — that's fine,
+    // ctx.close() on an already-closed ctx throws InvalidStateError which
+    // we swallow. LegacyAudioGraph.dispose() does NOT close the ctx (it only
+    // disconnects nodes), so this is the only place the ctx gets closed for
+    // the legacy path. Closing the ctx is what frees the OS-level audio
+    // resources + the worklet's audio thread.
+    if (this.ctx) {
+      try { await this.ctx.close(); } catch { /* already closed */ }
+      this.ctx = null;
+    }
+    // Null out all backend references so any stray post-stop calls surface
+    // as runtime errors instead of silently operating on a disposed backend.
+    this.analyser = null;
+    this.audio = null;
+    this.workletEngine = null;
+    this.audioReady = false;
+    this.audioLoading = false;
+    this.initPromise = null;
+    this.isWorkletBackend = false;
   }
 
   private get bpm(): number {

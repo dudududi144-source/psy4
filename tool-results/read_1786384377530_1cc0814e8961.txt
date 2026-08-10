@@ -1,0 +1,2002 @@
+     1→'use client';
+     2→
+     3→import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+     4→import { Button } from '@/components/ui/button';
+     5→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+     6→import { Badge } from '@/components/ui/badge';
+     7→import {
+     8→  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+     9→} from '@/components/ui/table';
+    10→import {
+    11→  Radio, Play, Square, Activity, Wifi, WifiOff, Volume2, VolumeX,
+    12→  Zap, Brain, CheckCircle2, Music, Gauge, Waves, Sparkles, TrendingUp,
+    13→  TrendingDown, Target, ArrowUp, ArrowDown, Check, Shuffle,
+    14→  Cpu, SlidersHorizontal, Layers, Piano, ListMusic, AudioWaveform,
+    15→  Fingerprint, ScanSearch, Wand2, Disc3, Link2, Link2Off,
+    16→  KeyRound, Drum, Flame, LayoutGrid,
+    17→  Database, RotateCcw, Minus, Loader2,
+    18→} from 'lucide-react';
+    19→import { Toaster } from '@/components/ui/sonner';
+    20→import { toast } from 'sonner';
+    21→import type { RadioStream } from '@/lib/studio/engine/reference/radioStreams';
+    22→import type { ReferenceProfile } from '@/lib/studio/engine/reference/referenceListener';
+    23→
+    24→// ─── Types ──────────────────────────────────────────────────────────────────
+    25→
+    26→interface RefMetrics {
+    27→  bpm: number; lufs: number; subEnergy: number; lowEnergy: number;
+    28→  midEnergy: number; highEnergy: number; airEnergy: number;
+    29→  spectralCentroid: number; transientDensity: number; kickDecayMs: number;
+    30→  bassDecayMs: number; stereoWidth: number; energy: number;
+    31→  detectedKey?: { root: number; rootName: string; scale: string; confidence: number };
+    32→  detectedStyle?: { style: string; confidence: number };
+    33→  // ── Task P2 (musical intelligence): per-instrument density + regularity ──
+    34→  // Populated by the V2 listener from the kick-band + high-band transient
+    35→  // grids. Optional — when present, the MusicAnalyzer uses them directly to
+    36→  // pick the kick/hat gate pattern; when undefined, it estimates from total
+    37→  // transient density + highEnergy.
+    38→  kickDensity?: number;
+    39→  hatDensity?: number;
+    40→  rhythmicRegularity?: number;
+    41→}
+    42→
+    43→type RefProfile = ReferenceProfile;
+    44→
+    45→/** Shape produced by engine.getStyleClassification() (Track C). Optional. */
+    46→interface StyleMatch {
+    47→  style: string;
+    48→  confidence: number;          // 0..1
+    49→  reasons?: string[];          // human-readable justification strings
+    50→}
+    51→
+    52→/** Static world metadata mirrored from worlds.ts (so the dropdown is decoupled). */
+    53→const WORLD_OPTIONS: { id: string; name: string; description: string }[] = [
+    54→  { id: 'progressive-psy', name: 'Progressive Psy', description: 'Slow-building, melodic, hypnotic · 124-134 BPM' },
+    55→  { id: 'dark-psy',        name: 'Dark Psy',        description: 'Fast, intense, foreboding · 145-156 BPM' },
+    56→  { id: 'morning-psy',     name: 'Morning Psy',     description: 'Uplifting, bright, euphoric · 138-146 BPM' },
+    57→  { id: 'goa',             name: 'Goa',             description: 'Acidic, melodic, mystical · 134-146 BPM' },
+    58→  { id: 'forest',          name: 'Forest',          description: 'Organic, deep, mysterious · 144-156 BPM' },
+    59→  { id: 'deep-psy',        name: 'Deep Psy',        description: 'Minimal, hypnotic, spacious · 128-140 BPM' },
+    60→  { id: 'hypnotic',        name: 'Hypnotic',        description: 'Repetitive, trance-inducing · 126-136 BPM' },
+    61→  { id: 'cosmic',          name: 'Cosmic',          description: 'Spacious, ethereal, drifting · 130-144 BPM' },
+    62→  { id: 'organic-psy',     name: 'Organic Psy',     description: 'Warm, natural, flowing · 132-144 BPM' },
+    63→  { id: 'acid-psy',        name: 'Acid Psy',        description: '303-style acid lines, squelchy · 136-148 BPM' },
+    64→];
+    65→const WORLD_NAME: Record<string, string> = Object.fromEntries(WORLD_OPTIONS.map(w => [w.id, w.name]));
+    66→
+    67→type Mode = 'listen' | 'analyze' | 'train';
+    68→
+    69→const SPECTRAL_BANDS = [
+    70→  { key: 'subEnergy',  label: 'SUB',  range: '20-60 Hz' },
+    71→  { key: 'lowEnergy',  label: 'LOW',  range: '60-250 Hz' },
+    72→  { key: 'midEnergy',  label: 'MID',  range: '250-2k Hz' },
+    73→  { key: 'highEnergy', label: 'HIGH', range: '2k-6k Hz' },
+    74→  { key: 'airEnergy',  label: 'AIR',  range: '6k-20k Hz' },
+    75→] as const;
+    76→
+    77→// ─── Main Page ──────────────────────────────────────────────────────────────
+    78→
+    79→export default function PSY4Page() {
+    80→  const [streams, setStreams] = useState<RadioStream[]>([]);
+    81→  const [streamId, setStreamId] = useState('');
+    82→  const [mode, setMode] = useState<Mode>('listen');
+    83→  const [worldId, setWorldId] = useState('dark-psy');
+    84→
+    85→  // Reference
+    86→  const [refConnected, setRefConnected] = useState(false);
+    87→  const [refMetrics, setRefMetrics] = useState<RefMetrics | null>(null);
+    88→  const [refProfile, setRefProfile] = useState<RefProfile | null>(null);
+    89→  const [refPlaying, setRefPlaying] = useState(false);
+    90→
+    91→  // Engine
+    92→  const [engineOn, setEngineOn] = useState(false);
+    93→  const [engineLoading, setEngineLoading] = useState(false);
+    94→  const [selfMetrics, setSelfMetrics] = useState<RefMetrics | null>(null);
+    95→  const [engineState, setEngineState] = useState<{ bpm: number; key: string; section: string; style: string }>({
+    96→    bpm: 145, key: 'phrygian', section: 'INTRO', style: 'dark-psy',
+    97→  });
+    98→
+    99→  // Learning
+   100→  const [learning, setLearning] = useState(false);
+   101→  const [learnState, setLearnState] = useState<any>(null);
+   102→
+   103→  // Reference pursuit status — snapshot of (target, actual) pairs from the engine
+   104→  const [pursuit, setPursuit] = useState<any>(null);
+   105→
+   106→  // Style detection (Track D / 19) — top style matches with confidence + reasons
+   107→  const [styleMatches, setStyleMatches] = useState<StyleMatch[]>([]);
+   108→  // The world the engine is currently using (mirrors engine.currentWorld).
+   109→  const [activeWorld, setActiveWorld] = useState<string>('dark-psy');
+   110→  // When true, the world selector shows an "AUTO" badge (engine has auto-switched).
+   111→  const [autoSwitchActive, setAutoSwitchActive] = useState(false);
+   112→
+   113→  // ── Integration UI state (Task I1-UI) ──
+   114→  // Synthesis character (FM / supersaw / wavetable / classic) per track.
+   115→  const [synthChar, setSynthChar] = useState<any>(null);
+   116→  // Per-track synth-mode overrides (always works — backed by getSynthModeOverrides).
+   117→  const [synthOverrides, setSynthOverrides] = useState<Record<number, string>>({});
+   118→  // Effects matrix state (per-track EQ/comp/sat + send levels).
+   119→  const [effectsState, setEffectsState] = useState<any>(null);
+   120→  // Current chord + progression (from HarmonyEngine, Task H1).
+   121→  const [currentChord, setCurrentChord] = useState<any>(null);
+   122→  const [progressionInfo, setProgressionInfo] = useState<{ chords: any[]; idx: number } | null>(null);
+   123→  // Deep pursuit dashboard (harmonic / transient / stereo field metrics).
+   124→  const [pursuitDashboard, setPursuitDashboard] = useState<any>(null);
+   125→  // Melody engine state (phrase position, tension, call-response).
+   126→  const [melodyState, setMelodyState] = useState<any>(null);
+   127→  // ── Task A1: deep A/B analysis ──
+   128→  // Detected effects + reference timbre + current timbre + comparison +
+   129→  // unique elements + synthesis plan. Pulled via engine.getDeepAnalysis().
+   130→  const [deepAnalysis, setDeepAnalysis] = useState<any>(null);
+   131→
+   132→  // ── Task P2 (musical intelligence): MusicAnalyzer snapshot ──
+   133→  // Detected section (intro/groove/build/drop/break/outro) + bar + energy,
+   134→  // melodic contour (rising/falling/arch/wave), rhythmic pattern (kick/hat
+   135→  // gate strings + syncopation), recent musical events (dropHit, riserStart,
+   136→  // breakStart, chordChange, keyChange), and harmonic rhythm (bars per
+   137→  // chord change). Pulled via engine.getMusicalAnalysis() on every analyzer
+   138→  // tick. Optional chaining throughout so the UI gracefully no-ops before
+   139→  // the first liveTrack() call returns a snapshot.
+   140→  const [musicalAnalysis, setMusicalAnalysis] = useState<any>(null);
+   141→
+   142→  // ── Task D1: DJ-style phase sync ──
+   143→  // Live sync status (synced indicator, phase offset, BPM match, downbeat
+   144→  // alignment, beat grid). Pulled via engine.getSyncStatus() on every
+   145→  // analyzer tick. The toggle state is mirrored locally so the UI shows
+   146→  // the user's last choice even before the engine is started.
+   147→  const [syncStatus, setSyncStatus] = useState<any>(null);
+   148→  const [syncEnabled, setSyncEnabled] = useState<boolean>(false);
+   149→
+   150→  // ── Task P4: phrase-level sync state ──
+   151→  // Live phrase-sync state (ref bar-in-phrase, our bar-in-phrase, estimated
+   152→  // phrase length, alignment %, realignment counter). Pulled via
+   153→  // engine.getPhraseSyncState() on every analyzer tick. The
+   154→  // `phraseSyncFlash` state briefly lights up when the realignment counter
+   155→  // increases (a realignment just happened) — driven by a useEffect that
+   156→  // watches the counter + auto-clears after 600ms.
+   157→  const [phraseSyncState, setPhraseSyncState] = useState<any>(null);
+   158→  const [phraseSyncFlash, setPhraseSyncFlash] = useState<boolean>(false);
+   159→  const prevRealignmentsRef = useRef<number>(0);
+   160→
+   161→  // ── Task T1 (active learning): cross-session memory dashboard ──
+   162→  // Pulled via engine.getLearningStatus() on every analyzer tick. Shows
+   163→  // total patterns learned, average + current match score, improvement
+   164→  // trend (learning / stable / drifting / idle), top 3 patterns, and the
+   165→  // rolling match-score history (last 20 samples) for the trend graph.
+   166→  // The "Reset learning" button clears the memory + localStorage.
+   167→  const [learningStatus, setLearningStatus] = useState<any>(null);
+   168→
+   169→  // ── Task P5 (adaptive learning): musical vocabulary dashboard ──
+   170→  // Pulled via engine.getVocabularyStats() on every analyzer tick. Shows
+   171→  // the count of learned melodic motifs + rhythmic patterns the engine
+   172→  // has extracted from the radio, the top 3 of each (visualized as note
+   173→  // sequences + gate strings), the average effectiveness score (how well
+   174→  // the quotes are working), and a "Learning..." indicator when the
+   175→  // learner has absorbed new material in the last 30s. The vocabulary
+   176→  // persists across sessions via localStorage (psy4_vocabulary_v1).
+   177→  const [vocabularyStats, setVocabularyStats] = useState<any>(null);
+   178→
+   179→  // Refs
+   180→  const listenerRef = useRef<any>(null);
+   181→  const analyzerRef = useRef<any>(null);
+   182→  const engineRef = useRef<any>(null);
+   183→  const trainerRef = useRef<any>(null);
+   184→  const refAudioRef = useRef<HTMLAudioElement | null>(null);
+   185→
+   186→  // Previous deltas per pursuit dimension, used to render convergence arrows.
+   187→  const prevDeltaRef = useRef<Record<string, number>>({});
+   188→  // Tracks the last world we toasted about, to avoid spamming on every tick.
+   189→  const lastSwitchToastRef = useRef<string>('');
+   190→
+   191→  // Load streams
+   192→  useEffect(() => {
+   193→    fetch('/api/streams.json').then(r => r.json()).then(d => {
+   194→      if (d.ok) {
+   195→        setStreams(d.streams);
+   196→        const https = d.streams.find((s: RadioStream) => s.url.startsWith('https'));
+   197→        setStreamId(https?.id || d.streams[0]?.id);
+   198→      }
+   199→    }).catch(() => {});
+   200→  }, []);
+   201→
+   202→  // ─── Reference ────────────────────────────────────────────────────────────
+   203→
+   204→  const connectRef = useCallback(async () => {
+   205→    const stream = streams.find(s => s.id === streamId);
+   206→    if (!stream) return;
+   207→    try {
+   208→      const { ReferenceListenerV2 } = await import('@/lib/studio/engine/reference/referenceListenerV2');
+   209→      if (listenerRef.current) await listenerRef.current.disconnect();
+   210→      const l = new ReferenceListenerV2();
+   211→      l.onMetrics(m => {
+   212→        setRefMetrics(m);
+   213→        if (engineRef.current?.applyMusicalUnderstanding && m.bpm > 0) {
+   214→          engineRef.current.applyMusicalUnderstanding({
+   215→            key: { root: m.detectedKey?.root ?? 1, scale: m.detectedKey?.scale ?? 'phrygian', confidence: m.detectedKey?.confidence ?? 0 },
+   216→            bpm: m.bpm, bpmConfidence: m.bpmConfidence, style: m.detectedStyle?.style ?? 'dark-psy', styleConfidence: m.detectedStyle?.confidence ?? 0,
+   217→          });
+   218→        }
+   219→        if (engineRef.current?.liveTrack) {
+   220→          engineRef.current.liveTrack({
+   221→            lufs: m.lufs,
+   222→            kickDecayMs: m.kickDecayMs,
+   223→            spectralCentroid: m.spectralCentroid,
+   224→            subEnergy: m.subEnergy,
+   225→            lowEnergy: m.lowEnergy,
+   226→            midEnergy: m.midEnergy,
+   227→            highEnergy: m.highEnergy,
+   228→            airEnergy: m.airEnergy,
+   229→            transientDensity: m.transientDensity,
+   230→            bassDecayMs: m.bassDecayMs,
+   231→            stereoWidth: m.stereoWidth,
+   232→            energy: m.energy,
+   233→            bpm: m.bpm,
+   234→            detectedKey: m.detectedKey,
+   235→            // ── Task T1: pass the new harmonic-content / transient-shape /
+   236→            //    stereo-field metrics so the engine can drive the synthesis
+   237→            //    detector + effects pursuit. All optional — undefined is
+   238→            //    gracefully handled by the engine.
+   239→            spectralCrest: m.spectralCrest,
+   240→            hnr: m.hnr,
+   241→            inharmonicity: m.inharmonicity,
+   242→            spectralSlopeDb: m.spectralSlopeDb,
+   243→            transientSharpness: m.transientSharpness,
+   244→            transientDecayMs: m.transientDecayMs,
+   245→            stereoBalance: m.stereoBalance,
+   246→            stereoCorrelation: m.stereoCorrelation,
+   247→            msRatio: m.msRatio,
+   248→            // ── Task D1: pass the reference listener's phaseInfo (built
+   249→            //    from kick-band transients) so the engine's PhaseSync can
+   250→            //    phase-lock our beat grid to the radio's. Optional — when
+   251→            //    undefined (no kick transients, low confidence, or V1
+   252→            //    listener), the PhaseSync gracefully no-ops.
+   253→            phaseInfo: m.phaseInfo,
+   254→            // ── Task D1 (upgrade): pass the reference listener's grooveInfo
+   255→            //    (swing + push/pull feel) so the DJController can match the
+   256→            //    radio's groove. Optional — when undefined, the groove
+   257→            //    dimension gracefully no-ops.
+   258→            grooveInfo: m.grooveInfo,
+   259→            // ── Task P2 (musical intelligence): pass per-instrument density +
+   260→            //    rhythmic regularity so the MusicAnalyzer can pick an accurate
+   261→            //    kick/hat gate pattern. Optional — when undefined, the analyzer
+   262→            //    estimates from total transient density + highEnergy.
+   263→            kickDensity: m.kickDensity,
+   264→            hatDensity: m.hatDensity,
+   265→            rhythmicRegularity: m.rhythmicRegularity,
+   266→          });
+   267→        }
+   268→      });
+   269→      l.onProfile(p => setRefProfile(p));
+   270→      l.onError(e => toast.error(`Stream error: ${e.message}`));
+   271→      const ok = await l.connect(stream);
+   272→      if (ok) { l.start(); listenerRef.current = l; setRefConnected(true); toast.success(`Connected: ${stream.name}`); }
+   273→    } catch (e) { toast.error(`Connection failed: ${e instanceof Error ? e.message : String(e)}`); }
+   274→  }, [streamId, streams]);
+   275→
+   276→  const disconnectRef = useCallback(async () => {
+   277→    if (listenerRef.current) { await listenerRef.current.disconnect(); listenerRef.current = null; }
+   278→    setRefConnected(false); setRefMetrics(null); setRefProfile(null);
+   279→  }, []);
+   280→
+   281→  const toggleRefAudio = useCallback(async () => {
+   282→    if (refPlaying && refAudioRef.current) { refAudioRef.current.pause(); setRefPlaying(false); return; }
+   283→    const stream = streams.find(s => s.id === streamId);
+   284→    if (!stream) return;
+   285→    try {
+   286→      if (!refAudioRef.current) { refAudioRef.current = new Audio(); refAudioRef.current.crossOrigin = 'anonymous'; refAudioRef.current.volume = 0.6; }
+   287→      refAudioRef.current.src = stream.url.startsWith('https') ? stream.url : `/api/reference/proxy?stream=${stream.id}&continuous=1`;
+   288→      await refAudioRef.current.play();
+   289→      setRefPlaying(true);
+   290→    } catch (e) { toast.error(`Playback failed: ${e instanceof Error ? e.message : String(e)}`); }
+   291→  }, [refPlaying, streamId, streams]);
+   292→
+   293→  // ─── Engine ───────────────────────────────────────────────────────────────
+   294→
+   295→  const startEngine = useCallback(async () => {
+   296→    try {
+   297→      // Task F1-F3: show "Loading engine..." while the audio backend initializes.
+   298→      // init() is now async (awaits the worklet module load, ~50-200ms). The
+   299→      // START button is disabled + shows a spinner until the promise resolves.
+   300→      setEngineLoading(true);
+   301→      const { Psy4EngineV2 } = await import('@/lib/studio/engine/psy4EngineV2');
+   302→      if (engineRef.current) engineRef.current.stop();
+   303→      const engine = new Psy4EngineV2();
+   304→      engine.onSectionChange = (s: string) => setEngineState(prev => ({ ...prev, section: s }));
+   305→      // Track D: subscribe to world changes so the dropdown + STYLE card follow.
+   306→      engine.onWorldChange = (newWorldId: string, reason?: string) => {
+   307→        setActiveWorld(newWorldId);
+   308→        setWorldId(newWorldId);
+   309→        setAutoSwitchActive(true);
+   310→        setEngineState(prev => ({ ...prev, style: newWorldId }));
+   311→        if (newWorldId !== lastSwitchToastRef.current) {
+   312→          lastSwitchToastRef.current = newWorldId;
+   313→          const label = WORLD_NAME[newWorldId] ?? newWorldId;
+   314→          toast.success(`Auto-switched to ${label}`, {
+   315→            description: reason ?? 'Style classifier matched a new world',
+   316→          });
+   317→        }
+   318→      };
+   319→      // Task F1-F3: await start() — it awaits init() internally, ensuring the
+   320→      // worklet (or legacy graph) is fully loaded before scheduling notes.
+   321→      // This fixes ROAST-7 bug #2: "If user clicks START before worklet loads,
+   322→      // triggerDrum/triggerSynth silently return. No audio, no feedback."
+   323→      await engine.start(worldId);
+   324→      engineRef.current = engine;
+   325→      setEngineOn(true);
+   326→      setEngineLoading(false);
+   327→      setActiveWorld(engine.getCurrentWorldId?.() ?? worldId);
+   328→      setAutoSwitchActive(false);
+   329→      setEngineState({ bpm: (engine as any)._bpm || 145, key: engine.getMusicalKey()?.scale || 'phrygian', section: 'INTRO', style: worldId });
+   330→
+   331→      // Self-analyzer
+   332→      const analyser = engine.getAnalyser();
+   333→      if (analyser) {
+   334→        const { SelfAnalyzer } = await import('@/lib/studio/engine/reference/selfAnalyzer');
+   335→        const a = new SelfAnalyzer();
+   336→        a.attach(analyser, engine.ctx!);
+   337→        a.setEngineBpm((engine as any)._bpm || 145);
+   338→        a.onMetrics(m => {
+   339→          setSelfMetrics(m);
+   340→          a.setEngineBpm((engineRef.current as any)?._bpm || 145);
+   341→          if (engineRef.current?.selfTrack) engineRef.current.selfTrack({
+   342→            lufs: m.lufs,
+   343→            energy: m.energy,
+   344→            spectralCentroid: m.spectralCentroid,
+   345→            transientDensity: m.transientDensity,
+   346→            subEnergy: m.subEnergy,
+   347→            highEnergy: m.highEnergy,
+   348→          });
+   349→          // Refresh pursuit status snapshot for UI display
+   350→          if (engineRef.current?.getPursuitStatus) {
+   351→            try { setPursuit(engineRef.current.getPursuitStatus()); } catch {}
+   352→          }
+   353→          // ── Integration UI pulls (Task I1-UI) ──
+   354→          // All optional-chained: T1 may or may not have wired the getters yet.
+   355→          try {
+   356→            if (engineRef.current?.getSynthesisCharacter) {
+   357→              setSynthChar(engineRef.current.getSynthesisCharacter());
+   358→            }
+   359→            if (engineRef.current?.getSynthModeOverrides) {
+   360→              setSynthOverrides(engineRef.current.getSynthModeOverrides() || {});
+   361→            }
+   362→            if (engineRef.current?.getEffectsState) {
+   363→              setEffectsState(engineRef.current.getEffectsState());
+   364→            }
+   365→            if (engineRef.current?.getCurrentChord) {
+   366→              setCurrentChord(engineRef.current.getCurrentChord());
+   367→            }
+   368→            if (engineRef.current?.getCurrentProgression) {
+   369→              const chords = engineRef.current.getCurrentProgression();
+   370→              const idx = engineRef.current.getChordIdx?.() ?? 0;
+   371→              if (Array.isArray(chords)) setProgressionInfo({ chords, idx });
+   372→            }
+   373→            if (engineRef.current?.getPursuitDashboard) {
+   374→              setPursuitDashboard(engineRef.current.getPursuitDashboard());
+   375→            }
+   376→            if (engineRef.current?.getMelodyState) {
+   377→              setMelodyState(engineRef.current.getMelodyState());
+   378→            }
+   379→            // ── Task A1: pull deep A/B analysis ──
+   380→            if (engineRef.current?.getDeepAnalysis) {
+   381→              try { setDeepAnalysis(engineRef.current.getDeepAnalysis()); } catch {}
+   382→            }
+   383→            // ── Task P2 (musical intelligence): pull MusicAnalyzer snapshot ──
+   384→            // Optional chaining so we degrade gracefully if P2 isn't merged.
+   385→            if (engineRef.current?.getMusicalAnalysis) {
+   386→              try { setMusicalAnalysis(engineRef.current.getMusicalAnalysis()); } catch {}
+   387→            }
+   388→            // ── Task D1: pull DJ sync status + mirror toggle state ──
+   389→            // Optional chaining so we degrade gracefully if D1 isn't merged.
+   390→            if (engineRef.current?.getSyncStatus) {
+   391→              try { setSyncStatus(engineRef.current.getSyncStatus()); } catch {}
+   392→            }
+   393→            if (engineRef.current?.isSyncEnabled) {
+   394→              try { setSyncEnabled(engineRef.current.isSyncEnabled()); } catch {}
+   395→            }
+   396→            // ── Task P4: pull phrase-sync state ──
+   397→            // Optional chaining so we degrade gracefully if P4 isn't merged.
+   398→            if (engineRef.current?.getPhraseSyncState) {
+   399→              try { setPhraseSyncState(engineRef.current.getPhraseSyncState()); } catch {}
+   400→            }
+   401→            // ── Task T1 (active learning): pull learning status ──
+   402→            // Optional chaining so we degrade gracefully if T1 isn't merged.
+   403→            if (engineRef.current?.getLearningStatus) {
+   404→              try { setLearningStatus(engineRef.current.getLearningStatus()); } catch {}
+   405→            }
+   406→            // ── Task P5 (adaptive learning): pull vocabulary stats ──
+   407→            // Optional chaining so we degrade gracefully if P5 isn't merged.
+   408→            if (engineRef.current?.getVocabularyStats) {
+   409→              try { setVocabularyStats(engineRef.current.getVocabularyStats()); } catch {}
+   410→            }
+   411→          } catch {}
+   412→          // Track D: pull style classification + active world on every tick.
+   413→          // Optional chaining so we degrade gracefully if Track C isn't merged yet.
+   414→          if (engineRef.current?.getStyleClassification) {
+   415→            try {
+   416→              const matches = engineRef.current.getStyleClassification() as StyleMatch[];
+   417→              if (Array.isArray(matches)) setStyleMatches(matches);
+   418→            } catch {}
+   419→          }
+   420→          if (engineRef.current?.getCurrentWorldId) {
+   421→            try {
+   422→              const cw = engineRef.current.getCurrentWorldId() as string;
+   423→              if (cw && cw !== activeWorldRef.current) {
+   424→                activeWorldRef.current = cw;
+   425→                setActiveWorld(cw);
+   426→              }
+   427→            } catch {}
+   428→          }
+   429→          const refM = refMetrics;
+   430→          setEngineState(prev => ({
+   431→            ...prev,
+   432→            bpm: (engineRef.current as any)?._bpm || prev.bpm,
+   433→            key: engineRef.current?.getMusicalKey()?.scale || prev.key,
+   434→            style: refM?.detectedStyle?.style || prev.style,
+   435→          }));
+   436→        });
+   437→        a.start();
+   438→        analyzerRef.current = a;
+   439→      }
+   440→      toast.success('Engine V2 started');
+   441→    } catch (e) {
+   442→      setEngineLoading(false);
+   443→      toast.error(`Engine error: ${e instanceof Error ? e.message : String(e)}`);
+   444→    }
+   445→  }, [worldId]);
+   446→
+   447→  // Mirror activeWorld in a ref so the polling closure sees the latest value
+   448→  // without re-binding on every change (which would re-create the analyzer).
+   449→  const activeWorldRef = useRef('dark-psy');
+   450→  useEffect(() => { activeWorldRef.current = activeWorld; }, [activeWorld]);
+   451→
+   452→  const stopEngine = useCallback(() => {
+   453→    if (analyzerRef.current) { analyzerRef.current.detach(); analyzerRef.current = null; }
+   454→    if (engineRef.current) { engineRef.current.stop(); engineRef.current = null; }
+   455→    if (trainerRef.current) { trainerRef.current.stop(); trainerRef.current = null; }
+   456→    setEngineOn(false); setSelfMetrics(null); setLearning(false);
+   457→    setStyleMatches([]); setPursuit(null);
+   458→    // Reset Integration UI state (Task I1-UI) so stale data doesn't persist.
+   459→    setSynthChar(null); setSynthOverrides({}); setEffectsState(null);
+   460→    setCurrentChord(null); setProgressionInfo(null);
+   461→    setPursuitDashboard(null); setMelodyState(null);
+   462→    setDeepAnalysis(null);
+   463→    // ── Task P2: clear the musical analysis snapshot ──
+   464→    setMusicalAnalysis(null);
+   465→    // ── Task D1: clear sync status (the engine is gone) ──
+   466→    // We DON'T reset syncEnabled — the user's toggle choice persists across
+   467→    // restarts. When the engine is restarted, the new engine's PhaseSync
+   468→    // will pick up the toggle state on the first toggle click.
+   469→    setSyncStatus(null);
+   470→    // ── Task P4: clear phrase-sync state (the engine is gone) ──
+   471→    setPhraseSyncState(null);
+   472→    setPhraseSyncFlash(false);
+   473→    prevRealignmentsRef.current = 0;
+   474→    // ── Task T1 (active learning): keep the learning status visible ──
+   475→    // We DON'T clear learningStatus — the engine saved its memory to
+   476→    // localStorage on stop(), and the next engine instance will reload it.
+   477→    // Clearing here would briefly show "no patterns" before the new engine
+   478→    // loads them, which is misleading. The status refreshes on the next
+   479→    // analyzer tick after restart.
+   480→    // ── Task P5 (adaptive learning): same pattern — keep the vocabulary
+   481→    // stats visible across stop/start (the vocabulary persists to
+   482→    // localStorage and reloads on the next engine instance). ──
+   483→    prevDeltaRef.current = {};
+   484→    lastSwitchToastRef.current = '';
+   485→  }, []);
+   486→
+   487→  // ─── Learning ─────────────────────────────────────────────────────────────
+   488→
+   489→  const startLearning = useCallback(async () => {
+   490→    if (!refProfile) { toast.error('Connect reference first'); return; }
+   491→    try {
+   492→      const { ContinuousTrainer } = await import('@/lib/studio/engine/reference/continuousTrainer');
+   493→      if (trainerRef.current) trainerRef.current.stop();
+   494→      const t = new ContinuousTrainer({ worldId, seed: 1234, renderDuration: 8, iterationIntervalMs: 12000, maxChangesPerIteration: 2, autoApplyToEngine: true, saveToLocalStorage: true });
+   495→      if (engineRef.current) t.setEngine({ setWorld: (p: any) => engineRef.current?.setWorld?.(p) });
+   496→      t.onIteration(() => setLearnState({ ...t.getState() }));
+   497→      t.onStateChange(s => setLearnState({ ...s }));
+   498→      t.start(refProfile);
+   499→      trainerRef.current = t;
+   500→      setLearning(true);
+   501→      toast.success('Learning started');
+   502→    } catch (e) { toast.error(`Learning error: ${e instanceof Error ? e.message : String(e)}`); }
+   503→  }, [refProfile, worldId]);
+   504→
+   505→  const stopLearning = useCallback(() => {
+   506→    if (trainerRef.current) { trainerRef.current.stop(); trainerRef.current = null; }
+   507→    setLearning(false);
+   508→  }, []);
+   509→
+   510→  // When the user manually selects a world, turn off AUTO mode and apply it live.
+   511→  const onUserSelectWorld = useCallback((newWorld: string) => {
+   512→    setWorldId(newWorld);
+   513→    setActiveWorld(newWorld);
+   514→    setAutoSwitchActive(false);
+   515→    lastSwitchToastRef.current = newWorld;
+   516→    if (engineRef.current) {
+   517→      try { engineRef.current.start?.(newWorld); } catch {}
+   518→    }
+   519→  }, []);
+   520→
+   521→  // ── Task D1: toggle DJ-style phase sync on/off ──
+   522→  // Forwards the user's choice to the engine's PhaseSync. The engine's
+   523→  // getSyncStatus() will reflect the new state on the next analyzer tick.
+   524→  // Safe to call before the engine is started — we just store the choice
+   525→  // locally; when the engine starts, the user can toggle again.
+   526→  //
+   527→  // Task D1 (upgrade): this now toggles MASTER SYNC (the full DJ controller
+   528→  // — BPM + phase + key + groove + energy + beat-grid). When on, ALL
+   529→  // dimensions are engaged; when off, the engine runs free but the sync
+   530→  // state is still computed + exposed for UI display.
+   531→  const toggleSync = useCallback(() => {
+   532→    const next = !syncEnabled;
+   533→    setSyncEnabled(next);
+   534→    if (engineRef.current?.setSyncEnabled) {
+   535→      try { engineRef.current.setSyncEnabled(next); } catch {}
+   536→    }
+   537→    if (next) {
+   538→      toast.success('MASTER SYNC enabled', {
+   539→        description: 'Full DJ controller: BPM + phase + key (Camelot) + groove (swing/push-pull) + energy + beat-grid + phrase.',
+   540→      });
+   541→    } else {
+   542→      toast.info('MASTER SYNC disabled', {
+   543→        description: 'Engine reverts to free-running (still tracks the radio BPM via applyMusicalUnderstanding).',
+   544→      });
+   545→    }
+   546→  }, [syncEnabled]);
+   547→
+   548→  // ── Task P4: watch the phrase-sync realignment counter + flash the UI ──
+   549→  // When the counter increases (a realignment just happened), set the flash
+   550→  // state to true and auto-clear it after 600ms. The flash adds a brief
+   551→  // ring + bg pulse to the PHRASE SYNC card so the user can SEE that a
+   552→  // realignment fired (otherwise the only feedback is the counter going up
+   553→  // by 1, which is easy to miss).
+   554→  useEffect(() => {
+   555→    const count = phraseSyncState?.realignments ?? 0;
+   556→    if (count > prevRealignmentsRef.current) {
+   557→      setPhraseSyncFlash(true);
+   558→      const t = setTimeout(() => setPhraseSyncFlash(false), 600);
+   559→      prevRealignmentsRef.current = count;
+   560→      return () => clearTimeout(t);
+   561→    }
+   562→    prevRealignmentsRef.current = count;
+   563→  }, [phraseSyncState?.realignments]);
+   564→
+   565→  // ─── Cleanup ──────────────────────────────────────────────────────────────
+   566→
+   567→  useEffect(() => () => {
+   568→    if (listenerRef.current) listenerRef.current.disconnect();
+   569→    if (analyzerRef.current) analyzerRef.current.detach();
+   570→    if (engineRef.current) engineRef.current.stop();
+   571→    if (trainerRef.current) trainerRef.current.stop();
+   572→  }, []);
+   573→
+   574→  // ── Integration UI helpers (Task I1-UI) ──
+   575→
+   576→  const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+   577→  const midiToName = (m: number) => {
+   578→    if (typeof m !== 'number' || !Number.isFinite(m)) return '—';
+   579→    const n = Math.round(m);
+   580→    return `${NOTE_NAMES[((n % 12) + 12) % 12]}${Math.floor(n / 12) - 1}`;
+   581→  };
+   582→  const CHORD_TYPE_LABEL: Record<string, string> = {
+   583→    triad: '', maj7: 'maj7', min7: 'min7', dom7: '7', min9: 'min9',
+   584→    maj9: 'maj9', sus2: 'sus2', sus4: 'sus4', dim: 'dim', aug: 'aug', min7b5: 'm7b5',
+   585→  };
+   586→  const INVERSION_LABEL = ['root', '1st inv', '2nd inv', '3rd inv'];
+   587→
+   588→  // Per-track defaults — mirrors applyWorldPresets() in psy4EngineV2.
+   589→  // Used as a fallback when getSynthesisCharacter() is unavailable so the user
+   590→  // still sees which synthesis mode each track is running.
+   591→  const TRACK_NAMES = ['KICK', 'SNARE', 'HATS', 'PERC', 'BASS', 'LEAD', 'PAD', 'ARP'];
+   592→  const TRACK_DEFAULT_MODE: Record<number, string> = {
+   593→    0: 'classic', 1: 'classic', 2: 'classic', 3: 'classic',
+   594→    4: 'classic', 5: 'fm', 6: 'supersaw', 7: 'wavetable',
+   595→  };
+   596→
+   597→  const modeColor = (mode?: string): string => {
+   598→    switch (mode) {
+   599→      case 'fm': return 'bg-rose-600 text-white border-rose-500';
+   600→      case 'supersaw': return 'bg-amber-600 text-white border-amber-500';
+   601→      case 'wavetable': return 'bg-emerald-600 text-white border-emerald-500';
+   602→      case 'classic': return 'bg-slate-600 text-white border-slate-500';
+   603→      default: return 'bg-slate-700 text-slate-200 border-slate-600';
+   604→    }
+   605→  };
+   606→  const modeTextColor = (mode?: string): string => {
+   607→    switch (mode) {
+   608→      case 'fm': return 'text-rose-400';
+   609→      case 'supersaw': return 'text-amber-400';
+   610→      case 'wavetable': return 'text-emerald-400';
+   611→      default: return 'text-slate-300';
+   612→    }
+   613→  };
+   614→
+   615→  // Resolve the effective synthesis mode for a track: override first, then
+   616→  // synthChar (if T1 has populated it), then the static default.
+   617→  const effectiveMode = (trackIdx: number): string => {
+   618→    if (synthOverrides?.[trackIdx]) return synthOverrides[trackIdx];
+   619→    if (synthChar?.tracks?.[trackIdx]?.mode) return synthChar.tracks[trackIdx].mode;
+   620→    if (synthChar?.mode && synthChar?.primaryTrack === trackIdx) return synthChar.mode;
+   621→    return TRACK_DEFAULT_MODE[trackIdx] ?? 'classic';
+   622→  };
+   623→
+   624→  // Color for a target-vs-actual delta (used by deep pursuit rows).
+   625→  const deltaColor = (delta: number | undefined, tol: number): string => {
+   626→    if (delta === undefined || !Number.isFinite(delta)) return 'text-slate-500';
+   627→    const a = Math.abs(delta);
+   628→    if (a <= tol) return 'text-emerald-400';
+   629→    if (a <= tol * 3) return 'text-amber-400';
+   630→    return 'text-rose-400';
+   631→  };
+   632→
+   633→  // Mini horizontal bar for 0..1 normalized values.
+   634→  const MiniBar = ({ value, max = 1, color = 'bg-cyan-500' }: { value: number; max?: number; color?: string }) => {
+   635→    const v = typeof value === 'number' && Number.isFinite(value) ? value : 0;
+   636→    const pct = Math.max(0, Math.min(100, (v / Math.max(0.0001, max)) * 100));
+   637→    return (
+   638→      <div className="h-1.5 w-full bg-slate-800 rounded overflow-hidden" aria-hidden>
+   639→        <div className={`h-full ${color} rounded transition-all duration-200`} style={{ width: `${pct.toFixed(1)}%` }} />
+   640→      </div>
+   641→    );
+   642→  };
+   643→
+   644→  // ─── Render helpers ───────────────────────────────────────────────────────
+   645→
+   646→  const refVal = (v?: number) => v !== undefined ? v.toFixed(2) : '—';
+   647→  const refDb = (v?: number) => v !== undefined ? `${v.toFixed(1)} dB` : '—';
+   648→  const refHz = (v?: number) => v !== undefined ? `${v.toFixed(0)} Hz` : '—';
+   649→  const refMs = (v?: number) => v !== undefined ? `${v.toFixed(0)} ms` : '—';
+   650→
+   651→  // ─── Derived style match data ─────────────────────────────────────────────
+   652→
+   653→  const topMatch = styleMatches.length > 0 ? styleMatches[0] : null;
+   654→  const top3 = styleMatches.slice(0, 3);
+   655→  const topConfidence = topMatch?.confidence ?? 0;
+   656→
+   657→  const confidenceBadgeClass = (c: number) =>
+   658→    c > 0.7 ? 'bg-emerald-600 text-white border-emerald-500'
+   659→    : c > 0.4 ? 'bg-amber-600 text-white border-amber-500'
+   660→    : 'bg-rose-700 text-white border-rose-500';
+   661→  const confidenceTextColor = (c: number) =>
+   662→    c > 0.7 ? 'text-emerald-400'
+   663→    : c > 0.4 ? 'text-amber-400'
+   664→    : 'text-rose-400';
+   665→
+   666→  // ─── Convergence computation for the pursuit card ─────────────────────────
+   667→
+   668→  type PursuitRow = {
+   669→    label: string; target: number; actual: number; unit: string;
+   670→    tol: number; delta: number; absDelta: number; arrow: 'up' | 'down' | 'ok' | 'idle';
+   671→    color: string;
+   672→  };
+   673→
+   674→  const pursuitRows: PursuitRow[] = useMemo(() => {
+   675→    if (!pursuit) return [];
+   676→    const defs: [string, number, number, string, number][] = [
+   677→      ['Kick decay',    pursuit.kickDecay?.target ?? 0,        pursuit.kickDecay?.actual ?? 0,        's',  0.005],
+   678→      ['Centroid',      pursuit.centroid?.target ?? 0,         pursuit.centroid?.actual ?? 0,         'Hz', 50],
+   679→      ['Transient',     pursuit.transientDensity?.target ?? 0, pursuit.transientDensity?.actual ?? 0, '/s', 0.5],
+   680→      ['BPM',           pursuit.bpm?.target ?? 0,              pursuit.bpm?.actual ?? 0,              '',   0.5],
+   681→    ];
+   682→    return defs.map(([label, target, actual, unit, tol]) => {
+   683→      const delta = actual - target;
+   684→      const absDelta = Math.abs(delta);
+   685→      const isActive = target > 0;
+   686→      const prev = prevDeltaRef.current[label];
+   687→      prevDeltaRef.current[label] = absDelta;
+   688→      let arrow: PursuitRow['arrow'] = 'idle';
+   689→      if (isActive) {
+   690→        if (absDelta <= tol) arrow = 'ok';
+   691→        else if (prev === undefined) arrow = 'idle';
+   692→        else if (absDelta < prev - 1e-6) arrow = 'up';
+   693→        else if (absDelta > prev + 1e-6) arrow = 'down';
+   694→        else arrow = 'idle';
+   695→      }
+   696→      const color = !isActive ? 'text-slate-500'
+   697→        : absDelta <= tol ? 'text-emerald-400'
+   698→        : absDelta <= tol * 3 ? 'text-amber-400'
+   699→        : 'text-rose-400';
+   700→      return { label, target, actual, unit, tol, delta, absDelta, arrow, color };
+   701→    });
+   702→  }, [pursuit]);
+   703→
+   704→  const ArrowIcon = ({ a }: { a: PursuitRow['arrow'] }) => {
+   705→    if (a === 'up')   return <TrendingUp className="w-3 h-3 inline mr-0.5 text-emerald-400" aria-label="converging" />;
+   706→    if (a === 'down') return <TrendingDown className="w-3 h-3 inline mr-0.5 text-rose-400" aria-label="diverging" />;
+   707→    if (a === 'ok')   return <Check className="w-3 h-3 inline mr-0.5 text-emerald-400" aria-label="within tolerance" />;
+   708→    return <span className="text-slate-600 mr-0.5">·</span>;
+   709→  };
+   710→
+   711→  // ─── Spectral A/B bands ───────────────────────────────────────────────────
+   712→
+   713→  const spectralBands = useMemo(() => {
+   714→    return SPECTRAL_BANDS.map(b => {
+   715→      const r = refMetrics ? (refMetrics as any)[b.key] as number | undefined : undefined;
+   716→      const o = selfMetrics ? (selfMetrics as any)[b.key] as number | undefined : undefined;
+   717→      const refNorm  = r !== undefined ? Math.min(1, Math.max(0, r)) : 0;
+   718→      const ownNorm  = o !== undefined ? Math.min(1, Math.max(0, o)) : 0;
+   719→      const delta    = (r !== undefined && o !== undefined) ? (o - r) : null;
+   720→      return { ...b, ref: r, own: o, refNorm, ownNorm, delta };
+   721→    });
+   722→  }, [refMetrics, selfMetrics]);
+   723→
+   724→  const spectralDeltaColor = (d: number | null) =>
+   725→    d === null ? 'text-slate-500'
+   726→    : Math.abs(d) < 0.1 ? 'text-emerald-400'
+   727→    : Math.abs(d) < 0.2 ? 'text-amber-400'
+   728→    : 'text-rose-400';
+   729→
+   730→  // Custom scrollbar styling for long lists (Tailwind utility classes only).
+   731→  const scrollList = 'max-h-96 overflow-y-auto pr-1 [scrollbar-width:thin] [scrollbar-color:rgb(71_85_105)_transparent]';
+   732→
+   733→  return (
+   734→    <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100">
+   735→      <Toaster />
+   736→      <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur-sm sticky top-0 z-10">
+   737→        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between flex-wrap gap-3">
+   738→          <div className="flex items-center gap-3">
+   739→            <Radio className="w-7 h-7 text-fuchsia-400" />
+   740→            <div>
+   741→              <h1 className="text-lg font-bold bg-gradient-to-r from-fuchsia-400 to-cyan-400 bg-clip-text text-transparent">PSY4 ENGINE V2</h1>
+   742→              <p className="text-[10px] text-slate-400 font-mono">POOLED VOICES · FACTORY PRESETS · LIVE SYNC · STYLE DETECTION</p>
+   743→            </div>
+   744→          </div>
+   745→          <div className="flex items-center gap-2">
+   746→            <Badge variant={refConnected ? 'default' : 'secondary'} className="font-mono text-[10px]">
+   747→              {refConnected ? <Wifi className="w-3 h-3 mr-1" /> : <WifiOff className="w-3 h-3 mr-1" />}
+   748→              {refConnected ? 'REF LIVE' : 'REF OFF'}
+   749→            </Badge>
+   750→            <Badge variant={engineOn ? 'default' : 'secondary'} className="font-mono text-[10px]">
+   751→              <Activity className="w-3 h-3 mr-1" />
+   752→              {engineOn ? `ENGINE ${engineState.bpm} BPM` : 'ENGINE OFF'}
+   753→            </Badge>
+   754→            {autoSwitchActive && (
+   755→              <Badge className="bg-fuchsia-600 text-white animate-pulse text-[10px]"><Shuffle className="w-3 h-3 mr-1" />AUTO</Badge>
+   756→            )}
+   757→            {learning && <Badge className="bg-emerald-600 text-white animate-pulse text-[10px]"><Brain className="w-3 h-3 mr-1" />LEARNING</Badge>}
+   758→          </div>
+   759→        </div>
+   760→      </header>
+   761→
+   762→      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-4 space-y-4">
+   763→        {/* Mode + Stream + World */}
+   764→        <Card className="border-slate-800 bg-slate-900/60">
+   765→          <CardContent className="p-4">
+   766→            <div className="flex flex-wrap items-center gap-3">
+   767→              {(['listen', 'analyze', 'train'] as Mode[]).map(m => (
+   768→                <Button key={m} size="sm" variant={mode === m ? 'default' : 'outline'} onClick={() => setMode(m)} className={mode === m ? 'bg-fuchsia-600 hover:bg-fuchsia-700' : ''}>{m.toUpperCase()}</Button>
+   769→              ))}
+   770→              <div className="ml-auto flex items-center gap-2 flex-wrap">
+   771→                <select
+   772→                  value={streamId}
+   773→                  onChange={e => setStreamId(e.target.value)}
+   774→                  className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono"
+   775→                  aria-label="Reference stream"
+   776→                >
+   777→                  {streams.map(s => <option key={s.id} value={s.id}>{s.name} ({s.bitrate}kbps)</option>)}
+   778→                </select>
+   779→                <div className="flex items-center gap-1">
+   780→                  {autoSwitchActive && (
+   781→                    <Badge className="bg-fuchsia-600 text-white text-[9px] px-1 py-0 font-mono">AUTO</Badge>
+   782→                  )}
+   783→                  <select
+   784→                    value={worldId}
+   785→                    onChange={e => onUserSelectWorld(e.target.value)}
+   786→                    className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono"
+   787→                    aria-label="Active world"
+   788→                  >
+   789→                    {WORLD_OPTIONS.map(w => (
+   790→                      <option key={w.id} value={w.id}>{w.name} — {w.description}</option>
+   791→                    ))}
+   792→                  </select>
+   793→                </div>
+   794→              </div>
+   795→            </div>
+   796→          </CardContent>
+   797→        </Card>
+   798→
+   799→        {/* Transport */}
+   800→        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+   801→          {/* Reference */}
+   802→          <Card className="border-slate-800 bg-slate-900/60">
+   803→            <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Radio className="w-4 h-4 text-fuchsia-400" /> REFERENCE</CardTitle></CardHeader>
+   804→            <CardContent className="space-y-2">
+   805→              <div className="flex gap-2">
+   806→                {!refConnected ? (
+   807→                  <Button onClick={connectRef} size="sm" className="bg-emerald-600 hover:bg-emerald-700"><Wifi className="w-4 h-4 mr-1" /> CONNECT</Button>
+   808→                ) : (
+   809→                  <Button onClick={disconnectRef} size="sm" variant="destructive"><WifiOff className="w-4 h-4 mr-1" /> DISCONNECT</Button>
+   810→                )}
+   811→                {refConnected && (
+   812→                  <Button onClick={toggleRefAudio} size="sm" variant={refPlaying ? 'secondary' : 'outline'} className={refPlaying ? 'bg-amber-600 text-white' : ''}>
+   813→                    {refPlaying ? <Volume2 className="w-4 h-4 mr-1" /> : <VolumeX className="w-4 h-4 mr-1" />}
+   814→                    {refPlaying ? 'STOP' : 'PLAY'}
+   815→                  </Button>
+   816→                )}
+   817→              </div>
+   818→              {refProfile && <div className="text-[10px] font-mono text-slate-400">{refProfile.windowCount} windows · BPM {refProfile.bpm.mean.toFixed(0)} · LUFS {refProfile.lufs.mean.toFixed(1)}</div>}
+   819→              {refMetrics?.detectedKey && <div className="text-[10px] font-mono text-emerald-400">Key: {refMetrics.detectedKey.rootName} {refMetrics.detectedKey.scale} (conf {refMetrics.detectedKey.confidence.toFixed(2)})</div>}
+   820→            </CardContent>
+   821→          </Card>
+   822→
+   823→          {/* Engine */}
+   824→          <Card className="border-slate-800 bg-slate-900/60">
+   825→            <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Activity className="w-4 h-4 text-cyan-400" /> ENGINE V2</CardTitle></CardHeader>
+   826→            <CardContent className="space-y-2">
+   827→              <div className="flex gap-2">
+   828→                {!engineOn ? (
+   829→                  <Button onClick={startEngine} size="sm" disabled={engineLoading} className="bg-cyan-600 hover:bg-cyan-700">
+   830→                    {engineLoading ? (
+   831→                      <><Loader2 className="w-4 h-4 mr-1 animate-spin" /> LOADING…</>
+   832→                    ) : (
+   833→                      <><Play className="w-4 h-4 mr-1" /> START</>
+   834→                    )}
+   835→                  </Button>
+   836→                ) : (
+   837→                  <Button onClick={stopEngine} size="sm" variant="destructive"><Square className="w-4 h-4 mr-1" /> STOP</Button>
+   838→                )}
+   839→              </div>
+   840→              {engineLoading && !engineOn && (
+   841→                <div className="text-[10px] font-mono text-amber-400 animate-pulse">
+   842→                  Loading audio engine (worklet module + DSP voices)…
+   843→                </div>
+   844→              )}
+   845→              {engineOn && (
+   846→                <div className="text-[10px] font-mono text-slate-400">
+   847→                  BPM: <span className="text-cyan-400">{engineState.bpm}</span> · Key: <span className="text-cyan-400">{engineState.key}</span> · Style: <span className="text-fuchsia-400">{engineState.style}</span> · Section: <span className="text-cyan-400">{engineState.section}</span>
+   848→                </div>
+   849→              )}
+   850→              {engineOn && (
+   851→                <div className="text-[10px] font-mono text-slate-400">
+   852→                  Active world: <span className="text-fuchsia-400">{WORLD_NAME[activeWorld] ?? activeWorld}</span>
+   853→                  <span className="text-slate-600"> ({activeWorld})</span>
+   854→                </div>
+   855→              )}
+   856→            </CardContent>
+   857→          </Card>
+   858→        </div>
+   859→
+   860→        {/* STYLE DETECTION CARD (Task 19) — visible in listen + analyze */}
+   861→        {(mode === 'listen' || mode === 'analyze') && (
+   862→          <Card className="border-slate-800 bg-slate-900/60">
+   863→            <CardHeader>
+   864→              <CardTitle className="flex items-center gap-2 text-sm">
+   865→                <Sparkles className="w-4 h-4 text-amber-400" />
+   866→                STYLE DETECTION
+   867→                {topMatch && (
+   868→                  <Badge className={`ml-2 font-mono text-[10px] border ${confidenceBadgeClass(topConfidence)}`}>
+   869→                    {(topConfidence * 100).toFixed(0)}% {topMatch.style.toUpperCase()}
+   870→                  </Badge>
+   871→                )}
+   872→              </CardTitle>
+   873→            </CardHeader>
+   874→            <CardContent className="space-y-4">
+   875→              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+   876→                {/* Active world + detected style */}
+   877→                <div className="md:col-span-1 space-y-2">
+   878→                  <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">Active World</div>
+   879→                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+   880→                    <div className="flex items-center gap-2">
+   881→                      <Music className="w-4 h-4 text-fuchsia-400" />
+   882→                      <span className="text-sm font-semibold text-fuchsia-300">{WORLD_NAME[activeWorld] ?? activeWorld}</span>
+   883→                    </div>
+   884→                    <div className="text-[10px] text-slate-500 font-mono mt-1">{activeWorld}</div>
+   885→                  </div>
+   886→                  <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mt-2">Detected Style</div>
+   887→                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+   888→                    {topMatch ? (
+   889→                      <>
+   890→                        <div className="flex items-baseline justify-between">
+   891→                          <span className="text-sm font-semibold text-amber-300">{topMatch.style}</span>
+   892→                          <span className={`text-sm font-mono font-bold ${confidenceTextColor(topConfidence)}`}>
+   893→                            {(topConfidence * 100).toFixed(1)}%
+   894→                          </span>
+   895→                        </div>
+   896→                        <div className="mt-2 h-1.5 bg-slate-800 rounded overflow-hidden">
+   897→                          <div
+   898→                            className={`h-full rounded ${topConfidence > 0.7 ? 'bg-emerald-500' : topConfidence > 0.4 ? 'bg-amber-500' : 'bg-rose-500'}`}
+   899→                            style={{ width: `${Math.min(100, topConfidence * 100).toFixed(1)}%` }}
+   900→                          />
+   901→                        </div>
+   902→                      </>
+   903→                    ) : (
+   904→                      <div className="text-[11px] text-slate-500 font-mono">
+   905→                        {engineOn ? 'Awaiting classification…' : 'Start engine to detect style'}
+   906→                      </div>
+   907→                    )}
+   908→                  </div>
+   909→                </div>
+   910→
+   911→                {/* Top 3 ranked matches */}
+   912→                <div className="md:col-span-1 space-y-2">
+   913→                  <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">Top 3 Matches</div>
+   914→                  <div className="bg-slate-950 border border-slate-800 rounded p-3 space-y-2">
+   915→                    {top3.length === 0 ? (
+   916→                      <div className="text-[11px] text-slate-500 font-mono">No matches yet</div>
+   917→                    ) : top3.map((m, i) => {
+   918→                      const c = m.confidence;
+   919→                      return (
+   920→                        <div key={`${m.style}-${i}`} className="space-y-1">
+   921→                          <div className="flex items-center justify-between text-[11px] font-mono">
+   922→                            <span className="flex items-center gap-1">
+   923→                              <span className={`w-4 text-center ${i === 0 ? 'text-amber-300 font-bold' : 'text-slate-400'}`}>#{i + 1}</span>
+   924→                              <span className={i === 0 ? 'text-slate-100' : 'text-slate-300'}>{m.style}</span>
+   925→                            </span>
+   926→                            <span className={`font-bold ${confidenceTextColor(c)}`}>{(c * 100).toFixed(0)}%</span>
+   927→                          </div>
+   928→                          <div className="h-1.5 bg-slate-800 rounded overflow-hidden">
+   929→                            <div
+   930→                              className={`h-full rounded ${c > 0.7 ? 'bg-emerald-500' : c > 0.4 ? 'bg-amber-500' : 'bg-rose-500'}`}
+   931→                              style={{ width: `${Math.min(100, c * 100).toFixed(1)}%` }}
+   932→                            />
+   933→                          </div>
+   934→                        </div>
+   935→                      );
+   936→                    })}
+   937→                  </div>
+   938→                </div>
+   939→
+   940→                {/* Reasons for the top match */}
+   941→                <div className="md:col-span-1 space-y-2">
+   942→                  <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">Why this style?</div>
+   943→                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+   944→                    {topMatch?.reasons && topMatch.reasons.length > 0 ? (
+   945→                      <ul className={`space-y-1 text-[11px] font-mono text-slate-300 ${scrollList}`}>
+   946→                        {topMatch.reasons.map((r, i) => (
+   947→                          <li key={i} className="flex gap-1.5">
+   948→                            <CheckCircle2 className="w-3 h-3 mt-0.5 flex-shrink-0 text-emerald-400" />
+   949→                            <span>{r}</span>
+   950→                          </li>
+   951→                        ))}
+   952→                      </ul>
+   953→                    ) : (
+   954→                      <div className="text-[11px] text-slate-500 font-mono">
+   955→                        {topMatch ? 'No detailed reasons provided' : 'Start engine and connect reference'}
+   956→                      </div>
+   957→                    )}
+   958→                  </div>
+   959→                </div>
+   960→              </div>
+   961→
+   962→              {/* Auto-switch hint */}
+   963→              {autoSwitchActive && (
+   964→                <div className="text-[10px] font-mono text-fuchsia-400 flex items-center gap-1">
+   965→                  <Shuffle className="w-3 h-3" />
+   966→                  AUTO-SWITCH active — engine follows the detected style automatically. Pick a world manually to override.
+   967→                </div>
+   968→              )}
+   969→            </CardContent>
+   970→          </Card>
+   971→        )}
+   972→
+   973→        {/* ─── DJ CONTROLLER (Task D1 — full DJ sync) ─── */}
+   974→        {/* Full DJ-style sync — BPM + phase + key (Camelot harmonic mixing)
+   975→            + groove (swing + push/pull) + energy (smoothed + transition
+   976→            detection) + beat-grid / phrase alignment. The Pioneer CDJ /
+   977→            Traktor / Serato sync model applied to a generative psytrance
+   978→            engine. Visible in listen + analyze + train when the engine is
+   979→            running. When MASTER SYNC is on, all dimensions are engaged;
+   980→            when off, the engine runs free but the sync state is still
+   981→            computed + displayed (so the user can see how far off we are). */}
+   982→        {(mode === 'listen' || mode === 'analyze' || mode === 'train') && engineOn && (
+   983→          <Card className="border-slate-800 bg-slate-900/60">
+   984→            <CardHeader>
+   985→              <CardTitle className="flex items-center gap-2 text-sm">
+   986→                <Disc3 className={`w-4 h-4 ${syncEnabled ? 'text-emerald-400' : 'text-slate-500'}`} />
+   987→                DJ CONTROLLER
+   988→                <span className="text-[10px] text-slate-500 font-mono ml-2">bpm · phase · key · groove · energy · phrase</span>
+   989→                {/* Toggle button — top-right of the header */}
+   990→                <button
+   991→                  type="button"
+   992→                  onClick={toggleSync}
+   993→                  className={`ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-mono font-bold border transition-colors ${
+   994→                    syncEnabled
+   995→                      ? 'bg-emerald-600 text-white border-emerald-500 hover:bg-emerald-700'
+   996→                      : 'bg-slate-700 text-slate-200 border-slate-600 hover:bg-slate-600'
+   997→                  }`}
+   998→                  aria-pressed={syncEnabled}
+   999→                  aria-label={syncEnabled ? 'Disable master sync' : 'Enable master sync'}
+  1000→                >
+  1001→                  {syncEnabled ? <Link2 className="w-3 h-3" /> : <Link2Off className="w-3 h-3" />}
+  1002→                  {syncEnabled ? 'MASTER' : 'FREE-RUN'}
+  1003→                </button>
+  1004→              </CardTitle>
+  1005→            </CardHeader>
+  1006→            <CardContent className="space-y-4">
+  1007→              {!syncEnabled ? (
+  1008→                <div className="bg-slate-950 border border-slate-800 rounded p-4 text-center">
+  1009→                  <div className="text-[11px] text-slate-400 font-mono">
+  1010→                    MASTER SYNC is off — the engine runs free (still tracks the radio BPM via
+  1011→                    applyMusicalUnderstanding, but does NOT phase-lock or harmonic-match).
+  1012→                  </div>
+  1013→                  <div className="text-[10px] text-slate-500 font-mono mt-1">
+  1014→                    Click <span className="text-emerald-400 font-bold">FREE-RUN</span> above to engage
+  1015→                    full DJ sync (BPM + phase + key + groove + energy + phrase).
+  1016→                  </div>
+  1017→                </div>
+  1018→              ) : !syncStatus || (!syncStatus.refBpm && !syncStatus.ownBpm) ? (
+  1019→                <div className="bg-slate-950 border border-slate-800 rounded p-4 text-center">
+  1020→                  <div className="text-[11px] text-amber-400 font-mono">
+  1021→                    ⚠ Waiting for sync data — connect a stream and let the engine play. The reference
+  1022→                    listener extracts beat phase, key, groove, and energy every ~10s; the engine
+  1023→                    records its own beats from <code className="text-cyan-400">triggerDrum(0, ...)</code>.
+  1024→                  </div>
+  1025→                </div>
+  1026→              ) : (
+  1027→                <>
+  1028→                  {/* ── Master sync quality bar (prominent at top) ── */}
+  1029→                  {/* Aggregates all dimensions into a single 0..100 score.
+  1030→                      Weights: phase+BPM 40%, key 25%, energy 15%, groove 10%,
+  1031→                      phrase 10%. This is the headline number a DJ would look
+  1032→                      at — "how locked is the mix?". */}
+  1033→                  <div className={`bg-slate-950 border rounded p-3 ${
+  1034→                    syncStatus.syncQuality > 80 ? 'border-emerald-700'
+  1035→                    : syncStatus.syncQuality > 60 ? 'border-amber-700'
+  1036→                    : 'border-rose-800'
+  1037→                  }`}>
+  1038→                    <div className="flex items-center justify-between mb-1.5">
+  1039→                      <div className="flex items-center gap-1.5">
+  1040→                        <Disc3 className={`w-3.5 h-3.5 ${
+  1041→                          syncStatus.syncQuality > 80 ? 'text-emerald-400 animate-spin'
+  1042→                          : syncStatus.syncQuality > 60 ? 'text-amber-400'
+  1043→                          : 'text-rose-400'
+  1044→                        }`} style={syncStatus.syncQuality > 80 ? { animationDuration: '3s' } : undefined} />
+  1045→                        <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Master Sync Quality</span>
+  1046→                      </div>
+  1047→                      <span className={`text-lg font-bold font-mono ${
+  1048→                        syncStatus.syncQuality > 80 ? 'text-emerald-300'
+  1049→                        : syncStatus.syncQuality > 60 ? 'text-amber-300'
+  1050→                        : 'text-rose-300'
+  1051→                      }`}>
+  1052→                        {syncStatus.syncQuality.toFixed(0)}%
+  1053→                      </span>
+  1054→                    </div>
+  1055→                    <div className="h-2 w-full bg-slate-800 rounded overflow-hidden">
+  1056→                      <div
+  1057→                        className={`h-full rounded transition-all duration-300 ${
+  1058→                          syncStatus.syncQuality > 80 ? 'bg-emerald-500'
+  1059→                          : syncStatus.syncQuality > 60 ? 'bg-amber-500'
+  1060→                          : 'bg-rose-500'
+  1061→                        }`}
+  1062→                        style={{ width: `${syncStatus.syncQuality.toFixed(1)}%` }}
+  1063→                      />
+  1064→                    </div>
+  1065→                    <div className="flex flex-wrap gap-2 mt-2 text-[9px] font-mono">
+  1066→                      <span className={syncStatus.synced ? 'text-emerald-400' : 'text-rose-400'}>
+  1067→                        ● phase {syncStatus.synced ? 'LOCKED' : 'DRIFT'}
+  1068→                      </span>
+  1069→                      <span className={syncStatus.keySynced ? 'text-emerald-400' : 'text-amber-400'}>
+  1070→                        ● key {syncStatus.keySynced ? 'MATCHED' : 'OFF'}
+  1071→                      </span>
+  1072→                      <span className={syncStatus.grooveSynced ? 'text-emerald-400' : 'text-amber-400'}>
+  1073→                        ● groove {syncStatus.grooveSynced ? 'GROOVE' : 'OFF'}
+  1074→                      </span>
+  1075→                      <span className={syncStatus.energySynced ? 'text-emerald-400' : 'text-amber-400'}>
+  1076→                        ● energy {syncStatus.energySynced ? 'FOLLOW' : 'OFF'}
+  1077→                      </span>
+  1078→                      <span className={syncStatus.beatGridAligned ? 'text-emerald-400' : 'text-amber-400'}>
+  1079→                        ● phrase {syncStatus.beatGridAligned ? 'ALIGNED' : 'OFF'}
+  1080→                      </span>
+  1081→                    </div>
+  1082→                  </div>
+  1083→
+  1084→                  {/* ── Status grid: synced / offset / BPM / downbeat ── */}
+  1085→                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+  1086→                    {/* SYNCED indicator */}
+  1087→                    <div className={`bg-slate-950 border rounded p-3 ${syncStatus.synced ? 'border-emerald-700' : 'border-rose-800'}`}>
+  1088→                      <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Status</div>
+  1089→                      <div className={`flex items-center gap-1.5 ${syncStatus.synced ? 'text-emerald-300' : 'text-rose-300'}`}>
+  1090→                        {syncStatus.synced ? <Check className="w-4 h-4" /> : <Activity className="w-4 h-4" />}
+  1091→                        <span className="text-base font-bold font-mono">{syncStatus.synced ? 'LOCKED' : 'DRIFT'}</span>
+  1092→                      </div>
+  1093→                      <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+  1094→                        conf {(syncStatus.confidence * 100).toFixed(0)}%
+  1095→                      </div>
+  1096→                    </div>
+  1097→
+  1098→                    {/* Phase offset */}
+  1099→                    <div className="bg-slate-950 border border-slate-800 rounded p-3">
+  1100→                      <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Phase Offset</div>
+  1101→                      <div className="flex items-baseline gap-1">
+  1102→                        <span className={`text-base font-bold font-mono ${
+  1103→                          Math.abs(syncStatus.offsetMs) < 16 ? 'text-emerald-300'
+  1104→                          : Math.abs(syncStatus.offsetMs) < 50 ? 'text-amber-300'
+  1105→                          : 'text-rose-300'
+  1106→                        }`}>
+  1107→                          {syncStatus.offsetMs > 0 ? '+' : ''}{syncStatus.offsetMs.toFixed(1)}
+  1108→                        </span>
+  1109→                        <span className="text-[10px] text-slate-500 font-mono">ms</span>
+  1110→                      </div>
+  1111→                      <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+  1112→                        target {syncStatus.targetOffsetMs > 0 ? '+' : ''}{syncStatus.targetOffsetMs.toFixed(0)}ms
+  1113→                      </div>
+  1114→                    </div>
+  1115→
+  1116→                    {/* BPM match */}
+  1117→                    <div className="bg-slate-950 border border-slate-800 rounded p-3">
+  1118→                      <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">BPM Match</div>
+  1119→                      <div className="flex items-baseline justify-between">
+  1120→                        <span className="text-[10px] font-mono text-fuchsia-300">{syncStatus.refBpm.toFixed(1)}</span>
+  1121→                        <span className="text-[9px] text-slate-600">vs</span>
+  1122→                        <span className="text-[10px] font-mono text-cyan-300">{syncStatus.ownBpm.toFixed(1)}</span>
+  1123→                      </div>
+  1124→                      <div className="mt-1">
+  1125→                        <div className="flex justify-between text-[9px] font-mono mb-0.5">
+  1126→                          <span className="text-slate-500">match</span>
+  1127→                          <span className={`${
+  1128→                            syncStatus.bpmMatchPct > 90 ? 'text-emerald-300'
+  1129→                            : syncStatus.bpmMatchPct > 70 ? 'text-amber-300'
+  1130→                            : 'text-rose-300'
+  1131→                          }`}>{syncStatus.bpmMatchPct.toFixed(0)}%</span>
+  1132→                        </div>
+  1133→                        <div className="h-1 w-full bg-slate-800 rounded overflow-hidden">
+  1134→                          <div
+  1135→                            className={`h-full rounded transition-all duration-200 ${
+  1136→                              syncStatus.bpmMatchPct > 90 ? 'bg-emerald-500'
+  1137→                              : syncStatus.bpmMatchPct > 70 ? 'bg-amber-500'
+  1138→                              : 'bg-rose-500'
+  1139→                            }`}
+  1140→                            style={{ width: `${syncStatus.bpmMatchPct.toFixed(1)}%` }}
+  1141→                          />
+  1142→                        </div>
+  1143→                      </div>
+  1144→                    </div>
+  1145→
+  1146→                    {/* Downbeat alignment */}
+  1147→                    <div className="bg-slate-950 border border-slate-800 rounded p-3">
+  1148→                      <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Downbeat Align</div>
+  1149→                      <div className={`text-base font-bold font-mono ${
+  1150→                        syncStatus.downbeatAlignment > 85 ? 'text-emerald-300'
+  1151→                        : syncStatus.downbeatAlignment > 50 ? 'text-amber-300'
+  1152→                        : 'text-rose-300'
+  1153→                      }`}>
+  1154→                        {syncStatus.downbeatAlignment.toFixed(0)}%
+  1155→                      </div>
+  1156→                      <div className="mt-1">
+  1157→                        <div className="h-1 w-full bg-slate-800 rounded overflow-hidden">
+  1158→                          <div
+  1159→                            className={`h-full rounded transition-all duration-200 ${
+  1160→                              syncStatus.downbeatAlignment > 85 ? 'bg-emerald-500'
+  1161→                              : syncStatus.downbeatAlignment > 50 ? 'bg-amber-500'
+  1162→                              : 'bg-rose-500'
+  1163→                            }`}
+  1164→                            style={{ width: `${syncStatus.downbeatAlignment.toFixed(1)}%` }}
+  1165→                          />
+  1166→                        </div>
+  1167→                      </div>
+  1168→                    </div>
+  1169→                  </div>
+  1170→
+  1171→                  {/* ── KEY sync (Camelot harmonic mixing) ── */}
+  1172→                  {/* Shows the reference key vs our key, mapped to Camelot
+  1173→                      wheel positions (e.g., 8A = A minor). Compatibility %
+  1174→                      is the harmonic-mixing score (0..1). When the radio's
+  1175→                      key is incompatible, the suggested shift (semitones)
+  1176→                      is shown — when master sync is on, the engine applies
+  1177→                      this shift gradually (1 semitone per bar) to reach
+  1178→                      the nearest compatible key. */}
+  1179→                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+  1180→                    <div className="flex items-center justify-between mb-2">
+  1181→                      <div className="flex items-center gap-1.5">
+  1182→                        <KeyRound className="w-3.5 h-3.5 text-violet-400" />
+  1183→                        <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Key Sync · Camelot</span>
+  1184→                      </div>
+  1185→                      <span className={`text-[10px] font-mono font-bold ${syncStatus.keySynced ? 'text-emerald-400' : 'text-amber-400'}`}>
+  1186→                        {syncStatus.keySynced ? '● MATCHED' : '○ MISMATCH'}
+  1187→                      </span>
+  1188→                    </div>
+  1189→                    <div className="grid grid-cols-3 gap-2 mb-2">
+  1190→                      {/* Reference key */}
+  1191→                      <div className="bg-slate-900 border border-fuchsia-900 rounded p-2 text-center">
+  1192→                        <div className="text-[9px] text-slate-500 font-mono uppercase">REF</div>
+  1193→                        <div className="text-base font-bold font-mono text-fuchsia-300">
+  1194→                          {syncStatus.refCamelot ?? '—'}
+  1195→                        </div>
+  1196→                        <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+  1197→                          {syncStatus.refKey ? `${syncStatus.refKey.root} ${syncStatus.refKey.scale}`.slice(0, 14) : '—'}
+  1198→                        </div>
+  1199→                      </div>
+  1200→                      {/* Compatibility */}
+  1201→                      <div className="bg-slate-900 border border-slate-700 rounded p-2 text-center">
+  1202→                        <div className="text-[9px] text-slate-500 font-mono uppercase">Compat</div>
+  1203→                        <div className={`text-base font-bold font-mono ${
+  1204→                          syncStatus.keyCompatibility > 0.8 ? 'text-emerald-300'
+  1205→                          : syncStatus.keyCompatibility > 0.5 ? 'text-amber-300'
+  1206→                          : 'text-rose-300'
+  1207→                        }`}>
+  1208→                          {(syncStatus.keyCompatibility * 100).toFixed(0)}%
+  1209→                        </div>
+  1210→                        <div className="h-1 w-full bg-slate-800 rounded overflow-hidden mt-1">
+  1211→                          <div
+  1212→                            className={`h-full rounded transition-all duration-200 ${
+  1213→                              syncStatus.keyCompatibility > 0.8 ? 'bg-emerald-500'
+  1214→                              : syncStatus.keyCompatibility > 0.5 ? 'bg-amber-500'
+  1215→                              : 'bg-rose-500'
+  1216→                            }`}
+  1217→                            style={{ width: `${(syncStatus.keyCompatibility * 100).toFixed(1)}%` }}
+  1218→                          />
+  1219→                        </div>
+  1220→                      </div>
+  1221→                      {/* Own key */}
+  1222→                      <div className="bg-slate-900 border border-cyan-900 rounded p-2 text-center">
+  1223→                        <div className="text-[9px] text-slate-500 font-mono uppercase">OURS</div>
+  1224→                        <div className="text-base font-bold font-mono text-cyan-300">
+  1225→                          {syncStatus.ownCamelot ?? '—'}
+  1226→                        </div>
+  1227→                        <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+  1228→                          {syncStatus.ownKey ? `${syncStatus.ownKey.root} ${syncStatus.ownKey.scale}`.slice(0, 14) : '—'}
+  1229→                        </div>
+  1230→                      </div>
+  1231→                    </div>
+  1232→                    <div className="flex items-center justify-between text-[10px] font-mono">
+  1233→                      <div className="text-slate-500">
+  1234→                        suggested shift: <span className={syncStatus.suggestedShift === 0 ? 'text-emerald-400' : 'text-amber-400'}>
+  1235→                          {syncStatus.suggestedShift > 0 ? '+' : ''}{syncStatus.suggestedShift} st
+  1236→                        </span>
+  1237→                      </div>
+  1238→                      <div className="text-slate-500">
+  1239→                        applied: <span className={syncStatus.appliedShift === 0 ? 'text-slate-400' : 'text-violet-400'}>
+  1240→                          {syncStatus.appliedShift > 0 ? '+' : ''}{syncStatus.appliedShift} st
+  1241→                        </span>
+  1242→                        {syncStatus.appliedShift !== 0 && <span className="text-emerald-400 ml-1">· live</span>}
+  1243→                      </div>
+  1244→                    </div>
+  1245→                  </div>
+  1246→
+  1247→                  {/* ── GROOVE sync (swing + push/pull) ── */}
+  1248→                  {/* Shows the reference groove vs our groove: swing amount
+  1249→                      (0..0.5) and push/pull feel (ms, signed). The match %
+  1250→                      combines both. When master sync is on, our swing
+  1251→                      converges toward the radio's swing (≤0.02/bar) and
+  1252→                      the push/pull offset is applied to the scheduler
+  1253→                      (capped at ±30ms — glitch-free). */}
+  1254→                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+  1255→                    <div className="flex items-center justify-between mb-2">
+  1256→                      <div className="flex items-center gap-1.5">
+  1257→                        <Drum className="w-3.5 h-3.5 text-orange-400" />
+  1258→                        <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Groove Sync · swing + push/pull</span>
+  1259→                      </div>
+  1260→                      <span className={`text-[10px] font-mono font-bold ${syncStatus.grooveSynced ? 'text-emerald-400' : 'text-amber-400'}`}>
+  1261→                        {syncStatus.grooveSynced ? '● GROOVE' : '○ ADJUSTING'}
+  1262→                      </span>
+  1263→                    </div>
+  1264→                    <div className="grid grid-cols-2 gap-3">
+  1265→                      {/* Swing */}
+  1266→                      <div>
+  1267→                        <div className="flex items-baseline justify-between text-[10px] font-mono mb-1">
+  1268→                          <span className="text-slate-500 uppercase tracking-wider">Swing</span>
+  1269→                          <span className={syncStatus.grooveMatch > 0.85 ? 'text-emerald-300' : syncStatus.grooveMatch > 0.5 ? 'text-amber-300' : 'text-rose-300'}>
+  1270→                            {(syncStatus.grooveMatch * 100).toFixed(0)}%
+  1271→                          </span>
+  1272→                        </div>
+  1273→                        <div className="flex items-baseline justify-between mb-1">
+  1274→                          <span className="text-[10px] font-mono text-fuchsia-300">{(syncStatus.refSwing * 100).toFixed(0)}%</span>
+  1275→                          <span className="text-[9px] text-slate-600">vs</span>
+  1276→                          <span className="text-[10px] font-mono text-cyan-300">{(syncStatus.ownSwing * 100).toFixed(0)}%</span>
+  1277→                        </div>
+  1278→                        <div className="h-1.5 w-full bg-slate-800 rounded overflow-hidden">
+  1279→                          <div className="h-full bg-fuchsia-500 rounded transition-all duration-200" style={{ width: `${(syncStatus.refSwing * 200).toFixed(1)}%` }} />
+  1280→                        </div>
+  1281→                        <div className="h-1.5 w-full bg-slate-800 rounded overflow-hidden mt-0.5">
+  1282→                          <div className="h-full bg-cyan-500 rounded transition-all duration-200" style={{ width: `${(syncStatus.ownSwing * 200).toFixed(1)}%` }} />
+  1283→                        </div>
+  1284→                      </div>
+  1285→                      {/* Push/pull */}
+  1286→                      <div>
+  1287→                        <div className="flex items-baseline justify-between text-[10px] font-mono mb-1">
+  1288→                          <span className="text-slate-500 uppercase tracking-wider">Push/Pull</span>
+  1289→                          <span className={`${
+  1290→                            Math.abs(syncStatus.pushPullMs) < 8 ? 'text-emerald-300'
+  1291→                            : Math.abs(syncStatus.pushPullMs) < 20 ? 'text-amber-300'
+  1292→                            : 'text-rose-300'
+  1293→                          }`}>
+  1294→                            {syncStatus.pushPullMs > 0 ? '+' : ''}{syncStatus.pushPullMs.toFixed(1)}ms
+  1295→                          </span>
+  1296→                        </div>
+  1297→                        <div className="text-[10px] font-mono text-slate-400 mb-1">
+  1298→                          {syncStatus.pushPullMs > 8 ? 'laid back ↓' : syncStatus.pushPullMs < -8 ? 'pushed ↑' : 'on grid ●'}
+  1299→                        </div>
+  1300→                        {/* Push/pull meter — center = 0, left = pushed, right = laid back */}
+  1301→                        <div className="relative h-1.5 w-full bg-slate-800 rounded overflow-hidden">
+  1302→                          <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-600" />
+  1303→                          <div
+  1304→                            className={`absolute top-0 bottom-0 rounded transition-all duration-200 ${
+  1305→                              Math.abs(syncStatus.pushPullMs) < 8 ? 'bg-emerald-500'
+  1306→                              : Math.abs(syncStatus.pushPullMs) < 20 ? 'bg-amber-500'
+  1307→                              : 'bg-rose-500'
+  1308→                            }`}
+  1309→                            style={
+  1310→                              syncStatus.pushPullMs >= 0
+  1311→                                ? { left: '50%', width: `${Math.min(50, Math.abs(syncStatus.pushPullMs) / 60 * 100).toFixed(1)}%` }
+  1312→                                : { right: '50%', width: `${Math.min(50, Math.abs(syncStatus.pushPullMs) / 60 * 100).toFixed(1)}%` }
+  1313→                            }
+  1314→                          />
+  1315→                        </div>
+  1316→                        <div className="flex justify-between text-[8px] font-mono text-slate-600 mt-0.5">
+  1317→                          <span>pushed</span>
+  1318→                          <span>laid back</span>
+  1319→                        </div>
+  1320→                      </div>
+  1321→                    </div>
+  1322→                  </div>
+  1323→
+  1324→                  {/* ── ENERGY sync (smoothed + transition detection) ── */}
+  1325→                  {/* Shows the reference energy (4-bar smoothed) vs our own
+  1326→                      energy (current flow density as proxy). The transition
+  1327→                      indicator flags build / drop / break / rise events so
+  1328→                      the user can see when the radio's energy curve is
+  1329→                      shifting. When master sync is on, the engine's phrase
+  1330→                      realignment triggers on transitions (drop / break). */}
+  1331→                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+  1332→                    <div className="flex items-center justify-between mb-2">
+  1333→                      <div className="flex items-center gap-1.5">
+  1334→                        <Flame className="w-3.5 h-3.5 text-amber-400" />
+  1335→                        <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Energy Sync · smoothed (4-bar MA)</span>
+  1336→                      </div>
+  1337→                      <span className={`text-[10px] font-mono font-bold ${syncStatus.energySynced ? 'text-emerald-400' : 'text-amber-400'}`}>
+  1338→                        {syncStatus.energySynced ? '● FOLLOW' : '○ CHASING'}
+  1339→                      </span>
+  1340→                    </div>
+  1341→                    <div className="flex items-baseline justify-between mb-1">
+  1342→                      <div className="flex items-baseline gap-2">
+  1343→                        <span className="text-[10px] font-mono text-fuchsia-300">{(syncStatus.refEnergySmoothed * 100).toFixed(0)}%</span>
+  1344→                        <span className="text-[9px] text-slate-600">vs</span>
+  1345→                        <span className="text-[10px] font-mono text-cyan-300">{(syncStatus.ownEnergy * 100).toFixed(0)}%</span>
+  1346→                      </div>
+  1347→                      <span className={`text-[10px] font-mono ${
+  1348→                        Math.abs(syncStatus.energyDelta) < 0.12 ? 'text-emerald-300'
+  1349→                        : Math.abs(syncStatus.energyDelta) < 0.25 ? 'text-amber-300'
+  1350→                        : 'text-rose-300'
+  1351→                      }`}>
+  1352→                        Δ {syncStatus.energyDelta > 0 ? '+' : ''}{syncStatus.energyDelta.toFixed(2)}
+  1353→                      </span>
+  1354→                    </div>
+  1355→                    {/* Two-row bar (ref + ours) */}
+  1356→                    <div className="h-1.5 w-full bg-slate-800 rounded overflow-hidden">
+  1357→                      <div className="h-full bg-fuchsia-500 rounded transition-all duration-200" style={{ width: `${(syncStatus.refEnergySmoothed * 100).toFixed(1)}%` }} />
+  1358→                    </div>
+  1359→                    <div className="h-1.5 w-full bg-slate-800 rounded overflow-hidden mt-0.5">
+  1360→                      <div className="h-full bg-cyan-500 rounded transition-all duration-200" style={{ width: `${(syncStatus.ownEnergy * 100).toFixed(1)}%` }} />
+  1361→                    </div>
+  1362→                    {/* Transition indicator */}
+  1363→                    <div className="flex items-center justify-between mt-2 text-[10px] font-mono">
+  1364→                      <span className="text-slate-500 uppercase tracking-wider">transition</span>
+  1365→                      {syncStatus.energyTransition === 'none' ? (
+  1366→                        <span className="text-slate-400">— stable</span>
+  1367→                      ) : syncStatus.energyTransition === 'drop' ? (
+  1368→                        <span className="text-rose-400 font-bold flex items-center gap-1">
+  1369→                          <Zap className="w-3 h-3" /> DROP
+  1370→                        </span>
+  1371→                      ) : syncStatus.energyTransition === 'break' ? (
+  1372→                        <span className="text-sky-400 font-bold flex items-center gap-1">
+  1373→                          <Waves className="w-3 h-3" /> BREAK
+  1374→                        </span>
+  1375→                      ) : syncStatus.energyTransition === 'build' ? (
+  1376→                        <span className="text-amber-400 font-bold flex items-center gap-1">
+  1377→                          <TrendingUp className="w-3 h-3" /> BUILD
+  1378→                        </span>
+  1379→                      ) : (
+  1380→                        <span className="text-emerald-400 font-bold flex items-center gap-1">
+  1381→                          <ArrowUp className="w-3 h-3" /> RISE
+  1382→                        </span>
+  1383→                      )}
+  1384→                    </div>
+  1385→                  </div>
+  1386→
+  1387→                  {/* ── BEAT-GRID / PHRASE alignment ── */}
+  1388→                  {/* Shows the reference bar-in-phrase vs our own. A phrase
+  1389→                      is 4 bars (psytrance standard). When the radio hits a
+  1390→                      phrase boundary (drop / break), our bar-in-phrase
+  1391→                      should be 0 too — if not, master sync snaps us to bar
+  1392→                      0 on the next transition (the "cut short and drop now"
+  1393→                      DJ move). */}
+  1394→                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+  1395→                    <div className="flex items-center justify-between mb-2">
+  1396→                      <div className="flex items-center gap-1.5">
+  1397→                        <LayoutGrid className="w-3.5 h-3.5 text-emerald-400" />
+  1398→                        <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">
+  1399→                          Beat-Grid · phrase ({syncStatus.phraseLengthBars}-bar)
+  1400→                        </span>
+  1401→                      </div>
+  1402→                      <span className={`text-[10px] font-mono font-bold ${syncStatus.beatGridAligned ? 'text-emerald-400' : 'text-amber-400'}`}>
+  1403→                        {syncStatus.beatGridAligned ? '● ALIGNED' : '○ DRIFT'}
+  1404→                      </span>
+  1405→                    </div>
+  1406→                    {/* Phrase visualization: 4 cells per phrase, ref row + ours row */}
+  1407→                    {(() => {
+  1408→                      const refBar = syncStatus.refBarInPhrase ?? 0;
+  1409→                      const ownBar = syncStatus.ownBarInPhrase ?? 0;
+  1410→                      const phraseLen = syncStatus.phraseLengthBars ?? 4;
+  1411→                      const cells = Array.from({ length: phraseLen }, (_, i) => i);
+  1412→                      const renderPhraseRow = (label: string, current: number, color: 'fuchsia' | 'cyan') => {
+  1413→                        const colorClasses = color === 'fuchsia'
+  1414→                          ? { active: 'bg-fuchsia-500 border-fuchsia-300', idle: 'bg-fuchsia-950 border-fuchsia-900', text: 'text-fuchsia-300' }
+  1415→                          : { active: 'bg-cyan-500 border-cyan-300', idle: 'bg-cyan-950 border-cyan-900', text: 'text-cyan-300' };
+  1416→                        return (
+  1417→                          <div className="flex items-center gap-2">
+  1418→                            <span className={`text-[10px] font-mono ${colorClasses.text} w-10`}>{label}</span>
+  1419→                            <div className="flex-1 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${phraseLen}, 1fr)` }}>
+  1420→                              {cells.map(b => {
+  1421→                                const isActive = b === current;
+  1422→                                const isStart = b === 0;
+  1423→                                return (
+  1424→                                  <div
+  1425→                                    key={b}
+  1426→                                    className={`relative h-6 rounded border flex items-center justify-center transition-all duration-100 ${
+  1427→                                      isActive ? colorClasses.active : colorClasses.idle
+  1428→                                    } ${isStart ? 'ring-1 ring-offset-1 ring-offset-slate-950' : ''}`}
+  1429→                                    style={isStart ? { boxShadow: `0 0 0 1px ${color === 'fuchsia' ? 'rgb(217 70 239)' : 'rgb(34 211 238)'}` } : undefined}
+  1430→                                  >
+  1431→                                    <span className={`text-[9px] font-mono font-bold ${isActive ? 'text-white' : 'text-slate-600'}`}>
+  1432→                                      {b + 1}
+  1433→                                    </span>
+  1434→                                  </div>
+  1435→                                );
+  1436→                              })}
+  1437→                            </div>
+  1438→                          </div>
+  1439→                        );
+  1440→                      };
+  1441→                      return (
+  1442→                        <div className="space-y-1.5">
+  1443→                          {renderPhraseRow('REF', refBar, 'fuchsia')}
+  1444→                          {renderPhraseRow('OURS', ownBar, 'cyan')}
+  1445→                        </div>
+  1446→                      );
+  1447→                    })()}
+  1448→                    <div className="text-[10px] text-slate-500 font-mono mt-2 flex flex-wrap gap-3">
+  1449→                      <span><span className="inline-block w-2 h-2 bg-fuchsia-500 rounded-sm mr-1" />radio bar-in-phrase</span>
+  1450→                      <span><span className="inline-block w-2 h-2 bg-cyan-500 rounded-sm mr-1" />engine bar-in-phrase</span>
+  1451→                      <span><span className="inline-block w-2 h-2 border-2 border-fuchsia-300 rounded-sm mr-1" />phrase start</span>
+  1452→                    </div>
+  1453→                  </div>
+  1454→
+  1455→                  {/* ── PHRASE SYNC (Task P4 — phrase-level structural sync) ── */}
+  1456→                  {/* Complements the BEAT-GRID / PHRASE block above (which is
+  1457→                      driven by the DJController's reactive energy-transition
+  1458→                      detector). This block shows the PhraseSync's PROACTIVE
+  1459→                      structural alignment: the radio's estimated phrase
+  1460→                      length + bar position vs our own, the alignment %, the
+  1461→                      realignment counter, and a flash when a realignment
+  1462→                      just fired. When the radio drops, we drop at the same
+  1463→                      time — not 3 bars off. */}
+  1464→                  <div className={`bg-slate-950 border rounded p-3 transition-all duration-300 ${
+  1465→                    phraseSyncFlash
+  1466→                      ? 'border-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.4)]'
+  1467→                      : phraseSyncState && phraseSyncState.alignment > 0.75
+  1468→                        ? 'border-emerald-700'
+  1469→                        : phraseSyncState && phraseSyncState.alignment > 0.4
+  1470→                          ? 'border-amber-700'
+  1471→                          : 'border-slate-800'
+  1472→                  }`}>
+  1473→                    <div className="flex items-center justify-between mb-2">
+  1474→                      <div className="flex items-center gap-1.5">
+  1475→                        <LayoutGrid className={`w-3.5 h-3.5 ${phraseSyncFlash ? 'text-emerald-300' : 'text-emerald-400'}`} />
+  1476→                        <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">
+  1477→                          Phrase Sync · structural
+  1478→                        </span>
+  1479→                      </div>
+  1480→                      <span className={`text-[10px] font-mono font-bold ${
+  1481→                        !phraseSyncState || phraseSyncState.lastRefBoundaryTime === 0
+  1482→                          ? 'text-slate-500'
+  1483→                          : phraseSyncState.alignment > 0.75
+  1484→                            ? 'text-emerald-400'
+  1485→                            : phraseSyncState.alignment > 0.4
+  1486→                              ? 'text-amber-400'
+  1487→                              : 'text-rose-400'
+  1488→                      }`}>
+  1489→                        {!phraseSyncState || phraseSyncState.lastRefBoundaryTime === 0
+  1490→                          ? '○ NO REF'
+  1491→                          : phraseSyncFlash
+  1492→                            ? '✦ REALIGN'
+  1493→                            : `● ${phraseSyncState.alignment > 0.75 ? 'ALIGNED' : phraseSyncState.alignment > 0.4 ? 'DRIFT' : 'OFF'}`}
+  1494→                      </span>
+  1495→                    </div>
+  1496→                    {(() => {
+  1497→                      if (!phraseSyncState || phraseSyncState.lastRefBoundaryTime === 0) {
+  1498→                        return (
+  1499→                          <div className="text-[10px] text-slate-500 font-mono text-center py-2">
+  1500→                            Waiting for the radio's first section boundary — connect a stream and
+  1501→                            the MusicAnalyzer will detect drop / break / build events within ~30s.
+  1502→                          </div>
+  1503→                        );
+  1504→                      }
+  1505→                      const refBar = phraseSyncState.refPhraseBar ?? 0;
+  1506→                      const ownBar = phraseSyncState.ownPhraseBar ?? 0;
+  1507→                      const refLen = Math.max(4, Math.min(16, phraseSyncState.refPhraseLength ?? 8));
+  1508→                      const ownLen = Math.max(4, Math.min(16, phraseSyncState.ownPhraseLength ?? 8));
+  1509→                      const maxLen = Math.max(refLen, ownLen);
+  1510→                      const cells = Array.from({ length: maxLen }, (_, i) => i);
+  1511→                      const renderRow = (label: string, current: number, len: number, color: 'fuchsia' | 'cyan') => {
+  1512→                        const colorClasses = color === 'fuchsia'
+  1513→                          ? { active: 'bg-fuchsia-500 border-fuchsia-300', idle: 'bg-fuchsia-950 border-fuchsia-900', text: 'text-fuchsia-300' }
+  1514→                          : { active: 'bg-cyan-500 border-cyan-300', idle: 'bg-cyan-950 border-cyan-900', text: 'text-cyan-300' };
+  1515→                        return (
+  1516→                          <div className="flex items-center gap-2">
+  1517→                            <span className={`text-[10px] font-mono ${colorClasses.text} w-10`}>{label}</span>
+  1518→                            <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${maxLen}, 1fr)` }}>
+  1519→                              {cells.map(b => {
+  1520→                                const isActive = b === current && b < len;
+  1521→                                const isStart = b === 0;
+  1522→                                const isBeyondLen = b >= len;
+  1523→                                return (
+  1524→                                  <div
+  1525→                                    key={b}
+  1526→                                    className={`relative h-5 rounded border flex items-center justify-center transition-all duration-100 ${
+  1527→                                      isBeyondLen
+  1528→                                        ? 'bg-slate-900 border-slate-800 opacity-30'
+  1529→                                        : isActive ? colorClasses.active : colorClasses.idle
+  1530→                                    } ${isStart && !isBeyondLen ? 'ring-1 ring-offset-1 ring-offset-slate-950' : ''}`}
+  1531→                                    style={isStart && !isBeyondLen ? { boxShadow: `0 0 0 1px ${color === 'fuchsia' ? 'rgb(217 70 239)' : 'rgb(34 211 238)'}` } : undefined}
+  1532→                                  >
+  1533→                                    <span className={`text-[8px] font-mono font-bold ${isActive ? 'text-white' : 'text-slate-600'}`}>
+  1534→                                      {b + 1}
+  1535→                                    </span>
+  1536→                                  </div>
+  1537→                                );
+  1538→                              })}
+  1539→                            </div>
+  1540→                          </div>
+  1541→                        );
+  1542→                      };
+  1543→                      return (
+  1544→                        <div className="space-y-1.5">
+  1545→                          {renderRow('REF', refBar, refLen, 'fuchsia')}
+  1546→                          {renderRow('OURS', ownBar, ownLen, 'cyan')}
+  1547→                        </div>
+  1548→                      );
+  1549→                    })()}
+  1550→                    {/* Stats footer — alignment %, ref phrase length, realignment counter */}
+  1551→                    {phraseSyncState && phraseSyncState.lastRefBoundaryTime > 0 && (
+  1552→                      <div className="grid grid-cols-3 gap-2 mt-2.5 pt-2 border-t border-slate-800">
+  1553→                        <div>
+  1554→                          <div className="text-[9px] text-slate-500 uppercase font-mono tracking-wider">alignment</div>
+  1555→                          <div className={`text-sm font-mono font-bold ${
+  1556→                            phraseSyncState.alignment > 0.75 ? 'text-emerald-300'
+  1557→                            : phraseSyncState.alignment > 0.4 ? 'text-amber-300'
+  1558→                            : 'text-rose-300'
+  1559→                          }`}>
+  1560→                            {(phraseSyncState.alignment * 100).toFixed(0)}%
+  1561→                          </div>
+  1562→                          <div className="h-1 bg-slate-800 rounded mt-0.5 overflow-hidden">
+  1563→                            <div
+  1564→                              className={`h-full rounded transition-all duration-200 ${
+  1565→                                phraseSyncState.alignment > 0.75 ? 'bg-emerald-500'
+  1566→                                : phraseSyncState.alignment > 0.4 ? 'bg-amber-500'
+  1567→                                : 'bg-rose-500'
+  1568→                              }`}
+  1569→                              style={{ width: `${(phraseSyncState.alignment * 100).toFixed(1)}%` }}
+  1570→                            />
+  1571→                          </div>
+  1572→                        </div>
+  1573→                        <div>
+  1574→                          <div className="text-[9px] text-slate-500 uppercase font-mono tracking-wider">ref phrase</div>
+  1575→                          <div className="text-sm font-mono font-bold text-fuchsia-300">
+  1576→                            {phraseSyncState.refPhraseLength ?? 8}-bar
+  1577→                          </div>
+  1578→                          <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+  1579→                            {phraseSyncState.lastRefSectionLabel
+  1580→                              ? `last: ${phraseSyncState.lastRefSectionLabel}`
+  1581→                              : 'no boundary yet'}
+  1582→                          </div>
+  1583→                        </div>
+  1584→                        <div>
+  1585→                          <div className="text-[9px] text-slate-500 uppercase font-mono tracking-wider">realignments</div>
+  1586→                          <div className={`text-sm font-mono font-bold ${phraseSyncFlash ? 'text-emerald-300 animate-pulse' : 'text-slate-300'}`}>
+  1587→                            {phraseSyncState.realignments ?? 0}
+  1588→                          </div>
+  1589→                          <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+  1590→                            {phraseSyncState.realignments > 0
+  1591→                              ? `last ${(phraseSyncState.lastRealignment > 0
+  1592→                                ? Math.max(0, ((typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000 - phraseSyncState.lastRealignment)).toFixed(0)
+  1593→                                : '0')}s ago`
+  1594→                              : 'never'}
+  1595→                          </div>
+  1596→                        </div>
+  1597→                      </div>
+  1598→                    )}
+  1599→                  </div>
+  1600→
+  1601→                  {/* ── Beat grid visualization (per-bar, 4 beats) ── */}
+  1602→                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+  1603→                    <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-2 flex items-center justify-between">
+  1604→                      <span>Beat Grid (in-bar)</span>
+  1605→                      {syncStatus.beatDropPending && (
+  1606→                        <span className="text-amber-400 font-bold flex items-center gap-1">
+  1607→                          <Zap className="w-3 h-3" /> beat-drop pending
+  1608→                        </span>
+  1609→                      )}
+  1610→                    </div>
+  1611→                    {(() => {
+  1612→                      const refDb = syncStatus.refDownbeat ?? 0;
+  1613→                      const ownDb = syncStatus.ownDownbeat ?? 0;
+  1614→                      const refPhase = syncStatus.refPhase ?? 0;
+  1615→                      const ownPhase = syncStatus.ownPhase ?? 0;
+  1616→                      const beats = [0, 1, 2, 3];
+  1617→                      const renderRow = (label: string, current: number, phase: number, color: 'fuchsia' | 'cyan') => {
+  1618→                        const colorClasses = color === 'fuchsia'
+  1619→                          ? { active: 'bg-fuchsia-500 border-fuchsia-300', idle: 'bg-fuchsia-950 border-fuchsia-800', text: 'text-fuchsia-300', downbeat: 'bg-fuchsia-400' }
+  1620→                          : { active: 'bg-cyan-500 border-cyan-300', idle: 'bg-cyan-950 border-cyan-800', text: 'text-cyan-300', downbeat: 'bg-cyan-400' };
+  1621→                        return (
+  1622→                          <div className="flex items-center gap-2">
+  1623→                            <span className={`text-[10px] font-mono ${colorClasses.text} w-10`}>{label}</span>
+  1624→                            <div className="flex-1 grid grid-cols-4 gap-1.5">
+  1625→                              {beats.map(b => {
+  1626→                                const isActive = b === current;
+  1627→                                const isDownbeat = b === 0;
+  1628→                                return (
+  1629→                                  <div
+  1630→                                    key={b}
+  1631→                                    className={`relative h-8 rounded border-2 flex items-center justify-center transition-all duration-100 ${
+  1632→                                      isActive ? colorClasses.active : colorClasses.idle
+  1633→                                    } ${isDownbeat ? 'ring-1 ring-offset-1 ring-offset-slate-950' : ''}`}
+  1634→                                    style={isDownbeat ? { boxShadow: `0 0 0 1px ${color === 'fuchsia' ? 'rgb(217 70 239)' : 'rgb(34 211 238)'}` } : undefined}
+  1635→                                  >
+  1636→                                    <span className={`text-[10px] font-mono font-bold ${isActive ? 'text-white' : 'text-slate-600'}`}>
+  1637→                                      {b + 1}
+  1638→                                    </span>
+  1639→                                    {/* Phase progress bar at the bottom of the active beat */}
+  1640→                                    {isActive && (
+  1641→                                      <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/30 rounded-b">
+  1642→                                        <div
+  1643→                                          className={`h-full ${colorClasses.downbeat} rounded-b transition-all duration-75`}
+  1644→                                          style={{ width: `${(phase * 100).toFixed(1)}%` }}
+  1645→                                        />
+  1646→                                      </div>
+  1647→                                    )}
+  1648→                                  </div>
+  1649→                                );
+  1650→                              })}
+  1651→                            </div>
+  1652→                          </div>
+  1653→                        );
+  1654→                      };
+  1655→                      return (
+  1656→                        <div className="space-y-2">
+  1657→                          {renderRow('REF', refDb, refPhase, 'fuchsia')}
+  1658→                          {renderRow('OURS', ownDb, ownPhase, 'cyan')}
+  1659→                        </div>
+  1660→                      );
+  1661→                    })()}
+  1662→                    <div className="text-[10px] text-slate-500 font-mono mt-2 flex flex-wrap gap-3">
+  1663→                      <span><span className="inline-block w-2 h-2 bg-fuchsia-500 rounded-sm mr-1" />radio beat-in-bar</span>
+  1664→                      <span><span className="inline-block w-2 h-2 bg-cyan-500 rounded-sm mr-1" />engine beat-in-bar</span>
+  1665→                      <span><span className="inline-block w-2 h-2 border-2 border-fuchsia-300 rounded-sm mr-1" />downbeat (bar start)</span>
+  1666→                      <span>Δ {(syncStatus.phaseDiff * 100).toFixed(1)}% phase</span>
+  1667→                    </div>
+  1668→                  </div>
+  1669→
+  1670→                  {/* ── Convergence footer ── */}
+  1671→                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+  1672→                    <div className="flex items-center justify-between text-[10px] font-mono">
+  1673→                      <div className="flex items-center gap-2">
+  1674→                        <span className="text-slate-500 uppercase tracking-wider">BPM convergence</span>
+  1675→                        {Math.abs(syncStatus.convergenceBpmDelta) < 0.1 ? (
+  1676→                          <span className="text-emerald-400 flex items-center gap-1">
+  1677→                            <Check className="w-3 h-3" /> converged
+  1678→                          </span>
+  1679→                        ) : (
+  1680→                          <span className="text-amber-400 flex items-center gap-1">
+  1681→                            {syncStatus.convergenceBpmDelta > 0 ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
+  1682→                            {syncStatus.convergenceBpmDelta > 0 ? '+' : ''}{syncStatus.convergenceBpmDelta.toFixed(2)} BPM
+  1683→                          </span>
+  1684→                        )}
+  1685→                      </div>
+  1686→                      <div className="text-slate-500">
+  1687→                        phase Δ = {(syncStatus.phaseDiff * 100).toFixed(1)}%
+  1688→                        {syncStatus.phaseDiff < 0.04 && <span className="text-emerald-400 ml-1">· locked</span>}
+  1689→                      </div>
+  1690→                    </div>
+  1691→                  </div>
+  1692→                </>
+  1693→              )}
+  1694→            </CardContent>
+  1695→          </Card>
+  1696→        )}
+  1697→
+  1698→        {/* A/B COMPARISON (existing table) */}
+  1699→        {(mode === 'analyze' || mode === 'train') && (
+  1700→          <Card className="border-slate-800 bg-slate-900/60">
+  1701→            <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Gauge className="w-4 h-4 text-amber-400" /> A/B COMPARISON</CardTitle></CardHeader>
+  1702→            <CardContent>
+  1703→              <Table>
+  1704→                <TableHeader>
+  1705→                  <TableRow className="border-slate-700">
+  1706→                    <TableHead className="text-slate-400 font-mono text-[10px]">METRIC</TableHead>
+  1707→                    <TableHead className="text-fuchsia-400 font-mono text-[10px]">REFERENCE</TableHead>
+  1708→                    <TableHead className="text-cyan-400 font-mono text-[10px]">OUR ENGINE</TableHead>
+  1709→                    <TableHead className="text-amber-400 font-mono text-[10px]">ERROR</TableHead>
+  1710→                  </TableRow>
+  1711→                </TableHeader>
+  1712→                <TableBody>
+  1713→                  {[
+  1714→                    ['BPM', refProfile?.bpm.mean, selfMetrics?.bpm, '', (r: number, o: number) => (o - r).toFixed(1)],
+  1715→                    ['LUFS', refProfile?.lufs.mean, selfMetrics?.lufs, ' dB', (r: number, o: number) => (o - r).toFixed(1)],
+  1716→                    ['Sub', refProfile?.subEnergy.mean, selfMetrics?.subEnergy, '', (r: number, o: number) => (o - r).toFixed(2)],
+  1717→                    ['Low', refProfile?.lowEnergy.mean, selfMetrics?.lowEnergy, '', (r: number, o: number) => (o - r).toFixed(2)],
+  1718→                    ['Mid', refProfile?.midEnergy.mean, selfMetrics?.midEnergy, '', (r: number, o: number) => (o - r).toFixed(2)],
+  1719→                    ['High', refProfile?.highEnergy.mean, selfMetrics?.highEnergy, '', (r: number, o: number) => (o - r).toFixed(2)],
+  1720→                    ['Centroid', refProfile?.spectralCentroid.mean, selfMetrics?.spectralCentroid, ' Hz', (r: number, o: number) => (o - r).toFixed(0)],
+  1721→                    ['Transient', refProfile?.transientDensity.mean, selfMetrics?.transientDensity, '/s', (r: number, o: number) => (o - r).toFixed(1)],
+  1722→                    ['Kick decay', refProfile?.kickDecayMs.mean, selfMetrics?.kickDecayMs, 'ms', (r: number, o: number) => (o - r).toFixed(0)],
+  1723→                    ['Bass decay', refProfile?.bassDecayMs.mean, selfMetrics?.bassDecayMs, 'ms', (r: number, o: number) => (o - r).toFixed(0)],
+  1724→                    ['Stereo', refProfile?.stereoWidth.mean, selfMetrics?.stereoWidth, '', (r: number, o: number) => (o - r).toFixed(2)],
+  1725→                    ['Energy', refProfile?.energy.mean, selfMetrics?.energy, '', (r: number, o: number) => (o - r).toFixed(2)],
+  1726→                  ].map(([label, rv, ov, unit, fn]: any) => {
+  1727→                    const r = rv ?? 0, o = ov ?? 0;
+  1728→                    const err = r > 0 && o > 0 ? fn(r, o) : '—';
+  1729→                    const errColor = err === '—' ? 'text-slate-500' : Math.abs(parseFloat(err)) < 0.1 ? 'text-emerald-400' : Math.abs(parseFloat(err)) < 0.3 ? 'text-amber-400' : 'text-rose-400';
+  1730→                    return (
+  1731→                      <TableRow key={label} className="border-slate-800">
+  1732→                        <TableCell className="font-mono text-[10px] text-slate-300">{label}</TableCell>
+  1733→                        <TableCell className="font-mono text-[10px] text-fuchsia-300">{rv !== undefined ? rv.toFixed(2) : '—'}{unit}</TableCell>
+  1734→                        <TableCell className="font-mono text-[10px] text-cyan-300">{ov !== undefined ? ov.toFixed(2) : '—'}{unit}</TableCell>
+  1735→                        <TableCell className={`font-mono text-[10px] ${errColor}`}>{err}{err !== '—' ? unit : ''}</TableCell>
+  1736→                      </TableRow>
+  1737→                    );
+  1738→                  })}
+  1739→                </TableBody>
+  1740→              </Table>
+  1741→              {(!refProfile || !selfMetrics) && <p className="text-[10px] text-amber-400 mt-2 font-mono">{!refProfile ? '⚠ Connect reference' : ''} {!selfMetrics ? '⚠ Start engine' : ''}</p>}
+  1742→            </CardContent>
+  1743→          </Card>
+  1744→        )}
+  1745→
+  1746→        {/* ─── DEEP A/B ANALYSIS (Task A1) ─── */}
+  1747→        {/* Massive expansion of the A/B comparison: detects EFFECTS
+  1748→            (reverb/delay/chorus/distortion/compression/filter), TIMBRE
+  1749→            fingerprints (spectral shape + harmonics + formants + signature),
+  1750→            UNIQUE ELEMENTS (risers/impacts/FX/vocal chops/glitches/stabs),
+  1751→            and the SYNTHESIS PLAN (mode routing + per-track sends + reasons).
+  1752→            Visible in analyze + train when the engine is running. */}
+  1753→        {(mode === 'analyze' || mode === 'train') && engineOn && (
+  1754→          <Card className="border-slate-800 bg-slate-900/60">
+  1755→            <CardHeader>
+  1756→              <CardTitle className="flex items-center gap-2 text-sm">
+  1757→                <ScanSearch className="w-4 h-4 text-fuchsia-400" />
+  1758→                DEEP A/B ANALYSIS
+  1759→                <span className="text-[10px] text-slate-500 font-mono ml-2">effects · timbre · unique · plan</span>
+  1760→              </CardTitle>
+  1761→            </CardHeader>
+  1762→            <CardContent className="space-y-4">
+  1763→              {(!deepAnalysis || (!deepAnalysis.effects && !deepAnalysis.refTimbre)) ? (
+  1764→                <div className="text-[11px] text-amber-400 font-mono py-6 text-center">
+  1765→                  ⚠ Waiting for reference features — connect a stream and the deep analysis
+  1766→                  (effects / timbre / unique elements / synthesis plan) appears here within ~10s.
+  1767→                </div>
+  1768→              ) : (
+  1769→                <>
+  1770→                  {/* ─── 1. EFFECTS ─── */}
+  1771→                  <div>
+  1772→                    <div className="text-[10px] uppercase tracking-wider font-mono mb-2 text-cyan-400 flex items-center gap-1">
+  1773→                      <Waves className="w-3 h-3" /> Effects Detection
+  1774→                    </div>
+  1775→                    {deepAnalysis.effects ? (
+  1776→                      <div className="bg-slate-950 border border-slate-800 rounded p-3">
+  1777→                        <Table>
+  1778→                          <TableHeader>
+  1779→                            <TableRow className="border-slate-700">
+  1780→                              <TableHead className="text-slate-400 font-mono text-[10px]">EFFECT</TableHead>
+  1781→                              <TableHead className="text-fuchsia-400 font-mono text-[10px]">REFERENCE</TableHead>
+  1782→                              <TableHead className="text-cyan-400 font-mono text-[10px]">OUR ENGINE</TableHead>
+  1783→                              <TableHead className="text-amber-400 font-mono text-[10px]">DELTA</TableHead>
+  1784→                              <TableHead className="text-emerald-400 font-mono text-[10px]">MATCH</TableHead>
+  1785→                            </TableRow>
+  1786→                          </TableHeader>
+  1787→                          <TableBody>
+  1788→                            {(() => {
+  1789→                              const e = deepAnalysis.effects;
+  1790→                              const ourEffects = deepAnalysis.currentTimbre;
+  1791→                              // Compute "our" effects proxy from the current timbre + per-track sends in pursuitDashboard.
+  1792→                              const ourReverb = pursuitDashboard?.effects?.reverbSend
+  1793→                                ? Math.max(...pursuitDashboard.effects.reverbSend.slice(5, 8).map((v: number) => v || 0))
+  1794→                                : 0;
+  1795→                              const ourDelay = pursuitDashboard?.effects?.delaySend
+  1796→                                ? Math.max(...pursuitDashboard.effects.delaySend.slice(5, 8).map((v: number) => v || 0))
+  1797→                                : 0;
+  1798→                              const ourChorus = pursuitDashboard?.effects?.chorusSend
+  1799→                                ? Math.max(...pursuitDashboard.effects.chorusSend.slice(5, 8).map((v: number) => v || 0))
+  1800→                                : 0;
+  1801→                              const ourDist = pursuitDashboard?.effects?.distortionSend
+  1802→                                ? Math.max(...pursuitDashboard.effects.distortionSend.slice(4, 8).map((v: number) => v || 0))
+  1803→                                : 0;
+  1804→                              const rows: [string, number, number, string][] = [
+  1805→                                ['Reverb',     e.reverbAmount,     ourReverb,  ''],
+  1806→                                ['Rev decay',  e.reverbDecay,      0,          's'],
+  1807→                                ['Delay',      e.delayAmount,      ourDelay,   ''],
+  1808→                                ['Delay time', e.delayTime,        0,          'ms'],
+  1809→                                ['Delay fb',   e.delayFeedback,    0,          ''],
+  1810→                                ['Chorus',     e.chorusAmount,     ourChorus,  ''],
+  1811→                                ['Chorus rate',e.chorusRate,       0,          'Hz'],
+  1812→                                ['Distortion', e.distortionAmount, ourDist,    ''],
+  1813→                                ['Compression',e.compressionAmount,0,         ''],
+  1814→                                ['Filter cut', e.filterCutoff,     0,          'Hz'],
+  1815→                                ['Filter res', e.filterResonance,  0,          ''],
+  1816→                                ['Stereo',     e.stereoWidth,      ourEffects?.spectralSpread ? Math.min(1, ourEffects.spectralSpread / 6000) : 0, ''],
+  1817→                              ];
+  1818→                              return rows.map(([label, ref, our, unit]) => {
+  1819→                                const refStr = ref > 0 ? (unit === 'Hz' || unit === 'ms' ? ref.toFixed(0) : ref.toFixed(2)) : '—';
+  1820→                                const ourStr = our > 0 ? (unit === 'Hz' || unit === 'ms' ? our.toFixed(0) : our.toFixed(2)) : '—';
+  1821→                                const delta = ref > 0 && our > 0 ? our - ref : null;
+  1822→                                const dColor = delta === null ? 'text-slate-500'
+  1823→                                  : Math.abs(delta) < 0.05 ? 'text-emerald-400'
+  1824→                                  : Math.abs(delta) < 0.15 ? 'text-amber-400'
+  1825→                                  : 'text-rose-400';
+  1826→                                const match = delta === null ? '—'
+  1827→                                  : Math.abs(delta) < 0.05 ? '✓'
+  1828→                                  : Math.abs(delta) < 0.15 ? '~'
+  1829→                                  : '✗';
+  1830→                                const matchColor = match === '✓' ? 'text-emerald-400'
+  1831→                                  : match === '~' ? 'text-amber-400'
+  1832→                                  : match === '✗' ? 'text-rose-400' : 'text-slate-500';
+  1833→                                return (
+  1834→                                  <TableRow key={label} className="border-slate-800">
+  1835→                                    <TableCell className="font-mono text-[10px] text-slate-300">{label}</TableCell>
+  1836→                                    <TableCell className="font-mono text-[10px] text-fuchsia-300">{refStr}{unit}</TableCell>
+  1837→                                    <TableCell className="font-mono text-[10px] text-cyan-300">{ourStr}{unit}</TableCell>
+  1838→                                    <TableCell className={`font-mono text-[10px] ${dColor}`}>
+  1839→                                      {delta === null ? '—' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)}${unit}`}
+  1840→                                    </TableCell>
+  1841→                                    <TableCell className={`font-mono text-[10px] font-bold ${matchColor}`}>{match}</TableCell>
+  1842→                                  </TableRow>
+  1843→                                );
+  1844→                              });
+  1845→                            })()}
+  1846→                          </TableBody>
+  1847→                        </Table>
+  1848→                        {deepAnalysis.effects.haasEffect && (
+  1849→                          <div className="text-[10px] text-fuchsia-400 font-mono mt-2">
+  1850→                            ⚡ Haas / double-track detected on reference (low correlation + wide stereo)
+  1851→                          </div>
+  1852→                        )}
+  1853→                      </div>
+  1854→                    ) : (
+  1855→                      <div className="text-[10px] text-slate-500 font-mono">No effects detected yet.</div>
+  1856→                    )}
+  1857→                  </div>
+  1858→
+  1859→                  {/* ─── 2. TIMBRE FINGERPRINT ─── */}
+  1860→                  <div>
+  1861→                    <div className="text-[10px] uppercase tracking-wider font-mono mb-2 text-emerald-400 flex items-center gap-1">
+  1862→                      <Fingerprint className="w-3 h-3" /> Timbre Fingerprint
+  1863→                    </div>
+  1864→                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+  1865→                      {/* Reference vs our timbre side by side */}
+  1866→                      <div className="bg-slate-950 border border-slate-800 rounded p-3">
+  1867→                        <Table>
+  1868→                          <TableHeader>
+  1869→                            <TableRow className="border-slate-700">
+  1870→                              <TableHead className="text-slate-400 font-mono text-[10px]">METRIC</TableHead>
+  1871→                              <TableHead className="text-fuchsia-400 font-mono text-[10px]">REF</TableHead>
+  1872→                              <TableHead className="text-cyan-400 font-mono text-[10px]">OURS</TableHead>
+  1873→                              <TableHead className="text-amber-400 font-mono text-[10px]">Δ</TableHead>
+  1874→                            </TableRow>
+  1875→                          </TableHeader>
+  1876→                          <TableBody>
+  1877→                            {(() => {
+  1878→                              const r = deepAnalysis.refTimbre;
+  1879→                              const o = deepAnalysis.currentTimbre;
+  1880→                              if (!r) return null;
+  1881→                              const rows: [string, number, number, string, number][] = [
+  1882→                                ['Centroid',     r.spectralCentroid,    o?.spectralCentroid ?? 0,    'Hz', 200],
+  1883→                                ['Spread',       r.spectralSpread,      o?.spectralSpread ?? 0,      'Hz', 500],
+  1884→                                ['Skewness',     r.spectralSkewness,    o?.spectralSkewness ?? 0,    '',   0.3],
+  1885→                                ['Kurtosis',     r.spectralKurtosis,    o?.spectralKurtosis ?? 0,    '',   1.5],
+  1886→                                ['Flux',         r.spectralFlux,        o?.spectralFlux ?? 0,        '',   0.15],
+  1887→                                ['f0',           r.fundamentalFrequency,o?.fundamentalFrequency ?? 0,'Hz', 30],
+  1888→                                ['Inharmonicity',r.inharmonicity,       o?.inharmonicity ?? 0,       '',   0.1],
+  1889→                                ['Odd:Even',     r.oddEvenRatio,        o?.oddEvenRatio ?? 0,        '',   0.3],
+  1890→                                ['Attack',       r.attackTime,          o?.attackTime ?? 0,          'ms', 5],
+  1891→                              ];
+  1892→                              return rows.map(([label, rv, ov, unit, tol]) => {
+  1893→                                const delta = rv > 0 && ov > 0 ? ov - rv : null;
+  1894→                                const dColor = delta === null ? 'text-slate-500'
+  1895→                                  : Math.abs(delta) <= tol ? 'text-emerald-400'
+  1896→                                  : Math.abs(delta) <= tol * 3 ? 'text-amber-400'
+  1897→                                  : 'text-rose-400';
+  1898→                                return (
+  1899→                                  <TableRow key={label} className="border-slate-800">
+  1900→                                    <TableCell className="font-mono text-[10px] text-slate-300">{label}</TableCell>
+  1901→                                    <TableCell className="font-mono text-[10px] text-fuchsia-300">
+  1902→                                      {rv > 0 ? (unit === 'Hz' || unit === 'ms' ? rv.toFixed(0) : rv.toFixed(2)) : '—'}{unit}
+  1903→                                    </TableCell>
+  1904→                                    <TableCell className="font-mono text-[10px] text-cyan-300">
+  1905→                                      {ov > 0 ? (unit === 'Hz' || unit === 'ms' ? ov.toFixed(0) : ov.toFixed(2)) : '—'}{unit}
+  1906→                                    </TableCell>
+  1907→                                    <TableCell className={`font-mono text-[10px] ${dColor}`}>
+  1908→                                      {delta === null ? '—' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)}`}
+  1909→                                    </TableCell>
+  1910→                                  </TableRow>
+  1911→                                );
+  1912→                              });
+  1913→                            })()}
+  1914→                          </TableBody>
+  1915→                        </Table>
+  1916→                        {/* Signatures + formants + comparison */}
+  1917→                        <div className="mt-3 space-y-2 text-[10px] font-mono">
+  1918→                          <div className="flex flex-wrap gap-2">
+  1919→                            <span className="text-slate-500">REF sig:</span>
+  1920→                            <span className="text-fuchsia-300 font-bold">{deepAnalysis.refTimbre?.signature ?? '—'}</span>
+  1921→                          </div>
+  1922→                          <div className="flex flex-wrap gap-2">
+  1923→                            <span className="text-slate-500">OURS sig:</span>
+  1924→                            <span className="text-cyan-300 font-bold">{deepAnalysis.currentTimbre?.signature ?? '—'}</span>
+  1925→                          </div>
+  1926→                          {deepAnalysis.refTimbre?.formants && deepAnalysis.refTimbre.formants.length > 0 && (
+  1927→                            <div className="flex flex-wrap gap-2">
+  1928→                              <span className="text-slate-500">REF formants:</span>
+  1929→                              {deepAnalysis.refTimbre.formants.map((f: any, i: number) => (
+  1930→                                <span key={i} className="text-emerald-300 px-1.5 py-0.5 bg-emerald-950 border border-emerald-800 rounded text-[9px]">
+  1931→                                  {f.freq.toFixed(0)}Hz · {(f.amp * 100).toFixed(0)}%
+  1932→                                </span>
+  1933→                              ))}
+  1934→                            </div>
+  1935→                          )}
+  1936→                        </div>
+  1937→                      </div>
+  1938→
+  1939→                      {/* Similarity + matching traits + differences */}
+  1940→                      <div className="bg-slate-950 border border-slate-800 rounded p-3 space-y-3">
+  1941→                        <div>
+  1942→                          <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Similarity</div>
+  1943→                          <div className="flex items-baseline justify-between">
+  1944→                            <span className={`text-2xl font-bold font-mono ${
+  1945→                              (deepAnalysis.timbreComparison?.similarity ?? 0) > 0.7 ? 'text-emerald-300'
+  1946→                              : (deepAnalysis.timbreComparison?.similarity ?? 0) > 0.4 ? 'text-amber-300'
+  1947→                              : 'text-rose-300'
+  1948→                            }`}>
+  1949→                              {deepAnalysis.timbreComparison ? `${Math.round(deepAnalysis.timbreComparison.similarity * 100)}%` : '—'}
+  1950→                            </span>
+  1951→                            <span className="text-[10px] text-slate-500 font-mono">target ≥ 70%</span>
+  1952→                          </div>
+  1953→                          {deepAnalysis.timbreComparison && (
+  1954→                            <div className="mt-2">
+  1955→                              <MiniBar
+  1956→                                value={deepAnalysis.timbreComparison.similarity}
+  1957→                                max={1}
+  1958→                                color={(deepAnalysis.timbreComparison.similarity ?? 0) > 0.7 ? 'bg-emerald-500' : (deepAnalysis.timbreComparison.similarity ?? 0) > 0.4 ? 'bg-amber-500' : 'bg-rose-500'}
+  1959→                              />
+  1960→                            </div>
+  1961→                          )}
+  1962→                        </div>
+  1963→                        {deepAnalysis.timbreComparison?.matchingTraits && deepAnalysis.timbreComparison.matchingTraits.length > 0 && (
+  1964→                          <div>
+  1965→                            <div className="text-[10px] text-emerald-400 uppercase tracking-wider font-mono mb-1">Matching Traits</div>
+  1966→                            <ul className={`space-y-1 text-[10px] font-mono text-slate-300 ${scrollList}`}>
+  1967→                              {deepAnalysis.timbreComparison.matchingTraits.map((t: string, i: number) => (
+  1968→                                <li key={i} className="flex gap-1.5">
+  1969→                                  <Check className="w-3 h-3 mt-0.5 flex-shrink-0 text-emerald-400" />
+  1970→                                  <span>{t}</span>
+  1971→                                </li>
+  1972→                              ))}
+  1973→                            </ul>
+  1974→                          </div>
+  1975→                        )}
+  1976→                        {deepAnalysis.timbreComparison?.differences && deepAnalysis.timbreComparison.differences.length > 0 && (
+  1977→                          <div>
+  1978→                            <div className="text-[10px] text-rose-400 uppercase tracking-wider font-mono mb-1">Differences</div>
+  1979→                            <ul className={`space-y-1 text-[10px] font-mono text-slate-300 ${scrollList}`}>
+  1980→                              {deepAnalysis.timbreComparison.differences.map((d: string, i: number) => (
+  1981→                                <li key={i} className="flex gap-1.5">
+  1982→                                  <ArrowDown className="w-3 h-3 mt-0.5 flex-shrink-0 text-rose-400" />
+  1983→                                  <span>{d}</span>
+  1984→                                </li>
+  1985→                              ))}
+  1986→                            </ul>
+  1987→                          </div>
+  1988→                        )}
+  1989→                      </div>
+  1990→                    </div>
+  1991→                  </div>
+  1992→
+  1993→                  {/* ─── 3. UNIQUE ELEMENTS ─── */}
+  1994→                  <div>
+  1995→                    <div className="text-[10px] uppercase tracking-wider font-mono mb-2 text-amber-400 flex items-center gap-1">
+  1996→                      <Sparkles className="w-3 h-3" /> Unique Elements
+  1997→                      <span className="text-slate-500 ml-1">({deepAnalysis.uniqueElements?.length ?? 0} detected · history {deepAnalysis.historyLength ?? 0} windows)</span>
+  1998→                    </div>
+  1999→                    {deepAnalysis.uniqueElements && deepAnalysis.uniqueElements.length > 0 ? (
+  2000→                      <div className={`space-y-1.5 ${scrollList}`}>
+
+[showing lines 1-2000 of 3286; use offset=2001 with limit to continue reading]

@@ -91,6 +91,11 @@ export default function PSY4Page() {
   // Engine
   const [engineOn, setEngineOn] = useState(false);
   const [engineLoading, setEngineLoading] = useState(false);
+  // ── F1-FIX-LOOP: engineStopping state mirrors engineStoppingRef for UI ──
+  // feedback (disabled buttons, "STOPPING…" label). The ref is the imperative
+  // guard inside startEngine (doesn't depend on React render timing); the
+  // state is for reactive UI updates.
+  const [engineStopping, setEngineStopping] = useState(false);
   const [selfMetrics, setSelfMetrics] = useState<RefMetrics | null>(null);
   const [engineState, setEngineState] = useState<{ bpm: number; key: string; section: string; style: string }>({
     bpm: 145, key: 'phrygian', section: 'INTRO', style: 'dark-psy',
@@ -182,6 +187,19 @@ export default function PSY4Page() {
   const engineRef = useRef<any>(null);
   const trainerRef = useRef<any>(null);
   const refAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // ── F1-FIX-LOOP: stable startEngine + singleton guard refs ──
+  // worldIdRef mirrors the worldId state so startEngine's useCallback can have
+  // an EMPTY dependency array (FIX 1). Without this, every worldId change
+  // (including the engine's own onWorldChange → setWorldId auto-switch) would
+  // recreate the startEngine callback, and any subsequent re-trigger would
+  // create a NEW engine while the old one is still running. This was ROAST-8
+  // root cause #2 + #5.
+  const worldIdRef = useRef(worldId);
+  // engineStoppingRef is the imperative singleton guard: while the old engine
+  // is being awaited to stop(), startEngine returns immediately (FIX 2). The
+  // matching `engineStopping` STATE is for UI feedback (disabled buttons).
+  const engineStoppingRef = useRef(false);
 
   // Previous deltas per pursuit dimension, used to render convergence arrows.
   const prevDeltaRef = useRef<Record<string, number>>({});
@@ -293,16 +311,40 @@ export default function PSY4Page() {
   // ─── Engine ───────────────────────────────────────────────────────────────
 
   const startEngine = useCallback(async () => {
+    // ── F1-FIX-LOOP: singleton guard (FIX 2) ──
+    // If a previous engine is still stopping (stop() is async — it awaits
+    // AudioContext.close() + worklet port.close()), bail out immediately.
+    // Without this, a rapid second START click (or a re-trigger from a
+    // stale closure) would create a NEW engine while the OLD one is still
+    // tearing down its AudioContext, leaving orphaned worklet nodes. This
+    // was ROAST-8 root cause #1 + #4.
+    if (engineStoppingRef.current) return;
+    // If an engine is already running, ignore the START click — the user
+    // should click STOP first. (The button is also disabled when engineOn
+    // is true, but this guards against any stray programmatic calls.)
+    if (engineRef.current) return;
+
+    // Read worldId from the ref (FIX 1) — NOT from the worldId state. This
+    // lets the useCallback have an EMPTY dependency array, so the callback
+    // identity is stable across worldId changes. The engine's own
+    // onWorldChange → setWorldId auto-switch no longer recreates this
+    // callback, eliminating the 6× creation loop (ROAST-8 root cause #2 + #5).
+    const wid = worldIdRef.current;
+
     try {
       // Task F1-F3: show "Loading engine..." while the audio backend initializes.
       // init() is now async (awaits the worklet module load, ~50-200ms). The
       // START button is disabled + shows a spinner until the promise resolves.
       setEngineLoading(true);
       const { Psy4EngineV2 } = await import('@/lib/studio/engine/psy4EngineV2');
-      if (engineRef.current) engineRef.current.stop();
       const engine = new Psy4EngineV2();
       engine.onSectionChange = (s: string) => setEngineState(prev => ({ ...prev, section: s }));
       // Track D: subscribe to world changes so the dropdown + STYLE card follow.
+      // F1-FIX-LOOP (FIX 4): this callback is a UI-ONLY notification. The
+      // engine has ALREADY called switchWorld() internally before invoking
+      // onWorldChange — we must NOT recreate the engine here. With FIX 1,
+      // setWorldId no longer recreates startEngine (empty deps), so this is
+      // safe: we update React state for the dropdown + STYLE card display.
       engine.onWorldChange = (newWorldId: string, reason?: string) => {
         setActiveWorld(newWorldId);
         setWorldId(newWorldId);
@@ -320,13 +362,13 @@ export default function PSY4Page() {
       // worklet (or legacy graph) is fully loaded before scheduling notes.
       // This fixes ROAST-7 bug #2: "If user clicks START before worklet loads,
       // triggerDrum/triggerSynth silently return. No audio, no feedback."
-      await engine.start(worldId);
+      await engine.start(wid);
       engineRef.current = engine;
       setEngineOn(true);
       setEngineLoading(false);
-      setActiveWorld(engine.getCurrentWorldId?.() ?? worldId);
+      setActiveWorld(engine.getCurrentWorldId?.() ?? wid);
       setAutoSwitchActive(false);
-      setEngineState({ bpm: (engine as any)._bpm || 145, key: engine.getMusicalKey()?.scale || 'phrygian', section: 'INTRO', style: worldId });
+      setEngineState({ bpm: (engine as any)._bpm || 145, key: engine.getMusicalKey()?.scale || 'phrygian', section: 'INTRO', style: wid });
 
       // Self-analyzer
       const analyser = engine.getAnalyser();
@@ -442,46 +484,77 @@ export default function PSY4Page() {
       setEngineLoading(false);
       toast.error(`Engine error: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [worldId]);
+  }, []);
 
   // Mirror activeWorld in a ref so the polling closure sees the latest value
   // without re-binding on every change (which would re-create the analyzer).
   const activeWorldRef = useRef('dark-psy');
   useEffect(() => { activeWorldRef.current = activeWorld; }, [activeWorld]);
 
-  const stopEngine = useCallback(() => {
-    if (analyzerRef.current) { analyzerRef.current.detach(); analyzerRef.current = null; }
-    if (engineRef.current) { engineRef.current.stop(); engineRef.current = null; }
-    if (trainerRef.current) { trainerRef.current.stop(); trainerRef.current = null; }
-    setEngineOn(false); setSelfMetrics(null); setLearning(false);
-    setStyleMatches([]); setPursuit(null);
-    // Reset Integration UI state (Task I1-UI) so stale data doesn't persist.
-    setSynthChar(null); setSynthOverrides({}); setEffectsState(null);
-    setCurrentChord(null); setProgressionInfo(null);
-    setPursuitDashboard(null); setMelodyState(null);
-    setDeepAnalysis(null);
-    // ── Task P2: clear the musical analysis snapshot ──
-    setMusicalAnalysis(null);
-    // ── Task D1: clear sync status (the engine is gone) ──
-    // We DON'T reset syncEnabled — the user's toggle choice persists across
-    // restarts. When the engine is restarted, the new engine's PhaseSync
-    // will pick up the toggle state on the first toggle click.
-    setSyncStatus(null);
-    // ── Task P4: clear phrase-sync state (the engine is gone) ──
-    setPhraseSyncState(null);
-    setPhraseSyncFlash(false);
-    prevRealignmentsRef.current = 0;
-    // ── Task T1 (active learning): keep the learning status visible ──
-    // We DON'T clear learningStatus — the engine saved its memory to
-    // localStorage on stop(), and the next engine instance will reload it.
-    // Clearing here would briefly show "no patterns" before the new engine
-    // loads them, which is misleading. The status refreshes on the next
-    // analyzer tick after restart.
-    // ── Task P5 (adaptive learning): same pattern — keep the vocabulary
-    // stats visible across stop/start (the vocabulary persists to
-    // localStorage and reloads on the next engine instance). ──
-    prevDeltaRef.current = {};
-    lastSwitchToastRef.current = '';
+  // ── F1-FIX-LOOP: keep worldIdRef in sync with the worldId state ──
+  // startEngine reads worldIdRef.current (not worldId) so its useCallback
+  // dependency array can be empty (FIX 1). This effect runs on every worldId
+  // change (manual dropdown selection OR engine auto-switch) and updates the
+  // ref atomically — no re-creation of startEngine.
+  useEffect(() => { worldIdRef.current = worldId; }, [worldId]);
+
+  // ── F1-FIX-LOOP: stopEngine is now async + guarded (FIX 2 + FIX 3) ──
+  // engine.stop() is async (it awaits AudioContext.close() + worklet
+  // port.close()). We set engineStoppingRef + engineStopping state BEFORE
+  // awaiting so:
+  //   (a) startEngine's singleton guard rejects any concurrent START click
+  //       while we're still tearing down the old engine.
+  //   (b) The STOP button shows "STOPPING…" + is disabled (no double-stop).
+  // All UI state resets happen in the `finally` block so they fire even if
+  // stop() throws (e.g., ctx.close() on an already-closed context).
+  const stopEngine = useCallback(async () => {
+    if (engineStoppingRef.current) return; // already stopping — no-op
+    engineStoppingRef.current = true;
+    setEngineStopping(true);
+    try {
+      if (analyzerRef.current) { analyzerRef.current.detach(); analyzerRef.current = null; }
+      if (engineRef.current) {
+        // F1-FIX-LOOP (FIX 6): await the full dispose — the engine closes
+        // its AudioContext + disconnects the worklet node + analyser. Only
+        // AFTER this resolves is it safe for startEngine to create a new
+        // engine (the singleton guard in startEngine checks engineStoppingRef).
+        try { await engineRef.current.stop(); } catch { /* best-effort */ }
+        engineRef.current = null;
+      }
+      if (trainerRef.current) { trainerRef.current.stop(); trainerRef.current = null; }
+      setEngineOn(false); setSelfMetrics(null); setLearning(false);
+      setStyleMatches([]); setPursuit(null);
+      // Reset Integration UI state (Task I1-UI) so stale data doesn't persist.
+      setSynthChar(null); setSynthOverrides({}); setEffectsState(null);
+      setCurrentChord(null); setProgressionInfo(null);
+      setPursuitDashboard(null); setMelodyState(null);
+      setDeepAnalysis(null);
+      // ── Task P2: clear the musical analysis snapshot ──
+      setMusicalAnalysis(null);
+      // ── Task D1: clear sync status (the engine is gone) ──
+      // We DON'T reset syncEnabled — the user's toggle choice persists across
+      // restarts. When the engine is restarted, the new engine's PhaseSync
+      // will pick up the toggle state on the first toggle click.
+      setSyncStatus(null);
+      // ── Task P4: clear phrase-sync state (the engine is gone) ──
+      setPhraseSyncState(null);
+      setPhraseSyncFlash(false);
+      prevRealignmentsRef.current = 0;
+      // ── Task T1 (active learning): keep the learning status visible ──
+      // We DON'T clear learningStatus — the engine saved its memory to
+      // localStorage on stop(), and the next engine instance will reload it.
+      // Clearing here would briefly show "no patterns" before the new engine
+      // loads them, which is misleading. The status refreshes on the next
+      // analyzer tick after restart.
+      // ── Task P5 (adaptive learning): same pattern — keep the vocabulary
+      // stats visible across stop/start (the vocabulary persists to
+      // localStorage and reloads on the next engine instance). ──
+      prevDeltaRef.current = {};
+      lastSwitchToastRef.current = '';
+    } finally {
+      engineStoppingRef.current = false;
+      setEngineStopping(false);
+    }
   }, []);
 
   // ─── Learning ─────────────────────────────────────────────────────────────
@@ -508,13 +581,23 @@ export default function PSY4Page() {
   }, []);
 
   // When the user manually selects a world, turn off AUTO mode and apply it live.
+  // ── F1-FIX-LOOP (FIX 5): switch the world IN-PLACE — do NOT recreate the ──
+  // engine. The old code called `engineRef.current.start?.(newWorld)` on a
+  // running engine, which is a no-op for transport (start() returns early if
+  // already playing) AND does NOT switch the world (start() only sets the
+  // world on a fresh start). So changing the dropdown while running had no
+  // audible effect — and worse, it risked re-entering the start path. The
+  // fix: call the engine's `switchWorld(newWorld)` method, which smoothly
+  // transitions BPM/key/FX/presets without stopping playback. If the engine
+  // is NOT running, just setWorldId (above) — startEngine will pick it up
+  // via worldIdRef when the user clicks START.
   const onUserSelectWorld = useCallback((newWorld: string) => {
     setWorldId(newWorld);
     setActiveWorld(newWorld);
     setAutoSwitchActive(false);
     lastSwitchToastRef.current = newWorld;
     if (engineRef.current) {
-      try { engineRef.current.start?.(newWorld); } catch {}
+      try { engineRef.current.switchWorld?.(newWorld); } catch {}
     }
   }, []);
 
@@ -564,10 +647,22 @@ export default function PSY4Page() {
 
   // ─── Cleanup ──────────────────────────────────────────────────────────────
 
+  // F1-FIX-LOOP: engine.stop() is now async (it awaits AudioContext.close()).
+  // useEffect cleanup can't return a Promise, so we fire-and-forget the async
+  // stop on unmount — the browser keeps the promise alive until it resolves
+  // (or the page unloads, at which point the OS reclaims the audio resources
+  // anyway). This is the same lifecycle as before; only the await semantics
+  // changed. The critical singleton guard is in startEngine (which awaits),
+  // not here.
   useEffect(() => () => {
     if (listenerRef.current) listenerRef.current.disconnect();
     if (analyzerRef.current) analyzerRef.current.detach();
-    if (engineRef.current) engineRef.current.stop();
+    if (engineRef.current) {
+      // Fire-and-forget — can't await in a sync cleanup. Wrapped in try/catch
+      // so a rejected stop() promise doesn't trigger an unhandled rejection.
+      try { void engineRef.current.stop?.(); } catch { /* best-effort */ }
+      engineRef.current = null;
+    }
     if (trainerRef.current) trainerRef.current.stop();
   }, []);
 
@@ -825,8 +920,17 @@ export default function PSY4Page() {
             <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Activity className="w-4 h-4 text-cyan-400" /> ENGINE V2</CardTitle></CardHeader>
             <CardContent className="space-y-2">
               <div className="flex gap-2">
-                {!engineOn ? (
-                  <Button onClick={startEngine} size="sm" disabled={engineLoading} className="bg-cyan-600 hover:bg-cyan-700">
+                {/* ── F1-FIX-LOOP (FIX 3): button states ──
+                    * engineStopping  → disabled STOPPING… button (tearing down)
+                    * !engineOn       → START button (disabled while loading OR
+                                       stopping OR already on — defensive)
+                    * engineOn        → STOP button (disabled while stopping) */}
+                {engineStopping ? (
+                  <Button size="sm" disabled variant="destructive">
+                    <Loader2 className="w-4 h-4 mr-1 animate-spin" /> STOPPING…
+                  </Button>
+                ) : !engineOn ? (
+                  <Button onClick={startEngine} size="sm" disabled={engineLoading || engineStopping || engineOn} className="bg-cyan-600 hover:bg-cyan-700">
                     {engineLoading ? (
                       <><Loader2 className="w-4 h-4 mr-1 animate-spin" /> LOADING…</>
                     ) : (
@@ -834,12 +938,17 @@ export default function PSY4Page() {
                     )}
                   </Button>
                 ) : (
-                  <Button onClick={stopEngine} size="sm" variant="destructive"><Square className="w-4 h-4 mr-1" /> STOP</Button>
+                  <Button onClick={stopEngine} size="sm" variant="destructive" disabled={engineStopping}><Square className="w-4 h-4 mr-1" /> STOP</Button>
                 )}
               </div>
               {engineLoading && !engineOn && (
                 <div className="text-[10px] font-mono text-amber-400 animate-pulse">
                   Loading audio engine (worklet module + DSP voices)…
+                </div>
+              )}
+              {engineStopping && (
+                <div className="text-[10px] font-mono text-amber-400 animate-pulse">
+                  Stopping audio engine (closing AudioContext + worklet)…
                 </div>
               )}
               {engineOn && (
