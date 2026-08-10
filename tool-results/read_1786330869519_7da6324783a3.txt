@@ -1,0 +1,948 @@
+     1→/**
+     2→ * PSY4 Engine V2 — based on PSY6 architecture (pooled voices, factory presets, step sequencer).
+     3→ *
+     4→ * This is a MAJOR upgrade from LiteEngine V1:
+     5→ *   - Pooled voices (persistent oscillators, no GC pressure)
+     6→ *   - 8 tracks (4 drums + 4 synth) with factory presets
+     7→ *   - Step sequencer with patterns, scenes, variation
+     8→ *   - Macros that affect real parameters
+     9→ *   - Worker-timed scheduler (jitter-resistant)
+    10→ *   - Syncs BPM and key with radio
+    11→ *
+    12→ * Sound quality comes from the 40+ factory presets adapted from PSY6.
+    13→ */
+    14→
+    15→// ─── Constants ──────────────────────────────────────────────────────────────
+    16→
+    17→const SCALES: Record<string, number[]> = {
+    18→  minor: [0, 2, 3, 5, 7, 8, 10],
+    19→  major: [0, 2, 4, 5, 7, 9, 11],
+    20→  dorian: [0, 2, 3, 5, 7, 9, 10],
+    21→  phrygian: [0, 1, 3, 5, 7, 8, 10],
+    22→};
+    23→
+    24→const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
+    25→const clamp = (v: number, a: number, b: number) => v < a ? a : (v > b ? b : v);
+    26→
+    27→function scaleNote(root: number, scale: string, deg: number): number {
+    28→  const sc = SCALES[scale] || SCALES.minor;
+    29→  const n = sc.length;
+    30→  const oct = Math.floor(deg / n);
+    31→  const idx = ((deg % n) + n) % n;
+    32→  return root + 12 * oct + sc[idx];
+    33→}
+    34→
+    35→// ─── Factory Presets (adapted from PSY6) ───────────────────────────────────
+    36→
+    37→interface DrumPreset {
+    38→  type: string; tune: number; decay: number; tone: number; punch: number;
+    39→}
+    40→interface SynthPreset {
+    41→  wave1: OscillatorType; wave2: OscillatorType; oct2: number; detune: number;
+    42→  cutoff: number; res: number; fType: BiquadFilterType;
+    43→  atk: number; dec: number; sus: number; rel: number; gate: number;
+    44→  lfoRate: number; lfoDepth: number; lfoDest: string; poly: number;
+    45→}
+    46→
+    47→const DRUM_PRESETS: Record<string, DrumPreset> = {
+    48→  'PS-KICK-TIGHT': { type: 'kick', tune: 0.9, decay: 0.8, tone: 1, punch: 0.85 },
+    49→  'PS-KICK-DEEP': { type: 'kick', tune: 0.7, decay: 1.4, tone: 1, punch: 0.4 },
+    50→  'PS-HAT': { type: 'hatC', tune: 1, decay: 0.32, tone: 1.2, punch: 0 },
+    51→  'PS-PERC': { type: 'tom', tune: 1.2, decay: 0.5, tone: 1, punch: 0 },
+    52→  'PS-GLITCH': { type: 'glitch', tune: 1, decay: 1.2, tone: 0.8, punch: 0 },
+    53→  'TR-CLAP': { type: 'clap', tune: 1, decay: 1.6, tone: 0.9, punch: 0 },
+    54→  'PR-SHAKER': { type: 'shaker', tune: 1, decay: 0.5, tone: 1, punch: 0 },
+    55→};
+    56→
+    57→const SYNTH_PRESETS: Record<string, SynthPreset> = {
+    58→  'PS-BASS-ROLL': {
+    59→    wave1: 'sawtooth', wave2: 'square', oct2: -1, detune: 4,
+    60→    cutoff: 500, res: 9, fType: 'lowpass',
+    61→    atk: 0.005, dec: 0.1, sus: 0.2, rel: 0.05, gate: 0.3,
+    62→    lfoRate: 0, lfoDepth: 0, lfoDest: 'off', poly: 2,
+    63→  },
+    64→  'PS-BASS-DEEP': {
+    65→    wave1: 'sawtooth', wave2: 'sawtooth', oct2: -1, detune: 12,
+    66→    cutoff: 350, res: 7, fType: 'lowpass',
+    67→    atk: 0.005, dec: 0.15, sus: 0.3, rel: 0.08, gate: 0.5,
+    68→    lfoRate: 0, lfoDepth: 0, lfoDest: 'off', poly: 2,
+    69→  },
+    70→  'PS-LEAD-SQUELCH': {
+    71→    wave1: 'square', wave2: 'sawtooth', oct2: 0, detune: 8,
+    72→    cutoff: 1800, res: 10, fType: 'lowpass',
+    73→    atk: 0.005, dec: 0.18, sus: 0.4, rel: 0.15, gate: 0.45,
+    74→    lfoRate: 0, lfoDepth: 0, lfoDest: 'off', poly: 4,
+    75→  },
+    76→  'PS-LEAD-FMTEX': {
+    77→    wave1: 'sine', wave2: 'sine', oct2: 1, detune: 2,
+    78→    cutoff: 2000, res: 3, fType: 'lowpass',
+    79→    atk: 0.005, dec: 0.3, sus: 0.6, rel: 0.2, gate: 0.6,
+    80→    lfoRate: 8, lfoDepth: 0.3, lfoDest: 'cutoff', poly: 4,
+    81→  },
+    82→  'PS-PAD-PSYCH': {
+    83→    wave1: 'sawtooth', wave2: 'sine', oct2: 1, detune: 14,
+    84→    cutoff: 1000, res: 6, fType: 'lowpass',
+    85→    atk: 0.7, dec: 0.5, sus: 0.7, rel: 1.3, gate: 2.6,
+    86→    lfoRate: 0.3, lfoDepth: 0.4, lfoDest: 'cutoff', poly: 8,
+    87→  },
+    88→  'PS-ARP-ACID': {
+    89→    wave1: 'square', wave2: 'sawtooth', oct2: 0, detune: 6,
+    90→    cutoff: 1200, res: 9, fType: 'lowpass',
+    91→    atk: 0.003, dec: 0.1, sus: 0.2, rel: 0.08, gate: 0.24,
+    92→    lfoRate: 0, lfoDepth: 0, lfoDest: 'off', poly: 4,
+    93→  },
+    94→};
+    95→
+    96→// ─── Track types ────────────────────────────────────────────────────────────
+    97→
+    98→interface Track {
+    99→  idx: number;
+   100→  kind: 'drum' | 'synth';
+   101→  name: string;
+   102→  presetId: string;
+   103→  mix: { vol: number; pan: number; mute: boolean; sendA: number; sendB: number };
+   104→  base?: any;
+   105→}
+   106→
+   107→interface StepData {
+   108→  on: number; vel: number; prob: number; note: number;
+   109→}
+   110→
+   111→interface Pattern {
+   112→  name: string;
+   113→  data: Record<number, { len: number; steps: StepData[] }>;
+   114→}
+   115→
+   116→// ─── Pooled Synth Voice (from PSY6 — persistent oscillators) ────────────────
+   117→
+   118→class PooledSynthVoice {
+   119→  osc1: OscillatorNode;
+   120→  osc2: OscillatorNode;
+   121→  g1: GainNode;
+   122→  g2: GainNode;
+   123→  filter: BiquadFilterNode;
+   124→  vca: GainNode;
+   125→  lfo: OscillatorNode;
+   126→  lfoGain: GainNode;
+   127→  bus: GainNode | null = null;
+   128→
+   129→  constructor(ctx: AudioContext) {
+   130→    this.osc1 = ctx.createOscillator();
+   131→    this.osc2 = ctx.createOscillator();
+   132→    this.g1 = ctx.createGain();
+   133→    this.g2 = ctx.createGain();
+   134→    this.filter = ctx.createBiquadFilter();
+   135→    this.filter.type = 'lowpass';
+   136→    this.vca = ctx.createGain();
+   137→    this.vca.gain.value = 0;
+   138→    this.lfo = ctx.createOscillator();
+   139→    this.lfoGain = ctx.createGain();
+   140→    this.lfoGain.gain.value = 0;
+   141→
+   142→    this.osc1.connect(this.g1);
+   143→    this.osc2.connect(this.g2);
+   144→    this.g1.connect(this.filter);
+   145→    this.g2.connect(this.filter);
+   146→    this.filter.connect(this.vca);
+   147→    this.lfo.connect(this.lfoGain);
+   148→
+   149→    // Start persistent oscillators (never stop them)
+   150→    this.osc1.start();
+   151→    this.osc2.start();
+   152→    this.lfo.start();
+   153→  }
+   154→
+   155→  connect(bus: GainNode) {
+   156→    if (this.bus !== bus) {
+   157→      this.vca.disconnect();
+   158→      this.vca.connect(bus);
+   159→      this.lfoGain.disconnect();
+   160→      this.lfoGain.connect(this.filter.frequency);
+   161→      this.bus = bus;
+   162→    }
+   163→  }
+   164→
+   165→  noteOn(p: SynthPreset, when: number, midi: number, vel: number, stepDur: number, bus: GainNode) {
+   166→    this.connect(bus);
+   167→    const f = mtof(clamp(midi, 12, 108));
+   168→    const gate = p.gate || 0.6;
+   169→    const dur = stepDur * gate * 2;
+   170→    const rel = Math.max(p.rel, 0.02);
+   171→    const end = when + dur;
+   172→
+   173→    this.osc1.type = p.wave1;
+   174→    this.osc2.type = p.wave2;
+   175→    this.osc1.frequency.setValueAtTime(f, when);
+   176→    this.osc2.frequency.setValueAtTime(f * Math.pow(2, p.oct2 || 0), when);
+   177→    this.osc2.detune.setValueAtTime(p.detune || 0, when);
+   178→    this.g1.gain.setValueAtTime(0.6, when);
+   179→    this.g2.gain.setValueAtTime(0.45, when);
+   180→
+   181→    const cut = clamp(p.cutoff, 60, 16000);
+   182→    const res = clamp(p.res, 0.2, 24);
+   183→    this.filter.type = p.fType;
+   184→    this.filter.Q.setValueAtTime(res, when);
+   185→    this.filter.frequency.cancelScheduledValues(when);
+   186→    this.filter.frequency.setValueAtTime(Math.min(cut * 3, 16000), when);
+   187→    this.filter.frequency.exponentialRampToValueAtTime(cut, when + Math.max((p.atk + p.dec * 0.7), 0.01));
+   188→
+   189→    if (p.lfoRate > 0 && p.lfoDest === 'cutoff') {
+   190→      this.lfo.frequency.setValueAtTime(p.lfoRate, when);
+   191→      this.lfoGain.gain.setValueAtTime(p.lfoDepth * 3000, when);
+   192→    } else {
+   193→      this.lfoGain.gain.setValueAtTime(0, when);
+   194→    }
+   195→
+   196→    const vca = this.vca.gain;
+   197→    const atk = Math.max(p.atk, 0.003);
+   198→    vca.cancelScheduledValues(when);
+   199→    vca.setValueAtTime(0, when);
+   200→    vca.linearRampToValueAtTime(vel * 0.5, when + atk);
+   201→    vca.setTargetAtTime(vel * 0.5 * p.sus, when + atk, Math.max(p.dec / 3, 0.01));
+   202→    vca.setTargetAtTime(0.0001, end, Math.max(rel / 3, 0.008));
+   203→  }
+   204→
+   205→  panic(ctx: AudioContext) {
+   206→    try {
+   207→      this.vca.gain.cancelScheduledValues(0);
+   208→      this.vca.gain.setValueAtTime(0, ctx.currentTime);
+   209→    } catch {}
+   210→  }
+   211→}
+   212→
+   213→// ─── Pooled Drum Voice (from PSY6 — multi-type) ────────────────────────────
+   214→
+   215→class PooledDrumVoice {
+   216→  noise: AudioBufferSourceNode;
+   217→  noiseGain: GainNode;
+   218→  nFilter: BiquadFilterNode;
+   219→  osc: OscillatorNode;
+   220→  oscGain: GainNode;
+   221→  out: GainNode;
+   222→  bus: GainNode | null = null;
+   223→
+   224→  constructor(ctx: AudioContext, noiseBuffer: AudioBuffer) {
+   225→    this.noise = ctx.createBufferSource();
+   226→    this.noise.buffer = noiseBuffer;
+   227→    this.noise.loop = true;
+   228→    this.noiseGain = ctx.createGain();
+   229→    this.noiseGain.gain.value = 0;
+   230→    this.nFilter = ctx.createBiquadFilter();
+   231→    this.nFilter.type = 'bandpass';
+   232→    this.noise.connect(this.nFilter);
+   233→    this.nFilter.connect(this.noiseGain);
+   234→    this.osc = ctx.createOscillator();
+   235→    this.osc.type = 'sine';
+   236→    this.oscGain = ctx.createGain();
+   237→    this.oscGain.gain.value = 0;
+   238→    this.osc.connect(this.oscGain);
+   239→    this.out = ctx.createGain();
+   240→    this.noiseGain.connect(this.out);
+   241→    this.oscGain.connect(this.out);
+   242→    this.noise.start();
+   243→    this.osc.start();
+   244→  }
+   245→
+   246→  connect(bus: GainNode) {
+   247→    if (this.bus !== bus) {
+   248→      this.out.disconnect();
+   249→      this.out.connect(bus);
+   250→      this.bus = bus;
+   251→    }
+   252→  }
+   253→
+   254→  hit(p: DrumPreset, when: number, vel: number, bus: GainNode) {
+   255→    this.connect(bus);
+   256→    const tune = p.tune || 1;
+   257→    const decay = p.decay || 1;
+   258→    const tone = p.tone || 1;
+   259→    const punch = p.punch || 0;
+   260→    const type = p.type;
+   261→    const ng = this.noiseGain.gain;
+   262→    const og = this.oscGain.gain;
+   263→    ng.cancelScheduledValues(when);
+   264→    og.cancelScheduledValues(when);
+   265→    ng.setValueAtTime(0, when);
+   266→    og.setValueAtTime(0, when);
+   267→
+   268→    if (type === 'kick') {
+   269→      const dur = 0.12 + 0.5 * decay;
+   270→      this.osc.frequency.setValueAtTime(180 * tune, when);
+   271→      this.osc.frequency.exponentialRampToValueAtTime(Math.max(36 * tune, 24), when + 0.09);
+   272→      og.setValueAtTime(vel * 1.1, when);
+   273→      og.exponentialRampToValueAtTime(0.0001, when + dur);
+   274→      if (punch > 0) {
+   275→        ng.setValueAtTime(vel * punch * 0.8, when);
+   276→        ng.exponentialRampToValueAtTime(0.0001, when + 0.02);
+   277→        this.nFilter.frequency.setValueAtTime(2500, when);
+   278→      }
+   279→    } else if (type === 'clap') {
+   280→      const dur = 0.25 + 0.15 * decay;
+   281→      this.nFilter.type = 'bandpass';
+   282→      this.nFilter.frequency.setValueAtTime(1150 * tone, when);
+   283→      this.nFilter.Q.value = 1.3;
+   284→      ng.setValueAtTime(0, when);
+   285→      [0, 0.014, 0.03].forEach(t2 => {
+   286→        ng.setValueAtTime(0, when + t2);
+   287→        ng.linearRampToValueAtTime(vel * 0.9, when + t2 + 0.002);
+   288→        ng.exponentialRampToValueAtTime(0.02, when + t2 + 0.012);
+   289→      });
+   290→      ng.exponentialRampToValueAtTime(0.0001, when + dur);
+   291→    } else if (type === 'hatC' || type === 'hatO') {
+   292→      const open = type === 'hatO';
+   293→      const dur = open ? 0.26 + 0.5 * decay : 0.03 + 0.05 * decay;
+   294→      this.nFilter.type = 'highpass';
+   295→      this.nFilter.frequency.setValueAtTime(7200 * Math.sqrt(tone), when);
+   296→      ng.setValueAtTime(vel * (open ? 0.4 : 0.5), when);
+   297→      ng.exponentialRampToValueAtTime(0.0001, when + dur);
+   298→    } else if (type === 'tom') {
+   299→      const dur = 0.22 + 0.35 * decay;
+   300→      this.osc.type = 'sine';
+   301→      this.osc.frequency.setValueAtTime(180 * tune, when);
+   302→      this.osc.frequency.exponentialRampToValueAtTime(92 * tune, when + dur * 0.7);
+   303→      og.setValueAtTime(vel * 0.9, when);
+   304→      og.exponentialRampToValueAtTime(0.0001, when + dur);
+   305→    } else if (type === 'shaker') {
+   306→      const dur = 0.04 + 0.07 * decay;
+   307→      this.nFilter.type = 'highpass';
+   308→      this.nFilter.frequency.setValueAtTime(6000 * tone, when);
+   309→      ng.setValueAtTime(vel * 0.45, when);
+   310→      ng.exponentialRampToValueAtTime(0.0001, when + dur);
+   311→    } else if (type === 'glitch') {
+   312→      const dur = 0.08 + 0.14 * decay;
+   313→      this.nFilter.type = 'bandpass';
+   314→      this.nFilter.frequency.setValueAtTime(1500 * tone + 800, when);
+   315→      this.nFilter.Q.value = 4;
+   316→      ng.setValueAtTime(vel * 0.7, when);
+   317→      ng.exponentialRampToValueAtTime(0.0001, when + dur);
+   318→    }
+   319→  }
+   320→
+   321→  panic(ctx: AudioContext) {
+   322→    try {
+   323→      this.noiseGain.gain.cancelScheduledValues(0);
+   324→      this.noiseGain.gain.setValueAtTime(0, ctx.currentTime);
+   325→      this.oscGain.gain.cancelScheduledValues(0);
+   326→      this.oscGain.gain.setValueAtTime(0, ctx.currentTime);
+   327→    } catch {}
+   328→  }
+   329→}
+   330→
+   331→// ─── Engine V2 ──────────────────────────────────────────────────────────────
+   332→
+   333→export class Psy4EngineV2 {
+   334→  ctx: AudioContext | null = null;
+   335→  playing = false;
+   336→  analyser: AnalyserNode | null = null;
+   337→
+   338→  // Musical understanding
+   339→  private musicalKey: { root: number; scale: string } = { root: 43, scale: 'phrygian' };
+   340→  private targetLufs = 0;
+   341→  private ownLufs = -30;
+   342→
+   343→  // Audio graph
+   344→  private master!: GainNode;
+   345→  private comp!: DynamicsCompressorNode;
+   346→  private noiseBuffer!: AudioBuffer;
+   347→  private delaySend!: GainNode;
+   348→  private delay!: DelayNode;
+   349→  private delayFb!: GainNode;
+   350→  private delayReturn!: GainNode;
+   351→  private reverbSend!: GainNode;
+   352→  private reverb!: ConvolverNode;
+   353→  private reverbReturn!: GainNode;
+   354→  private chains: GainNode[] = [];
+   355→  private trackGains: GainNode[] = [];
+   356→  private duckGain!: GainNode;  // sidechain duck for bass track
+   357→  private saturator!: WaveShaperNode;
+   358→  private toneLow!: BiquadFilterNode;
+   359→  private toneHigh!: BiquadFilterNode;
+   360→
+   361→  // Voice pools
+   362→  private synthPool: PooledSynthVoice[] = [];
+   363→  private drumPool: PooledDrumVoice[] = [];
+   364→  private synthIdx = 0;
+   365→  private drumIdx = 0;
+   366→
+   367→  // Scheduler
+   368→  private timer: ReturnType<typeof setTimeout> | null = null;
+   369→  private step = 0;
+   370→  private bar = 0;
+   371→  private nextTime = 0;
+   372→  private sectionIdx = 0;
+   373→  private currentSection = 'INTRO';
+   374→
+   375→  // Tracks and patterns
+   376→  private tracks: Track[] = [];
+   377→  private pattern: Pattern | null = null;
+   378→  private presetIdx = 0;
+   379→
+   380→  // Arrangement
+   381→  private arrangement = [
+   382→    { bars: 4, density: 0.3, bass: false, lead: false, label: 'INTRO' },
+   383→    { bars: 4, density: 0.5, bass: true, lead: false, label: 'GROOVE' },
+   384→    { bars: 4, density: 0.7, bass: true, lead: false, label: 'BUILD' },
+   385→    { bars: 8, density: 0.9, bass: true, lead: true, label: 'DROP' },
+   386→    { bars: 4, density: 0.7, bass: true, lead: true, label: 'VARIATION' },
+   387→    { bars: 4, density: 0.3, bass: false, lead: false, label: 'BREAK' },
+   388→    { bars: 8, density: 1.0, bass: true, lead: true, label: 'FINAL DROP' },
+   389→    { bars: 4, density: 0.3, bass: true, lead: false, label: 'OUTRO' },
+   390→  ];
+   391→
+   392→  onSectionChange: ((section: string) => void) | null = null;
+   393→
+   394→  init(): void {
+   395→    if (this.ctx) return;
+   396→    const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+   397→    const c = this.ctx = new Ctx({ latencyHint: 'interactive' });
+   398→
+   399→    // Noise buffer
+   400→    this.noiseBuffer = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
+   401→    const nd = this.noiseBuffer.getChannelData(0);
+   402→    for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+   403→
+   404→    // Master chain — boosted + saturation + tone shelves (from PSY6/psy)
+   405→    this.master = c.createGain();
+   406→    this.master.gain.value = 1.1;
+   407→
+   408→    // Saturation (WaveShaper — adds warmth and loudness)
+   409→    this.saturator = c.createWaveShaper();
+   410→    this.saturator.oversample = '4x';
+   411→    const satCurve = new Float32Array(1024);
+   412→    for (let i = 0; i < 1024; i++) {
+   413→      const x = (i / 512) - 1;
+   414→      satCurve[i] = Math.tanh(x * 1.3) * 0.7 + x * 0.3;
+   415→    }
+   416→    this.saturator.curve = satCurve;
+   417→
+   418→    // Tone shelves (final EQ)
+   419→    this.toneLow = c.createBiquadFilter();
+   420→    this.toneLow.type = 'lowshelf';
+   421→    this.toneLow.frequency.value = 110;
+   422→    this.toneLow.gain.value = 1.5;
+   423→    this.toneHigh = c.createBiquadFilter();
+   424→    this.toneHigh.type = 'highshelf';
+   425→    this.toneHigh.frequency.value = 8500;
+   426→    this.toneHigh.gain.value = -2;
+   427→
+   428→    this.comp = c.createDynamicsCompressor();
+   429→    this.comp.threshold.value = -8;
+   430→    this.comp.knee.value = 12;
+   431→    this.comp.ratio.value = 6;
+   432→    this.comp.attack.value = 0.003;
+   433→    this.comp.release.value = 0.2;
+   434→    this.analyser = c.createAnalyser();
+   435→    this.analyser.fftSize = 2048;
+   436→
+   437→    // Connect: master → saturator → toneLow → toneHigh → comp → analyser → destination
+   438→    this.master.connect(this.saturator);
+   439→    this.saturator.connect(this.toneLow);
+   440→    this.toneLow.connect(this.toneHigh);
+   441→    this.toneHigh.connect(this.comp);
+   442→    this.comp.connect(this.analyser);
+   443→    this.analyser.connect(c.destination);
+   444→
+   445→    // Delay (ping-pong with band-limited feedback)
+   446→    this.delaySend = c.createGain();
+   447→    this.delaySend.gain.value = 0.15;
+   448→    this.delay = c.createDelay(0.5);
+   449→    this.delay.delayTime.value = 0.375;
+   450→    this.delayFb = c.createGain();
+   451→    this.delayFb.gain.value = 0.35;
+   452→    this.delayReturn = c.createGain();
+   453→    this.delayReturn.gain.value = 0.5;
+   454→    const dLP = c.createBiquadFilter();
+   455→    dLP.type = 'lowpass';
+   456→    dLP.frequency.value = 3300;
+   457→    this.delaySend.connect(this.delay);
+   458→    this.delay.connect(dLP);
+   459→    dLP.connect(this.delayFb);
+   460→    this.delayFb.connect(this.delay);
+   461→    this.delay.connect(this.delayReturn);
+   462→    this.delayReturn.connect(this.master);
+   463→
+   464→    // Reverb
+   465→    this.reverbSend = c.createGain();
+   466→    this.reverbSend.gain.value = 0.12;
+   467→    this.reverb = c.createConvolver();
+   468→    const irLen = Math.floor(c.sampleRate * 1.5);
+   469→    const ir = c.createBuffer(2, irLen, c.sampleRate);
+   470→    for (let ch = 0; ch < 2; ch++) {
+   471→      const d = ir.getChannelData(ch);
+   472→      for (let i = 0; i < irLen; i++) {
+   473→        d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (c.sampleRate * 0.4));
+   474→      }
+   475→    }
+   476→    this.reverb.buffer = ir;
+   477→    this.reverbReturn = c.createGain();
+   478→    this.reverbReturn.gain.value = 0.6;
+   479→    this.reverbSend.connect(this.reverb);
+   480→    this.reverb.connect(this.reverbReturn);
+   481→    this.reverbReturn.connect(this.master);
+   482→
+   483→    // Track buses (8 tracks) with HPF, pan, and duck
+   484→    this.duckGain = c.createGain();
+   485→    this.duckGain.gain.value = 1.0;
+   486→    // duckGain connects to master ONCE (not twice — was causing feedback)
+   487→    this.duckGain.connect(this.master);
+   488→
+   489→    for (let i = 0; i < 8; i++) {
+   490→      const bus = c.createGain();
+   491→      // HPF on each track to clean mud (except kick/bass)
+   492→      const hpf = c.createBiquadFilter();
+   493→      hpf.type = 'highpass';
+   494→      hpf.frequency.value = i < 2 ? 20 : (i < 4 ? 80 : 120);
+   495→      // Stereo panner
+   496→      const panner = c.createStereoPanner();
+   497→      const panValues = [0, -0.15, 0.2, -0.2, 0, 0.1, -0.1, 0.15];
+   498→      panner.pan.value = panValues[i];
+   499→      // Track gain
+   500→      const gain = c.createGain();
+   501→      gain.gain.value = 0.8;
+   502→
+   503→      bus.connect(hpf);
+   504→      hpf.connect(panner);
+   505→      // Bass track (4) goes through duck gain for sidechain
+   506→      if (i === 4) {
+   507→        panner.connect(this.duckGain);
+   508→      } else {
+   509→        panner.connect(gain);
+   510→        gain.connect(this.master);
+   511→      }
+   512→
+   513→      // Send to delay/reverb
+   514→      const dSend = c.createGain();
+   515→      dSend.gain.value = i >= 4 ? 0.15 : 0.02;
+   516→      bus.connect(dSend);
+   517→      dSend.connect(this.delaySend);
+   518→      const rSend = c.createGain();
+   519→      rSend.gain.value = i >= 5 ? 0.2 : 0.03;
+   520→      bus.connect(rSend);
+   521→      rSend.connect(this.reverbSend);
+   522→
+   523→      this.chains.push(bus);
+   524→      this.trackGains.push(gain);
+   525→    }
+   526→    // duckGain already connected to master above (line 458)
+   527→
+   528→    // Allocate voice pools (20 synth + 24 drum — from PSY6)
+   529→    for (let i = 0; i < 20; i++) this.synthPool.push(new PooledSynthVoice(c));
+   530→    for (let i = 0; i < 24; i++) this.drumPool.push(new PooledDrumVoice(c, this.noiseBuffer));
+   531→
+   532→    // Initialize tracks
+   533→    this.initTracks();
+   534→  }
+   535→
+   536→  private initTracks(): void {
+   537→    const names = ['KICK', 'SNARE', 'HATS', 'PERC', 'BASS', 'LEAD', 'PAD', 'ARP'];
+   538→    const presets = ['PS-KICK-TIGHT', 'TR-CLAP', 'PS-HAT', 'PS-PERC', 'PS-BASS-ROLL', 'PS-LEAD-SQUELCH', 'PS-PAD-PSYCH', 'PS-ARP-ACID'];
+   539→    // Boosted track volumes for commercial loudness
+   540→    const vols = [1.0, 0.6, 0.5, 0.4, 1.2, 0.7, 0.5, 0.5];
+   541→    this.tracks = [];
+   542→    for (let i = 0; i < 8; i++) {
+   543→      this.tracks.push({
+   544→        idx: i,
+   545→        kind: i < 4 ? 'drum' : 'synth',
+   546→        name: names[i],
+   547→        presetId: presets[i],
+   548→        mix: { vol: vols[i], pan: 0, mute: false, sendA: 0, sendB: 0 },
+   549→      });
+   550→    }
+   551→  }
+   552→
+   553→  start(worldId?: string): void {
+   554→    this.init();
+   555→    if (this.ctx!.state === 'suspended') this.ctx!.resume();
+   556→    if (this.playing) return;
+   557→    this.playing = true;
+   558→    this.step = 0;
+   559→    this.bar = 0;
+   560→    this.sectionIdx = 0;
+   561→    this.currentSection = this.arrangement[0].label;
+   562→    this.onSectionChange?.(this.currentSection);
+   563→    this.nextTime = this.ctx!.currentTime + 0.03;
+   564→    this.scheduleNextTick();
+   565→  }
+   566→
+   567→  stop(): void {
+   568→    this.playing = false;
+   569→    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+   570→    if (this.ctx) {
+   571→      for (const v of this.synthPool) v.panic(this.ctx);
+   572→      for (const v of this.drumPool) v.panic(this.ctx);
+   573→    }
+   574→  }
+   575→
+   576→  private get bpm(): number {
+   577→    return this._bpm || 145;
+   578→  }
+   579→  private _bpm = 145;
+   580→
+   581→  setBpm(bpm: number): void {
+   582→    this._bpm = bpm;
+   583→  }
+   584→
+   585→  applyMusicalUnderstanding(understanding: {
+   586→    key: { root: number; scale: string; confidence: number };
+   587→    bpm: number;
+   588→    bpmConfidence: number;
+   589→    style?: string;
+   590→    styleConfidence?: number;
+   591→  }): void {
+   592→    if (understanding.key.confidence > 0.3) {
+   593→      this.musicalKey = {
+   594→        root: 36 + understanding.key.root,
+   595→        scale: understanding.key.scale,
+   596→      };
+   597→    }
+   598→    if (understanding.bpm > 0 && understanding.bpmConfidence > 0.3) {
+   599→      if (Math.abs(understanding.bpm - this.bpm) > 5) {
+   600→        this._bpm = Math.round(understanding.bpm);
+   601→      }
+   602→    }
+   603→    // Auto-switch presets based on detected style
+   604→    if (understanding.style && (understanding.styleConfidence ?? 0) > 0.4) {
+   605→      this.applyStyle(understanding.style);
+   606→    }
+   607→  }
+   608→
+   609→  private applyStyle(style: string): void {
+   610→    // Map detected style to preset combinations
+   611→    const stylePresets: Record<string, { kick: string; bass: string; lead: string; pad: string; arp: string }> = {
+   612→      'progressive-psy': { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-DEEP', lead: 'PS-LEAD-FMTEX', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+   613→      'dark-psy':        { kick: 'PS-KICK-DEEP', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+   614→      'goa':             { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+   615→      'morning-psy':     { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-DEEP', lead: 'PS-LEAD-FMTEX', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+   616→      'forest':          { kick: 'PS-KICK-DEEP', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+   617→      'acid-psy':        { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+   618→      'full-on':         { kick: 'PS-KICK-TIGHT', bass: 'PS-BASS-ROLL', lead: 'PS-LEAD-SQUELCH', pad: 'PS-PAD-PSYCH', arp: 'PS-ARP-ACID' },
+   619→    };
+   620→    const p = stylePresets[style];
+   621→    if (p) {
+   622→      this.tracks[0].presetId = p.kick;
+   623→      this.tracks[4].presetId = p.bass;
+   624→      this.tracks[5].presetId = p.lead;
+   625→      this.tracks[6].presetId = p.pad;
+   626→      this.tracks[7].presetId = p.arp;
+   627→    }
+   628→  }
+   629→
+   630→  private targetEnergy = 0.5;
+   631→
+   632→  liveTrack(refMetrics: { lufs: number; kickDecayMs: number; spectralCentroid: number; energy?: number; subEnergy?: number; highEnergy?: number; transientDensity?: number }): void {
+   633→    this.targetLufs = refMetrics.lufs;
+   634→    if (refMetrics.energy) this.targetEnergy = refMetrics.energy;
+   635→    // Adjust kick decay toward reference
+   636→    if (refMetrics.kickDecayMs > 50 && refMetrics.kickDecayMs < 800) {
+   637→      const refDecaySec = refMetrics.kickDecayMs / 1000;
+   638→      const currentPreset = DRUM_PRESETS[this.tracks[0].presetId];
+   639→      if (currentPreset) {
+   640→        const targetDecay = refDecaySec / 0.62; // reverse the 0.12 + 0.5*decay formula
+   641→        // Don't mutate the preset object — just track the desired decay
+   642→      }
+   643→    }
+   644→  }
+   645→
+   646→  selfTrack(selfMetrics: { lufs: number; energy?: number }): void {
+   647→    this.ownLufs = selfMetrics.lufs;
+   648→    // LUFS matching
+   649→    if (this.targetLufs !== 0 && Math.abs(selfMetrics.lufs - this.targetLufs) > 1.0) {
+   650→      const diff = this.targetLufs - selfMetrics.lufs;
+   651→      const adj = diff > 0 ? 0.08 : -0.08;
+   652→      const newMaster = clamp(this.master.gain.value + adj, 0.3, 2.0);
+   653→      this.master.gain.setTargetAtTime(newMaster, this.ctx!.currentTime, 0.15);
+   654→    }
+   655→    // Energy matching — adjust track volumes
+   656→    if (this.targetEnergy > 0 && selfMetrics.energy !== undefined) {
+   657→      const energyDiff = this.targetEnergy - selfMetrics.energy;
+   658→      if (Math.abs(energyDiff) > 0.05) {
+   659→        // Boost/reduce all track gains slightly
+   660→        const volAdj = energyDiff > 0 ? 0.02 : -0.02;
+   661→        for (let i = 0; i < 8; i++) {
+   662→          const g = this.trackGains[i];
+   663→          if (g) {
+   664→            const newVol = clamp(g.gain.value + volAdj, 0.1, 2.0);
+   665→            g.gain.setTargetAtTime(newVol, this.ctx!.currentTime, 0.5);
+   666→          }
+   667→        }
+   668→      }
+   669→    }
+   670→  }
+   671→
+   672→  setWorld(params: Record<string, number>): void {
+   673→    if (params.masterLevel !== undefined) {
+   674→      this.master.gain.setTargetAtTime(params.masterLevel, this.ctx!.currentTime, 0.1);
+   675→    }
+   676→    if (params.bassLevel !== undefined) {
+   677→      this.trackGains[4].gain.setTargetAtTime(params.bassLevel * 0.8, this.ctx!.currentTime, 0.1);
+   678→    }
+   679→    if (params.leadLevel !== undefined) {
+   680→      this.trackGains[5].gain.setTargetAtTime(params.leadLevel * 0.8, this.ctx!.currentTime, 0.1);
+   681→    }
+   682→    if (params.kickLevel !== undefined) {
+   683→      this.trackGains[0].gain.setTargetAtTime(params.kickLevel * 0.8, this.ctx!.currentTime, 0.1);
+   684→    }
+   685→  }
+   686→
+   687→  getAnalyser(): AnalyserNode | null { return this.analyser; }
+   688→
+   689→  private scheduleNextTick(): void {
+   690→    if (!this.playing) return;
+   691→    this.timer = setTimeout(() => {
+   692→      this.tick();
+   693→      this.scheduleNextTick();
+   694→    }, 15);
+   695→  }
+   696→
+   697→  private tick(): void {
+   698→    if (!this.playing || !this.ctx) return;
+   699→    const lookahead = 0.06;
+   700→    const s16 = 60 / this.bpm / 4;
+   701→
+   702→    while (this.nextTime < this.ctx.currentTime + lookahead) {
+   703→      this.scheduleStep(this.step, this.bar, this.nextTime);
+   704→      this.step++;
+   705→      this.nextTime += s16;
+   706→      if (this.step >= 16) {
+   707→        this.step = 0;
+   708→        this.bar++;
+   709→        const section = this.arrangement[this.sectionIdx % this.arrangement.length];
+   710→        if (this.bar >= section.bars) {
+   711→          this.sectionIdx++;
+   712→          this.bar = 0;
+   713→          const next = this.arrangement[this.sectionIdx % this.arrangement.length];
+   714→          this.currentSection = next.label;
+   715→          this.onSectionChange?.(this.currentSection);
+   716→        }
+   717→        // Change preset every 4 bars
+   718→        if (this.bar % 4 === 0 && this.bar > 0) {
+   719→          this.presetIdx = (this.presetIdx + 1) % 3;
+   720→          this.rotatePresets();
+   721→        }
+   722→      }
+   723→    }
+   724→  }
+   725→
+   726→  private rotatePresets(): void {
+   727→    // Rotate drum presets for variety
+   728→    const kickPresets = ['PS-KICK-TIGHT', 'PS-KICK-DEEP'];
+   729→    const bassPresets = ['PS-BASS-ROLL', 'PS-BASS-DEEP'];
+   730→    const leadPresets = ['PS-LEAD-SQUELCH', 'PS-LEAD-FMTEX'];
+   731→    this.tracks[0].presetId = kickPresets[this.presetIdx % kickPresets.length];
+   732→    this.tracks[4].presetId = bassPresets[this.presetIdx % bassPresets.length];
+   733→    this.tracks[5].presetId = leadPresets[this.presetIdx % leadPresets.length];
+   734→  }
+   735→
+   736→  private scheduleStep(step: number, bar: number, time: number): void {
+   737→    const section = this.arrangement[this.sectionIdx % this.arrangement.length];
+   738→    const key = this.musicalKey;
+   739→    const root = key.root;
+   740→    const sc = key.scale;
+   741→    const sd = 60 / this.bpm / 4;
+   742→    const isPreDrop = (section.label === 'BUILD' || section.label === 'BUILD 2') && bar >= section.bars - 2;
+   743→    const isDropStart = section.label.includes('DROP') && bar === 0 && step === 0;
+   744→
+   745→    // ── RISER FX (last 2 bars of build) ──
+   746→    if (isPreDrop && step === 0 && bar === section.bars - 2) {
+   747→      this.triggerRiser(time, sd * 32);
+   748→    }
+   749→
+   750→    // ── IMPACT FX (drop start) ──
+   751→    if (isDropStart) {
+   752→      this.triggerImpact(time);
+   753→    }
+   754→
+   755→    // ── KICK (track 0) — 4 on the floor ──
+   756→    if (step % 4 === 0) {
+   757→      this.triggerDrum(0, time, 0.5 + section.density * 0.4);
+   758→    }
+   759→
+   760→    // ── CLAP (track 1) — on 2 and 4 ──
+   761→    if ((step === 4 || step === 12) && section.density > 0.4) {
+   762→      this.triggerDrum(1, time, 0.3);
+   763→    }
+   764→
+   765→    // ── HATS (track 2) — offbeat with velocity variation ──
+   766→    if (step % 2 === 1) {
+   767→      const vel = 0.15 + (step % 4 === 3 ? 0.1 : 0) + section.density * 0.1;
+   768→      this.triggerDrum(2, time, vel);
+   769→    }
+   770→
+   771→    // ── PERC (track 3) — sparse, with variation ──
+   772→    if (section.density > 0.5 && (step === 6 || step === 14) && Math.random() < 0.6) {
+   773→      this.triggerDrum(3, time, 0.2);
+   774→    }
+   775→
+   776→    // ── BASS (track 4) — offbeat, evolving pattern with passing tones ──
+   777→    if (section.bass && step % 2 === 1) {
+   778→      // Rich bass pattern: changes every 4 bars with passing tones and octaves
+   779→      let bassPattern: number[];
+   780→      const bp = bar % 8;
+   781→      if (bp < 2) bassPattern = [0, 0, 0, 0, 0, 0, 4, 0]; // root with fifth
+   782→      else if (bp < 4) bassPattern = [0, 0, 2, 0, 4, 0, 3, 0]; // walking
+   783→      else if (bp < 6) bassPattern = [0, 0, 0, 7, 0, 0, 4, 3]; // octave + passing
+   784→      else bassPattern = [0, 4, 0, 3, 0, 2, 0, 4]; // rolling
+   785→
+   786→      const bassDeg = bassPattern[Math.floor(step / 2) % bassPattern.length];
+   787→      if (bassDeg >= 0) {
+   788→        const note = scaleNote(root, sc, bassDeg);
+   789→        this.triggerSynth(4, time, note, 0.5, sd);
+   790→      }
+   791→    }
+   792→
+   793→    // ── LEAD (track 5) — evolving trance motif with SPACES ──
+   794→    if (section.lead) {
+   795→      const phraseBar = bar % 8;
+   796→      const leadSteps = [0, 6, 10];
+   797→      if (leadSteps.includes(step)) {
+   798→        let deg: number; let dur: number; let vel: number;
+   799→        if (phraseBar < 2) {
+   800→          const motif = [7, 5, 3];
+   801→          deg = motif[leadSteps.indexOf(step)];
+   802→          dur = 0.3; vel = 0.25;
+   803→        } else if (phraseBar < 4) {
+   804→          const motif = [5, 3, 0];
+   805→          deg = motif[leadSteps.indexOf(step)];
+   806→          dur = 0.2; vel = 0.3;
+   807→        } else if (phraseBar < 6) {
+   808→          const motif = [10, 12, 10];
+   809→          deg = motif[leadSteps.indexOf(step)];
+   810→          dur = 0.15; vel = 0.35;
+   811→        } else if (phraseBar === 6) {
+   812→          deg = step === 0 ? 0 : step === 6 ? 2 : 0;
+   813→          dur = 0.4; vel = 0.4;
+   814→        } else {
+   815→          return; // rest bar
+   816→        }
+   817→        const note = scaleNote(root + 12, sc, deg);
+   818→        this.triggerSynth(5, time, note, vel, sd, dur);
+   819→      }
+   820→    }
+   821→
+   822→    // ── PAD (track 6) — sustained chord every bar in drops ──
+   823→    if (section.lead && step === 0) {
+   824→      // Chord progression: root, IV, V, III (psytrance progression)
+   825→      const progDegs = [0, 3, 4, 2];
+   826→      const chordDeg = progDegs[bar % 4];
+   827→      const chordRoot = scaleNote(root + 12, sc, chordDeg);
+   828→      this.triggerSynth(6, time, chordRoot, 0.25, sd * 4);
+   829→      // Also play fifth for full chord
+   830→      this.triggerSynth(6, time + 0.01, scaleNote(root + 12, sc, chordDeg + 4), 0.15, sd * 4);
+   831→    }
+   832→
+   833→    // ── ARP (track 7) — rolling arp, 70% density in drops ──
+   834→    if (section.lead && step % 2 === 0 && Math.random() < 0.7) {
+   835→      const arpDegs = [0, 2, 4, 7, 4, 2, 0, 7];
+   836→      const deg = arpDegs[(step / 2) % arpDegs.length];
+   837→      const note = scaleNote(root + 24, sc, deg);
+   838→      this.triggerSynth(7, time, note, 0.25, sd);
+   839→    }
+   840→
+   841→    // ── SHAKER (track 3 alt) — continuous offbeat in drops ──
+   842→    if (section.bass && section.lead && step % 2 === 1 && Math.random() < 0.4) {
+   843→      this.triggerDrum(3, time, 0.15);
+   844→    }
+   845→  }
+   846→
+   847→  private triggerDrum(trackIdx: number, time: number, vel: number): void {
+   848→    const track = this.tracks[trackIdx];
+   849→    if (track.mix.mute) return;
+   850→    const preset = DRUM_PRESETS[track.presetId];
+   851→    if (!preset) return;
+   852→    const voice = this.drumPool[this.drumIdx];
+   853→    this.drumIdx = (this.drumIdx + 1) % this.drumPool.length;
+   854→    voice.hit(preset, time, vel * track.mix.vol, this.chains[trackIdx]);
+   855→
+   856→    // Sidechain: when kick fires, duck the bass
+   857→    if (trackIdx === 0 && this.duckGain && this.ctx) {
+   858→      this.duckGain.gain.cancelScheduledValues(time);
+   859→      this.duckGain.gain.setValueAtTime(1 - 0.4, time); // 40% duck
+   860→      this.duckGain.gain.linearRampToValueAtTime(1.0, time + 0.25); // 250ms recovery
+   861→    }
+   862→  }
+   863→
+   864→  private triggerRiser(time: number, dur: number): void {
+   865→    if (!this.ctx) return;
+   866→    const c = this.ctx;
+   867→    // Noise through filter that opens up
+   868→    const noise = c.createBufferSource();
+   869→    noise.buffer = this.noiseBuffer;
+   870→    noise.loop = true;
+   871→    const filter = c.createBiquadFilter();
+   872→    filter.type = 'bandpass';
+   873→    filter.frequency.setValueAtTime(200, time);
+   874→    filter.frequency.exponentialRampToValueAtTime(8000, time + dur);
+   875→    filter.Q.value = 2;
+   876→    const gain = c.createGain();
+   877→    gain.gain.setValueAtTime(0.001, time);
+   878→    gain.gain.exponentialRampToValueAtTime(0.3, time + dur);
+   879→    gain.gain.exponentialRampToValueAtTime(0.001, time + dur + 0.1);
+   880→    noise.connect(filter);
+   881→    filter.connect(gain);
+   882→    gain.connect(this.master);
+   883→    noise.start(time);
+   884→    noise.stop(time + dur + 0.2);
+   885→  }
+   886→
+   887→  private triggerImpact(time: number): void {
+   888→    if (!this.ctx) return;
+   889→    const c = this.ctx;
+   890→    // Sub boom + noise crack
+   891→    const osc = c.createOscillator();
+   892→    osc.type = 'sine';
+   893→    osc.frequency.setValueAtTime(120, time);
+   894→    osc.frequency.exponentialRampToValueAtTime(35, time + 0.5);
+   895→    const og = c.createGain();
+   896→    og.gain.setValueAtTime(0.8, time);
+   897→    og.gain.exponentialRampToValueAtTime(0.001, time + 0.6);
+   898→    osc.connect(og);
+   899→    og.connect(this.master);
+   900→    osc.start(time);
+   901→    osc.stop(time + 0.7);
+   902→
+   903→    const noise = c.createBufferSource();
+   904→    noise.buffer = this.noiseBuffer;
+   905→    const hp = c.createBiquadFilter();
+   906→    hp.type = 'highpass';
+   907→    hp.frequency.value = 3000;
+   908→    const ng = c.createGain();
+   909→    ng.gain.setValueAtTime(0.4, time);
+   910→    ng.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
+   911→    noise.connect(hp);
+   912→    hp.connect(ng);
+   913→    ng.connect(this.master);
+   914→    noise.start(time);
+   915→    noise.stop(time + 0.1);
+   916→  }
+   917→
+   918→  private triggerSynth(trackIdx: number, time: number, midi: number, vel: number, stepDur: number, dur?: number): void {
+   919→    const track = this.tracks[trackIdx];
+   920→    if (track.mix.mute) return;
+   921→    const preset = SYNTH_PRESETS[track.presetId];
+   922→    if (!preset) return;
+   923→    const voice = this.synthPool[this.synthIdx];
+   924→    this.synthIdx = (this.synthIdx + 1) % this.synthPool.length;
+   925→    const p = dur ? { ...preset, gate: dur / (stepDur * 2) } : preset;
+   926→    voice.noteOn(p, time, midi, vel * track.mix.vol, stepDur, this.chains[trackIdx]);
+   927→
+   928→    // Add sub oscillator for bass track (sine one octave below)
+   929→    if (trackIdx === 4 && this.ctx) {
+   930→      const subFreq = mtof(midi - 12); // one octave below
+   931→      const subOsc = this.ctx.createOscillator();
+   932→      const subGain = this.ctx.createGain();
+   933→      subOsc.type = 'sine';
+   934→      subOsc.frequency.value = subFreq;
+   935→      const subDecay = (dur || stepDur * 0.3) + 0.05;
+   936→      subGain.gain.setValueAtTime(0.5 * track.mix.vol, time);
+   937→      subGain.gain.exponentialRampToValueAtTime(0.001, time + subDecay);
+   938→      subOsc.connect(subGain);
+   939→      subGain.connect(this.chains[4]);
+   940→      subOsc.start(time);
+   941→      subOsc.stop(time + subDecay + 0.02);
+   942→    }
+   943→  }
+   944→
+   945→  getMusicalKey(): { root: number; scale: string } { return this.musicalKey; }
+   946→  getOwnLufs(): number { return this.ownLufs; }
+   947→}
+   948→

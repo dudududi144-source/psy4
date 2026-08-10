@@ -1,0 +1,1000 @@
+     1→/**
+     2→ * PSY4 Engine — Single AudioWorklet processor.
+     3→ *
+     4→ * This is the REAL-TIME PRODUCTION ENGINE. It replaces the setInterval(25ms)
+     5→ * main-thread scheduler and the per-hit Web Audio node creation that caused
+     6→ * latency, jitter, and GC pressure under dense events.
+     7→ *
+     8→ * Architecture:
+     9→ *   Main thread (controller)
+    10→ *     ↓ port.postMessage (commands + event batches)
+    11→ *   AudioWorklet (this file)
+    12→ *     ├── Transport (BPM, step, section — sample-accurate clock)
+    13→ *     ├── Ring-buffer event queue (zero allocation)
+    14→ *     ├── Preallocated voice pool (kick, bass, lead, acid, pad, hats, ...)
+    15→ *     ├── Voice DSP (Moog ladder, BL saw, envelopes — all inline)
+    16→ *     ├── Bus mixing (drum/bass/music/atmos/fx → master)
+    17→ *     └── Master chain (saturation + limiter)
+    18→ *     ↓ stereo output
+    19→ *   Speakers
+    20→ *
+    21→ * The main thread NEVER determines when a kick fires. It sends high-level
+    22→ * musical events ("kick at time T, velocity 0.9") and the worklet executes
+    23→ * them sample-accurately. The main thread can be blocked by React/GC without
+    24→ * affecting audio timing.
+    25→ *
+    26→ * Ported DSP from PSY3:
+    27→ *   - pro_dsp.py moog()       → MoogLadder class (4-stage tanh)
+    28→ *   - pro_dsp.py bl_saw()     → polyBLEP sawtooth
+    29→ *   - engine.py kick()        → KickVoice (sub + mid + click)
+    30→ *   - engine.py bass()        → BassVoice (saw + Moog + sub)
+    31→ *   - engine.py hat()         → HatVoice (differentiated pink noise)
+    32→ *   - engine.py clap()        → ClapVoice (multi-burst noise)
+    33→ *   - style_master.py _sat()  → master saturation
+    34→ *   - style_master.py limiter → master limiter
+    35→ */
+    36→
+    37→// ─── Constants ─────────────────────────────────────────────────────────────
+    38→
+    39→const MAX_VOICES = 32;        // was 64 — reduced to match pool size
+    40→const EVENT_SIZE = 6;         // floats per event: [time, voice, note, vel, dur, param]
+    41→const MAX_EVENTS = 1024;      // was 2048 — reduced (1024 is plenty for 100ms lookahead)
+    42→const TANH_TABLE_SIZE = 1024; // was 2048 — half size, still accurate enough
+    43→
+    44→// Voice IDs
+    45→const V_KICK = 0, V_BASS = 1, V_LEAD = 2, V_ACID = 3, V_PAD = 4;
+    46→const V_HAT = 5, V_HAT_OPEN = 6, V_CLAP = 7, V_PERC = 8, V_SHAKER = 9;
+    47→const V_TEXTURE = 10, V_RISER = 11, V_IMPACT = 12, V_SWEEP = 13;
+    48→const V_ZAP = 14, V_BLIP = 15, V_DOWNLIFTER = 16;
+    49→
+    50→// ─── Fast tanh via lookup table ────────────────────────────────────────────
+    51→
+    52→const tanhTable = new Float32Array(TANH_TABLE_SIZE + 1);
+    53→for (let i = 0; i <= TANH_TABLE_SIZE; i++) {
+    54→  const x = (i / TANH_TABLE_SIZE) * 2 - 1; // -1..1
+    55→  tanhTable[i] = Math.tanh(x);
+    56→}
+    57→
+    58→function fastTanh(x) {
+    59→  if (x >= 1) return 1;
+    60→  if (x <= -1) return -1;
+    61→  const idx = (x + 1) * 0.5 * TANH_TABLE_SIZE;
+    62→  const i0 = idx | 0;
+    63→  const f = idx - i0;
+    64→  return tanhTable[i0] * (1 - f) + tanhTable[i0 + 1] * f;
+    65→}
+    66→
+    67→// ─── polyBLEP ──────────────────────────────────────────────────────────────
+    68→
+    69→function polyBlep(phase, inc) {
+    70→  if (phase < inc) {
+    71→    const t = phase / inc;
+    72→    return 2 * t - t * t - 1;
+    73→  } else if (phase > 1 - inc) {
+    74→    const t = (phase - 1) / inc;
+    75→    return t * t + 2 * t + 1;
+    76→  }
+    77→  return 0;
+    78→}
+    79→
+    80→// ─── Moog Ladder Filter (4-stage tanh, stateful) ───────────────────────────
+    81→// Port of PSY3 pro_dsp.py moog(). Reusable per-voice instance.
+    82→
+    83→class MoogLadder {
+    84→  constructor() {
+    85→    this.s0 = 0; this.s1 = 0; this.s2 = 0; this.s3 = 0;
+    86→    this.g = 0;
+    87→    this.lastCutoff = -1;
+    88→  }
+    89→
+    90→  reset() { this.s0 = this.s1 = this.s2 = this.s3 = 0; }
+    91→
+    92→  process(x, cutoff, res, drive, sr) {
+    93→    // Recompute g when cutoff changes
+    94→    if (Math.abs(cutoff - this.lastCutoff) > 0.5) {
+    95→      const fc = Math.min(0.45, cutoff / sr);
+    96→      this.g = 1 - Math.exp(-2 * Math.PI * fc);
+    97→      this.lastCutoff = cutoff;
+    98→    }
+    99→    const g = this.g;
+   100→    const fb = res * 4 * fastTanh(this.s3);
+   101→    const u = fastTanh((x - fb) * drive);
+   102→    let prev = u;
+   103→    this.s0 += g * (fastTanh(prev) - this.s0); prev = this.s0;
+   104→    this.s1 += g * (fastTanh(prev) - this.s1); prev = this.s1;
+   105→    this.s2 += g * (fastTanh(prev) - this.s2); prev = this.s2;
+   106→    this.s3 += g * (fastTanh(prev) - this.s3);
+   107→    return this.s3 / (1 + res * 0.5);
+   108→  }
+   109→}
+   110→
+   111→// ─── One-pole lowpass (for envelopes, simple filters) ──────────────────────
+   112→
+   113→class OnePoleLP {
+   114→  constructor() { this.v = 0; }
+   115→  reset() { this.v = 0; }
+   116→  process(x, cutoff, sr) {
+   117→    const a = (1 / sr) * 2 * Math.PI * cutoff;
+   118→    this.v += a * (x - this.v) / (1 + a);
+   119→    return this.v;
+   120→  }
+   121→}
+   122→
+   123→// ─── Pink noise generator (stateful, Voss-McCartney) ───────────────────────
+   124→
+   125→class PinkNoise {
+   126→  constructor() {
+   127→    this.b = new Float32Array(7);
+   128→    this.rngState = 12345;
+   129→  }
+   130→  reset() { this.b.fill(0); }
+   131→  // Simple LFSR random (deterministic, no Math.random for reproducibility)
+   132→  next() {
+   133→    this.rngState = (this.rngState * 1103515245 + 12345) & 0x7fffffff;
+   134→    return (this.rngState / 0x3fffffff) - 1;
+   135→  }
+   136→  // Pink noise sample
+   137→  process() {
+   138→    const w = this.next();
+   139→    this.b[0] = 0.99886 * this.b[0] + w * 0.0555179;
+   140→    this.b[1] = 0.99332 * this.b[1] + w * 0.0750759;
+   141→    this.b[2] = 0.96900 * this.b[2] + w * 0.1538520;
+   142→    this.b[3] = 0.86650 * this.b[3] + w * 0.3104856;
+   143→    this.b[4] = 0.55000 * this.b[4] + w * 0.5329522;
+   144→    this.b[5] = -0.7616 * this.b[5] - w * 0.0168980;
+   145→    const p = this.b[0] + this.b[1] + this.b[2] + this.b[3] + this.b[4] + this.b[5] + this.b[6] + w * 0.5362;
+   146→    this.b[6] = w * 0.115926;
+   147→    return p * 0.11;
+   148→  }
+   149→}
+   150→
+   151→// ─── ADSR Envelope ─────────────────────────────────────────────────────────
+   152→
+   153→class ADSR {
+   154→  constructor() { this.stage = 4; this.t = 0; this.value = 0; }
+   155→  trigger(a, d, s, r) { this.stage = 0; this.t = 0; this.a = a; this.d = d; this.s = s; this.r = r; this.value = 0; }
+   156→  release() { if (this.stage < 3) { this.stage = 3; this.t = 0; } }
+   157→  process(dt) {
+   158→    if (this.stage >= 4) return 0;
+   159→    this.t += dt;
+   160→    if (this.stage === 0) { // attack
+   161→      this.value = this.t / Math.max(0.0001, this.a);
+   162→      if (this.t >= this.a) { this.stage = 1; this.t = 0; this.value = 1; }
+   163→    } else if (this.stage === 1) { // decay
+   164→      this.value = 1 - (1 - this.s) * (this.t / Math.max(0.0001, this.d));
+   165→      if (this.t >= this.d) { this.stage = 2; this.value = this.s; }
+   166→    } else if (this.stage === 2) { // sustain
+   167→      this.value = this.s;
+   168→    } else if (this.stage === 3) { // release
+   169→      this.value = this.s * (1 - this.t / Math.max(0.0001, this.r));
+   170→      if (this.t >= this.r) { this.stage = 4; this.value = 0; }
+   171→    }
+   172→    return Math.max(0, Math.min(1, this.value));
+   173→  }
+   174→  get done() { return this.stage >= 4; }
+   175→}
+   176→
+   177→// ─── Exponential decay envelope (for percussive voices) ────────────────────
+   178→
+   179→class DecayEnv {
+   180→  constructor() { this.t = 0; this.decay = 0.1; this.active = false; }
+   181→  trigger(decay) { this.t = 0; this.decay = Math.max(0.001, decay); this.active = true; }
+   182→  process(dt) {
+   183→    if (!this.active) return 0;
+   184→    this.t += dt;
+   185→    const v = Math.exp(-this.t / this.decay);
+   186→    if (v < 0.0001) { this.active = false; return 0; }
+   187→    return v;
+   188→  }
+   189→  get done() { return !this.active; }
+   190→}
+   191→
+   192→// ─── Band-limited sawtooth oscillator (polyBLEP) ───────────────────────────
+   193→
+   194→class BLSaw {
+   195→  constructor() { this.phase = 0; this.freq = 220; }
+   196→  setFreq(f) { this.freq = f; }
+   197→  process(inc) {
+   198→    const val = 2 * this.phase - 1;
+   199→    const corrected = val - polyBlep(this.phase, inc);
+   200→    this.phase += inc;
+   201→    if (this.phase >= 1) this.phase -= 1;
+   202→    return corrected;
+   203→  }
+   204→  reset() { this.phase = 0; }
+   205→}
+   206→
+   207→// ─── Band-limited square oscillator (polyBLEP) ─────────────────────────────
+   208→
+   209→class BLSquare {
+   210→  constructor() { this.phase = 0; this.freq = 220; }
+   211→  setFreq(f) { this.freq = f; }
+   212→  process(inc) {
+   213→    let val = this.phase < 0.5 ? 1 : -1;
+   214→    val += polyBlep(this.phase, inc);
+   215→    let p2 = this.phase + 0.5;
+   216→    if (p2 >= 1) p2 -= 1;
+   217→    val -= polyBlep(p2, inc);
+   218→    this.phase += inc;
+   219→    if (this.phase >= 1) this.phase -= 1;
+   220→    return val;
+   221→  }
+   222→  reset() { this.phase = 0; }
+   223→}
+   224→
+   225→// ─── Voice: Kick (PSY3 engine.py kick) ─────────────────────────────────────
+   226→// sub (pitched sine) + mid (saturated triangle) + click (differentiated noise)
+   227→
+   228→class KickVoice {
+   229→  constructor() {
+   230→    this.active = false;
+   231→    this.t = 0;
+   232→    this.amp = 1;
+   233→    this.fund = 50;
+   234→    this.decay = 0.2;
+   235→    this.phase = 0;
+   236→    this.prevNoise = 0;
+   237→    this.noise = new PinkNoise();
+   238→  }
+   239→
+   240→  trigger(time, amp, fund, decay, sr) {
+   241→    this.active = true;
+   242→    this.t = 0;
+   243→    this.amp = amp;
+   244→    this.fund = fund;
+   245→    this.decay = decay;
+   246→    this.startTime = time;
+   247→    this.phase = 0;
+   248→    this.prevNoise = 0;
+   249→    this.noise.reset();
+   250→  }
+   251→
+   252→  // Returns [sample, done]
+   253→  render(currentTime, sr) {
+   254→    if (!this.active) return [0, true];
+   255→    const dt = 1 / sr;
+   256→    this.t += dt;
+   257→    if (this.t > this.decay + 0.05) { this.active = false; return [0, true]; }
+   258→
+   259→    const t = this.t;
+   260→    const f0 = this.fund;
+   261→
+   262→    // Pitch envelope: f0*2.4 → f0 over 0.04s
+   263→    const f = (f0 * 2.4 - f0) * Math.exp(-t / 0.04) + f0;
+   264→
+   265→    // Sub: sine with integrated phase (pitch sweep)
+   266→    this.phase += 2 * Math.PI * f / sr;
+   267→    const subEnv = Math.exp(-t / (this.decay * 0.9));
+   268→    const sub = Math.sin(this.phase) * subEnv * 0.8;
+   269→
+   270→    // Mid: saturated triangle at fundamental, short decay
+   271→    const triPhase = (t * f0) % 1;
+   272→    const tri = 2 * Math.abs(2 * triPhase - 1) - 1;
+   273→    const midEnv = Math.exp(-t / 0.05) * 0.5;
+   274→    const mid = fastTanh(tri * 1.5) * midEnv;
+   275→
+   276→    // Click: differentiated white noise, very short
+   277→    const n = this.noise.next();
+   278→    const click = (n - this.prevNoise) * Math.exp(-t / 0.002) * 0.35;
+   279→    this.prevNoise = n;
+   280→
+   281→    const sample = (sub + mid + click) * 0.8 * this.amp;
+   282→    return [sample, false];
+   283→  }
+   284→}
+   285→
+   286→// ─── Voice: Bass (PSY3 engine.py bass) ─────────────────────────────────────
+   287→// BL saw → Moog filter (cutoff envelope) + sub sine
+   288→
+   289→class BassVoice {
+   290→  constructor() {
+   291→    this.active = false;
+   292→    this.t = 0;
+   293→    this.freq = 80;
+   294→    this.amp = 0.5;
+   295→    this.dur = 0.2;
+   296→    this.acid = false;
+   297→    this.square = new BLSquare();
+   298→    this.saw = new BLSaw();
+   299→    this.filter = new MoogLadder();
+   300→    this.phase = 0;
+   301→    this.cutoffStart = 800;
+   302→    this.cutoffEnd = 200;
+   303→    this.res = 0.1;
+   304→    this.bassDecay = 0.12;
+   305→    // Post-filter state (one-pole HP for cleaning mud)
+   306→    this.hpState = 0;
+   307→  }
+   308→
+   309→  trigger(time, freq, dur, amp, acid, sr, params) {
+   310→    this.active = true;
+   311→    this.t = 0;
+   312→    this.freq = freq;
+   313→    this.dur = dur;
+   314→    this.amp = amp;
+   315→    this.acid = acid;
+   316→    this.phase = 0;
+   317→    this.hpState = 0;
+   318→    this.square.reset();
+   319→    this.square.setFreq(freq);
+   320→    this.saw.reset();
+   321→    this.saw.setFreq(freq);
+   322→    this.filter.reset();
+   323→    if (acid) {
+   324→      this.cutoffStart = 2500;
+   325→      this.cutoffEnd = 100;
+   326→      this.res = 0.85;
+   327→      this.bassDecay = 0.15;
+   328→    } else {
+   329→      this.cutoffStart = params?.cutoffStart ?? 800;
+   330→      this.cutoffEnd = params?.cutoffEnd ?? 200;
+   331→      this.res = Math.min(0.3, (params?.resonance ?? 3) / 20);
+   332→      this.bassDecay = 0.12;
+   333→    }
+   334→  }
+   335→
+   336→  render(currentTime, sr) {
+   337→    if (!this.active) return [0, true];
+   338→    const dt = 1 / sr;
+   339→    this.t += dt;
+   340→    if (this.t > this.bassDecay) { this.active = false; return [0, true]; }
+   341→
+   342→    const inc = this.freq / sr;
+   343→    const osc = this.acid ? this.saw.process(inc) : this.square.process(inc);
+   344→
+   345→    // 1. FILTER: Moog ladder with envelope (this is the tone-shaping stage)
+   346→    const cutoffEnv = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / 0.04) + this.cutoffEnd;
+   347→    const drive = this.acid ? 2.5 : 1.3;
+   348→    const filtered = this.filter.process(osc, cutoffEnv, this.res, drive, sr);
+   349→
+   350→    // 2. SUB: Clean sine at fundamental (separate from body — provides weight)
+   351→    this.phase += 2 * Math.PI * this.freq / sr;
+   352→    const sub = Math.sin(this.phase) * 0.45;
+   353→
+   354→    // 3. MIX: Body (filtered) + Sub (clean) — body provides character, sub provides weight
+   355→    let mixed = filtered * 0.55 + sub * 0.45;
+   356→
+   357→    // 4. SATURATION: Post-mix tanh saturation (adds harmonics + warmth — this is what makes
+   358→    //    a bass sound "produced" rather than "raw oscillator")
+   359→    //    Commercial bass always has saturation. Without it, the bass sounds thin and digital.
+   360→    mixed = fastTanh(mixed * 1.8);  // drive=1.8 — moderate, adds warmth without distortion
+   361→
+   362→    // 5. HP FILTER: Remove subsonic mud below 30Hz (one-pole HP)
+   363→    //    Prevents the bass from interfering with the kick's sub region
+   364→    const hpCutoff = 30;  // Hz
+   365→    const hpA = (1 / sr) * 2 * Math.PI * hpCutoff;
+   366→    this.hpState += hpA * (mixed - this.hpState) / (1 + hpA);
+   367→    mixed = mixed - this.hpState * 0.7;  // partial HP — keep some sub but remove mud
+   368→
+   369→    // 6. AMP ENVELOPE: Fast attack (1ms) + exponential decay
+   370→    const attackEnv = Math.min(1, this.t / 0.001);
+   371→    const decayEnv = Math.exp(-this.t / (this.bassDecay * 0.5));
+   372→    const ampEnv = attackEnv * decayEnv;
+   373→
+   374→    return ixed * ampEnv * this.amp, false];
+   375→  }
+   376→}
+   377→
+   378→// ─── Voice: Lead (supersaw → Moog → amp env) ───────────────────────────────
+   379→
+   380→class LeadVoice {
+   381→  constructor() {
+   382→    this.active = false;
+   383→    this.t = 0;
+   384→    this.dur = 0.3;
+   385→    this.amp = 0.5;  // was 0.15 — lead was 22x quieter than kick
+   386→    this.saws = [new BLSaw(), new BLSaw(), new BLSaw(), new BLSaw(), new BLSaw()];
+   387→    this.octaveSaws = [new BLSaw(), new BLSaw(), new BLSaw()]; // octave-up layer
+   388→    this.filter = new MoogLadder();
+   389→    this.cutoff = 1800;
+   390→    this.res = 0.15;
+   391→    this.lfoPhase = 0;
+   392→    this.lfoRate = 0.8;
+   393→    this.lfoDepth = 0.3;
+   394→    this.detune = 10;
+   395→    this.noise = new PinkNoise(); // air/texture layer
+   396→  }
+   397→
+   398→  trigger(time, freq, dur, amp, sr, params) {
+   399→    this.active = true;
+   400→    this.t = 0;
+   401→    this.dur = dur;
+   402→    this.amp = amp;
+   403→    this.freq = freq;
+   404→    this.detune = params?.detune ?? 10;
+   405→    this.cutoff = params?.cutoff ?? 1800;
+   406→    this.res = Math.min(1, (params?.resonance ?? 2) / 20);
+   407→    this.lfoRate = params?.lfoRate ?? 0.8;
+   408→    this.lfoDepth = params?.lfoDepth ?? 0.3;
+   409→    this.lfoPhase = 0;
+   410→    for (const s of this.saws) { s.reset(); }
+   411→    const n = this.saws.length;
+   412→    for (let i = 0; i < n; i++) {
+   413→      const cents = (i - (n - 1) / 2) * this.detune;
+   414→      const mult = Math.pow(2, cents / 1200);
+   415→      this.saws[i].setFreq(freq * mult);
+   416→    }
+   417→    // Octave-up layer — adds brightness and richness
+   418→    for (let i = 0; i < this.octaveSaws.length; i++) {
+   419→      this.octaveSaws[i].reset();
+   420→      const cents = (i - 1) * this.detune * 0.6;
+   421→      this.octaveSaws[i].setFreq(freq * 2 * Math.pow(2, cents / 1200));
+   422→    }
+   423→    this.filter.reset();
+   424→    this.noise.reset();
+   425→  }
+   426→
+   427→  render(currentTime, sr) {
+   428→    if (!this.active) return [0, true];
+   429→    const dt = 1 / sr;
+   430→    this.t += dt;
+   431→    if (this.t > this.dur + 0.05) { this.active = false; return [0, true]; }
+   432→
+   433→    // BUG FIX: Use each saw's OWN frequency (set via setFreq in trigger) — NOT the base freq.
+   434→    // Previously used `const inc = this.freq / sr` for all saws, which ignored the detune
+   435→    // and made all saws play the same frequency. This made leadDetune a DEAD parameter.
+   436→
+   437→    // Layer 1: Fundamental — 5 detuned saws
+   438→    let fundamental = 0;
+   439→    for (const s of this.saws) fundamental += s.process(s.freq / sr);
+   440→    fundamental /= this.saws.length;
+   441→
+   442→    // Layer 2: Octave-up — 3 detuned saws at 2x freq (adds brightness/air)
+   443→    let octaveLayer = 0;
+   444→    for (const s of this.octaveSaws) octaveLayer += s.process(s.freq / sr);
+   445→    octaveLayer /= this.octaveSaws.length;
+   446→
+   447→    // Layer 3: Air — pink noise through high-pass (adds "breath" and sheen)
+   448→    const noiseSample = this.noise.process();
+   449→    const air = (noiseSample - this.noise.prevOutput || 0) * 0.08; // differentiated = HP
+   450→
+   451→    // Mix: fundamental dominant, octave at 30%, air at 8%
+   452→    let mix = fundamental * 0.7 + octaveLayer * 0.3 + air * 0.08;
+   453→
+   454→    // LFO modulates filter cutoff (psychedelic movement)
+   455→    this.lfoPhase += this.lfoRate * dt;
+   456→    const lfo = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.lfoPhase);
+   457→    const modCutoff = this.cutoff * (1 + this.lfoDepth * (lfo * 2 - 1) * 0.5);
+   458→
+   459→    // Filter envelope: open → settle
+   460→    const fEnv = this.cutoff * 2 * Math.exp(-this.t / (this.dur * 0.5)) + this.cutoff;
+   461→    const cutoff = Math.min(18000, Math.max(100, fEnv * 0.5 + modCutoff * 0.5));
+   462→
+   463→    const filtered = this.filter.process(mix, cutoff, this.res, 1.5, sr);
+   464→
+   465→    // SATURATION: Post-filter tanh — adds character and warmth
+   466→    const saturated = fastTanh(filtered * 1.6);
+   467→
+   468→    // Amp envelope
+   469→    const ampEnv = Math.min(1, this.t / 0.006) * Math.exp(-this.t / this.dur);
+   470→    const sample = saturated * ampEnv * this.amp;
+   471→    return [sample, false];
+   472→  }
+   473→}
+   474→
+   475→// ─── Voice: Acid (square → high-res Moog → distortion) ─────────────────────
+   476→
+   477→class AcidVoice {
+   478→  constructor() {
+   479→    this.active = false;
+   480→    this.t = 0;
+   481→    this.square = new BLSquare();
+   482→    this.filter = new MoogLadder();
+   483→    this.lfoPhase = 0; // bidirectional filter movement
+   484→  }
+   485→
+   486→  trigger(time, freq, dur, amp, sr) {
+   487→    this.active = true;
+   488→    this.t = 0;
+   489→    this.freq = freq;
+   490→    this.dur = dur;
+   491→    this.amp = amp;
+   492→    this.square.reset();
+   493→    this.square.setFreq(freq);
+   494→    this.filter.reset();
+   495→    this.cutoffStart = 200 + 3000;
+   496→    this.cutoffEnd = 100;
+   497→    this.res = 0.95; // near self-oscillation for squelch
+   498→    this.lfoPhase = 0;
+   499→  }
+   500→
+   501→  render(currentTime, sr) {
+   502→    if (!this.active) return [0, true];
+   503→    const dt = 1 / sr;
+   504→    this.t += dt;
+   505→    if (this.t > this.dur + 0.05) { this.active = false; return [0, true]; }
+   506→
+   507→    const inc = this.freq / sr;
+   508→    const sq = this.square.process(inc);
+   509→
+   510→    // BIDIRECTIONAL filter movement — envelope + LFO combined
+   511→    // Envelope: fast drop from high to low (classic acid)
+   512→    const envCutoff = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / (this.dur * 0.4)) + this.cutoffEnd;
+   513→    // LFO: slow sine that adds up-down movement on top of the envelope
+   514→    // This creates the "wobble" that real 303 acid has
+   515→    this.lfoPhase += 4.0 * dt; // 4Hz LFO
+   516→    const lfo = Math.sin(2 * Math.PI * this.lfoPhase);
+   517→    const cutoff = Math.max(80, envCutoff * (1 + lfo * 0.3)); // ±30% modulation
+   518→
+   519→    const filtered = this.filter.process(sq, cutoff, 0.95, 3.0, sr);
+   520→    const distorted = fastTanh(filtered * 4); // heavy distortion
+   521→
+   522→    const ampEnv = Math.min(1, this.t / 0.003) * Math.exp(-this.t / this.dur);
+   523→    const sample = distorted * ampEnv * this.amp;
+   524→    return [sample, false];
+   525→  }
+   526→}
+   527→
+   528→// ─── Voice: Pad (detuned saws → Moog → slow env) ───────────────────────────
+   529→
+   530→class PadVoice {
+   531→  constructor() {
+   532→    this.active = false;
+   533→    this.t = 0;
+   534→    this.saws = [new BLSaw(), new BLSaw(), new BLSaw()]; // 3 oscillators (was 2)
+   535→    this.filter = new MoogLadder();
+   536→    this.lfoPhase = 0;
+   537→    this.filterSweepPhase = 0; // slow filter sweep
+   538→  }
+   539→
+   540→  trigger(time, freq, dur, amp, sr, params) {
+   541→    this.active = true;
+   542→    this.t = 0;
+   543→    this.dur = dur;
+   544→    this.amp = amp;
+   545→    this.freq = freq;
+   546→    this.cutoffBase = params?.cutoff ?? 1200;
+   547→    this.res = 0.08; // slightly higher resonance for filter movement
+   548→    this.attack = params?.attack ?? 0.5;
+   549→    this.detune = params?.detune ?? 7;
+   550→    this.evolveRate = params?.evolveRate ?? 0.1;
+   551→    this.lfoPhase = 0;
+   552→    this.filterSweepPhase = 0;
+   553→    for (const s of this.saws) { s.reset(); }
+   554→    // 3-osc detuned: -detune, center, +detune (wider than 2-osc)
+   555→    this.saws[0].setFreq(freq * Math.pow(2, -this.detune / 1200));
+   556→    this.saws[1].setFreq(freq);
+   557→    this.saws[2].setFreq(freq * Math.pow(2, this.detune / 1200));
+   558→    this.filter.reset();
+   559→  }
+   560→
+   561→  render(currentTime, sr) {
+   562→    if (!this.active) return [0, true];
+   563→    const dt = 1 / sr;
+   564→    this.t += dt;
+   565→    if (this.t > this.dur + 0.1) { this.active = false; return [0, true]; }
+   566→
+   567→    const inc = this.freq / sr;
+   568→
+   569→    // Evolve LFO modulates detune (via frequency)
+   570→    this.lfoPhase += this.evolveRate * dt;
+   571→    const lfo = Math.sin(2 * Math.PI * this.lfoPhase);
+   572→    const detuneMod = 1 + 0.003 * lfo;
+   573→    this.saws[0].setFreq(this.freq * Math.pow(2, -this.detune / 1200) * detuneMod);
+   574→    this.saws[1].setFreq(this.freq * detuneMod);
+   575→    this.saws[2].setFreq(this.freq * Math.pow(2, this.detune / 1200) * detuneMod);
+   576→
+   577→    let mix = 0;
+   578→    // BUG FIX: use each saw's own frequency, not the shared base inc
+   579→    for (const s of this.saws) mix += s.process(s.freq / sr);
+   580→    mix /= this.saws.length;
+   581→
+   582→    // SLOW FILTER SWEEP — cutoff moves up and down over the duration
+   583→    // This is what makes a pad "breathe" — without it, it's a static organ
+   584→    this.filterSweepPhase += 0.15 * dt; // 0.15Hz — very slow
+   585→    const sweep = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.filterSweepPhase);
+   586→    const cutoff = this.cutoffBase * (0.6 + sweep * 0.8); // 60% to 140% of base
+   587→
+   588→    const filtered = this.filter.process(mix, cutoff, this.res, 1.2, sr);
+   589→
+   590→    // Slow attack/release envelope
+   591→    const attackEnv = Math.min(1, this.t / this.attack);
+   592→    const releaseEnv = Math.min(1, (this.dur - this.t) / 0.4);
+   593→    const ampEnv = Math.max(0, Math.min(1, Math.min(attackEnv, releaseEnv)));
+   594→    const sample = filtered * ampEnv * this.amp;
+   595→    return [sample, false];
+   596→  }
+   597→}
+   598→
+   599→// ─── Voice: Hat (differentiated pink noise, PSY3 engine.py hat) ────────────
+   600→
+   601→class HatVoice {
+   602→  constructor() {
+   603→    this.active = false;
+   604→    this.t = 0;
+   605→    this.noise = new PinkNoise();
+   606→    this.prevNoise = 0;
+   607→  }
+   608→
+   609→  trigger(time, open, amp, sr) {
+   610→    this.active = true;
+   611→    this.t = 0;
+   612→    this.open = open;
+   613→    this.amp = amp;
+   614→    this.decay = open ? 0.22 : 0.03;
+   615→    this.prevNoise = 0;
+   616→    this.noise.reset();
+   617→  }
+   618→
+   619→  render(currentTime, sr) {
+   620→    if (!this.active) return [0, true];
+   621→    this.t += 1 / sr;
+   622→    if (this.t > this.decay * 1.5) { this.active = false; return [0, true]; }
+   623→
+   624→    const n = this.noise.process();
+   625→    // Highpass via differentiation
+   626→    const hp = n - this.prevNoise;
+   627→    this.prevNoise = n;
+   628→    const env = Math.exp(-this.t / this.decay);
+   629→    const sample = hp * env * 0.5 * this.amp / 0.12;
+   630→    return [sample, false];
+   631→  }
+   632→}
+   633→
+   634→// ─── Voice: Clap (multi-burst noise, PSY3 engine.py clap) ──────────────────
+   635→
+   636→class ClapVoice {
+   637→  constructor() {
+   638→    this.active = false;
+   639→    this.t = 0;
+   640→    this.noise = new PinkNoise();
+   641→  }
+   642→
+   643→  trigger(time, amp, sr) {
+   644→    this.active = true;
+   645→    this.t = 0;
+   646→    this.amp = amp;
+   647→    this.noise.reset();
+   648→    this.bursts = [0, 0.012, 0.024, 0.036];
+   649→    this.decays = [0.02, 0.02, 0.02, 0.09];
+   650→  }
+   651→
+   652→  render(currentTime, sr) {
+   653→    if (!this.active) return [0, true];
+   654→    this.t += 1 / sr;
+   655→    if (this.t > 0.3) { this.active = false; return [0, true]; }
+   656→
+   657→    const n = this.noise.next();
+   658→    let g = 0;
+   659→    for (let k = 0; k < 4; k++) {
+   660→      if (this.t >= this.bursts[k]) {
+   661→        g += Math.exp(-(this.t - this.bursts[k]) / this.decays[k]);
+   662→      }
+   663→    }
+   664→    const sample = n * g * 0.6 * this.amp / 0.4;
+   665→    return [sample, false];
+   666→  }
+   667→}
+   668→
+   669→// ─── Voice: Perc (pitched sine with pitch envelope + saturation) ───────────
+   670→// BEFORE: bare sine with fixed frequency and decay = telephone bell.
+   671→// AFTER: sine with pitch envelope (descending) + saturation + Moog filter = tribal perc.
+   672→
+   673→class PercVoice {
+   674→  constructor() {
+   675→    this.active = false;
+   676→    this.t = 0;
+   677→    this.phase = 0;
+   678→    this.filter = new MoogLadder();
+   679→  }
+   680→
+   681→  trigger(time, freq, amp, sr) {
+   682→    this.active = true;
+   683→    this.t = 0;
+   684→    this.freq = freq;
+   685→    this.amp = amp;
+   686→    this.phase = 0;
+   687→    this.filter.reset();
+   688→  }
+   689→
+   690→  render(currentTime, sr) {
+   691→    if (!this.active) return [0, true];
+   692→    this.t += 1 / sr;
+   693→    if (this.t > 0.1) { this.active = false; return [0, true]; }
+   694→
+   695→    // Pitch envelope: starts 1.5x higher, drops to fundamental
+   696→    const pitchEnv = 1.5 * Math.exp(-this.t / 0.01) + 0.5;
+   697→    this.phase += 2 * Math.PI * this.freq * pitchEnv / sr;
+   698→    const osc = Math.sin(this.phase);
+   699→
+   700→    // Filter for body — LP at 800Hz with slight resonance
+   701→    const filtered = this.filter.process(osc, 800, 0.2, 1.5, sr);
+   702→
+   703→    // Saturation for warmth
+   704→    const saturated = fastTanh(filtered * 1.8);
+   705→
+   706→    const env = Math.exp(-this.t / 0.05);
+   707→    const sample = saturated * env * this.amp;
+   708→    return [sample, false];
+   709→  }
+   710→}
+   711→
+   712→// ─── Voice: Shaker (filtered noise with proper HP + saturation) ────────────
+   713→// BEFORE: differentiated noise (primitive HP). Thin and digital.
+   714→// AFTER: noise through Moog HP + saturation = warm shaker with body.
+   715→
+   716→class ShakerVoice {
+   717→  constructor() {
+   718→    this.active = false;
+   719→    this.t = 0;
+   720→    this.noise = new PinkNoise();
+   721→    this.prevNoise = 0;
+   722→    this.filter = new MoogLadder(); // for HP shaping
+   723→  }
+   724→
+   725→  trigger(time, amp, sr) {
+   726→    this.active = true;
+   727→    this.t = 0;
+   728→    this.amp = amp;
+   729→    this.noise.reset();
+   730→    this.prevNoise = 0;
+   731→    this.filter.reset();
+   732→  }
+   733→
+   734→  render(currentTime, sr) {
+   735→    if (!this.active) return [0, true];
+   736→    this.t += 1 / sr;
+   737→    if (this.t > 0.08) { this.active = false; return [0, true]; }
+   738→
+   739→    const n = this.noise.process();
+   740→    // HP via differentiation (fast)
+   741→    const hp = n - this.prevNoise;
+   742→    this.prevNoise = n;
+   743→    // Additional HP shaping through Moog (highpass approximation via lowpass inversion)
+   744→    const shaped = this.filter.process(hp, 6000, 0.1, 1.0, sr);
+   745→    // Saturation for warmth
+   746→    const saturated = fastTanh(shaped * 2.5);
+   747→    const env = Math.exp(-this.t / 0.03);
+   748→    const sample = saturated * env * 2 * this.amp;
+   749→    return [sample, false];
+   750→  }
+   751→}
+   752→
+   753→// ─── Voice: Texture (multi-layer psychedelic evolving bed) ──────────────────
+   754→// BEFORE: FM sine or raw noise = siren or wind. Not psychedelic.
+   755→// AFTER: 3 layers — detuned osc bed + filtered noise + slow filter morph.
+   756→// Creates evolving atmospheric texture that sounds "psychedelic" not "generated".
+   757→
+   758→class TextureVoice {
+   759→  constructor() {
+   760→    this.active = false;
+   761→    this.t = 0;
+   762→    this.saw1 = new BLSaw();
+   763→    this.saw2 = new BLSaw();
+   764→    this.filter = new MoogLadder();
+   765→    this.noise = new PinkNoise();
+   766→    this.morphPhase = 0;
+   767→    this.noiseFilter = new MoogLadder(); // separate filter for noise layer
+   768→  }
+   769→
+   770→  trigger(time, dur, amp, type, sr) {
+   771→    this.active = true;
+   772→    this.t = 0;
+   773→    this.dur = dur;
+   774→    this.amp = amp;
+   775→    this.type = type || 'fm';
+   776→    this.morphPhase = 0;
+   777→    this.saw1.reset();
+   778→    this.saw2.reset();
+   779→    this.filter.reset();
+   780→    this.noiseFilter.reset();
+   781→    this.noise.reset();
+   782→    // Detuned oscillators — slow evolving bed
+   783→    const baseFreq = 110 + Math.random() * 220;
+   784→    this.saw1.setFreq(baseFreq);
+   785→    this.saw2.setFreq(baseFreq * 1.01); // very slight detune
+   786→    this.baseFreq = baseFreq;
+   787→  }
+   788→
+   789→  render(currentTime, sr) {
+   790→    if (!this.active) return [0, true];
+   791→    this.t += 1 / sr;
+   792→    if (this.t > this.dur + 0.1) { this.active = false; return [0, true]; }
+   793→
+   794→    const dt = 1 / sr;
+   795→    const env = Math.min(1, this.t / 0.5) * Math.min(1, (this.dur - this.t) / 0.5);
+   796→    if (env <= 0) return [0, false];
+   797→
+   798→    // Layer 1: Detuned saw bed — provides harmonic content
+   799→    const inc = this.baseFreq / sr;
+   800→    let oscBed = (this.saw1.process(inc) + this.saw2.process(inc)) * 0.3;
+   801→
+   802→    // Layer 2: Filtered noise — provides "air" and texture
+   803→    const noiseSamp = this.noise.process();
+   804→    const noiseFiltered = this.noiseFilter.process(noiseSamp, 2000, 0.3, 1.0, sr) * 0.4;
+   805→
+   806→    // Layer 3: Slow filter morph — cutoff moves up and down
+   807→    this.morphPhase += 0.3 * dt; // 0.3Hz morph
+   808→    const morph = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.morphPhase);
+   809→    const morphCutoff = 300 + morph * 2000; // 300Hz to 2300Hz
+   810→
+   811→    // Mix layers and apply morph filter
+   812→    let mix = oscBed + noiseFiltered;
+   813→    mix = this.filter.process(mix, morphCutoff, 0.15, 1.2, sr);
+   814→
+   815→    // Saturation for warmth
+   816→    mix = fastTanh(mix * 1.3);
+   817→
+   818→    return ix * env * this.amp, false];
+   819→  }
+   820→}
+   821→
+   822→// ─── Voice: FX (riser, impact, sweep, zap, blip, downlifter) ──────────────
+   823→// BEFORE: Riser = noise getting louder. Impact = sine going down. Primitive.
+   824→// AFTER: Riser = noise + filter sweep opening up. Impact = sub boom + noise burst.
+   825→//        Sweep = filtered noise with stereo movement. Each FX has more body.
+   826→
+   827→class FXVoice {
+   828→  constructor() {
+   829→    this.active = false;
+   830→    this.t = 0;
+   831→    this.noise = new PinkNoise();
+   832→    this.phase = 0;
+   833→    this.filter = new MoogLadder(); // filter for riser/sweep
+   834→  }
+   835→
+   836→  trigger(type, time, dur, amp, sr) {
+   837→    this.active = true;
+   838→    this.type = type;
+   839→    this.t = 0;
+   840→    this.dur = dur || 0.3;
+   841→    this.amp = amp || 0.2;
+   842→    this.phase = 0;
+   843→    this.noise.reset();
+   844→    this.filter.reset();
+   845→  }
+   846→
+   847→  render(currentTime, sr) {
+   848→    if (!this.active) return [0, true];
+   849→    const dt = 1 / sr;
+   850→    this.t += dt;
+   851→    if (this.t > this.dur + 0.2) { this.active = false; return [0, true]; }
+   852→
+   853→    let sample = 0;
+   854→    const t = this.t;
+   855→    switch (this.type) {
+   856→      case V_RISER: {
+   857→        // Riser = noise through filter that opens up + amplitude rise
+   858→        // BEFORE: just noise * env. No filter, no character.
+   859→        const n = this.noise.process();
+   860→        // Filter opens from 200Hz to 8000Hz over the duration
+   861→        const cutoff = 200 + (t / this.dur) * 7800;
+   862→        const filtered = this.filter.process(n, cutoff, 0.2, 1.5, sr);
+   863→        // Amplitude rises exponentially (not linear)
+   864→        const env = Math.pow(t / this.dur, 2) * 0.35;
+   865→        sample = fastTanh(filtered * env * 3); // saturate for punch
+   866→        break;
+   867→      }
+   868→      case V_IMPACT: {
+   869→        // Impact = sub sine boom + noise burst (two layers)
+   870→        // BEFORE: just sine going down. No body, no texture.
+   871→        // Sub boom: sine from 120Hz to 35Hz with exp decay
+   872→        const f = 120 * Math.exp(-t / 0.15) + 35;
+   873→        this.phase += 2 * Math.PI * f * dt;
+   874→        const subEnv = Math.exp(-t / 0.2);
+   875→        const sub = Math.sin(this.phase) * subEnv * 0.7;
+   876→        // Noise burst: short percussive crack
+   877→        const n = this.noise.process();
+   878→        const noiseEnv = Math.exp(-t / 0.02); // 20ms crack
+   879→        const crack = n * noiseEnv * 0.3;
+   880→        sample = sub + crack;
+   881→        sample = fastTanh(sample * 1.5); // saturate
+   882→        break;
+   883→      }
+   884→      case V_SWEEP: {
+   885→        // Sweep = filtered noise with filter moving + amplitude curve
+   886→        // BEFORE: noise * sin envelope. No filter movement.
+   887→        const n = this.noise.process();
+   888→        // Filter sweeps from low to high and back
+   889→        const sweepPos = t / this.dur;
+   890→        const cutoff = 200 + Math.sin(Math.PI * sweepPos) * 4000 + 2000;
+   891→        const filtered = this.filter.process(n, cutoff, 0.3, 1.3, sr);
+   892→        const env = Math.sin(Math.PI * sweepPos) * 0.2;
+   893→        sample = filtered * env;
+   894→        break;
+   895→      }
+   896→      case V_ZAP: {
+   897→        // FM zap — carrier + modulator with exponential index decay
+   898→        const car = 880, mod = 1760;
+   899→        const idx = 3 * Math.exp(-t / 0.03);
+   900→        this.phase += 2 * Math.PI * (car + idx * Math.sin(2 * Math.PI * mod * t)) * dt;
+   901→        const env = Math.exp(-t / 0.04);
+   902→        sample = Math.sin(this.phase) * env;
+   903→        sample = fastTanh(sample * 2); // saturate for grit
+   904→        break;
+   905→      }
+   906→      case V_BLIP: {
+   907→        // Pure sine blip with pitch envelope (descending)
+   908→        const f = 1200 * Math.exp(-t / 0.01) + 400;
+   909→        this.phase += 2 * Math.PI * f * dt;
+   910→        const env = Math.exp(-t / 0.02);
+   911→        sample = Math.sin(this.phase) * env;
+   912→        break;
+   913→      }
+   914→      case V_DOWNLIFTER: {
+   915→        // Downlifter = saw wave with descending pitch + filter closing
+   916→        const f = 800 * Math.exp(-t / 0.15) + 100;
+   917→        this.phase += 2 * Math.PI * f * dt;
+   918→        const saw = 2 * (this.phase / (2 * Math.PI) % 1) - 1; // naive saw
+   919→        const cutoff = 3000 * Math.exp(-t / 0.2) + 200;
+   920→        const filtered = this.filter.process(saw, cutoff, 0.1, 1.0, sr);
+   921→        const env = Math.exp(-t / 0.2);
+   922→        sample = filtered * env * 0.4;
+   923→        break;
+   924→      }
+   925→    }
+   926→    return [sample * this.amp, false];
+   927→  }
+   928→}
+   929→
+   930→// ─── Sample Voice (plays preloaded AudioBuffer data) ──────────────────────
+   931→// Plays a sample with linear interpolation, pitch shift, and gain.
+   932→// Used for kick/hat/clap — the REAL PSY3 samples give professional sound quality
+   933→// that pure synth DSP cannot match.
+   934→
+   935→class SampleVoice {
+   936→  constructor() {
+   937→    this.active = false;
+   938→    this.t = 0;
+   939→    this.sampleData = null;     // Float32Array
+   940→    this.sampleRate = 44100;
+   941→    this.playbackRate = 1.0;    // pitch shift
+   942→    this.amp = 1.0;
+   943→    this.gainEnv = 1.0;
+   944→    this.decay = 0.3;
+   945→    this.position = 0;          // fractional sample position
+   946→    this.pan = 0;               // -1..1
+   947→  }
+   948→
+   949→  trigger(sampleData, sampleRate, playbackRate, amp, decay, pan) {
+   950→    this.active = true;
+   951→    this.t = 0;
+   952→    this.sampleData = sampleData;
+   953→    this.sampleRate = sampleRate;
+   954→    this.playbackRate = playbackRate || 1.0;
+   955→    this.amp = amp;
+   956→    this.decay = decay || 0.3;
+   957→    this.position = 0;
+   958→    this.pan = pan || 0;
+   959→  }
+   960→
+   961→  // Returns [leftSample, rightSample, done]
+   962→  renderStereo(currentTime, sr) {
+   963→    if (!this.active || !this.sampleData) return [0, 0, true];
+   964→    this.t += 1 / sr;
+   965→    const env = Math.exp(-this.t / this.decay);
+   966→    if (env < 0.001 || this.position >= this.sampleData.length) {
+   967→      this.active = false;
+   968→      return [0, 0, true];
+   969→    }
+   970→
+   971→    // Linear interpolation playback
+   972→    const idx = Math.floor(this.position);
+   973→    const frac = this.position - idx;
+   974→    const s1 = this.sampleData[idx] || 0;
+   975→    const s2 = this.sampleData[idx + 1] || 0;
+   976→    let sample = (s1 + (s2 - s1) * frac) * env * this.amp;
+   977→
+   978→    // SATURATION: Add warmth and punch to samples (especially kick)
+   979→    // Commercial kicks/snares always have saturation. Without it, samples
+   980→    // sound flat and lifeless. This tanh adds harmonics that make the
+   981→    // kick "punch through" the mix.
+   982→    sample = fastTanh(sample * 1.4);  // moderate drive — warm, not distorted
+   983→
+   984→    // Advance position based on playback rate and sample rate ratio
+   985→    this.position += this.playbackRate * (this.sampleRate / sr);
+   986→
+   987→    // Stereo: apply pan (equal power)
+   988→    const pan = Math.max(-1, Math.min(1, this.pan));
+   989→    const leftGain = pan <= 0 ? 1 : 1 - pan;
+   990→    const rightGain = pan >= 0 ? 1 : 1 + pan;
+   991→
+   992→    return [sample * leftGain, sample * rightGain, false];
+   993→  }
+   994→}
+   995→
+   996→// ─── Algorithmic Reverb (Schroeder-style: 4 comb + 2 allpass) ──────────────
+   997→// Creates space and depth. A dry psytrance mix sounds flat/amateur.
+   998→// Reverb is a SEND — voices send a portion of their signal here, and the
+   999→// reverb output feeds back to the master. This is how professional mixes work.
+  1000→

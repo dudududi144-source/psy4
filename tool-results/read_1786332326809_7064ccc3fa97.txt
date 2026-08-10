@@ -1,0 +1,518 @@
+     1→'use client';
+     2→
+     3→import React, { useState, useRef, useEffect, useCallback } from 'react';
+     4→import { Button } from '@/components/ui/button';
+     5→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+     6→import { Badge } from '@/components/ui/badge';
+     7→import {
+     8→  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+     9→} from '@/components/ui/table';
+    10→import {
+    11→  Radio, Play, Square, Activity, Wifi, WifiOff, Volume2, VolumeX,
+    12→  Zap, Brain, CheckCircle2, Music, Gauge, Waves,
+    13→} from 'lucide-react';
+    14→import { Toaster } from '@/components/ui/sonner';
+    15→import { toast } from 'sonner';
+    16→
+    17→// ─── Types ──────────────────────────────────────────────────────────────────
+    18→
+    19→interface RadioStream {
+    20→  id: string; name: string; url: string; format: string; bitrate: number;
+    21→  genre: string; worldMapping: string[]; hasMetadata: boolean; priority: number;
+    22→}
+    23→
+    24→interface RefMetrics {
+    25→  bpm: number; lufs: number; subEnergy: number; lowEnergy: number;
+    26→  midEnergy: number; highEnergy: number; airEnergy: number;
+    27→  spectralCentroid: number; transientDensity: number; kickDecayMs: number;
+    28→  bassDecayMs: number; stereoWidth: number; energy: number;
+    29→  detectedKey?: { root: number; rootName: string; scale: string; confidence: number };
+    30→  detectedStyle?: { style: string; confidence: number };
+    31→}
+    32→
+    33→interface RefProfile {
+    34→  bpm: { mean: number }; lufs: { mean: number };
+    35→  subEnergy: { mean: number }; lowEnergy: { mean: number };
+    36→  midEnergy: { mean: number }; highEnergy: { mean: number }; airEnergy: { mean: number };
+    37→  spectralCentroid: { mean: number }; transientDensity: { mean: number };
+    38→  kickDecayMs: { mean: number }; bassDecayMs: { mean: number };
+    39→  stereoWidth: { mean: number }; energy: { mean: number };
+    40→  windowCount: number;
+    41→}
+    42→
+    43→type Mode = 'listen' | 'analyze' | 'train';
+    44→
+    45→// ─── Main Page ──────────────────────────────────────────────────────────────
+    46→
+    47→export default function PSY4Page() {
+    48→  const [streams, setStreams] = useState<RadioStream[]>([]);
+    49→  const [streamId, setStreamId] = useState('');
+    50→  const [mode, setMode] = useState<Mode>('listen');
+    51→  const [worldId, setWorldId] = useState('dark-psy');
+    52→
+    53→  // Reference
+    54→  const [refConnected, setRefConnected] = useState(false);
+    55→  const [refMetrics, setRefMetrics] = useState<RefMetrics | null>(null);
+    56→  const [refProfile, setRefProfile] = useState<RefProfile | null>(null);
+    57→  const [refPlaying, setRefPlaying] = useState(false);
+    58→
+    59→  // Engine
+    60→  const [engineOn, setEngineOn] = useState(false);
+    61→  const [selfMetrics, setSelfMetrics] = useState<RefMetrics | null>(null);
+    62→  const [engineState, setEngineState] = useState<{ bpm: number; key: string; section: string; style: string }>({
+    63→    bpm: 145, key: 'phrygian', section: 'INTRO', style: 'dark-psy',
+    64→  });
+    65→
+    66→  // Learning
+    67→  const [learning, setLearning] = useState(false);
+    68→  const [learnState, setLearnState] = useState<any>(null);
+    69→
+    70→  // Reference pursuit status — snapshot of (target, actual) pairs from the engine
+    71→  const [pursuit, setPursuit] = useState<any>(null);
+    72→
+    73→  // Refs
+    74→  const listenerRef = useRef<any>(null);
+    75→  const analyzerRef = useRef<any>(null);
+    76→  const engineRef = useRef<any>(null);
+    77→  const trainerRef = useRef<any>(null);
+    78→  const refAudioRef = useRef<HTMLAudioElement | null>(null);
+    79→
+    80→  // Load streams
+    81→  useEffect(() => {
+    82→    fetch('/api/streams.json').then(r => r.json()).then(d => {
+    83→      if (d.ok) {
+    84→        setStreams(d.streams);
+    85→        const https = d.streams.find((s: RadioStream) => s.url.startsWith('https'));
+    86→        setStreamId(https?.id || d.streams[0]?.id);
+    87→      }
+    88→    }).catch(() => {});
+    89→  }, []);
+    90→
+    91→  // ─── Reference ────────────────────────────────────────────────────────────
+    92→
+    93→  const connectRef = useCallback(async () => {
+    94→    const stream = streams.find(s => s.id === streamId);
+    95→    if (!stream) return;
+    96→    try {
+    97→      const { ReferenceListenerV2 } = await import('@/lib/studio/engine/reference/referenceListenerV2');
+    98→      if (listenerRef.current) await listenerRef.current.disconnect();
+    99→      const l = new ReferenceListenerV2();
+   100→      l.onMetrics(m => {
+   101→        setRefMetrics(m);
+   102→        if (engineRef.current?.applyMusicalUnderstanding && m.bpm > 0) {
+   103→          engineRef.current.applyMusicalUnderstanding({
+   104→            key: { root: m.detectedKey?.root ?? 1, scale: m.detectedKey?.scale ?? 'phrygian', confidence: m.detectedKey?.confidence ?? 0 },
+   105→            bpm: m.bpm, bpmConfidence: m.bpmConfidence, style: m.detectedStyle?.style ?? 'dark-psy', styleConfidence: m.detectedStyle?.confidence ?? 0,
+   106→          });
+   107→        }
+   108→        if (engineRef.current?.liveTrack) {
+   109→          engineRef.current.liveTrack({
+   110→            lufs: m.lufs,
+   111→            kickDecayMs: m.kickDecayMs,
+   112→            spectralCentroid: m.spectralCentroid,
+   113→            subEnergy: m.subEnergy,
+   114→            highEnergy: m.highEnergy,
+   115→            transientDensity: m.transientDensity,
+   116→            bassDecayMs: m.bassDecayMs,
+   117→            energy: m.energy,
+   118→          });
+   119→        }
+   120→      });
+   121→      l.onProfile(p => setRefProfile(p));
+   122→      l.onError(e => toast.error(`Stream error: ${e.message}`));
+   123→      const ok = await l.connect(stream);
+   124→      if (ok) { l.start(); listenerRef.current = l; setRefConnected(true); toast.success(`Connected: ${stream.name}`); }
+   125→    } catch (e) { toast.error(`Connection failed: ${e instanceof Error ? e.message : String(e)}`); }
+   126→  }, [streamId, streams]);
+   127→
+   128→  const disconnectRef = useCallback(async () => {
+   129→    if (listenerRef.current) { await listenerRef.current.disconnect(); listenerRef.current = null; }
+   130→    setRefConnected(false); setRefMetrics(null); setRefProfile(null);
+   131→  }, []);
+   132→
+   133→  const toggleRefAudio = useCallback(async () => {
+   134→    if (refPlaying && refAudioRef.current) { refAudioRef.current.pause(); setRefPlaying(false); return; }
+   135→    const stream = streams.find(s => s.id === streamId);
+   136→    if (!stream) return;
+   137→    try {
+   138→      if (!refAudioRef.current) { refAudioRef.current = new Audio(); refAudioRef.current.crossOrigin = 'anonymous'; refAudioRef.current.volume = 0.6; }
+   139→      refAudioRef.current.src = stream.url.startsWith('https') ? stream.url : `/api/reference/proxy?stream=${stream.id}&continuous=1`;
+   140→      await refAudioRef.current.play();
+   141→      setRefPlaying(true);
+   142→    } catch (e) { toast.error(`Playback failed: ${e instanceof Error ? e.message : String(e)}`); }
+   143→  }, [refPlaying, streamId, streams]);
+   144→
+   145→  // ─── Engine ───────────────────────────────────────────────────────────────
+   146→
+   147→  const startEngine = useCallback(async () => {
+   148→    try {
+   149→      const { Psy4EngineV2 } = await import('@/lib/studio/engine/psy4EngineV2');
+   150→      if (engineRef.current) engineRef.current.stop();
+   151→      const engine = new Psy4EngineV2();
+   152→      engine.onSectionChange = (s: string) => setEngineState(prev => ({ ...prev, section: s }));
+   153→      engine.start(worldId);
+   154→      engineRef.current = engine;
+   155→      setEngineOn(true);
+   156→      setEngineState({ bpm: (engine as any)._bpm || 145, key: engine.getMusicalKey()?.scale || 'phrygian', section: 'INTRO' });
+   157→
+   158→      // Self-analyzer
+   159→      const analyser = engine.getAnalyser();
+   160→      if (analyser) {
+   161→        const { SelfAnalyzer } = await import('@/lib/studio/engine/reference/selfAnalyzer');
+   162→        const a = new SelfAnalyzer();
+   163→        a.attach(analyser, engine.ctx!);
+   164→        a.setEngineBpm((engine as any)._bpm || 145);
+   165→        a.onMetrics(m => {
+   166→          setSelfMetrics(m);
+   167→          a.setEngineBpm((engineRef.current as any)?._bpm || 145);
+   168→          if (engineRef.current?.selfTrack) engineRef.current.selfTrack({
+   169→            lufs: m.lufs,
+   170→            energy: m.energy,
+   171→            spectralCentroid: m.spectralCentroid,
+   172→            transientDensity: m.transientDensity,
+   173→            subEnergy: m.subEnergy,
+   174→            highEnergy: m.highEnergy,
+   175→          });
+   176→          // Refresh pursuit status snapshot for UI display
+   177→          if (engineRef.current?.getPursuitStatus) {
+   178→            try { setPursuit(engineRef.current.getPursuitStatus()); } catch {}
+   179→          }
+   180→          const refM = refMetrics;
+   181→          setEngineState(prev => ({
+   182→            ...prev,
+   183→            bpm: (engineRef.current as any)?._bpm || prev.bpm,
+   184→            key: engineRef.current?.getMusicalKey()?.scale || prev.key,
+   185→            style: refM?.detectedStyle?.style || prev.style,
+   186→          }));
+   187→        });
+   188→        a.start();
+   189→        analyzerRef.current = a;
+   190→      }
+   191→      toast.success('Engine V2 started');
+   192→    } catch (e) { toast.error(`Engine error: ${e instanceof Error ? e.message : String(e)}`); }
+   193→  }, [worldId]);
+   194→
+   195→  const stopEngine = useCallback(() => {
+   196→    if (analyzerRef.current) { analyzerRef.current.detach(); analyzerRef.current = null; }
+   197→    if (engineRef.current) { engineRef.current.stop(); engineRef.current = null; }
+   198→    if (trainerRef.current) { trainerRef.current.stop(); trainerRef.current = null; }
+   199→    setEngineOn(false); setSelfMetrics(null); setLearning(false);
+   200→  }, []);
+   201→
+   202→  // ─── Learning ─────────────────────────────────────────────────────────────
+   203→
+   204→  const startLearning = useCallback(async () => {
+   205→    if (!refProfile) { toast.error('Connect reference first'); return; }
+   206→    try {
+   207→      const { ContinuousTrainer } = await import('@/lib/studio/engine/reference/continuousTrainer');
+   208→      if (trainerRef.current) trainerRef.current.stop();
+   209→      const t = new ContinuousTrainer({ worldId, seed: 1234, renderDuration: 8, iterationIntervalMs: 12000, maxChangesPerIteration: 2, autoApplyToEngine: true, saveToLocalStorage: true });
+   210→      if (engineRef.current) t.setEngine({ setWorld: (p: any) => engineRef.current?.setWorld?.(p) });
+   211→      t.onIteration(() => setLearnState({ ...t.getState() }));
+   212→      t.onStateChange(s => setLearnState({ ...s }));
+   213→      t.start(refProfile);
+   214→      trainerRef.current = t;
+   215→      setLearning(true);
+   216→      toast.success('Learning started');
+   217→    } catch (e) { toast.error(`Learning error: ${e instanceof Error ? e.message : String(e)}`); }
+   218→  }, [refProfile, worldId]);
+   219→
+   220→  const stopLearning = useCallback(() => {
+   221→    if (trainerRef.current) { trainerRef.current.stop(); trainerRef.current = null; }
+   222→    setLearning(false);
+   223→  }, []);
+   224→
+   225→  // ─── Cleanup ──────────────────────────────────────────────────────────────
+   226→
+   227→  useEffect(() => () => {
+   228→    if (listenerRef.current) listenerRef.current.disconnect();
+   229→    if (analyzerRef.current) analyzerRef.current.detach();
+   230→    if (engineRef.current) engineRef.current.stop();
+   231→    if (trainerRef.current) trainerRef.current.stop();
+   232→  }, []);
+   233→
+   234→  // ─── Render ───────────────────────────────────────────────────────────────
+   235→
+   236→  const refVal = (v?: number) => v !== undefined ? v.toFixed(2) : '—';
+   237→  const refDb = (v?: number) => v !== undefined ? `${v.toFixed(1)} dB` : '—';
+   238→  const refHz = (v?: number) => v !== undefined ? `${v.toFixed(0)} Hz` : '—';
+   239→  const refMs = (v?: number) => v !== undefined ? `${v.toFixed(0)} ms` : '—';
+   240→
+   241→  return (
+   242→    <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100">
+   243→      <Toaster />
+   244→      <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur-sm sticky top-0 z-10">
+   245→        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between flex-wrap gap-3">
+   246→          <div className="flex items-center gap-3">
+   247→            <Radio className="w-7 h-7 text-fuchsia-400" />
+   248→            <div>
+   249→              <h1 className="text-lg font-bold bg-gradient-to-r from-fuchsia-400 to-cyan-400 bg-clip-text text-transparent">PSY4 ENGINE V2</h1>
+   250→              <p className="text-[10px] text-slate-400 font-mono">POOLED VOICES · FACTORY PRESETS · LIVE SYNC</p>
+   251→            </div>
+   252→          </div>
+   253→          <div className="flex items-center gap-2">
+   254→            <Badge variant={refConnected ? 'default' : 'secondary'} className="font-mono text-[10px]">
+   255→              {refConnected ? <Wifi className="w-3 h-3 mr-1" /> : <WifiOff className="w-3 h-3 mr-1" />}
+   256→              {refConnected ? 'REF LIVE' : 'REF OFF'}
+   257→            </Badge>
+   258→            <Badge variant={engineOn ? 'default' : 'secondary'} className="font-mono text-[10px]">
+   259→              <Activity className="w-3 h-3 mr-1" />
+   260→              {engineOn ? `ENGINE ${engineState.bpm} BPM` : 'ENGINE OFF'}
+   261→            </Badge>
+   262→            {learning && <Badge className="bg-emerald-600 text-white animate-pulse text-[10px]"><Brain className="w-3 h-3 mr-1" />LEARNING</Badge>}
+   263→          </div>
+   264→        </div>
+   265→      </header>
+   266→
+   267→      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-4 space-y-4">
+   268→        {/* Mode + Stream + World */}
+   269→        <Card className="border-slate-800 bg-slate-900/60">
+   270→          <CardContent className="p-4">
+   271→            <div className="flex flex-wrap items-center gap-3">
+   272→              {(['listen', 'analyze', 'train'] as Mode[]).map(m => (
+   273→                <Button key={m} size="sm" variant={mode === m ? 'default' : 'outline'} onClick={() => setMode(m)} className={mode === m ? 'bg-fuchsia-600 hover:bg-fuchsia-700' : ''}>{m.toUpperCase()}</Button>
+   274→              ))}
+   275→              <div className="ml-auto flex items-center gap-2">
+   276→                <select value={streamId} onChange={e => setStreamId(e.target.value)} className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono">
+   277→                  {streams.map(s => <option key={s.id} value={s.id}>{s.name} ({s.bitrate}kbps)</option>)}
+   278→                </select>
+   279→                <select value={worldId} onChange={e => setWorldId(e.target.value)} className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono">
+   280→                  {['progressive-psy', 'dark-psy', 'goa', 'morning-psy', 'forest', 'acid-psy'].map(w => <option key={w} value={w}>{w}</option>)}
+   281→                </select>
+   282→              </div>
+   283→            </div>
+   284→          </CardContent>
+   285→        </Card>
+   286→
+   287→        {/* Transport */}
+   288→        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+   289→          {/* Reference */}
+   290→          <Card className="border-slate-800 bg-slate-900/60">
+   291→            <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Radio className="w-4 h-4 text-fuchsia-400" /> REFERENCE</CardTitle></CardHeader>
+   292→            <CardContent className="space-y-2">
+   293→              <div className="flex gap-2">
+   294→                {!refConnected ? (
+   295→                  <Button onClick={connectRef} size="sm" className="bg-emerald-600 hover:bg-emerald-700"><Wifi className="w-4 h-4 mr-1" /> CONNECT</Button>
+   296→                ) : (
+   297→                  <Button onClick={disconnectRef} size="sm" variant="destructive"><WifiOff className="w-4 h-4 mr-1" /> DISCONNECT</Button>
+   298→                )}
+   299→                {refConnected && (
+   300→                  <Button onClick={toggleRefAudio} size="sm" variant={refPlaying ? 'secondary' : 'outline'} className={refPlaying ? 'bg-amber-600 text-white' : ''}>
+   301→                    {refPlaying ? <Volume2 className="w-4 h-4 mr-1" /> : <VolumeX className="w-4 h-4 mr-1" />}
+   302→                    {refPlaying ? 'STOP' : 'PLAY'}
+   303→                  </Button>
+   304→                )}
+   305→              </div>
+   306→              {refProfile && <div className="text-[10px] font-mono text-slate-400">{refProfile.windowCount} windows · BPM {refProfile.bpm.mean.toFixed(0)} · LUFS {refProfile.lufs.mean.toFixed(1)}</div>}
+   307→              {refMetrics?.detectedKey && <div className="text-[10px] font-mono text-emerald-400">Key: {refMetrics.detectedKey.rootName} {refMetrics.detectedKey.scale} (conf {refMetrics.detectedKey.confidence.toFixed(2)})</div>}
+   308→            </CardContent>
+   309→          </Card>
+   310→
+   311→          {/* Engine */}
+   312→          <Card className="border-slate-800 bg-slate-900/60">
+   313→            <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Activity className="w-4 h-4 text-cyan-400" /> ENGINE V2</CardTitle></CardHeader>
+   314→            <CardContent className="space-y-2">
+   315→              <div className="flex gap-2">
+   316→                {!engineOn ? (
+   317→                  <Button onClick={startEngine} size="sm" className="bg-cyan-600 hover:bg-cyan-700"><Play className="w-4 h-4 mr-1" /> START</Button>
+   318→                ) : (
+   319→                  <Button onClick={stopEngine} size="sm" variant="destructive"><Square className="w-4 h-4 mr-1" /> STOP</Button>
+   320→                )}
+   321→              </div>
+   322→              {engineOn && (
+   323→                <div className="text-[10px] font-mono text-slate-400">
+   324→                  BPM: <span className="text-cyan-400">{engineState.bpm}</span> · Key: <span className="text-cyan-400">{engineState.key}</span> · Style: <span className="text-fuchsia-400">{engineState.style}</span> · Section: <span className="text-cyan-400">{engineState.section}</span>
+   325→                </div>
+   326→              )}
+   327→            </CardContent>
+   328→          </Card>
+   329→        </div>
+   330→
+   331→        {/* A/B Comparison */}
+   332→        {(mode === 'analyze' || mode === 'train') && (
+   333→          <Card className="border-slate-800 bg-slate-900/60">
+   334→            <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Gauge className="w-4 h-4 text-amber-400" /> A/B COMPARISON</CardTitle></CardHeader>
+   335→            <CardContent>
+   336→              <Table>
+   337→                <TableHeader>
+   338→                  <TableRow className="border-slate-700">
+   339→                    <TableHead className="text-slate-400 font-mono text-[10px]">METRIC</TableHead>
+   340→                    <TableHead className="text-fuchsia-400 font-mono text-[10px]">REFERENCE</TableHead>
+   341→                    <TableHead className="text-cyan-400 font-mono text-[10px]">OUR ENGINE</TableHead>
+   342→                    <TableHead className="text-amber-400 font-mono text-[10px]">ERROR</TableHead>
+   343→                  </TableRow>
+   344→                </TableHeader>
+   345→                <TableBody>
+   346→                  {[
+   347→                    ['BPM', refProfile?.bpm.mean, selfMetrics?.bpm, '', (r: number, o: number) => (o - r).toFixed(1)],
+   348→                    ['LUFS', refProfile?.lufs.mean, selfMetrics?.lufs, ' dB', (r: number, o: number) => (o - r).toFixed(1)],
+   349→                    ['Sub', refProfile?.subEnergy.mean, selfMetrics?.subEnergy, '', (r: number, o: number) => (o - r).toFixed(2)],
+   350→                    ['Low', refProfile?.lowEnergy.mean, selfMetrics?.lowEnergy, '', (r: number, o: number) => (o - r).toFixed(2)],
+   351→                    ['Mid', refProfile?.midEnergy.mean, selfMetrics?.midEnergy, '', (r: number, o: number) => (o - r).toFixed(2)],
+   352→                    ['High', refProfile?.highEnergy.mean, selfMetrics?.highEnergy, '', (r: number, o: number) => (o - r).toFixed(2)],
+   353→                    ['Centroid', refProfile?.spectralCentroid.mean, selfMetrics?.spectralCentroid, ' Hz', (r: number, o: number) => (o - r).toFixed(0)],
+   354→                    ['Transient', refProfile?.transientDensity.mean, selfMetrics?.transientDensity, '/s', (r: number, o: number) => (o - r).toFixed(1)],
+   355→                    ['Kick decay', refProfile?.kickDecayMs.mean, selfMetrics?.kickDecayMs, 'ms', (r: number, o: number) => (o - r).toFixed(0)],
+   356→                    ['Bass decay', refProfile?.bassDecayMs.mean, selfMetrics?.bassDecayMs, 'ms', (r: number, o: number) => (o - r).toFixed(0)],
+   357→                    ['Stereo', refProfile?.stereoWidth.mean, selfMetrics?.stereoWidth, '', (r: number, o: number) => (o - r).toFixed(2)],
+   358→                    ['Energy', refProfile?.energy.mean, selfMetrics?.energy, '', (r: number, o: number) => (o - r).toFixed(2)],
+   359→                  ].map(([label, rv, ov, unit, fn]: any) => {
+   360→                    const r = rv ?? 0, o = ov ?? 0;
+   361→                    const err = r > 0 && o > 0 ? fn(r, o) : '—';
+   362→                    const errColor = err === '—' ? 'text-slate-500' : Math.abs(parseFloat(err)) < 0.1 ? 'text-emerald-400' : Math.abs(parseFloat(err)) < 0.3 ? 'text-amber-400' : 'text-red-400';
+   363→                    return (
+   364→                      <TableRow key={label} className="border-slate-800">
+   365→                        <TableCell className="font-mono text-[10px] text-slate-300">{label}</TableCell>
+   366→                        <TableCell className="font-mono text-[10px] text-fuchsia-300">{rv !== undefined ? rv.toFixed(2) : '—'}{unit}</TableCell>
+   367→                        <TableCell className="font-mono text-[10px] text-cyan-300">{ov !== undefined ? ov.toFixed(2) : '—'}{unit}</TableCell>
+   368→                        <TableCell className={`font-mono text-[10px] ${errColor}`}>{err}{err !== '—' ? unit : ''}</TableCell>
+   369→                      </TableRow>
+   370→                    );
+   371→                  })}
+   372→                </TableBody>
+   373→              </Table>
+   374→              {(!refProfile || !selfMetrics) && <p className="text-[10px] text-amber-400 mt-2 font-mono">{!refProfile ? '⚠ Connect reference' : ''} {!selfMetrics ? '⚠ Start engine' : ''}</p>}
+   375→            </CardContent>
+   376→          </Card>
+   377→        )}
+   378→
+   379→        {/* Reference Pursuit Status — what the engine is actively chasing */}
+   380→        {(mode === 'analyze' || mode === 'train') && pursuit && (
+   381→          <Card className="border-slate-800 bg-slate-900/60">
+   382→            <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Waves className="w-4 h-4 text-fuchsia-400" /> REFERENCE PURSUIT</CardTitle></CardHeader>
+   383→            <CardContent>
+   384→              <Table>
+   385→                <TableHeader>
+   386→                  <TableRow className="border-slate-700">
+   387→                    <TableHead className="text-slate-400 font-mono text-[10px]">DIMENSION</TableHead>
+   388→                    <TableHead className="text-fuchsia-400 font-mono text-[10px]">RADIO TARGET</TableHead>
+   389→                    <TableHead className="text-cyan-400 font-mono text-[10px]">ENGINE ACTUAL</TableHead>
+   390→                    <TableHead className="text-emerald-400 font-mono text-[10px]">DELTA</TableHead>
+   391→                  </TableRow>
+   392→                </TableHeader>
+   393→                <TableBody>
+   394→                  {[
+   395→                    ['Kick decay', pursuit.kickDecay?.target ?? 0, pursuit.kickDecay?.actual ?? 0, 's', 0.005],
+   396→                    ['Centroid', pursuit.centroid?.target ?? 0, pursuit.centroid?.actual ?? 0, 'Hz', 50],
+   397→                    ['Transient', pursuit.transientDensity?.target ?? 0, pursuit.transientDensity?.actual ?? 0, '/s', 0.5],
+   398→                    ['BPM', pursuit.bpm?.target ?? 0, pursuit.bpm?.actual ?? 0, '', 0.5],
+   399→                  ].map(([label, t, a, unit, tol]: any) => {
+   400→                    const target = Number(t) || 0;
+   401→                    const actual = Number(a) || 0;
+   402→                    const delta = actual - target;
+   403→                    const isActive = target > 0;
+   404→                    const errColor = !isActive ? 'text-slate-500'
+   405→                      : Math.abs(delta) <= tol ? 'text-emerald-400'
+   406→                      : Math.abs(delta) <= tol * 3 ? 'text-amber-400'
+   407→                      : 'text-red-400';
+   408→                    const fmt = (v: number) => v === 0 ? '—' : (Math.abs(v) < 10 ? v.toFixed(2) : v.toFixed(0));
+   409→                    return (
+   410→                      <TableRow key={label} className="border-slate-800">
+   411→                        <TableCell className="font-mono text-[10px] text-slate-300">{label}</TableCell>
+   412→                        <TableCell className="font-mono text-[10px] text-fuchsia-300">{fmt(target)}{unit}</TableCell>
+   413→                        <TableCell className="font-mono text-[10px] text-cyan-300">{fmt(actual)}{unit}</TableCell>
+   414→                        <TableCell className={`font-mono text-[10px] ${errColor}`}>
+   415→                          {isActive ? `${delta > 0 ? '+' : ''}${fmt(delta)}${unit}` : 'idle'}
+   416→                        </TableCell>
+   417→                      </TableRow>
+   418→                    );
+   419→                  })}
+   420→                  <TableRow className="border-slate-800">
+   421→                    <TableCell className="font-mono text-[10px] text-slate-300">Key</TableCell>
+   422→                    <TableCell colSpan={3} className="font-mono text-[10px] text-emerald-300">
+   423→                      root {pursuit.key?.root ?? '—'} · {pursuit.key?.scale ?? '—'}
+   424→                    </TableCell>
+   425→                  </TableRow>
+   426→                </TableBody>
+   427→              </Table>
+   428→              <p className="text-[10px] text-slate-500 mt-2 font-mono">
+   429→                Engine smoothly ramps kick decay / cutoff / transient density / BPM and re-creates
+   430→                LeadMotif + AcidPattern on key change.
+   431→              </p>
+   432→            </CardContent>
+   433→          </Card>
+   434→        )}
+   435→
+   436→        {/* Learning */}
+   437→        {mode === 'train' && (
+   438→          <Card className="border-slate-800 bg-slate-900/60">
+   439→            <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Brain className="w-4 h-4 text-emerald-400" /> CONTINUOUS LEARNING</CardTitle></CardHeader>
+   440→            <CardContent className="space-y-3">
+   441→              <div className="flex gap-2">
+   442→                {!learning ? (
+   443→                  <Button onClick={startLearning} size="sm" disabled={!refProfile} className="bg-emerald-600 hover:bg-emerald-700"><Zap className="w-4 h-4 mr-1" /> START</Button>
+   444→                ) : (
+   445→                  <Button onClick={stopLearning} size="sm" variant="destructive"><Square className="w-4 h-4 mr-1" /> STOP</Button>
+   446→                )}
+   447→              </div>
+   448→              {learning && learnState && (
+   449→                <div className="grid grid-cols-4 gap-2">
+   450→                  {[['SCORE', learnState.currentScore?.toFixed(1) ?? '—', 'text-cyan-400'],
+   451→                    ['BEST', learnState.bestScore?.toFixed(1) ?? '—', 'text-emerald-400'],
+   452→                    ['ACCEPTED', learnState.acceptedCount ?? 0, 'text-emerald-400'],
+   453→                    ['TOTAL', learnState.totalIterations ?? 0, 'text-slate-300']].map(([l, v, c]) => (
+   454→                    <div key={l} className="bg-slate-950 border border-slate-800 rounded p-2 text-center">
+   455→                      <div className="text-[8px] text-slate-500 uppercase">{l}</div>
+   456→                      <div className={`text-lg font-bold ${c}`}>{v}</div>
+   457→                    </div>
+   458→                  ))}
+   459→                </div>
+   460→              )}
+   461→              {learning && learnState?.iterations?.length > 0 && (
+   462→                <div className="space-y-1 max-h-64 overflow-y-auto">
+   463→                  {[...learnState.iterations].reverse().slice(0, 10).map((it: any, i: number) => (
+   464→                    <div key={i} className={`border rounded p-2 text-[10px] font-mono ${it.accepted ? 'border-emerald-800 bg-emerald-950/30' : 'border-red-800 bg-red-950/30'}`}>
+   465→                      <span className="text-slate-300">#{it.iteration}</span> {' '}
+   466→                      {it.changes.map((c: any) => `${c.name} ${c.oldValue.toFixed(2)}→${c.newValue.toFixed(2)}`).join(', ')} {' '}
+   467→                      <span className={it.accepted ? 'text-emerald-400' : 'text-red-400'}>{it.accepted ? '✓' : '✗'} {it.newScore.toFixed(1)}</span>
+   468→                    </div>
+   469→                  ))}
+   470→                </div>
+   471→              )}
+   472→            </CardContent>
+   473→          </Card>
+   474→        )}
+   475→
+   476→        {/* Live Reference Metrics */}
+   477→        {mode === 'listen' && refMetrics && (
+   478→          <Card className="border-slate-800 bg-slate-900/60">
+   479→            <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Waves className="w-4 h-4 text-fuchsia-400" /> LIVE METRICS</CardTitle></CardHeader>
+   480→            <CardContent>
+   481→              <div className="grid grid-cols-3 md:grid-cols-6 gap-2 text-xs font-mono">
+   482→                {[['BPM', refMetrics.bpm.toFixed(0)], ['LUFS', refMetrics.lufs.toFixed(1)], ['SUB', refMetrics.subEnergy.toFixed(2)],
+   483→                  ['LOW', refMetrics.lowEnergy.toFixed(2)], ['MID', refMetrics.midEnergy.toFixed(2)], ['HIGH', refMetrics.highEnergy.toFixed(2)],
+   484→                  ['CENTROID', `${refMetrics.spectralCentroid.toFixed(0)}Hz`], ['TRANSIENT', `${refMetrics.transientDensity.toFixed(1)}/s`],
+   485→                  ['KICK', `${refMetrics.kickDecayMs.toFixed(0)}ms`], ['BASS', `${refMetrics.bassDecayMs.toFixed(0)}ms`],
+   486→                  ['ENERGY', refMetrics.energy.toFixed(2)], ['CONF', `${(refMetrics.energy * 100).toFixed(0)}%`]].map(([l, v]) => (
+   487→                  <div key={l} className="bg-slate-950 border border-slate-800 rounded p-2 text-center">
+   488→                    <div className="text-[8px] text-slate-500 uppercase">{l}</div>
+   489→                    <div className="text-sm text-slate-200">{v}</div>
+   490→                  </div>
+   491→                ))}
+   492→              </div>
+   493→              {refMetrics.detectedKey && (
+   494→                <div className="mt-3 p-2 bg-emerald-950/30 border border-emerald-800 rounded text-[10px] font-mono text-emerald-400">
+   495→                  DETECTED: {refMetrics.detectedKey.rootName} {refMetrics.detectedKey.scale} (confidence {refMetrics.detectedKey.confidence.toFixed(2)})
+   496→                  {refMetrics.detectedStyle && ` · Style: ${refMetrics.detectedStyle.style}`}
+   497→                </div>
+   498→              )}
+   499→              {engineOn && (
+   500→                <div className="mt-2 p-2 bg-cyan-950/30 border border-cyan-800 rounded text-[10px] font-mono text-cyan-400">
+   501→                  ENGINE SYNCED: BPM {engineState.bpm} · Key {engineState.key} · Section {engineState.section}
+   502→                </div>
+   503→              )}
+   504→            </CardContent>
+   505→          </Card>
+   506→        )}
+   507→      </main>
+   508→
+   509→      <footer className="border-t border-slate-800 bg-slate-900/60 mt-auto">
+   510→        <div className="max-w-7xl mx-auto px-4 py-3 text-[10px] text-slate-500 font-mono flex items-center justify-between">
+   511→          <span>PSY4 · Engine V2 · Pooled Voices · 8 Tracks · Factory Presets</span>
+   512→          <span>NO ScriptProcessor · NO AudioWorklet · Pure Web Audio</span>
+   513→        </div>
+   514→      </footer>
+   515→    </div>
+   516→  );
+   517→}
+   518→

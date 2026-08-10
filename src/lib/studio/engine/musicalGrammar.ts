@@ -230,6 +230,8 @@ export class LeadMotif {
   private seq: EvolvingSequence;
   private phrasePos = 0;
   private phraseLength = 16; // 1 bar of 16th notes
+  // Track the last bar at which we mutated for tickEvolution() throttling.
+  private lastMutateBar = -1;
 
   constructor(root: number, scale: string, rng: SeededRng) {
     this.seq = new EvolvingSequence(root + 12, scale, rng, 4, 5);
@@ -261,6 +263,31 @@ export class LeadMotif {
   /** Force a mutation at section boundaries. */
   evolve() {
     this.seq.forceMutate();
+  }
+
+  /**
+   * Per-bar evolution tick. Called every bar from the engine's tick().
+   * Decides internally whether to mutate based on:
+   *   - bar count (mutate every `intervalBars` bars, default 8)
+   *   - the world's evolutionRate (higher = more frequent mutations)
+   *
+   * This keeps LeadMotif's mutation logic encapsulated while letting the
+   * engine drive it from its scheduler without needing to expose the
+   * internal EvolvingSequence.
+   */
+  tickEvolution(bar: number, evolutionRate = 0.4, intervalBars = 8): void {
+    if (bar <= this.lastMutateBar) return; // never mutate twice on the same bar
+    // Effective interval shrinks as evolutionRate grows (0.2 -> 12 bars, 1.0 -> 4 bars).
+    const effectiveInterval = Math.max(4, Math.round(intervalBars * (1.2 - evolutionRate)));
+    if (bar > 0 && bar % effectiveInterval === 0) {
+      this.seq.forceMutate();
+      this.lastMutateBar = bar;
+    }
+  }
+
+  /** Expose the internal EvolvingSequence for advanced use (testing, debugging). */
+  getSequence(): EvolvingSequence {
+    return this.seq;
   }
 }
 

@@ -2125,3 +2125,642 @@ Stage Summary:
 - The system now ACTUALLY WORKS: reference listener extracts real features, engine produces audible audio at reasonable levels, self-analyzer taps the real output, training loop runs with accept/reject.
 - The score is low (10/100) because the reference profile has extreme values (kick decay 514ms from reverb, centroid 752Hz from dark stream). The optimizer needs smarter adjustment rules to close these gaps.
 - Ready to push to GitHub.
+
+---
+Task ID: ROAST-2
+Agent: Z.ai Code (main)
+Task: Honest self-roast based on ACTUAL code in repo (not claims). Identify what's truly missing for commercial-grade autonomous music, why it's monotonous, and root-cause limitations.
+
+Work Log:
+- Read the ACTUAL playing path: src/app/page.tsx → Psy4EngineV2 (src/lib/studio/engine/psy4EngineV2.ts).
+- Read the 1955-line worklet (public/worklets/psy4-engine.js) — Moog ladder, polyBLEP, Schroeder reverb, bus processors, master chain.
+- Read worlds.ts (257 lines, 10 worlds with rich TimbrePreset).
+- Read psy4LiveEngine.ts WORLDS (8 worlds, hatPattern/percPattern).
+- Read musicalGrammar.ts (EvolvingSequence, LeadMotif, AcidPattern, BASS_PATTERNS).
+- Read psy4EngineV2.ts scheduleStep() — the function that ACTUALLY generates notes.
+
+ROAST FINDINGS (brutally honest, code-based):
+
+1. THE WORKLET IS DEAD CODE.
+   page.tsx line 137: `const { Psy4EngineV2 } = await import('@/lib/studio/engine/psy4EngineV2')`.
+   Psy4EngineV2 uses plain Web Audio nodes (OscillatorNode + BiquadFilterNode + GainNode).
+   The 1955-line psy4-engine.js worklet (Moog ladder, polyBLEP, Schroeder reverb, stereo delay, 5 bus processors, master chain) is NEVER loaded. Only engineWorklet.ts references it, and engineWorklet.ts is NOT imported by page.tsx. All that DSP quality work = zero audible effect.
+
+2. THE WORLD IS DECORATIVE.
+   scheduleStep() (line 736) is HARDCODED. It does NOT read worldId, does NOT read WORLDS config:
+   - Kick: `step % 4 === 0` → four-on-the-floor, EVERY world, EVERY section, EVERY bar.
+   - Clap: steps 4 & 12, ALWAYS.
+   - Hats: `step % 2 === 1` → offbeat, ALWAYS.
+   - Bass: `step % 2 === 1` → 4 hardcoded note patterns cycling every 2 bars.
+   - Lead: steps [0,6,10], 4 fixed motifs.
+   - Pad: chord progression [0,3,4,2] FOREVER.
+   - Arp: [0,2,4,7,4,2,0,7] FOREVER.
+   The worldId passed to start(worldId) is IGNORED for patterns. applyStyle() only swaps preset names (7 styles → same 7 presets, just TIGHT vs DEEP kick).
+
+3. worlds.ts (10 worlds) IS DISCONNECTED.
+   Rich TimbrePreset (oscShape, cutoff, resonance, ADSR, drive, level) — IGNORED by playing engine.
+   fxAlgorithm1/2, fxMix — IGNORED.
+   spectralMotion, evolutionRate — IGNORED.
+   energyCurve — IGNORED.
+   Plus all 10 worlds have IDENTICAL kickPattern='x...x...x...x...' and bassPattern='.x.x.x.x.x.x.x.x'.
+
+4. NO REFERENCE PURSUIT.
+   liveTrack() line 632-643: the kick decay adjustment is a NO-OP:
+     `const targetDecay = refDecaySec / 0.62; // Don't mutate the preset object`
+   Only LUFS (master gain ±0.08) and energy (track gains ±0.02) actually adjust. No spectral matching, no transient matching, no kick/bass character matching, no key pursuit.
+
+5. NO MUSICAL EVOLUTION.
+   musicalGrammar.ts (EvolvingSequence with controlled mutation, LeadMotif with AABA, AcidPattern) exists and is good. But it's used by psy4LiveEngine.ts — which is NOT used by page.tsx. Psy4EngineV2 has hardcoded patterns with ZERO mutation.
+
+6. setTimeout(15ms) SCHEDULER.
+   scheduleNextTick() uses setTimeout(...,15) on the main thread. The worklet was built specifically to replace this ("replaces the setInterval(25ms) main-thread scheduler"). But worklet is dead code. So timing is jittery and GC-affected.
+
+7. STYLE = PRESET SWAP, NOT LEARNED.
+   applyStyle() maps a style string to preset name swaps. 7 styles → 7 preset combos, all near-identical (PS-KICK-TIGHT vs PS-KICK-DEEP). No spectral learning, no pattern learning, no character learning. "Fat bass" is not a style — the user is right.
+
+ROOT CAUSES OF MONOTONY (ranked by impact):
+  #1 Hardcoded four-on-floor kick (every world, every section).
+  #2 Hardcoded offbeat bass (4 rotating patterns only).
+  #3 Hardcoded lead/pad/arp motifs (fixed arrays).
+  #4 World selection does nothing to patterns.
+  #5 Rich DSP (worklet) is dead code.
+  #6 No reference pursuit (liveTrack is a no-op).
+  #7 No musical evolution (EvolvingSequence is dead code).
+  #8 setTimeout scheduler (jittery).
+
+Stage Summary:
+- The "commercial-grade autonomous psytrance engine" is actually: 8 fixed tracks, hardcoded 4-on-floor + offbeat bass + fixed motifs, worldId ignored, reference tracking no-op, rich DSP dead.
+- The fix is NOT more features — it's CONNECTING what exists. Wire Psy4EngineV2.scheduleStep() to read from worlds + grammar + reference pursuit. Make patterns world-driven. Make liveTrack actually adjust parameters. Make EvolvingSequence drive the lead.
+- New todos (23 items) created to fix root causes, not symptoms.
+
+---
+Task ID: 9-13 (Track B: Reference pursuit)
+Agent: full-stack-developer
+
+Task: Make Psy4EngineV2 ACTIVELY PURSUE the reference radio sound across 5 dimensions
+(kick decay, spectral centroid, transient density, sub/high energy, bass decay) plus
+continuous BPM tracking and key pursuit. Replace the previous no-op liveTrack() with
+real per-note and per-bar adjustments, all smoothed to prevent audio glitches.
+
+Work Log:
+- Read existing engine (src/lib/studio/engine/psy4EngineV2.ts) and confirmed the
+  ROAST-2 finding: liveTrack() line 632-643 had a NO-OP kick decay block ("Don't
+  mutate the preset object — just track the desired decay" ← did nothing). Only
+  LUFS (master gain ±0.08) and energy (track gains ±0.02) actually adjusted.
+
+- Added 6 private reference-target fields to Psy4EngineV2:
+    refKickDecay, refSpectralCentroid, refTransientDensity,
+    refSubEnergy, refHighEnergy, refBassDecay
+  Plus 4 own-measurement fields (ownSpectralCentroid, ownTransientDensity,
+  ownSubEnergy, ownHighEnergy) and 3 BPM-ramp fields (targetBpm, bpmRampPerBar,
+  bpmRampBarsLeft) for smooth tempo transitions.
+
+- Imported SeededRng / LeadMotif / AcidPattern from ./musicalGrammar so the
+  engine can own its own melodic generators (used by Track A's scheduleStep
+  via this.leadMotif.nextNote()).
+
+- Modified PooledDrumVoice.hit() signature:
+    hit(p, when, vel, bus, decayOverride?: number)
+  The override is guarded (typeof number, isFinite, > 0.001, < 50) and falls
+  back to p.decay when invalid. All existing 4-arg callers still work.
+
+- Rewrote liveTrack() to actually store the 6 targets AND apply the smooth
+  sub/high energy gain ramps immediately (setTargetAtTime with 0.8-1.0s time
+  constants). Kick decay / centroid / transient density / bass decay are
+  applied per-note downstream. Also accepts new optional bassDecayMs field.
+
+- Extended selfTrack() to accept optional spectralCentroid, transientDensity,
+  subEnergy, highEnergy — these are stored as "own" measured values used by
+  getPursuitStatus() and the sub/high balancing in liveTrack(). Existing
+  callers that only pass {lufs, energy} still work.
+
+- Updated triggerDrum() to take an optional 4th param decayOverride AND to
+  compute a blended kick decay when refKickDecay is set:
+    targetDur = clamp(refKickDecay, 0.05, 0.8)
+    refDecayParam = (targetDur - 0.12) / 0.5   // inverse of dur = 0.12 + 0.5*decay
+    blended = preset.decay * 0.5 + refDecayParam * 0.5
+  This blended value is passed as decayOverride to PooledDrumVoice.hit().
+
+- Added centroidToCutoff() helper (log-linear map: 500Hz→800, 2000Hz→3000,
+  5000Hz→6000). Used in triggerSynth for lead (5) and pad (6): cutoff is
+  blended 60% preset + 40% target. Also applied bass decay matching for
+  bass (4): gate is blended 70% preset + 30% ref-derived gate, and the
+  sub-oscillator tail is lengthened to match refBassDecay.
+
+- Updated scheduleStep() (then Track A rewrote it for world-driven patterns —
+  my tScale/tVelBoost variables survived the rewrite and are now multiplied
+  into world.hatDensity, world.percDensity, and the shaker probability).
+  When refTransientDensity is set: 8/sec → 0.83x, 16/sec → 1.17x, 24/sec →
+  1.5x probability scaling, capped at 1.0. Above 1.0, velocity is boosted
+  instead (since probability is already saturated).
+
+- Improved applyMusicalUnderstanding():
+    * KEY PURSUIT: when key changes, calls refreshMusicalGenerators() which
+      re-creates LeadMotif + AcidPattern with the new root/scale (using a
+      deterministic SeededRng so each key gives a stable motif).
+    * CONTINUOUS BPM TRACKING: removed the ">5 BPM" threshold; now always
+      honors the new BPM when bpmConfidence > 0.5. Diffs ≤2 BPM applied
+      immediately; larger diffs ramp across 4 bars (one bar per step) to
+      avoid scheduler glitches.
+
+- Added BPM ramp smoothing in tick(): bpmRampBarsLeft counts down from 4,
+  each bar applies bpmRampPerBar, snaps to targetBpm at the end. s16 is now
+  recomputed inside the while loop so the ramp actually affects scheduling.
+
+- Added refreshMusicalGenerators() private method — re-creates leadMotif and
+  acidPattern with current musicalKey. Called from initTracks(), from
+  start() (after world sets the initial key), and from
+  applyMusicalUnderstanding() on key change.
+
+- Added getPursuitStatus() public method returning:
+    { kickDecay: {target, actual}, centroid: {target, actual},
+      transientDensity: {target, actual}, bpm: {target, actual},
+      key: {root, scale} }
+  Actual kick decay is computed from the current preset's dur formula,
+  blended with refKickDecay when pursuing. Actual centroid/transient come
+  from selfTrack. Actual BPM is this._bpm, target is targetBpm (or _bpm
+  when no ramp is active).
+
+- Updated src/app/page.tsx:
+    * liveTrack() call now passes bassDecayMs.
+    * selfTrack() call now passes spectralCentroid, transientDensity,
+      subEnergy, highEnergy (so the engine can compare ref vs own).
+    * Added a "REFERENCE PURSUIT" card in analyze/train modes that calls
+      getPursuitStatus() on every self-metrics tick and renders a 4-row
+      target/actual/delta table plus the current key.
+
+- Coordinate with Track A: Track A was concurrently rewriting scheduleStep
+  to be world-driven. Track A's edits are compatible with mine:
+    * They extended my musicalGrammar import to also pull BASS_PATTERNS,
+      PROGRESSIONS, scaleNote, mtof — kept my SeededRng/LeadMotif/AcidPattern.
+    * They added a 7th optional `timbre` param to triggerSynth — my
+      decayOverride on triggerDrum is independent (4th param) so no conflict.
+    * They consume my leadMotif, musicRng, refSpectralCentroid,
+      refTransientDensity, refBassDecay fields directly in their scheduleStep
+      and triggerSynth path. My reference-pursuit cutoff blending now runs
+      on top of their world timbre override (verified at line 1219-1227).
+    * They kept my BPM-ramp logic in tick() intact (lines 902-913).
+
+- Verification:
+    * `npx eslint src/lib/studio/engine/psy4EngineV2.ts src/app/page.tsx` →
+      EXIT 0 (no errors, no warnings).
+    * `npx tsc --noEmit --skipLibCheck` → no errors in psy4EngineV2.ts or
+      page.tsx that weren't already present before this task (3 pre-existing
+      page.tsx errors about RadioStream / setEngineState / RefProfile typing
+      were confirmed via git stash to pre-date this work).
+    * dev.log shows successful compiles and 200 responses after edits.
+    * The pre-existing module-not-found errors in
+      src/lib/studio/engine/reference/renderWorker.ts are unrelated to this
+      task (they pre-date it and live in a different subfolder).
+
+Stage Summary:
+- The engine now ACTIVELY chases the radio across 5 timbral dimensions plus
+  BPM and key:
+    1. KICK DECAY — per-note decayOverride on every kick hit, blended 50/50
+       with the preset decay so the kick keeps its tonal character but
+       adopts the reference tail length.
+    2. SPECTRAL CENTROID — per-note cutoff blend (60/40) on lead + pad,
+       mapped log-linearly from ref centroid (500Hz→800, 2000Hz→3000,
+       5000Hz→6000).
+    3. TRANSIENT DENSITY — hat/perc/shaker probability scaled by
+       0.5 + refTransientDensity/24, with velocity boost above 1.0.
+    4. SUB/HIGH ENERGY — smooth 0.8-1.0s gain ramps on bass/kick (sub)
+       and lead/pad/arp (high) tracks, driven by ref-vs-own delta.
+    5. BASS DECAY — per-note gate blend (70/30) on bass, plus sub-osc
+       tail lengthened to match refBassDecay.
+    6. BPM — continuous tracking (no >5 threshold), 4-bar ramp for diffs >2.
+    7. KEY — LeadMotif + AcidPattern re-created on every key change, so
+       melodic content actually follows the radio's tonal center.
+- All adjustments use setTargetAtTime / per-note parameter overrides (no
+  instant jumps that would cause audio glitches). Time constants: 0.3-1.0s
+  for timbre, 4 bars for BPM.
+- All public APIs preserved: liveTrack(), selfTrack(), applyMusicalUnderstanding(),
+  triggerDrum(), triggerSynth() all accept their original args unchanged (new
+  params are optional, appended at the end).
+- New public method getPursuitStatus() exposes target/actual pairs for UI.
+- A new "REFERENCE PURSUIT" card in the dashboard renders the live pursuit
+  state so users can see the engine chasing in real time.
+- Track B deliverable complete. Hand-off to next agent: the leadMotif field
+  is already consumed by Track A's scheduleStep; if a future agent wants to
+  add per-step mutation, call this.leadMotif.evolve() (already wired at
+  section boundaries by Track A).
+
+---
+Task ID: 1-8
+Agent: full-stack-developer (Track A: World-driven pattern engine)
+Task: Make Psy4EngineV2 truly world-driven — connect scheduleStep() to the rich world definitions in worlds.ts so that different worldIds produce audibly different music (different BPM, scale, bass style, kick pattern, timbres, energy curves, swing).
+
+Work Log:
+- Read worklog.md ROAST-2 section: identified that scheduleStep() had HARDCODED patterns (4-on-floor kick, fixed bass/lead/pad/arp motifs) that IGNORED worldId. The 10 worlds in worlds.ts (with TimbrePreset, scales, kickPattern, bassPattern, hatDensity, percDensity, swing, energyCurve, darkness, brightness, psychedelia, evolutionRate, fxMix) were completely disconnected from the playing engine.
+- Read the ACTUAL current psy4EngineV2.ts (1229 lines — not the 948 from the task description; a previous agent had already added reference pursuit features: leadMotif, acidPattern, musicRng fields, refreshMusicalGenerators(), liveTrack() with kick decay / spectral centroid / transient density / sub-high energy / bass decay pursuit, selfTrack() with measurement tracking, getPursuitStatus()).
+- The previous agent's work was GOOD (reference pursuit infrastructure) but scheduleStep() was STILL HARDCODED. My task was to connect the world config to the pattern generation.
+
+Changes made to src/lib/studio/engine/psy4EngineV2.ts:
+
+1. IMPORTS:
+   - Extended the existing musicalGrammar import to include BASS_PATTERNS, PROGRESSIONS, scaleNote, mtof.
+   - Added import of WORLDS, WorldId, World from ./worlds.
+   - Removed local SCALES, mtof, scaleNote duplicates (the imported versions support ALL world scales: phrygianDominant, harmonicMinor, doubleHarmonic, minorPentatonic — the local SCALES only had minor/major/dorian/phrygian).
+
+2. NEW FIELDS:
+   - private currentWorld: World = WORLDS['dark-psy'] — the active world config.
+   - private arpIdx = 0 — rotates through 4 arp shapes at section boundaries.
+   - private bassPatternIdx = 0 — rotates through BASS_PATTERNS entries every 4 bars.
+   - Reused existing musicRng (SeededRng) and leadMotif (LeadMotif) fields — no duplication.
+
+3. start(worldId?) — WORLD-DRIVEN CONFIGURATION:
+   - Sets this.currentWorld = WORLDS[worldId as WorldId] || WORLDS['dark-psy'].
+   - Sets this._bpm = currentWorld.defaultBpm (dark-psy=150, progressive-psy=128, etc.).
+   - Sets this.musicalKey = { root: midpoint of rootRange, scale: defaultScale }.
+   - Calls refreshMusicalGenerators() to re-create LeadMotif/AcidPattern with the world's key.
+   - Resets arpIdx and bassPatternIdx.
+   - Applies currentWorld.fxMix to reverbSend (0.04 + fxMix*0.22) and delaySend (0.05 + fxMix*0.30) gains.
+
+4. tick() — SECTION BOUNDARY EVOLUTION:
+   - Calls this.leadMotif?.evolve() when sectionIdx changes — musical evolution at section boundaries.
+   - Mutates arp shape (arpIdx = (arpIdx+1) % 4) at section boundaries, rate controlled by world.evolutionRate.
+   - Rotates bass pattern (bassPatternIdx) every 4 bars for variation.
+
+5. scheduleStep() — FULLY REWRITTEN to be world-driven:
+   - ENERGY: computed from world.energyCurve[clamp(floor(bar/section.bars * curve.length))] * (0.4 + 0.6*section.density).
+   - SWING: offbeat steps (step%2===1) delayed by world.swing * sd * 0.5.
+   - KICK: parses world.kickPattern (16-char gate string). Plays when charAt(step)==='x'. Velocity: downbeat = 0.5 + density*0.4*aggressionBoost, others = 0.4*aggressionBoost (aggressionBoost = 0.7 + 0.6*world.aggression).
+   - CLAP: backbeat on steps 4/12, gated by section.density > 0.4.
+   - HATS: probability = world.hatDensity * (0.5 + 0.5*energy) * tScale. Uses musicRng.chance() (deterministic, not Math.random()).
+   - PERC: probability = world.percDensity * energy * tScale.
+   - BASS: parses world.bassPattern gate string. Derives bass style via deriveBassStyle(): dark/forest→roll, goa/acid→acid, else→off. Uses BASS_PATTERNS[style] with 8-step patterns (root/fifth/octave scale degrees). Rotates patterns every 4 bars. Applies per-step accent velocity.
+   - LEAD: uses LeadMotif.nextNote(step, bar, energy, musicRng) with AABA structure. Only plays when section.lead && energy > 0.35.
+   - PAD: chord progression from PROGRESSIONS[scale]. Plays chord root + fifth on step 0 of each bar in drops.
+   - ARP: 4 arp shapes (scale degree arrays), rotates based on world.evolutionRate. Probability = 0.7 * energy.
+   - SHAKER: offbeat in drops, probability = 0.4 * energy * tScale.
+   - All triggers use stepTime (swing-adjusted). RISER and IMPACT FX use raw time (not swung).
+   - Reference pursuit (tScale from refTransientDensity) is preserved and combined with world densities.
+
+6. triggerSynth() — TIMBRE OVERRIDES:
+   - Added optional timbre?: { cutoff?: number; res?: number; drive?: number } parameter.
+   - Applies world timbre overrides on top of factory preset: cutoff and res clamped and applied. Drive scales velocity (driveBoost = drive/1.5, clamped 0.5–1.8).
+   - Reference pursuit (spectral centroid matching for lead/pad, bass decay matching for bass) still works — applied ON TOP of world timbre overrides.
+   - Sub-oscillator for bass also gets driveBoost applied.
+
+7. WORLD TIMBRE MODULATION (pre-computed per step in scheduleStep):
+   - leadTimbre: cutoff * (0.7 + 0.6 * brightness), res = 2 + resonance * 12
+   - bassTimbre: cutoff * (0.7 + 0.6 * (1 - darkness)) — darker worlds get darker bass
+   - padTimbre: cutoff * (0.6 + 0.8 * brightness)
+   - arpTimbre: cutoff * (0.7 + 0.6 * psychedelia) — uses textureTimbre as base
+
+8. deriveBassStyle() HELPER:
+   - id includes 'dark' or 'forest' → 'roll' (rolling psy bass, 8 hits/bar)
+   - id includes 'goa' or 'acid' → 'acid' (acid bass with ghost notes)
+   - else → 'off' (offbeat bass with rests, 4 hits/bar)
+
+AUDIBLE DIFFERENCES: dark-psy vs progressive-psy:
+  - BPM: 150 vs 128 (different tempo)
+  - Scale: phrygian vs dorian (different notes)
+  - Bass style: roll (8 hits/bar, steady) vs off (4 hits/bar, syncopated)
+  - Hat density: 0.55 vs 0.35 (more hats in dark-psy)
+  - Perc density: 0.45 vs 0.25
+  - Swing: 0.03 vs 0.08 (more swing in progressive)
+  - Lead cutoff: ~1638 Hz vs ~2266 Hz (darker vs brighter)
+  - Bass cutoff: ~344 Hz vs ~501 Hz (darker vs warmer)
+  - Energy curve: 0.5–0.95 vs 0.3–0.9 (more intense arc for dark-psy)
+  - Aggression: 0.75 vs 0.35 (harder kick velocity in dark-psy)
+  - FX mix: 0.35 vs 0.30
+
+VERIFICATION:
+- TypeScript: npx tsc --noEmit → ZERO errors in psy4EngineV2.ts.
+- ESLint: bun run lint → ZERO errors/warnings in src/ directory.
+- Dev server: ✓ Compiled successfully, GET / returns 200.
+- API preserved: start(worldId?), stop(), setBpm(), applyMusicalUnderstanding(), liveTrack(), selfTrack(), setWorld(), getAnalyser(), getMusicalKey(), getOwnLufs(), getPursuitStatus() all still work.
+- 8 tracks (KICK, SNARE, HATS, PERC, BASS, LEAD, PAD, ARP) and their factory presets stay — world timbre params applied on top when triggering.
+- Web Audio nodes unchanged (no worklet switch).
+
+Stage Summary:
+- Psy4EngineV2.scheduleStep() is now TRULY world-driven. The worldId parameter to start() now controls: BPM, scale, kick pattern, bass pattern + style, hat/perc density, swing, lead motif (via LeadMotif with world key), pad chord progression (via PROGRESSIONS), arp shapes, energy curve, timbre overrides (cutoff/resonance/drive modulated by darkness/brightness/psychedelia), FX mix, and evolution rate.
+- Musical evolution: LeadMotif.evolve() called at section boundaries. Arp shape mutates based on world.evolutionRate. Bass pattern rotates every 4 bars.
+- The 10 worlds in worlds.ts are now CONNECTED to the playing engine. Selecting different worlds produces audibly different music.
+- Full work record saved to /home/z/my-project/agent-ctx/1-8-full-stack-developer.md.
+
+---
+Task ID: 19-20
+Agent: full-stack-developer (Track D: UI — Style Detection, A/B Spectral, Pursuit Convergence)
+
+Task: Surface Track A/B/C capabilities in the dashboard so the user can SEE the
+detected style with confidence and reasons, WATCH the A/B spectral bars converge
+in real-time, and OBSERVE the pursuit status with convergence indicators.
+
+Files Modified:
+- src/app/page.tsx (518 → 700 lines) — full UI rewrite
+- src/lib/studio/engine/psy4EngineV2.ts — added getCurrentWorldId() and
+  onWorldChange callback (purely additive, no API changes)
+
+CHANGE 1 — Style Detection Panel (Task 19):
+- New state: styleMatches: StyleMatch[], activeWorld: string, autoSwitchActive.
+- Polling loop calls engine.getStyleClassification?.() and getCurrentWorldId?.()
+  on every self-metrics tick (optional chaining → degrades gracefully if Track
+  C isn't merged yet).
+- New "STYLE DETECTION" card visible in listen + analyze modes. Three-column
+  layout: Active World tile (name + id), Detected Style tile (top match with
+  confidence % + colored bar), Top 3 Matches ranked list with bars, "Why this
+  style?" bullet list of topMatch.reasons.
+- Confidence color tiers: emerald >0.7, amber 0.4-0.7, rose <0.4.
+- Header badge: "(topConfidence * 100)% STYLE".
+- AUTO-SWITCH indicator: when engine.onWorldChange fires, dropdown + activeWorld
+  update and a deduplicated toast.success("Auto-switched to {label}") shows.
+
+CHANGE 2 — A/B Spectral Visualization (Task 20):
+- New card in analyze mode only. 5 frequency bands (SUB/LOW/MID/HIGH/AIR).
+- Each band: two side-by-side bars (REF fuchsia gradient + ENGINE cyan gradient)
+  with heights proportional to 0..1-normalized energy.
+- Per-band Δ number with color (emerald <0.1, amber <0.2, rose >0.2).
+- Pure CSS bars (div + Tailwind height) — no chart library.
+- Legend + placeholder when refMetrics or selfMetrics is null.
+
+CHANGE 3 — Pursuit Status Enhancement:
+- Added prevDeltaRef to track previous |delta| per dimension.
+- New CONVERGENCE column in the pursuit table with TrendingUp/TrendingDown/Check
+  icons: ↗ converging, ↘ diverging, ✓ locked (within tolerance), · idle.
+- Color tiers (emerald/amber/rose) preserved from Track B.
+
+CHANGE 4 — World Selector Enhancement:
+- Expanded the dropdown from 6 hardcoded worlds to all 10 worlds from worlds.ts
+  (progressive-psy, dark-psy, morning-psy, goa, forest, deep-psy, hypnotic,
+  cosmic, organic-psy, acid-psy). Each option is "{name} — {description}".
+- Added onUserSelectWorld() — turns OFF auto mode, restarts engine with new world.
+- Added an "AUTO" badge (fuchsia, pulsing) next to the selector when active.
+- engine.onWorldChange updates the dropdown value + engineState.style.
+
+CHANGE 5 — Professional polish:
+- Consistent Card padding (p-4) and border-slate-800/bg-slate-900/60.
+- Numeric values uniformly font-mono text-[10px]/text-[11px].
+- Long lists: max-h-96 overflow-y-auto with [scrollbar-width:thin] custom style.
+- Sticky footer (mt-auto) + root wrapper min-h-screen flex flex-col.
+- Responsive (grid-cols-1 on mobile, grids on md:).
+- Color palette: slate/fuchsia/cyan/emerald/amber/rose — NO indigo/blue.
+- aria-label on selects, title tooltips on spectral bars.
+
+Verification:
+- bun run lint 2>&1 | grep -E "page.tsx" | grep error → EMPTY (all 74 lint
+  errors live in .vercel/output/... build artifacts, not src/).
+- npx tsc --noEmit --skipLibCheck: psy4EngineV2.ts → ZERO errors. page.tsx →
+  2 errors, both PRE-EXISTING (RadioStream + RefProfile type mismatches
+  confirmed via git stash to pre-date this task — Track B's worklog documents
+  them). My changes actually REDUCED page.tsx errors from 3 → 2 by including
+  `style` in the setEngineState() call.
+- Dev server: GET / 200 in 53ms after edits. STYLE DETECTION card renders on
+  initial load in listen mode. A/B SPECTRAL + enhanced PURSUIT render in
+  analyze mode (client-side React state).
+
+Stage Summary:
+- The dashboard now lets the user SEE: (1) the currently active world, (2) the
+  detected style with a confidence percentage and color-coded badge, (3) the
+  top 3 ranked style matches with bars, (4) the human-readable reasons for the
+  top match, (5) two side-by-side A/B spectral bars per frequency band with a
+  colored delta, (6) target/actual/delta + a CONVERGENCE arrow per pursuit
+  dimension, (7) an AUTO badge when the engine auto-switches worlds.
+- All existing functionality preserved: radio connect, engine start/stop,
+  training loop, live metrics, A/B comparison table.
+- Full work record saved to /home/z/my-project/agent-ctx/19-20-full-stack-developer.md.
+
+---
+Task ID: 14-15
+Agent: full-stack-developer (Track C: Spectral style detection + musical evolution)
+Task: Build a spectral style classifier that LEARNS the psytrance sub-style from acoustic features (not genre tags), wire it into Psy4EngineV2 with smooth auto-switching, and add musical evolution that mutates motifs every 8 bars with phrase-locked preset rotation. Addresses the user's complaint that "סגנון הוא צריך ללמוד" — style must be learned, not defined by "fat bass".
+
+Work Log:
+
+PART 1 — Spectral style classifier (NEW FILE):
+- Created `src/lib/studio/engine/styleClassifier.ts` (467 lines). Pure function
+  `classifyStyle(features: RefFeatures): StyleMatch[]` with NO side effects —
+  deterministic given the same inputs, trivially testable.
+- 10 psytrance sub-style profiles, each with acoustic signatures (BPM range,
+  centroid range, sub/high energy ranges, transient density, kick decay,
+  preferred scales):
+    dark-psy (148-155 BPM, 600-1200 Hz centroid, 0.7+ sub, 14-22/s transients,
+             80-150ms kick, phrygian/harmonicMinor)
+    progressive-psy (124-134 BPM, 1200-2000 Hz, 0.4-0.7 sub, 10-14/s, 180-280ms,
+                    dorian/minor)
+    goa (134-146 BPM, 1800-3000 Hz, 14-20/s, 120-200ms, phrygianDominant)
+    forest (144-156 BPM, 800-1500 Hz, 0.65-0.9 sub, 12-18/s, minor/phrygian)
+    morning-psy (138-146 BPM, 2000-3500 Hz, 0.5-0.75 sub, 11-16/s, dorian)
+    full-on (140-146 BPM, 1500-2500 Hz, 0.65-0.9 sub, 12-16/s, minor/dorian)
+    hi-tech (150-160 BPM, 2500-4500 Hz, 18-28/s, 70-130ms, phrygian)
+    suomi (145-160 BPM, 1400-2400 Hz, 13-22/s, minor/phrygian/dorian)
+    acid-psy (138-146 BPM, 1500-2800 Hz, 12-18/s, minor/phrygian)
+    hypnotic (126-136 BPM, 800-1500 Hz, 6-10/s, 250-400ms, dorian)
+- Scoring: triangular similarity kernel per feature (1.0 at ideal, 0.7 at range
+  edges, drops to 0 outside). Weighted sum:
+    BPM 25% · centroid 20% · transientDensity 15% · subEnergy 10% ·
+    kickDecay 10% · highEnergy 10% · scale 10%.
+- Missing/zero features are SKIPPED and weights re-normalized so partial
+  feature sets still give meaningful answers. `hasAnyFeature` check returns
+  all styles at 0.1 confidence if everything is zero.
+- Confidence: top match = 0.4 + score·0.45 + dominance·0.1 (boosted toward
+  0.9 if it clearly wins). Lower matches capped at score·0.6 so ambiguous
+  inputs don't pretend to be confident. All clamped to [0, 0.95].
+- `reasons[]` array per match — strings like "BPM 150 matches dark-psy
+  148-155", "centroid 850Hz indicates dark character", "kick decay 110ms =
+  tight/punchy kick", "scale 'phrygian' is preferred by dark-psy".
+- `styleToWorld(styleId)` helper maps classifier styles to nearest available
+  WorldId (full-on→morning-psy, hi-tech→acid-psy, suomi→dark-psy fallbacks
+  for styles without a direct world counterpart).
+
+PART 2 — Engine wiring + auto-switch:
+- Imported `classifyStyle`, `styleToWorld`, `StyleMatch`, `RefFeatures` from
+  the new classifier module.
+- Added 7 new private fields to store the full reference feature snapshot
+  for the classifier: `refLowEnergy`, `refMidEnergy`, `refAirEnergy`,
+  `refStereoWidth`, `refBpm`, `refEnergy`, `refKeyScale`. Populated by
+  `liveTrack()` alongside the existing pursuit fields.
+- Added `styleMatches: StyleMatch[]` field, `lastAutoSwitchTime`,
+  `lastAutoSwitchWorldId`, `phraseCounter`, `phrasePresetVariant`. Two
+  static readonly constants: `AUTO_SWITCH_COOLDOWN_MS = 30_000` and
+  `AUTO_SWITCH_CONFIDENCE_THRESHOLD = 0.55`.
+- Added `onWorldChange: ((worldId, reason?) => void) | null` callback so
+  the UI can subscribe to auto-switch events without polling.
+- Extended `liveTrack()` signature to accept `lowEnergy`, `midEnergy`,
+  `airEnergy`, `stereoWidth`, `bpm`, `detectedKey` (all optional, appended
+  at the end — preserves existing API).
+- Rewrote `applyMusicalUnderstanding()` to run the classifier on stored
+  features and auto-switch when confident. Two paths:
+    (a) Explicit style tag from reference listener (confidence > 0.4) → use
+        it directly. Auto-switch only if confidence > 0.6 AND target world
+        differs from current.
+    (b) No style tag (or low confidence) → LEARN from features. Auto-switch
+        if top match confidence ≥ 0.55 AND target world differs.
+  In both cases, the full ranked `StyleMatch[]` is stored for UI.
+- New `buildRefFeatures()` private method — builds a `RefFeatures` snapshot
+  from stored reference metrics. Returns null if no usable features.
+- New `applyStyleClassification(matches: StyleMatch[])` public method —
+  drives auto-switch from a precomputed classification (for UI/tests).
+- New `getStyleClassification(): StyleMatch[]` public method — returns the
+  latest ranked matches for UI display.
+- New `getCurrentWorldId(): string` public method — returns the active
+  worldId so the UI can sync its dropdown after an auto-switch.
+- New `switchWorld(worldId: WorldId)` public method — SMOOTH world
+  transition (does NOT restart playback):
+    * Updates `currentWorld`, musicalKey (keeps root if in new world's
+      range, else snaps to midpoint of rootRange), refreshes generators.
+    * BPM diff > 2 → 4-bar ramp (reuses existing BPM ramp infrastructure).
+    * FX mix → `setTargetAtTime(timeConstant=0.5s)` on reverb/delay sends.
+    * Resets `phraseCounter`, `phrasePresetVariant`, `arpIdx`,
+      `bassPatternIdx` for a clean first phrase in the new world.
+    * Calls `applyWorldPresets()` to swap kick/bass/lead/pad/arp presets
+      immediately so the next note uses the new timbres.
+- New `tryAutoSwitch(worldId, reason?)` private method — the ONLY place
+  auto-switches happen. Enforces the 30-second cooldown and skips no-op
+  switches (target == lastAutoSwitchWorldId). Fires `onWorldChange`
+  callback after a successful switch.
+- New `applyWorldPresets()` private method — applies the current world's
+  preferred kick/bass/lead/pad/arp presets:
+    * Dark worlds (dark-psy, forest, deep-psy, hypnotic) → PS-KICK-DEEP +
+      PS-BASS-ROLL + PS-LEAD-SQUELCH
+    * Bright worlds (morning-psy, cosmic, organic-psy) → PS-KICK-TIGHT +
+      PS-BASS-DEEP + PS-LEAD-FMTEX
+    * Acid worlds (goa, acid-psy) → PS-KICK-TIGHT + PS-BASS-ROLL +
+      PS-LEAD-SQUELCH
+    * Others → PS-KICK-TIGHT + PS-BASS-ROLL + PS-LEAD-SQUELCH
+  Called by `start()` and `switchWorld()`.
+- Updated `start()` to call `applyWorldPresets()` and reset the new
+  phrase/auto-switch state fields.
+
+PART 3 — Musical evolution (Task 15):
+- Added `tickEvolution(bar, evolutionRate, intervalBars)` method to
+  `LeadMotif` in musicalGrammar.ts. Internally decides when to mutate
+  based on bar count (mutates every `effectiveInterval` bars, where
+  `effectiveInterval = max(4, round(intervalBars * (1.2 - evolutionRate)))`)
+  and `lastMutateBar` field prevents double-mutation on the same bar.
+  This keeps LeadMotif's mutation logic encapsulated while letting the
+  engine drive it from its scheduler.
+- Also added `getSequence()` to LeadMotif to expose the internal
+  EvolvingSequence for advanced use (testing, debugging).
+- In `tick()`, call `this.leadMotif?.tickEvolution(this.bar,
+  this.currentWorld.evolutionRate, 8)` every bar — MORE FREQUENT evolution
+  than the existing section-boundary `evolve()` call (every 8 bars or
+  fewer for high-evolution worlds vs every 4-8 sections). Both run
+  concurrently for layered variation.
+- Replaced the old `rotatePresets()` (cycled through 3 presets every 4
+  bars) with new `applyPhrasePresetRotation()` — phrase-locked preset
+  rotation every 8 bars, world-aware:
+    * Dark worlds → alternate kick between PS-KICK-DEEP (default) and
+      PS-KICK-TIGHT (variation); bass stays on PS-BASS-ROLL
+    * Bright worlds → kick stays on PS-KICK-TIGHT; bass alternates
+      between PS-BASS-DEEP and PS-BASS-ROLL
+    * Acid worlds → kick stays on PS-KICK-TIGHT; bass alternates between
+      PS-BASS-ROLL and PS-BASS-DEEP
+    * Others → both kick and bass alternate
+  Lead/Pad/Arp presets stay fixed per world — only kick/bass rotate to
+  keep the harmonic identity stable within a phrase, then vary across
+  phrases. "Sonic consistency within a phrase, then variation."
+- Verified energyCurve actually affects velocity/density (Track A had
+  wired it for hats/perc/arp/shaker/lead but missed kick/bass/pad):
+    * Kick velocity: was `0.5 + section.density*0.4*aggressionBoost`,
+      now `0.4 + section.density*0.3*aggressionBoost + energy*0.15`
+      (downbeat) and `0.3*aggressionBoost + energy*0.1` (others)
+    * Bass velocity: was `0.5 * accent`, now `(0.4 + energy*0.2) * accent`
+    * Pad velocity: was `0.25` / `0.15`, now `0.2 + energy*0.15` and
+      `0.12 + energy*0.1`
+  Now drops hit harder than builds even at the same section density.
+
+page.tsx integration:
+- Updated `liveTrack()` call to pass `lowEnergy`, `midEnergy`, `airEnergy`,
+  `stereoWidth`, `bpm`, `detectedKey` (previously only sub/high/centroid/
+  transient were passed). This gives the classifier the full feature set
+  it needs.
+- Discovered that page.tsx was already wired to consume the new API by a
+  prior "Track D / 19" agent (StyleMatch interface, styleMatches state,
+  onWorldChange subscription, STYLE DETECTION card UI). My engine methods
+  (`getStyleClassification`, `getCurrentWorldId`, `onWorldChange`) plug
+  directly into their UI.
+- Removed a duplicate `styleMatches` state declaration I accidentally
+  introduced (the prior agent's declaration was 3 lines below mine).
+- Removed the duplicate `getCurrentWorldId()` and `onWorldChange`
+  declarations at the bottom of the engine that the prior agent had added
+  (my versions are placed logically near my other Task 14 methods and the
+  `onWorldChange` field is initialized once at the top of the class).
+
+Coordination with prior tracks:
+- Track A (world-driven pattern engine): kept all their world-driven
+  scheduleStep logic. My changes only ADD per-step energy modulation and
+  replace the 4-bar rotatePresets() with 8-bar phrase-locked rotation.
+  All their kick/bass/lead/pad/arp trigger paths are intact.
+- Track B (reference pursuit): kept all their liveTrack/selfTrack/
+  applyMusicalUnderstanding/triggerDrum decay blending/triggerSynth cutoff
+  blending/BPM ramp/getPursuitStatus code. My new ref* fields are
+  populated alongside theirs in liveTrack().
+- Track D / 19 (style detection UI — found already in page.tsx): their
+  StyleMatch interface, styleMatches/activeWorld/autoSwitchActive state,
+  and onWorldChange subscription all consume my new engine API.
+
+Verification:
+- `npx eslint src/lib/studio/engine/psy4EngineV2.ts
+  src/lib/studio/engine/styleClassifier.ts
+  src/lib/studio/engine/musicalGrammar.ts src/app/page.tsx
+  --max-warnings=999` → EXIT 0 (zero errors, zero warnings).
+- `npx eslint 'src/**/*.{ts,tsx}' --max-warnings=999` → EXIT 0 (whole src
+  tree clean).
+- `npx tsc --noEmit --skipLibCheck | grep -E
+  "psy4Engine|styleClassifier|musicalGrammar"` → EXIT 1 (no errors in my
+  modified files; remaining tsc errors are all pre-existing in examples/,
+  scripts/, skills/, src/app/api/reference/, and src/app/page.tsx lines
+  172 + 303 which were confirmed pre-existing by Track B).
+- `bun run lint | grep -E "psy4Engine|styleClassifier|page.tsx" | grep error`
+  → empty (no errors in modified files).
+- Dev server log: `✓ Compiled in 324ms` and `GET / 200 in 559ms` after edits.
+
+Stage Summary:
+- The engine now LEARNS the psytrance sub-style from the reference's actual
+  acoustic features (BPM, spectral centroid, energy bands, transient density,
+  kick decay, detected scale) and auto-switches worlds when the classifier
+  is confident. This addresses the user's complaint that style must be
+  learned, not defined by "fat bass".
+- Musical evolution is now layered:
+    1. PER-BAR — LeadMotif.tickEvolution() mutates the EvolvingSequence every
+       8 bars (or fewer for high-evolution worlds), in addition to the
+       section-boundary evolve() call.
+    2. PHRASE-LOCKED — kick/bass presets alternate between 2 variants every
+       8 bars, world-aware (dark → DEEP/ROLL, bright → TIGHT/DEEP, acid →
+       TIGHT with bass swap).
+    3. ENERGY-DRIVEN — kick/bass/pad velocities now scale with the world's
+       energyCurve, so drops hit harder than builds even at the same section
+       density.
+    4. SECTION-BOUNDARY — LeadMotif.evolve() + arp shape mutation (kept
+       from Track A).
+- The classifier returns ALL 10 sub-styles ranked, with reasons[] explaining
+  each match — visible in the STYLE DETECTION card on the dashboard.
+- Auto-switch fires onWorldChange so the UI updates without polling, and the
+  30-second cooldown prevents thrashing.
+- All Track A and B APIs still work (new params are optional, appended at
+  the end of signatures). New public methods: applyStyleClassification(),
+  getStyleClassification(), getCurrentWorldId(), switchWorld(), plus the
+  onWorldChange callback field.
+- Full work record saved to /home/z/my-project/agent-ctx/14-15-full-stack-developer.md.
+
+---
+Task ID: 22-23 (Track E: ContinuousTrainer wiring + final verification)
+Agent: Z.ai Code (main)
+
+Work Log:
+- Identified that ContinuousTrainer.setEngine() calls engine.setWorld(params) with kickDecay, bassCutoff, leadCutoff, leadDetune, padCutoff, duck — but Psy4EngineV2.setWorld() only handled masterLevel/bassLevel/leadLevel/kickLevel. The trainer's optimized params were being DROPPED.
+- Added `learned` params object to Psy4EngineV2 (kickDecay, bassCutoff, leadCutoff, leadDetune, padCutoff, duck) with range guards.
+- Expanded setWorld() to store all 6 learned params (with isFinite + range validation).
+- Wired learned kickDecay into triggerDrum (25% blend on top of reference-pursued decay).
+- Wired learned bassCutoff/leadCutoff/padCutoff into triggerSynth (30% blend on top of world + reference pursuit).
+- Wired learned leadDetune into triggerSynth (30% blend on osc2 detune).
+- Wired learned duck into sidechain (blends with default 0.4 depth, range 0.15-0.7).
+- Fixed 2 pre-existing TypeScript errors in page.tsx: imported RadioStream from radioStreams.ts and ReferenceProfile from referenceListener.ts instead of redefining locally.
+- Browser verification (agent-browser):
+  - Page loads clean (200, no hydration errors, zero console errors).
+  - Engine starts: BPM 150, Key phrygian, Section INTRO (dark-psy world correctly applied).
+  - World switching verified: Dark Psy → Progressive Psy changes BPM 150→128 and key phrygian→dorian.
+  - Arrangement progresses through sections (INTRO → GROOVE → BUILD → DROP → ... → FINAL DROP).
+  - Reference stream connects (Psyndora): detected F minor (confidence 0.93), style acid-psy from spectral features.
+  - STYLE DETECTION card shows ranked matches with real acoustic reasons (BPM range, centroid range, subEnergy, transientDensity, highEnergy).
+  - A/B SPECTRAL VISUALIZATION renders 5 bands (SUB/LOW/MID/HIGH/AIR) with REFERENCE vs ENGINE bars.
+  - REFERENCE PURSUIT table shows target/actual/delta/convergence per dimension.
+  - AUTO-SWITCH active indicator visible.
+
+Stage Summary:
+- The ContinuousTrainer is now FULLY CONNECTED to the playing engine. Offline-optimized params blend into the live synthesis on top of world timbre + reference pursuit.
+- Three-layer param model: (1) World timbre from worlds.ts [base], (2) Reference pursuit from liveTrack() [reactive], (3) Learned params from ContinuousTrainer [exploratory]. All blend additively with sensible weights.
+- ALL 23 todos from the roast are addressed (except #21 scheduler-to-worker which is medium priority and requires larger architectural change).
+- The user's core complaints are FIXED: worldId is no longer ignored, patterns are world-driven, style is LEARNED from acoustic features (not "fat bass" genre tags), reference pursuit actually adjusts kick decay + spectral balance + transient density + BPM + key, musical evolution mutates motifs every 8 bars.
