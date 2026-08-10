@@ -5160,3 +5160,132 @@ ARTIFACTS:
 - src/lib/studio/engine/musicalDirector.ts (extended, +110 lines net) — Motif type import; transformMotifForPhase + mergeSequencedMotifs private methods; composeLead wired to use the transformation pipeline and return the transformation label.
 
 DELIVERABLE: A lead that ACTUALLY develops across phrases — statement (A as-is) → variation (A' transposed +3rd or fragmented) → contrast (B inverted) → climax (A'' diminished + sequenced up) → resolution (A augmented). The lead now sounds like it's EVOLVING, not repeating with octave shifts. The development is DETERMINISTIC (seeded rng), MUSICAL (scale-degree operations keep it in-key), and TRACKED (the Phrase.motifIds array surfaces the transformation label to the UI).
+
+---
+Task ID: P2-MUSIC-INTELLIGENCE (Phase 2 — Build a MusicAnalyzer that hears MUSIC, not just features)
+Agent: Z.ai Code (main)
+Task: Build a MusicAnalyzer that detects MUSICAL events (section boundaries, risers, drops, chord changes, key modulations, melodic contour, rhythmic pattern) from the reference audio, so the engine can respond to MUSIC not just features. When the radio drops, we drop; when the radio builds, we build.
+
+Work Log:
+- Read RESEARCH-DEEP section of worklog.md: findings #6 (pursuit is shallow — 9 reference dimensions but NO pursuit of harmonic content / melodic contour / rhythmic pattern / arrangement structure) and #7 (no musical intelligence layer — engine hears acoustic features but doesn't hear music). This task is Phase 2 of the improvement plan.
+- Read psy4EngineV2.ts liveTrack() (lines 2062-2299) — the entry point for reference features. Identified the integration point (end of liveTrack, after applyLearnedPatternProactively + runLearningTick).
+- Read flowEngine.ts transitionTo() (lines 473-491) — accepts `Partial<FlowState> & { label?: string }` + bars. Confirmed ARCHETYPES table has DROP, BREAK, BUILD labels matching the spec.
+- Read referenceListenerV2.ts + referenceListener.ts ReferenceMetrics interface — confirmed available features: energy, spectralCentroid, transientDensity, bpm, subEnergy, highEnergy, lowEnergy, midEnergy, airEnergy, detectedKey, spectralFlatness, hnr, kickDensity, hatDensity, rhythmicRegularity, etc.
+- Read page.tsx analyze mode UI structure (DEEP A/B ANALYSIS card at lines 1513-1960, A/B SPECTRAL VISUALIZATION card after) — identified the insertion point for the new MUSICAL ANALYSIS card.
+
+STEP 1 — Created MusicAnalyzer module
+- File: src/lib/studio/engine/musicAnalyzer.ts (~700 lines)
+- Exports: MusicAnalyzer class + 5 interfaces (MusicalEvent, MelodicContour, RhythmicPattern, SectionState, MusicalAnalysis) + MusicAnalyzerFeatures input shape
+- 8 MusicalEvent types: chordChange, sectionBoundary, riserStart, dropHit, breakStart, keyChange, melodicPeak, rhythmicFill
+- Extended the spec's input shape with optional fields (spectralFlatness, hnr, kickDensity, hatDensity, lowEnergy, midEnergy, airEnergy, rhythmicRegularity) so the analyzer can use V2 listener data when available
+- Bounded rolling histories (5-min window) + bounded event log (60s retention) — no unbounded growth
+
+STEP 2 — Section detection (energy-driven state machine)
+- 7 labels: intro / groove / build / drop / variation / break / outro
+- Tracks energy history over 5-min rolling window; computes short-term slope (16s ≈ 4 bars at 140 BPM)
+- Transitions: rising > 0.02/s → BUILD; energy > 0.8 after recent min < 0.6 → DROP; energy < 0.4 after recent max > 0.65 + falling < -0.02/s → BREAK; sustained high → VARIATION; sustained low + !hasDroppedOnce → INTRO; sustained low + hasDroppedOnce → OUTRO; stable mid → GROOVE
+- SECTION_MIN_BARS = 4 anti-flicker guard
+- hasDroppedOnce flag disambiguates intro vs outro
+- Emits sectionBoundary event on each transition (with from/to/energy/bar)
+
+STEP 3 — Riser/drop/break detection
+- riserStart: rising slope > 0.02/s + energy 0.4-0.8 + not already in build. 30s cooldown. Emits with fromEnergy/toEnergy/slopePerSec.
+- dropHit: energy crosses 0.8 after recent min < 0.6 + prev not drop. 30s cooldown. Emits with energy/recentMax/bar.
+- breakStart: energy < 0.4 + recent max > 0.65 + slope < -0.02/s + prev was drop/variation/build. 30s cooldown. Emits with fromEnergy/toEnergy/slopePerSec.
+- All three are SEPARATE events from sectionBoundary so the engine can route them directly to flowEngine.transitionTo.
+
+STEP 4 — Rhythmic pattern estimation
+- Converts per-second densities to per-bar (× 240/BPM) using 4/4 bar duration
+- 7 kick patterns (none/halfTime/twoBar/fourOnFloor/gallop/eighth/busy) + 6 hat patterns (none/sparse/offbeat/steady/triplet/busy) — 16-char gate strings at 16th-note resolution
+- Picks closest canonical pattern by hit count
+- Syncopation = 0.5×offbeatRatio + 0.5×(1 - rhythmicRegularity), clamped 0-1
+- Density = transients/bar / 16, clamped 0-1
+- Fallback estimators when kickDensity/hatDensity are missing (use total transient density + highEnergy with snap-to-canonical)
+
+STEP 5 — Melodic contour detection
+- Operates on spectral centroid history (proxy for melodic register)
+- 16-second window (~4 bars at 140 BPM)
+- Shapes: static (amplitude < 150 Hz) / arch (peak in middle, trough at start) / rising (slope > 80 Hz/s) / falling / descending (slope < -200 Hz/s) / wave (alternating sign of deltas, ≥1/3 sign changes)
+- Range = 12 × log2(peak/trough) in semitones, clamped 0-36
+- Direction = slope/200 clamped -1..1
+- Emits melodicPeak when peak is the latest sample + peak > first + 400 Hz (20s cooldown)
+
+STEP 6 — Chord change detection
+- Builds "harmonic signature" from spectralFlatness + hnr + subEnergy deltas (weighted: hnr ×2.0, flatness ×1.5, sub ×1.0)
+- Combined normalized delta > 0.15 → chordChange event (4s cooldown)
+- Tracks running average → harmonicRhythm (bars per chord change, 0.5-32 range)
+- Emits with delta + bar
+
+Bonus — Key modulation detection
+- Emits keyChange when detectedKey.root or scale shifts with confidence > 0.4 (20s cooldown)
+- Maintains recentKeyChanges list (5-min retention)
+- Emits with from/to (note name + scale)
+
+STEP 7 — Integration into psy4EngineV2.ts
+- Imported MusicAnalyzer, MusicalAnalysis, MusicalEvent, MusicAnalyzerFeatures types
+- Added private fields: musicAnalyzer (eagerly constructed), lastMusicalEventTime, musicalAnalysis
+- In start(): reset the analyzer (fresh instance + clear musicalAnalysis + lastMusicalEventTime) so stale histories from a previous play session don't bias the new session's first detections
+- In liveTrack() (end): calls updateMusicAnalyzer(refMetrics) which:
+  1. Guards against missing/zero spectralCentroid (early return — no polluted histories)
+  2. Builds MusicAnalyzerFeatures snapshot (all fields guarded with ?? fallbacks to defaults)
+  3. Calls musicAnalyzer.update(features) — updates all histories + runs all detectors
+  4. Computes wall-clock window since last check (Math.max(0.5, now - last))
+  5. Pulls getRecentEvents(windowSec) — these are NEW events since the last check
+  6. Routes each new event:
+     - dropHit → flowEngine.transitionTo({ label: 'DROP', energy: 0.95 }, 2)
+     - breakStart → flowEngine.transitionTo({ label: 'BREAK', energy: 0.3 }, 2)
+     - riserStart → flowEngine.transitionTo({ label: 'BUILD', energy: 0.7 }, 4)
+     - Other events (chordChange, keyChange, melodicPeak, sectionBoundary, rhythmicFill) are surfaced via getMusicalAnalysis() for UI but don't force flow transitions (the harmony + melody engines will pick them up on the next bar boundary via the existing scheduleStep path)
+  7. Logs each transition to console for debugging
+- Added public method getMusicalAnalysis(): MusicalAnalysis | null
+- Extended liveTrack()'s inline parameter type with optional kickDensity, hatDensity, rhythmicRegularity fields (so the analyzer gets accurate per-instrument densities when the V2 listener provides them)
+
+STEP 8 — UI: MUSICAL ANALYSIS card in page.tsx
+- Added musicalAnalysis state + polling in analyzer tick (getMusicalAnalysis())
+- Added the MUSICAL ANALYSIS card in analyze mode (when engine is on), placed between the DEEP A/B ANALYSIS card and the A/B SPECTRAL VISUALIZATION card:
+  - Section: colored badge (rose=drop, amber=build, fuchsia=variation, cyan=break, emerald=groove, slate=intro/outro) + bar/barsInSection + confidence % + energy gradient bar
+  - Melodic contour: shape badge (color-coded: emerald=rising, amber=falling, rose=descending, fuchsia=arch, cyan=wave, slate=static) + range in semitones + direction (↑/↓/→ arrow with signed value)
+  - Rhythmic pattern: 16-step kick gate (amber filled blocks for 'x', slate for '.') + 16-step hat gate (cyan filled blocks) + syncopation % bar + density % bar
+  - Harmonic rhythm: large "X.X bars/chord" stat + recent key changes list (from → to)
+  - Recent events: last 5 events (newest first), color-coded by type, with per-type payload summary (e.g. "energy 0.92 @ bar 24", "Δ 0.234 @ bar 18", "C phrygian → D# minor")
+  - Empty state: "Waiting for reference features — connect a stream and the musical analysis appears here within ~10s"
+  - Footer: explanation of what the analyzer does + how the engine reacts
+- Added kickDensity, hatDensity, rhythmicRegularity to RefMetrics interface (optional fields)
+- Updated connectRef's liveTrack call to pass these new fields from m (the V2 listener's metrics)
+- Cleared musicalAnalysis in stopEngine so stale data doesn't persist across engine restarts
+- All access uses optional chaining (musicalAnalysis?.section?.label ?? '—') throughout
+
+CONSTRAINTS HONORED:
+- Did NOT break existing functionality: all 8 detector paths are guarded against missing/zero features; the analyzer gracefully no-ops when fields are absent (V1 listener compatibility). All existing liveTrack consumers (applySynthesisPursuit, applyEffectsPursuit, applyDeepPursuit, phaseSync, djController, applyLearnedPatternProactively, runLearningTick) are unchanged — the new updateMusicAnalyzer call is purely additive at the end of liveTrack.
+- Efficient: runs every ~10s (on each liveTrack call), not per audio block. All histories bounded to 5-min window (≤30 samples per axis). Events bounded to 60s retention. No per-update allocation beyond the rare event push.
+- Guarded against missing/zero features: every input field is checked with isFinite + > 0 before being pushed to a history. Missing required field (spectralCentroid <= 0) → early return, no update.
+- TypeScript strict mode: all types explicit in musicAnalyzer.ts (no `any`). page.tsx uses `any` for the snapshot (consistent with existing deepAnalysis/pursuitDashboard state pattern in the file).
+- Optional chaining in UI: musicalAnalysis?.section?.label ?? '—' throughout the card.
+- Cooldowns prevent event spam: 30s for drop/riser/break, 20s for key/peak, 4s for chord, SECTION_MIN_BARS for section flips.
+
+VERIFICATION:
+- `npx tsc --noEmit --skipLibCheck 2>&1 | grep -E "musicAnalyzer|psy4EngineV2|page.tsx" | head` → EMPTY (0 errors in target files)
+- `bun run lint 2>&1 | grep -E "musicAnalyzer|psy4EngineV2|page.tsx" | grep error` → EMPTY (0 lint errors in target files)
+- Total tsc error count = 56 (unchanged from P1-CLEANUP baseline — all 56 are pre-existing in unrelated files: examples/websocket/*, scripts/independent-proof.ts, skills/*, src/lib/studio/artifacts/index.ts, src/lib/studio/audit/bypassAttacks.ts, src/lib/studio/dsp/masterChain.ts, src/lib/studio/engine/engineWorklet.ts, src/lib/studio/engine/forensic/*, src/lib/studio/engine/multisampleGenerator.ts, src/lib/studio/engine/reference/*, src/lib/studio/tests/index.ts)
+- Dev server smoke test: `curl http://localhost:3000/` → HTTP 200, ✓ Compiled. dev.log shows zero new compile errors.
+
+DELIVERABLE: A MusicAnalyzer that detects musical events (section changes, risers, drops, breaks, chord changes, key modulations, melodic peaks) from the radio, and the engine RESPONDS to them — when the radio drops, we drop; when the radio builds, we build; when the radio breaks, we break. This is true musical synchronization, not just feature matching. The UI surfaces the full analysis (section, contour, rhythm, events, harmonic rhythm) so the user can see what the engine is hearing.
+
+HONEST GAP (limitation):
+- PHYSICAL LISTENING UNVERIFIED — verification via TypeScript + ESLint pass + dev server compile. The signal chain is well-formed: liveTrack → updateMusicAnalyzer → musicAnalyzer.update → detectors fire → events emitted → flowEngine.transitionTo → flow smooths toward DROP/BREAK/BUILD target. But the audible result (does the engine ACTUALLY drop when the radio drops?) is asserted by construction, not by listening.
+- The detector thresholds (energy > 0.8 for drop, slope > 0.02/s for build, etc.) are heuristic — they'll need tuning against real radio streams. The constants are clearly named at the top of musicAnalyzer.ts (DROP_COOLDOWN_SEC, RISER_COOLDOWN_SEC, etc.) for easy tuning.
+- The chord-change proxy (spectralFlatness + hnr + subEnergy deltas) is a coarse approximation — a real chord detector would need a chromagram or pitch detection, which the reference listener doesn't currently expose. This is a reasonable starting point; the harmony engine can still sync to the chordChange events even with the coarse detection.
+- The melodic contour uses spectral centroid as a proxy for melodic register. This is a well-known approximation but breaks down when the arrangement changes (e.g., pad swells in the high register while the lead stays in the mid register). A future enhancement would use a separated lead-track centroid.
+
+ARTIFACTS:
+- src/lib/studio/engine/musicAnalyzer.ts (NEW, ~700 lines) — MusicAnalyzer class + 5 interfaces + MusicAnalyzerFeatures input shape
+- src/lib/studio/engine/psy4EngineV2.ts (extended, +160 lines) — import + 3 private fields + start() reset + updateMusicAnalyzer() private method + getMusicalAnalysis() public method + liveTrack() parameter extension (kickDensity/hatDensity/rhythmicRegularity) + liveTrack() end-of-method call to updateMusicAnalyzer
+- src/app/page.tsx (extended, +270 lines) — RefMetrics interface extension + musicalAnalysis state + polling + stopEngine clear + MUSICAL ANALYSIS card (section / contour / rhythm / harmonic rhythm / recent events)
+- agent-ctx/P2-MUSIC-INTELLIGENCE-z-ai-code.md (NEW) — work record for this task
+
+NEXT (future tasks, NOT done here — left for P4+):
+- Structural pursuit (Phase 4): pursue not just "kick decay" but "arrangement structure" — the analyzer now DETECTS sections, but the engine doesn't yet PURSUE them (it only reacts via flowEngine). A future enhancement would feed the detected section back into the MusicalDirector so it composes phrases that match the radio's structure.
+- Real-time adaptation (Phase 5): the analyzer detects the radio's rhythmic pattern (kickPattern/hatPattern gate strings) but the engine doesn't yet LEARN + replicate it. A future enhancement would feed the detected pattern into the step sequencer so our drums match the radio's drum pattern.
+- Tuning the detector thresholds against real radio streams (the current values are heuristic — energy > 0.8 for drop, slope > 0.02/s for build, etc.).
+- A real chord detector (chromagram or pitch detection) to replace the spectral-flatness proxy.
+- A separated lead-track centroid for more accurate melodic contour detection.

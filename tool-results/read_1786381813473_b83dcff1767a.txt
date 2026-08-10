@@ -1,0 +1,1211 @@
+     1→     1→/**
+     2→     2→ * ReferenceListener V2 — robust cross-origin stream analysis.
+     3→     3→ *
+     4→     4→ * V1 used MediaElementAudioSourceNode which outputs SILENCE for cross-origin
+     5→     5→ * streams even with crossOrigin='anonymous' + CORS headers, because the
+     6→     6→ * analyser node receives zeroed data (CORS tainting protection).
+     7→     7→ *
+     8→     8→ * V2 uses fetch() + ReadableStream + decodeAudioData:
+     9→     9→ *   1. fetch(streamUrl) — gets a ReadableStream of MP3 bytes
+    10→    10→ *   2. Accumulate chunks into a buffer
+    11→    11→ *   3. Every 10 seconds, take the accumulated bytes and decodeAudioData them
+    12→    12→ *   4. Analyze the decoded AudioBuffer (which is NOT tainted)
+    13→    13→ *   5. Extract features
+    14→    14→ *
+    15→    15→ * This is the standard approach for cross-origin audio analysis.
+    16→    16→ * NO ScriptProcessorNode. NO MediaElementAudioSourceNode.
+    17→    17→ * The audio is NEVER played through speakers — only decoded for analysis.
+    18→    18→ *
+    19→    19→ * CRITICAL: This does NOT copy or store the audio. The decoded AudioBuffer
+    20→    20→ * is analyzed and immediately discarded. Only features are kept.
+    21→    21→ */
+    22→    22→
+    23→    23→import type { RadioStream } from './radioStreams';
+    24→    24→import type { ReferenceMetrics, ReferenceProfile } from './referenceListener';
+    25→    25→// ── Task D1: DJ-style phase sync — the listener populates phaseInfo from
+    26→    26→// the kick-band transient grid so the engine can phase-lock to the radio.
+    27→    27→import type { PhaseInfo } from '../phaseSync';
+    28→    28→// ── Task D1 (upgrade): full DJ controller — the listener also populates
+    29→    29→// grooveInfo (swing + push/pull) from the same kick transient grid.
+    30→    30→import type { GrooveInfo } from '../djController';
+    31→    31→
+    32→    32→const WINDOW_SECONDS = 20;
+    33→    33→const HOP_SECONDS = 10;
+    34→    34→const MAX_WINDOWS = 30;
+    35→    35→const SAMPLE_RATE = 44100;
+    36→    36→const MIN_BYTES_FOR_ANALYSIS = 256 * 1024; // 256KB ≈ 16 seconds at 128kbps
+    37→    37→
+    38→    38→// ── Task T1: local numeric clamp (the file has no shared util) ──
+    39→    39→// Guards every new metric against NaN/Infinity so the pursuit can rely on
+    40→    40→// finite values even when the FFT produces denormals or all-zero frames.
+    41→    41→function clampT1(v: number, lo: number, hi: number): number {
+    42→    42→  if (!Number.isFinite(v)) return lo;
+    43→    43→  return v < lo ? lo : (v > hi ? hi : v);
+    44→    44→}
+    45→    45→
+    46→    46→export class ReferenceListenerV2 {
+    47→    47→  private stream: RadioStream | null = null;
+    48→    48→  private audioCtx: AudioContext | null = null;
+    49→    49→  private connected = false;
+    50→    50→  private extracting = false;
+    51→    51→
+    52→    52→  private fetchController: AbortController | null = null;
+    53→    53→  private chunkBuffer: Uint8Array[] = [];
+    54→    54→  private chunkBufferTotalBytes = 0;
+    55→    55→
+    56→    56→  private metricsHistory: ReferenceMetrics[] = [];
+    57→    57→  private profile: ReferenceProfile | null = null;
+    58→    58→
+    59→    59→  private extractInterval: ReturnType<typeof setInterval> | null = null;
+    60→    60→  private fetchReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    61→    61→
+    62→    62→  private onMetricsCallback: ((m: ReferenceMetrics) => void) | null = null;
+    63→    63→  private onProfileCallback: ((p: ReferenceProfile) => void) | null = null;
+    64→    64→  private onErrorCallback: ((e: Error) => void) | null = null;
+    65→    65→
+    66→    66→  /**
+    67→    67→   * Connect to a radio stream.
+    68→    68→   * Starts fetching the stream as a ReadableStream of bytes.
+    69→    69→   */
+    70→    70→  async connect(stream: RadioStream): Promise<boolean> {
+    71→    71→    if (this.connected) {
+    72→    72→      await this.disconnect();
+    73→    73→    }
+    74→    74→
+    75→    75→    this.stream = stream;
+    76→    76→    this.chunkBuffer = [];
+    77→    77→    this.chunkBufferTotalBytes = 0;
+    78→    78→    this.metricsHistory = [];
+    79→    79→
+    80→    80→    try {
+    81→    81→      // Create AudioContext for decodeAudioData.
+    82→    82→      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+    83→    83→      this.audioCtx = new Ctx({ sampleRate: SAMPLE_RATE });
+    84→    84→      if (this.audioCtx.state === 'suspended') {
+    85→    85→        await this.audioCtx.resume();
+    86→    86→      }
+    87→    87→
+    88→    88→      // Start fetching the stream.
+    89→    89→      // Try proxy first, fall back to direct URL for HTTPS streams.
+    90→    90→      this.fetchController = new AbortController();
+    91→    91→      this.connected = true;
+    92→    92→
+    93→    93→      const fetchUrl = stream.url.startsWith('https')
+    94→    94→        ? stream.url  // HTTPS streams can be fetched directly (CORS-friendly)
+    95→    95→        : `/api/reference/proxy?stream=${encodeURIComponent(stream.id)}`;  // HTTP needs proxy
+    96→    96→      this.startStreamingFetch(fetchUrl);
+    97→    97→
+    98→    98→      return true;
+    99→    99→    } catch (err) {
+   100→   100→      this.onErrorCallback?.(err instanceof Error ? err : new Error(String(err)));
+   101→   101→      await this.disconnect();
+   102→   102→      return false;
+   103→   103→    }
+   104→   104→  }
+   105→   105→
+   106→   106→  /**
+   107→   107→   * Start fetching the stream as a ReadableStream.
+   108→   108→   * Accumulates bytes into chunkBuffer for periodic analysis.
+   109→   109→   */
+   110→   110→  private async startStreamingFetch(url: string): Promise<void> {
+   111→   111→    try {
+   112→   112→      const response = await fetch(url, {
+   113→   113→        signal: this.fetchController?.signal,
+   114→   114→        headers: { 'Accept': 'audio/mpeg, audio/aac, */*' },
+   115→   115→      });
+   116→   116→
+   117→   117→      if (!response.ok) {
+   118→   118→        throw new Error(`HTTP ${response.status}`);
+   119→   119→      }
+   120→   120→
+   121→   121→      if (!response.body) {
+   122→   122→        throw new Error('No response body');
+   123→   123→      }
+   124→   124→
+   125→   125→      this.fetchReader = response.body.getReader();
+   126→   126→
+   127→   127→      // Read chunks continuously
+   128→   128→      while (this.connected && this.fetchReader) {
+   129→   129→        const { done, value } = await this.fetchReader.read();
+   130→   130→        if (done) break;
+   131→   131→        if (value) {
+   132→   132→          // Accumulate chunk (we keep a rolling buffer — discard old bytes)
+   133→   133→          this.chunkBuffer.push(value);
+   134→   134→          this.chunkBufferTotalBytes += value.length;
+   135→   135→
+   136→   136→          // Trim buffer to ~1 minute of audio (768KB at 128kbps)
+   137→   137→          const maxBytes = 768 * 1024;
+   138→   138→          while (this.chunkBufferTotalBytes > maxBytes && this.chunkBuffer.length > 1) {
+   139→   139→            const removed = this.chunkBuffer.shift()!;
+   140→   140→            this.chunkBufferTotalBytes -= removed.length;
+   141→   141→          }
+   142→   142→        }
+   143→   143→      }
+   144→   144→    } catch (err) {
+   145→   145→      if (this.connected) {
+   146→   146→        this.onErrorCallback?.(err instanceof Error ? err : new Error(String(err)));
+   147→   147→      }
+   148→   148→    }
+   149→   149→  }
+   150→   150→
+   151→   151→  /** Start periodic feature extraction (every HOP_SECONDS). */
+   152→   152→  start(): void {
+   153→   153→    if (!this.connected || this.extracting) return;
+   154→   154→    this.extracting = true;
+   155→   155→
+   156→   156→    // Extract every HOP_SECONDS (10s)
+   157→   157→    this.extractInterval = setInterval(() => {
+   158→   158→      this.extractWindow().catch(err => {
+   159→   159→        this.onErrorCallback?.(err instanceof Error ? err : new Error(String(err)));
+   160→   160→      });
+   161→   161→    }, HOP_SECONDS * 1000);
+   162→   162→
+   163→   163→    // Initial extraction after 15 seconds (need enough bytes to decode)
+   164→   164→    setTimeout(() => {
+   165→   165→      this.extractWindow().catch(() => {});
+   166→   166→    }, 15000);
+   167→   167→  }
+   168→   168→
+   169→   169→  stop(): void {
+   170→   170→    this.extracting = false;
+   171→   171→    if (this.extractInterval) {
+   172→   172→      clearInterval(this.extractInterval);
+   173→   173→      this.extractInterval = null;
+   174→   174→    }
+   175→   175→  }
+   176→   176→
+   177→   177→  async disconnect(): Promise<void> {
+   178→   178→    this.stop();
+   179→   179→    this.connected = false;
+   180→   180→
+   181→   181→    // Abort fetch
+   182→   182→    if (this.fetchController) {
+   183→   183→      this.fetchController.abort();
+   184→   184→      this.fetchController = null;
+   185→   185→    }
+   186→   186→
+   187→   187→    // Release reader
+   188→   188→    if (this.fetchReader) {
+   189→   189→      try { await this.fetchReader.cancel(); } catch { /* noop */ }
+   190→   190→      this.fetchReader = null;
+   191→   191→    }
+   192→   192→
+   193→   193→    // Close audio context
+   194→   194→    if (this.audioCtx) {
+   195→   195→      try { await this.audioCtx.close(); } catch { /* noop */ }
+   196→   196→      this.audioCtx = null;
+   197→   197→    }
+   198→   198→
+   199→   199→    this.chunkBuffer = [];
+   200→   200→    this.chunkBufferTotalBytes = 0;
+   201→   201→    this.stream = null;
+   202→   202→  }
+   203→   203→
+   204→   204→  isConnected(): boolean {
+   205→   205→    return this.connected;
+   206→   206→  }
+   207→   207→
+   208→   208→  getCurrentStream(): RadioStream | null {
+   209→   209→    return this.stream;
+   210→   210→  }
+   211→   211→
+   212→   212→  getLatestMetrics(): ReferenceMetrics | null {
+   213→   213→    return this.metricsHistory.length > 0
+   214→   214→      ? this.metricsHistory[this.metricsHistory.length - 1]
+   215→   215→      : null;
+   216→   216→  }
+   217→   217→
+   218→   218→  getProfile(): ReferenceProfile | null {
+   219→   219→    return this.profile;
+   220→   220→  }
+   221→   221→
+   222→   222→  getBufferedBytes(): number {
+   223→   223→    return this.chunkBufferTotalBytes;
+   224→   224→  }
+   225→   225→
+   226→   226→  onMetrics(cb: (m: ReferenceMetrics) => void): void {
+   227→   227→    this.onMetricsCallback = cb;
+   228→   228→  }
+   229→   229→
+   230→   230→  onProfile(cb: (p: ReferenceProfile) => void): void {
+   231→   231→    this.onProfileCallback = cb;
+   232→   232→  }
+   233→   233→
+   234→   234→  onError(cb: (e: Error) => void): void {
+   235→   235→    this.onErrorCallback = cb;
+   236→   236→  }
+   237→   237→
+   238→   238→  /**
+   239→   239→   * Extract features from the current buffer.
+   240→   240→   * Concatenates buffered bytes, decodes via decodeAudioData, analyzes.
+   241→   241→   */
+   242→   242→  private async extractWindow(): Promise<void> {
+   243→   243→    if (!this.audioCtx || this.chunkBufferTotalBytes < MIN_BYTES_FOR_ANALYSIS) {
+   244→   244→      return; // not enough data yet
+   245→   245→    }
+   246→   246→
+   247→   247→    try {
+   248→   248→      // Concatenate buffered bytes into a single ArrayBuffer
+   249→   249→      // Take the last ~20 seconds of data (256KB at 128kbps)
+   250→   250→      const targetBytes = Math.min(this.chunkBufferTotalBytes, 320 * 1024);
+   251→   251→      const combined = new Uint8Array(targetBytes);
+   252→   252→      let offset = 0;
+   253→   253→      const chunksToCopy = [...this.chunkBuffer];
+   254→   254→
+   255→   255→      // Skip leading chunks if we have more than targetBytes
+   256→   256→      let skipBytes = this.chunkBufferTotalBytes - targetBytes;
+   257→   257→      for (const chunk of chunksToCopy) {
+   258→   258→        if (skipBytes > 0) {
+   259→   259→          if (chunk.length <= skipBytes) {
+   260→   260→            skipBytes -= chunk.length;
+   261→   261→            continue;
+   262→   262→          } else {
+   263→   263→            const slice = chunk.subarray(skipBytes);
+   264→   264→            combined.set(slice, offset);
+   265→   265→            offset += slice.length;
+   266→   266→            skipBytes = 0;
+   267→   267→          }
+   268→   268→        } else {
+   269→   269→          combined.set(chunk, offset);
+   270→   270→          offset += chunk.length;
+   271→   271→        }
+   272→   272→      }
+   273→   273→
+   274→   274→      // Trim to actual size
+   275→   275→      const audioData = combined.buffer.slice(0, offset);
+   276→   276→
+   277→   277→      // Decode the MP3/AAC data to an AudioBuffer
+   278→   278→      let audioBuffer: AudioBuffer;
+   279→   279→      try {
+   280→   280→        audioBuffer = await this.audioCtx.decodeAudioData(audioData);
+   281→   281→      } catch (decodeErr) {
+   282→   282→        return;
+   283→   283→      }
+   284→   284→
+   285→   285→      // Extract features from the decoded buffer
+   286→   286→      const metrics = await this.extractFeaturesFromBuffer(audioBuffer);
+   287→   287→      this.metricsHistory.push(metrics);
+   288→   288→
+   289→   289→      // Trim history
+   290→   290→      if (this.metricsHistory.length > MAX_WINDOWS) {
+   291→   291→        this.metricsHistory.shift();
+   292→   292→      }
+   293→   293→
+   294→   294→      // Update rolling profile
+   295→   295→      this.updateProfile();
+   296→   296→
+   297→   297→      // Fire callbacks
+   298→   298→      this.onMetricsCallback?.(metrics);
+   299→   299→      if (this.profile) {
+   300→   300→        this.onProfileCallback?.(this.profile);
+   301→   301→      }
+   302→   302→    } catch (err) {
+   303→   303→      // Silent fail — we'll try again next window
+   304→   304→    }
+   305→   305→  }
+   306→   306→
+   307→   307→  /**
+   308→   308→   * Extract features from a decoded AudioBuffer.
+   309→   309→   * This is the REAL analysis — using the actual PCM data.
+   310→   310→   */
+   311→   311→  private async extractFeaturesFromBuffer(buffer: AudioBuffer): Promise<ReferenceMetrics> {
+   312→   312→    const sr = buffer.sampleRate;
+   313→   313→    const numChannels = buffer.numberOfChannels;
+   314→   314→    const length = buffer.length;
+   315→   315→    const duration = buffer.duration;
+   316→   316→
+   317→   317→    // Get channel data
+   318→   318→    const leftData = buffer.getChannelData(0);
+   319→   319→    const rightData = numChannels > 1 ? buffer.getChannelData(1) : leftData;
+   320→   320→
+   321→   321→    // Mono mix for analysis
+   322→   322→    const mono = new Float32Array(length);
+   323→   323→    for (let i = 0; i < length; i++) {
+   324→   324→      mono[i] = (leftData[i] + rightData[i]) * 0.5;
+   325→   325→    }
+   326→   326→
+   327→   327→    // ── Dynamics ──
+   328→   328→    let peak = 0;
+   329→   329→    let sumSq = 0;
+   330→   330→    for (let i = 0; i < length; i++) {
+   331→   331→      const abs = Math.abs(mono[i]);
+   332→   332→      if (abs > peak) peak = abs;
+   333→   333→      sumSq += mono[i] * mono[i];
+   334→   334→    }
+   335→   335→    const rms = Math.sqrt(sumSq / length);
+   336→   336→    const crestFactor = rms > 0 ? peak / rms : 0;
+   337→   337→    const lufs = 20 * Math.log10(rms + 1e-12) - 0.691;
+   338→   338→
+   339→   339→    // ── FFT for spectral analysis ──
+   340→   340→    const fftSize = 8192;
+   341→   341→    const numHops = Math.floor((length - fftSize) / (fftSize / 2)) + 1;
+   342→   342→    const avgMag = new Float32Array(fftSize / 2 + 1);
+   343→   343→
+   344→   344→    // Simple windowed FFT (reusing the forensic FFT)
+   345→   345→    const window = this.hannWindow(fftSize);
+   346→   346→    for (let h = 0; h < Math.max(1, numHops); h++) {
+   347→   347→      const start = h * (fftSize / 2);
+   348→   348→      const frame = new Float32Array(fftSize);
+   349→   349→      const copyLen = Math.min(fftSize, length - start);
+   350→   350→      for (let i = 0; i < copyLen; i++) {
+   351→   351→        frame[i] = mono[start + i] * window[i];
+   352→   352→      }
+   353→   353→      const mag = this.powerSpectrum(frame);
+   354→   354→      for (let i = 0; i < avgMag.length; i++) {
+   355→   355→        avgMag[i] += mag[i];
+   356→   356→      }
+   357→   357→    }
+   358→   358→    for (let i = 0; i < avgMag.length; i++) avgMag[i] /= Math.max(1, numHops);
+   359→   359→
+   360→   360→    const binHz = sr / fftSize;
+   361→   361→
+   362→   362→    // Band energies
+   363→   363→    const bandEnergy = (loHz: number, hiHz: number): number => {
+   364→   364→      const loBin = Math.max(1, Math.floor(loHz / binHz));
+   365→   365→      const hiBin = Math.min(avgMag.length - 1, Math.ceil(hiHz / binHz));
+   366→   366→      let sum = 0, count = 0;
+   367→   367→      for (let i = loBin; i <= hiBin; i++) {
+   368→   368→        sum += avgMag[i];
+   369→   369→        count++;
+   370→   370→      }
+   371→   371→      return count > 0 ? sum / count : 0;
+   372→   372→    };
+   373→   373→
+   374→   374→    const subEnergy = Math.sqrt(bandEnergy(20, 60));
+   375→   375→    const lowEnergy = Math.sqrt(bandEnergy(60, 250));
+   376→   376→    const midEnergy = Math.sqrt(bandEnergy(250, 2000));
+   377→   377→    const highEnergy = Math.sqrt(bandEnergy(2000, 8000));
+   378→   378→    const airEnergy = Math.sqrt(bandEnergy(8000, 20000));
+   379→   379→
+   380→   380→    // Spectral centroid
+   381→   381→    let weightedSum = 0, totalMag = 0;
+   382→   382→    for (let i = 1; i < avgMag.length; i++) {
+   383→   383→      const freq = i * binHz;
+   384→   384→      weightedSum += freq * avgMag[i];
+   385→   385→      totalMag += avgMag[i];
+   386→   386→    }
+   387→   387→    const spectralCentroid = totalMag > 0 ? weightedSum / totalMag : 0;
+   388→   388→
+   389→   389→    // Spectral flatness
+   390→   390→    let logSum = 0, arithSum = 0, validCount = 0;
+   391→   391→    for (let i = 1; i < avgMag.length; i++) {
+   392→   392→      if (avgMag[i] > 1e-15) {
+   393→   393→        logSum += Math.log(avgMag[i]);
+   394→   394→        arithSum += avgMag[i];
+   395→   395→        validCount++;
+   396→   396→      }
+   397→   397→    }
+   398→   398→    const geoMean = validCount > 0 ? Math.exp(logSum / validCount) : 0;
+   399→   399→    const arithMean = validCount > 0 ? arithSum / validCount : 0;
+   400→   400→    const spectralFlatness = arithMean > 0 ? Math.min(1, geoMean / arithMean) : 0;
+   401→   401→
+   402→   402→    // Spectral rolloff
+   403→   403→    const threshold85 = totalMag * 0.85;
+   404→   404→    let cumulative = 0, rolloffBin = avgMag.length - 1;
+   405→   405→    for (let i = 1; i < avgMag.length; i++) {
+   406→   406→      cumulative += avgMag[i];
+   407→   407→      if (cumulative >= threshold85) { rolloffBin = i; break; }
+   408→   408→    }
+   409→   409→    const spectralRolloff = rolloffBin * binHz;
+   410→   410→
+   411→   411→    // ── Transient detection ──
+   412→   412→    const transientThreshold = 0.15;
+   413→   413→    const minGapSamples = Math.floor(0.08 * sr);
+   414→   414→    let transientCount = 0;
+   415→   415→    let lastTransientIdx = -minGapSamples;
+   416→   416→    const transientIndices: number[] = [];
+   417→   417→    for (let i = 1; i < length - 1; i++) {
+   418→   418→      const abs = Math.abs(mono[i]);
+   419→   419→      if (abs > transientThreshold &&
+   420→   420→          abs > Math.abs(mono[i - 1]) &&
+   421→   421→          abs > Math.abs(mono[i + 1]) &&
+   422→   422→          i - lastTransientIdx >= minGapSamples) {
+   423→   423→        transientCount++;
+   424→   424→        transientIndices.push(i);
+   425→   425→        lastTransientIdx = i;
+   426→   426→      }
+   427→   427→    }
+   428→   428→    const transientDensity = transientCount / duration;
+   429→   429→
+   430→   430→    // Kick/hat density (simplified — based on low/high band energy at transient times)
+   431→   431→    // ── Task D1: collect kickTransientIndices so we can extract beat phase ──
+   432→   432→    // The previous version only counted kick/hat hits; we now also remember
+   433→   433→    // the SAMPLE INDEX of each kick-band transient so the phase detector
+   434→   434→    // can build a beat grid from them.
+   435→   435→    let kickCount = 0, hatCount = 0;
+   436→   436→    const kickTransientIndices: number[] = [];
+   437→   437→    for (const idx of transientIndices) {
+   438→   438→      // Check low-band energy at this time
+   439→   439→      const frameStart = Math.max(0, idx - 1024);
+   440→   440→      const frameEnd = Math.min(length, idx + 1024);
+   441→   441→      let lowSum = 0, highSum = 0, count = 0;
+   442→   442→      for (let i = frameStart; i < frameEnd; i++) {
+   443→   443→        // Simple bandpass via FFT would be better, but use sample magnitude as proxy
+   444→   444→        lowSum += Math.abs(mono[i]);
+   445→   445→        highSum += Math.abs(mono[i] - (mono[i - 1] || 0)); // high-freq = differentiation
+   446→   446→        count++;
+   447→   447→      }
+   448→   448→      if (lowSum / count > 0.1) {
+   449→   449→        kickCount++;
+   450→   450→        kickTransientIndices.push(idx);
+   451→   451→      }
+   452→   452→      if (highSum / count > 0.05) hatCount++;
+   453→   453→    }
+   454→   454→    const kickDensity = kickCount / duration;
+   455→   455→    const hatDensity = hatCount / duration;
+   456→   456→    const percussionDensity = transientCount / duration;
+   457→   457→
+   458→   458→    // ── BPM estimation (autocorrelation of low-band energy envelope) ──
+   459→   459→    const bpm = this.estimateBPM(mono, sr);
+   460→   460→
+   461→   461→    // ── Kick/bass decay ──
+   462→   462→    const kickDecaySec = this.estimateDecay(mono, sr);
+   463→   463→    const kickDecayMs = kickDecaySec * 1000;
+   464→   464→    const bassDecayMs = kickDecayMs; // simplified
+   465→   465→
+   466→   466→    // ── Stereo width (from L/R correlation) ──
+   467→   467→    let lrCorr = 0;
+   468→   468→    let lEnergy = 0, rEnergy = 0;
+   469→   469→    for (let i = 0; i < length; i += 10) { // sample every 10th
+   470→   470→      lrCorr += leftData[i] * rightData[i];
+   471→   471→      lEnergy += leftData[i] * leftData[i];
+   472→   472→      rEnergy += rightData[i] * rightData[i];
+   473→   473→    }
+   474→   474→    const denom = Math.sqrt(lEnergy * rEnergy) + 1e-12;
+   475→   475→    const correlation = lrCorr / denom;
+   476→   476→    // Stereo width = 1 - correlation (0 = mono, 1 = wide)
+   477→   477→    const stereoWidth = Math.max(0, Math.min(1, 1 - Math.abs(correlation)));
+   478→   478→
+   479→   479→    // ── Task T1: extended stereo-field analysis ──
+   480→   480→    // balance: -1 (full L) .. +1 (full R). correlation: signed value (the
+   481→   481→    // magnitude was used for stereoWidth above; the sign tells us phase).
+   482→   482→    // msRatio: side energy / (mid + side) energy → 0 = mono, 1 = full side.
+   483→   483→    const stereoBalance = (lEnergy + rEnergy) > 0
+   484→   484→      ? clampT1((rEnergy - lEnergy) / (lEnergy + rEnergy + 1e-12), -1, 1)
+   485→   485→      : 0;
+   486→   486→    const stereoCorrelation = isFinite(correlation) ? clampT1(correlation, -1, 1) : 0;
+   487→   487→    let midEnergySum = 0, sideEnergySum = 0;
+   488→   488→    const stereoStride = Math.max(1, Math.floor(length / 50000));
+   489→   489→    for (let i = 0; i < length; i += stereoStride) {
+   490→   490→      const l = leftData[i];
+   491→   491→      const r = rightData[i];
+   492→   492→      const mid = (l + r) * 0.5;
+   493→   493→      const side = (l - r) * 0.5;
+   494→   494→      midEnergySum += mid * mid;
+   495→   495→      sideEnergySum += side * side;
+   496→   496→    }
+   497→   497→    const msRatio = (midEnergySum + sideEnergySum) > 0
+   498→   498→      ? clampT1(sideEnergySum / (midEnergySum + sideEnergySum + 1e-12), 0, 1)
+   499→   499→      : 0;
+   500→   500→
+   501→   501→    // ── Task T1: spectral crest (peak-to-mean magnitude ratio) ──
+   502→   502→    let magMax = 0;
+   503→   503→    let magSum = 0;
+   504→   504→    for (let i = 1; i < avgMag.length; i++) {
+   505→   505→      if (avgMag[i] > magMax) magMax = avgMag[i];
+   506→   506→      magSum += avgMag[i];
+   507→   507→    }
+   508→   508→    const magMean = magSum / Math.max(1, avgMag.length - 1);
+   509→   509→    const spectralCrest = magMean > 0 ? magMax / magMean : 0;
+   510→   510→
+   511→   511→    // ── Task T1: spectral slope (dB/octave) via linear regression ──
+   512→   512→    // Fit ln(magnitude) = a + b * ln(freq). Convert slope b to dB/octave:
+   513→   513→    //   slope_dB_per_oct = b * ln(2) / ln(10^(1/10))  ... but since we want
+   514→   514→    //   dB per octave of frequency, and dB = 20*log10(mag), the simpler form
+   515→   515→    //   is: slope_dB_per_oct = b * ln(2) * 20 / ln(10) ≈ b * 6.0206.
+   516→   516→    // Typical: -6 (bright), -12 (balanced), -18 (dark), -24 (very dark).
+   517→   517→    let slopeN = 0, slopeSumX = 0, slopeSumY = 0, slopeSumXY = 0, slopeSumXX = 0;
+   518→   518→    const minSlopeBin = Math.max(2, Math.floor(80 / binHz));
+   519→   519→    for (let i = minSlopeBin; i < avgMag.length; i++) {
+   520→   520→      if (avgMag[i] <= 1e-12) continue;
+   521→   521→      const logF = Math.log(i * binHz);
+   522→   522→      const logM = Math.log(avgMag[i]);
+   523→   523→      slopeN++;
+   524→   524→      slopeSumX += logF;
+   525→   525→      slopeSumY += logM;
+   526→   526→      slopeSumXY += logF * logM;
+   527→   527→      slopeSumXX += logF * logF;
+   528→   528→    }
+   529→   529→    let spectralSlopeDb = 0;
+   530→   530→    if (slopeN > 2) {
+   531→   531→      const slopeDenom = slopeN * slopeSumXX - slopeSumX * slopeSumX;
+   532→   532→      if (Math.abs(slopeDenom) > 1e-9) {
+   533→   533→        const b = (slopeN * slopeSumXY - slopeSumX * slopeSumY) / slopeDenom;
+   534→   534→        spectralSlopeDb = b * Math.log(2) * 20 / Math.log(10);
+   535→   535→      }
+   536→   536→    }
+   537→   537→    // Clamp into a sane audio range so the pursuit doesn't react to noise.
+   538→   538→    spectralSlopeDb = clampT1(spectralSlopeDb, -36, 6);
+   539→   539→
+   540→   540→    // ── Task T1: fundamental-frequency estimate via HPS (harmonic product spectrum) ──
+   541→   541→    // Used for HNR + inharmonicity. Multiply downsampled spectra — the bin
+   542→   542→    // whose product is largest is most likely f0. Limited to 80-2000 Hz to
+   543→   543→    // avoid sub-harmonic and ultrasonic false positives.
+   544→   544→    const hpsDepth = 4;
+   545→   545→    const hpsMinBin = Math.max(2, Math.floor(80 / binHz));
+   546→   546→    const hpsMaxBin = Math.min(
+   547→   547→      Math.floor(avgMag.length / hpsDepth) - 1,
+   548→   548→      Math.floor(2000 / binHz),
+   549→   549→    );
+   550→   550→    let hpsBestBin = 0;
+   551→   551→    let hpsBestVal = 0;
+   552→   552→    for (let i = hpsMinBin; i <= hpsMaxBin; i++) {
+   553→   553→      let prod = avgMag[i];
+   554→   554→      for (let h = 2; h <= hpsDepth; h++) {
+   555→   555→        prod *= (avgMag[i * h] || 1e-15);
+   556→   556→      }
+   557→   557→      if (prod > hpsBestVal) {
+   558→   558→        hpsBestVal = prod;
+   559→   559→        hpsBestBin = i;
+   560→   560→      }
+   561→   561→    }
+   562→   562→    const f0Hz = hpsBestBin > 0 ? hpsBestBin * binHz : 0;
+   563→   563→
+   564→   564→    // ── Task T1: harmonic-to-noise ratio (HNR) ──
+   565→   565→    // Sum energy in ±2-bin windows around the first 10 harmonic bins; compare
+   566→   566→    // to total spectral energy above a small threshold. HNR = E_harmonic / E_total.
+   567→   567→    let harmonicEnergy = 0;
+   568→   568→    let totalSpectralEnergy = 0;
+   569→   569→    if (f0Hz > 60 && f0Hz < 2000) {
+   570→   570→      for (let h = 1; h <= 10; h++) {
+   571→   571→        const targetBin = Math.round((h * f0Hz) / binHz);
+   572→   572→        if (targetBin >= avgMag.length) break;
+   573→   573→        const lo = Math.max(1, targetBin - 2);
+   574→   574→        const hi = Math.min(avgMag.length - 1, targetBin + 2);
+   575→   575→        for (let b = lo; b <= hi; b++) harmonicEnergy += avgMag[b];
+   576→   576→      }
+   577→   577→    }
+   578→   578→    for (let i = 1; i < avgMag.length; i++) {
+   579→   579→      if (avgMag[i] > 1e-12) totalSpectralEnergy += avgMag[i];
+   580→   580→    }
+   581→   581→    const hnr = (totalSpectralEnergy > 0 && harmonicEnergy > 0)
+   582→   582→      ? clampT1(harmonicEnergy / totalSpectralEnergy, 0, 1)
+   583→   583→      : 0;
+   584→   584→
+   585→   585→    // ── Task T1: inharmonicity (0..1) ──
+   586→   586→    // Find spectral peaks (local maxima ≥ 3× mean). For each peak above f0,
+   587→   587→    // compute the relative frequency deviation from the nearest integer
+   588→   588→    // harmonic. Average deviation × 5 (so 20% mean deviation maps to 1.0).
+   589→   589→    const peakThreshold = magMean * 3;
+   590→   590→    const peaks: { freq: number }[] = [];
+   591→   591→    for (let i = 2; i < avgMag.length - 2; i++) {
+   592→   592→      if (avgMag[i] > peakThreshold &&
+   593→   593→          avgMag[i] > avgMag[i - 1] &&
+   594→   594→          avgMag[i] > avgMag[i + 1] &&
+   595→   595→          avgMag[i] >= avgMag[i - 2] &&
+   596→   596→          avgMag[i] >= avgMag[i + 2]) {
+   597→   597→        peaks.push({ freq: i * binHz });
+   598→   598→      }
+   599→   599→    }
+   600→   600→    let inharmonicity = 0;
+   601→   601→    if (f0Hz > 60 && peaks.length > 2) {
+   602→   602→      let totalDev = 0;
+   603→   603→      let countedPeaks = 0;
+   604→   604→      for (const p of peaks) {
+   605→   605→        if (p.freq < f0Hz * 0.9) continue;
+   606→   606→        const harmonicNum = Math.round(p.freq / f0Hz);
+   607→   607→        if (harmonicNum < 1) continue;
+   608→   608→        const expectedFreq = harmonicNum * f0Hz;
+   609→   609→        const dev = Math.abs(p.freq - expectedFreq) / expectedFreq;
+   610→   610→        totalDev += dev;
+   611→   611→        countedPeaks++;
+   612→   612→      }
+   613→   613→      if (countedPeaks > 0) {
+   614→   614→        inharmonicity = clampT1((totalDev / countedPeaks) * 5, 0, 1);
+   615→   615→      }
+   616→   616→    }
+   617→   617→
+   618→   618→    // ── Task T1: transient sharpness + decay ──
+   619→   619→    // For each detected transient, measure attack rise time (10% → 90% of
+   620→   620→    // peak) and decay time (peak → 10% of peak). Sharpness = 1 - rise/30ms.
+   621→   621→    // Decay is averaged in ms. Caps on the analysis window keep this O(N).
+   622→   622→    let sumSharpness = 0;
+   623→   623→    let sumDecayMs = 0;
+   624→   624→    let validTransients = 0;
+   625→   625→    const attackWindow = Math.floor(sr * 0.030);   // 30 ms look-back
+   626→   626→    const decayWindow = Math.floor(sr * 0.300);    // 300 ms look-ahead
+   627→   627→    const minPeak = 0.05;
+   628→   628→    for (const idx of transientIndices) {
+   629→   629→      const peakVal = Math.abs(mono[idx]);
+   630→   630→      if (peakVal < minPeak) continue;
+   631→   631→      // Attack phase
+   632→   632→      const startIdx = Math.max(1, idx - attackWindow);
+   633→   633→      let tenIdx = -1, ninetyIdx = -1;
+   634→   634→      for (let i = startIdx; i <= idx; i++) {
+   635→   635→        const a = Math.abs(mono[i]);
+   636→   636→        if (tenIdx < 0 && a >= peakVal * 0.1) tenIdx = i;
+   637→   637→        if (ninetyIdx < 0 && a >= peakVal * 0.9) ninetyIdx = i;
+   638→   638→        if (tenIdx >= 0 && ninetyIdx >= 0) break;
+   639→   639→      }
+   640→   640→      if (tenIdx >= 0 && ninetyIdx > tenIdx) {
+   641→   641→        const riseMs = ((ninetyIdx - tenIdx) / sr) * 1000;
+   642→   642→        sumSharpness += clampT1(1 - riseMs / 30, 0, 1);
+   643→   643→      } else {
+   644→   644→        sumSharpness += 0.5; // unknown attack — assume neutral
+   645→   645→      }
+   646→   646→      // Decay phase
+   647→   647→      const endIdx = Math.min(length - 1, idx + decayWindow);
+   648→   648→      let decaySamples = decayWindow;
+   649→   649→      for (let i = idx + 1; i <= endIdx; i++) {
+   650→   650→        if (Math.abs(mono[i]) <= peakVal * 0.1) {
+   651→   651→          decaySamples = i - idx;
+   652→   652→          break;
+   653→   653→        }
+   654→   654→      }
+   655→   655→      sumDecayMs += (decaySamples / sr) * 1000;
+   656→   656→      validTransients++;
+   657→   657→    }
+   658→   658→    const transientSharpness = validTransients > 0
+   659→   659→      ? clampT1(sumSharpness / validTransients, 0, 1)
+   660→   660→      : 0;
+   661→   661→    const transientDecayMs = validTransients > 0
+   662→   662→      ? clampT1(sumDecayMs / validTransients, 0, 1000)
+   663→   663→      : 0;
+   664→   664→
+   665→   665→    // ── Rhythmic regularity ──
+   666→   666→    const rhythmicRegularity = this.computeRegularity(transientIndices);
+   667→   667→
+   668→   668→    // ── Repetition score (spectral consistency) ──
+   669→   669→    // Simplified: use flatness as inverse of repetition
+   670→   670→    const repetitionScore = Math.max(0, Math.min(1, 1 - spectralFlatness));
+   671→   671→
+   672→   672→    // ── Energy ──
+   673→   673→    const energy = Math.min(1, rms * 3);
+   674→   674→
+   675→   675→    // ── Confidence ──
+   676→   676→    const overallConfidence = Math.min(1,
+   677→   677→      (rms > 0.01 ? 0.3 : 0) +
+   678→   678→      (transientCount > 5 ? 0.3 : 0) +
+   679→   679→      (bpm > 0 ? 0.2 : 0) +
+   680→   680→      (duration > 5 ? 0.2 : 0)
+   681→   681→    );
+   682→   682→
+   683→   683→    // ── Musical understanding (key, bass note, style detection) ──
+   684→   684→    let detectedKey: { root: number; rootName: string; scale: string; confidence: number } | undefined;
+   685→   685→    let detectedBassNote: { note: number; freq: number; confidence: number } | undefined;
+   686→   686→    let detectedStyle: { style: string; confidence: number } | undefined;
+   687→   687→
+   688→   688→    try {
+   689→   689→      // Dynamic import for musical understanding (optional, won't block)
+   690→   690→      const mu = await import('./musicalUnderstanding');
+   691→   691→      const chromagram = mu.computeChromagram(avgMag, sr, fftSize);
+   692→   692→      const key = mu.detectKey(chromagram);
+   693→   693→      detectedKey = {
+   694→   694→        root: key.root,
+   695→   695→        rootName: key.rootName,
+   696→   696→        scale: key.scale,
+   697→   697→        confidence: key.confidence,
+   698→   698→      };
+   699→   699→
+   700→   700→      const bass = mu.detectBassNote(avgMag, sr, fftSize);
+   701→   701→      if (bass) {
+   702→   702→        detectedBassNote = bass;
+   703→   703→      }
+   704→   704→
+   705→   705→      const style = mu.classifyStyle(bpm, spectralCentroid, subEnergy, highEnergy);
+   706→   706→      detectedStyle = style;
+   707→   707→    } catch (e) {
+   708→   708→      // Musical understanding is optional
+   709→   709→    }
+   710→   710→
+   711→   711→    // ── Task D1: DJ-style phase detection ──
+   712→   712→    // Extract beat + downbeat phase from the kick-band transient grid.
+   713→   713→    // The phase is computed relative to the LAST detected kick in the buffer
+   714→   714→    // (which is the most recent — closest to "now" in wall-clock time). The
+   715→   715→    // wall-clock lastBeatTime is performance.now()/1000 minus the latency
+   716→   716→    // between the buffer's end and the moment we're reporting (i.e., the
+   717→   717→    // buffer's trailing samples represent audio that arrived ~duration
+   718→   718→    // seconds ago — we approximate by assuming the buffer's end aligns with
+   719→   719→    // the moment the metrics are reported, plus a small fetch/decode
+   720→   720→    // latency we don't precisely know).
+   721→   721→    const phaseInfo = this.computePhaseInfo(
+   722→   722→      kickTransientIndices, bpm, sr, duration, rhythmicRegularity,
+   723→   723→    );
+   724→   724→
+   725→   725→    // ── Task D1 (upgrade): groove / feel analysis ──
+   726→   726→    // Extract swing + push/pull from the same kick transient grid. The
+   727→   727→    // DJController consumes this to match the radio's groove — the subtle
+   728→   728→    // timing feel that makes music "swing" or "push/pull" (the pocket).
+   729→   729→    const grooveInfo = this.computeGrooveInfo(
+   730→   730→      kickTransientIndices, bpm, sr, duration,
+   731→   731→    );
+   732→   732→
+   733→   733→    return {
+   734→   734→      bpm,
+   735→   735→      bpmConfidence: bpm > 0 ? 0.8 : 0,
+   736→   736→      rms, peak, lufs, crestFactor,
+   737→   737→      subEnergy, lowEnergy, midEnergy, highEnergy, airEnergy,
+   738→   738→      spectralCentroid, spectralFlatness, spectralRolloff,
+   739→   739→      transientDensity, kickDensity, hatDensity, percussionDensity,
+   740→   740→      stereoWidth, kickDecayMs, bassDecayMs,
+   741→   741→      rhythmicRegularity, repetitionScore,
+   742→   742→      energy, overallConfidence,
+   743→   743→      detectedKey,
+   744→   744→      detectedBassNote,
+   745→   745→      detectedStyle,
+   746→   746→      // ── Task T1: extended harmonic / transient-shape / stereo fields ──
+   747→   747→      spectralCrest,
+   748→   748→      hnr,
+   749→   749→      inharmonicity,
+   750→   750→      spectralSlopeDb,
+   751→   751→      transientSharpness,
+   752→   752→      transientDecayMs,
+   753→   753→      stereoBalance,
+   754→   754→      stereoCorrelation,
+   755→   755→      msRatio,
+   756→   756→      // ── Task D1: DJ-style phase sync info ──
+   757→   757→      phaseInfo,
+   758→   758→      // ── Task D1 (upgrade): groove / feel info ──
+   759→   759→      grooveInfo,
+   760→   760→      timestamp: Date.now(),
+   761→   761→      sourceStream: this.stream?.id || 'unknown',
+   762→   762→    };
+   763→   763→  }
+   764→   764→
+   765→   765→  // ─── Task D1: Phase detection ────────────────────────────────────────────
+   766→   766→  //
+   767→   767→  // Build a beat grid from the kick-band transients and extract:
+   768→   768→  //   - phase:        position within the current beat (0..1)
+   769→   769→  //   - downbeatPhase: position within the bar (0..1; 0 = downbeat)
+   770→   770→  //   - lastBeatTime: wall-clock seconds of the last beat (so the engine can
+   771→   771→  //                   extrapolate forward)
+   772→   772→  //   - confidence:   how regular the beat grid is (low IOI variance = high)
+   773→   773→  //
+   774→   774→  // Algorithm:
+   775→   775→  //   1. The first kick transient is assumed to be a downbeat (phase 0).
+   776→   776→  //      This is an approximation — we can't reliably detect which beat in
+   777→   777→  //      the bar is the downbeat from audio alone without a trained model.
+   778→   778→  //      For DJ sync purposes, this is fine: as long as both we and the
+   779→   779→  //      radio agree on which beat is "beat 1", the grids align. The first
+   780→   780→  //      detected beat in the buffer is a reasonable shared reference.
+   781→   781→  //   2. The beat period is 60/bpm seconds (or the median kick IOI, which
+   782→   782→  //      is usually very close — we use whichever has more support).
+   783→   783→  //   3. The LATEST kick in the buffer gives us lastBeatTime (wall-clock).
+   784→   784→  //      The wall-clock is approximated as performance.now()/1000 minus
+   785→   785→  //      the buffer's trailing-latency (duration - lastBeatBufferTime).
+   786→   786→  //      This assumes the buffer's end corresponds to "now" in wall-clock
+   787→   787→  //      — true up to the fetch/decode latency (~0.5-1s), which is below
+   788→   788→  //      the DJ sync tolerance.
+   789→   789→  //   4. Confidence = rhythmicRegularity × min(1, kickCount/8). A perfectly
+   790→   790→  //      regular grid with 8+ kicks = 1.0; an irregular grid with few
+   791→   791→  //      kicks = low confidence (the engine's PhaseSync will weight the
+   792→   792→  //      offset by this confidence, so noisy detections don't fight back).
+   793→   793→  private computePhaseInfo(
+   794→   794→    kickIndices: number[],
+   795→   795→    bpm: number,
+   796→   796→    sr: number,
+   797→   797→    duration: number,
+   798→   798→    rhythmicRegularity: number,
+   799→   799→  ): PhaseInfo | undefined {
+   800→   800→    if (!Array.isArray(kickIndices) || kickIndices.length < 2 || bpm <= 0 || bpm < 30 || bpm > 220) {
+   801→   801→      return undefined;
+   802→   802→    }
+   803→   803→    if (!Number.isFinite(sr) || sr <= 0 || !Number.isFinite(duration) || duration <= 0) {
+   804→   804→      return undefined;
+   805→   805→    }
+   806→   806→
+   807→   807→    // Beat period from BPM (the autocorrelation estimate is more robust
+   808→   808→    // than the median IOI for sparse kick grids, so we prefer it).
+   809→   809→    const beatPeriodSec = 60 / bpm;
+   810→   810→    const beatPeriodSamples = beatPeriodSec * sr;
+   811→   811→
+   812→   812→    // The first kick is our downbeat reference. The last kick is the most
+   813→   813→    // recent beat — its phase within the beat cycle is 0 by definition.
+   814→   814→    const firstKickIdx = kickIndices[0];
+   815→   815→    const lastKickIdx = kickIndices[kickIndices.length - 1];
+   816→   816→    const lastKickBufferTime = lastKickIdx / sr;
+   817→   817→
+   818→   818→    // Median IOI as a sanity check — if it's wildly different from 60/bpm,
+   819→   819→    // the BPM estimate is suspect and we lower the confidence.
+   820→   820→    const iois: number[] = [];
+   821→   821→    for (let i = 1; i < kickIndices.length; i++) {
+   822→   822→      iois.push(kickIndices[i] - kickIndices[i - 1]);
+   823→   823→    }
+   824→   824→    iois.sort((a, b) => a - b);
+   825→   825→    const medianIoiSamples = iois[Math.floor(iois.length / 2)] || beatPeriodSamples;
+   826→   826→    const medianIoiSec = medianIoiSamples / sr;
+   827→   827→    const ioiBpm = medianIoiSec > 0 ? 60 / medianIoiSec : 0;
+   828→   828→    const bpmAgreement = ioiBpm > 0
+   829→   829→      ? 1 - Math.min(1, Math.abs(ioiBpm - bpm) / bpm)
+   830→   830→      : 0;
+   831→   831→
+   832→   832→    // Phase at lastBeatTime = 0 (by definition — lastBeat IS a beat onset).
+   833→   833→    // We report phase = 0 so the engine knows "the last detected beat was
+   834→   834→    // exactly at lastBeatTime".
+   835→   835→    const phase = 0;
+   836→   836→
+   837→   837→    // Downbeat phase: how far through the bar (4 beats) the last beat is.
+   838→   838→    // (lastKick - firstKick) / beatPeriod = number of beats since the
+   839→   839→    // assumed downbeat. mod 4 = beat-in-bar. /4 = downbeatPhase.
+   840→   840→    const beatsSinceFirst = (lastKickIdx - firstKickIdx) / beatPeriodSamples;
+   841→   841→    const beatInBar = ((beatsSinceFirst % 4) + 4) % 4;  // 0..3.999
+   842→   842→    const downbeatPhase = beatInBar / 4;
+   843→   843→
+   844→   844→    // Wall-clock lastBeatTime. The decoded buffer's end corresponds to
+   845→   845→    // roughly "now" (modulo fetch/decode latency ~0.5-1s, which is below
+   846→   846→    // the DJ sync tolerance). So the wall-clock time of the last beat is:
+   847→   847→    //   wallClockNow - (duration - lastBeatBufferTime)
+   848→   848→    const wallClockNow = (typeof performance !== 'undefined' && performance.now)
+   849→   849→      ? performance.now() / 1000
+   850→   850→      : Date.now() / 1000;
+   851→   851→    const trailingLatency = Math.max(0, duration - lastKickBufferTime);
+   852→   852→    const lastBeatTime = wallClockNow - trailingLatency;
+   853→   853→
+   854→   854→    // Confidence: combine rhythmicRegularity (the listener's IOI variance
+   855→   855→    // measure), bpmAgreement (BPM estimate vs median IOI), and a kick-count
+   856→   856→    // support factor (more kicks = more confidence).
+   857→   857→    const kickSupport = Math.min(1, kickIndices.length / 8);
+   858→   858→    const confidence = clampT1(
+   859→   859→      rhythmicRegularity * 0.5 + bpmAgreement * 0.3 + kickSupport * 0.2,
+   860→   860→      0, 1,
+   861→   861→    );
+   862→   862→
+   863→   863→    return {
+   864→   864→      bpm,
+   865→   865→      phase,
+   866→   866→      downbeatPhase,
+   867→   867→      confidence,
+   868→   868→      lastBeatTime,
+   869→   869→    };
+   870→   870→  }
+   871→   871→
+   872→   872→  // ─── Task D1 (upgrade): groove / feel detection ──────────────────────────
+   873→   873→  //
+   874→   874→  // Extract the swing amount + push/pull feel from the kick transient grid.
+   875→   875→  // These describe the "pocket" — the subtle timing feel that makes music
+   876→   876→  // groove (swing = how much odd 16ths are delayed; push/pull = whether the
+   877→   877→  // beat sits ahead or behind the theoretical grid, like a live drummer).
+   878→   878→  //
+   879→   879→  // Algorithm:
+   880→   880→  //   1. Build the theoretical beat grid from BPM: gridTime[i] = i * beatPeriod
+   881→   881→  //      (relative to the first kick, which is our reference origin).
+   882→   882→  //   2. For each kick, find the nearest grid beat and measure the deviation
+   883→   883→  //      (actual - theoretical). The MEAN deviation is the push/pull: + = laid
+   884→   884→  //      back, - = pushed.
+   885→   885→  //   3. For swing, look at the IOIs (inter-onset intervals) between
+   886→   886→  //      consecutive kicks. If they alternate short-long-short-long, the
+   887→   887→  //      odd beats are delayed = swing. Swing ratio = (long - short) /
+   888→   888→  //      (long + short), giving 0 for straight and 0.5 for fully swung
+   889→   889→  //      (triplet feel).
+   890→   890→  //   4. Confidence: based on kick count + IOI regularity (more kicks +
+   891→   891→  //      consistent pattern = higher confidence).
+   892→   892→  private computeGrooveInfo(
+   893→   893→    kickIndices: number[],
+   894→   894→    bpm: number,
+   895→   895→    sr: number,
+   896→   896→    duration: number,
+   897→   897→  ): GrooveInfo | undefined {
+   898→   898→    if (!Array.isArray(kickIndices) || kickIndices.length < 3 || bpm <= 0 ||
+   899→   899→        bpm < 30 || bpm > 220 || !Number.isFinite(sr) || sr <= 0 ||
+   900→   900→        !Number.isFinite(duration) || duration <= 0) {
+   901→   901→      return undefined;
+   902→   902→    }
+   903→   903→
+   904→   904→    const beatPeriodSec = 60 / bpm;
+   905→   905→    const beatPeriodSamples = beatPeriodSec * sr;
+   906→   906→
+   907→   907→    // ── Push/pull: mean deviation of kicks from the theoretical grid ──
+   908→   908→    // The first kick defines grid time 0. Each subsequent kick should land
+   909→   909→    // at an integer multiple of beatPeriod. The deviation (signed residual
+   910→   910→    // after rounding to the nearest beat) is the push/pull feel.
+   911→   911→    const firstKick = kickIndices[0];
+   912→   912→    let devSum = 0;
+   913→   913→    let devCount = 0;
+   914→   914→    for (let i = 0; i < kickIndices.length; i++) {
+   915→   915→      const offsetFromFirst = kickIndices[i] - firstKick;
+   916→   916→      const beatsFromFirst = offsetFromFirst / beatPeriodSamples;
+   917→   917→      const nearestBeat = Math.round(beatsFromFirst);
+   918→   918→      const residualBeats = beatsFromFirst - nearestBeat;
+   919→   919→      // Only count residuals within ±0.4 beat (otherwise it's not a grid
+   920→   920→      // beat — it's an off-grid hit like a ghost note).
+   921→   921→      if (Math.abs(residualBeats) < 0.4) {
+   922→   922→        devSum += residualBeats * beatPeriodSec * 1000;  // → ms
+   923→   923→        devCount++;
+   924→   924→      }
+   925→   925→    }
+   926→   926→    const pushPullMs = devCount > 0 ? devSum / devCount : 0;
+   927→   927→
+   928→   928→    // ── Swing: from alternating IOI short/long pattern ──
+   929→   929→    // Collect IOIs between consecutive kicks. If they alternate (short,
+   930→   930→    // long, short, long), the swing ratio = (long - short) / (long + short).
+   931→   931→    // We separate even-indexed and odd-indexed IOIs and compare their means.
+   932→   932→    const iois: number[] = [];
+   933→   933→    for (let i = 1; i < kickIndices.length; i++) {
+   934→   934→      const dt = kickIndices[i] - kickIndices[i - 1];
+   935→   935→      // Only count IOIs that are between 1/4 and 2 beats — longer = phrase
+   936→   936→      // gap, shorter = flam/double-hit.
+   937→   937→      const beats = dt / beatPeriodSamples;
+   938→   938→      if (beats >= 0.2 && beats <= 2.5) {
+   939→   939→        iois.push(dt / sr * 1000);  // → ms
+   940→   940→      }
+   941→   941→    }
+   942→   942→    let swing = 0;
+   943→   943→    if (iois.length >= 4) {
+   944→   944→      // Separate into "short" and "long" buckets using the median as the
+   945→   945→      // threshold. This is more robust than even/odd indexing (which assumes
+   946→   946→      // every other IOI is short — not always true with dropped beats).
+   947→   947→      const sorted = [...iois].sort((a, b) => a - b);
+   948→   948→      const median = sorted[Math.floor(sorted.length / 2)];
+   949→   949→      let shortSum = 0, shortCount = 0;
+   950→   950→      let longSum = 0, longCount = 0;
+   951→   951→      for (const ioi of iois) {
+   952→   952→        if (ioi < median) {
+   953→   953→          shortSum += ioi;
+   954→   954→          shortCount++;
+   955→   955→        } else {
+   956→   956→          longSum += ioi;
+   957→   957→          longCount++;
+   958→   958→        }
+   959→   959→      }
+   960→   960→      if (shortCount > 0 && longCount > 0) {
+   961→   961→        const shortMean = shortSum / shortCount;
+   962→   962→        const longMean = longSum / longCount;
+   963→   963→        const ratio = (longMean - shortMean) / (longMean + shortMean);
+   964→   964→        // Clamp to 0..0.5 (negative ratio = no swing, > 0.5 = extreme).
+   965→   965→        swing = clampT1(ratio, 0, 0.5);
+   966→   966→      }
+   967→   967→    }
+   968→   968→
+   969→   969→    // ── Confidence ──
+   970→   970→    // More kicks + more IOIs = higher confidence. Also penalize if the
+   971→   971→    // push/pull is huge (> 50ms = the grid is suspect).
+   972→   972→    const kickSupport = Math.min(1, kickIndices.length / 8);
+   973→   973→    const ioiSupport = Math.min(1, iois.length / 6);
+   974→   974→    const pushPullSanity = 1 - Math.min(1, Math.abs(pushPullMs) / 80);
+   975→   975→    const confidence = clampT1(
+   976→   976→      kickSupport * 0.4 + ioiSupport * 0.4 + pushPullSanity * 0.2,
+   977→   977→      0, 1,
+   978→   978→    );
+   979→   979→
+   980→   980→    return { swing, pushPullMs, confidence };
+   981→   981→  }
+   982→   982→
+   983→   983→  // ─── DSP helpers ──────────────────────────────────────────────────────────
+   984→   984→
+   985→   985→  private hannWindow(n: number): Float32Array {
+   986→   986→    const w = new Float32Array(n);
+   987→   987→    for (let i = 0; i < n; i++) {
+   988→   988→      w[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (n - 1)));
+   989→   989→    }
+   990→   990→    return w;
+   991→   991→  }
+   992→   992→
+   993→   993→  private powerSpectrum(frame: Float32Array): Float32Array {
+   994→   994→    const n = frame.length;
+   995→   995→    const real = new Float32Array(n);
+   996→   996→    const imag = new Float32Array(n);
+   997→   997→    real.set(frame);
+   998→   998→    this.fft(real, imag);
+   999→   999→    const half = n / 2;
+  1000→  1000→    const mag = new Float32Array(half + 1);
+  1001→  1001→    for (let i = 0; i <= half; i++) {
+  1002→  1002→      mag[i] = (real[i] * real[i] + imag[i] * imag[i]) / n;
+  1003→  1003→    }
+  1004→  1004→    return mag;
+  1005→  1005→  }
+  1006→  1006→
+  1007→  1007→  private fft(real: Float32Array, imag: Float32Array): void {
+  1008→  1008→    const n = real.length;
+  1009→  1009→    if (n <= 1) return;
+  1010→  1010→    let j = 0;
+  1011→  1011→    for (let i = 1; i < n; i++) {
+  1012→  1012→      let bit = n >> 1;
+  1013→  1013→      for (; j & bit; bit >>= 1) j ^= bit;
+  1014→  1014→      j ^= bit;
+  1015→  1015→      if (i < j) {
+  1016→  1016→        [real[i], real[j]] = [real[j], real[i]];
+  1017→  1017→        [imag[i], imag[j]] = [imag[j], imag[i]];
+  1018→  1018→      }
+  1019→  1019→    }
+  1020→  1020→    for (let len = 2; len <= n; len <<= 1) {
+  1021→  1021→      const angle = -2 * Math.PI / len;
+  1022→  1022→      const wReal = Math.cos(angle);
+  1023→  1023→      const wImag = Math.sin(angle);
+  1024→  1024→      for (let i = 0; i < n; i += len) {
+  1025→  1025→        let curReal = 1, curImag = 0;
+  1026→  1026→        for (let k = 0; k < len / 2; k++) {
+  1027→  1027→          const idx1 = i + k;
+  1028→  1028→          const idx2 = i + k + len / 2;
+  1029→  1029→          const tReal = curReal * real[idx2] - curImag * imag[idx2];
+  1030→  1030→          const tImag = curReal * imag[idx2] + curImag * real[idx2];
+  1031→  1031→          real[idx2] = real[idx1] - tReal;
+  1032→  1032→          imag[idx2] = imag[idx1] - tImag;
+  1033→  1033→          real[idx1] += tReal;
+  1034→  1034→          imag[idx1] += tImag;
+  1035→  1035→          const nextReal = curReal * wReal - curImag * wImag;
+  1036→  1036→          curImag = curReal * wImag + curImag * wReal;
+  1037→  1037→          curReal = nextReal;
+  1038→  1038→        }
+  1039→  1039→      }
+  1040→  1040→    }
+  1041→  1041→  }
+  1042→  1042→
+  1043→  1043→  private estimateBPM(samples: Float32Array, sr: number): number {
+  1044→  1044→    // FIXED: proper one-pole lowpass to isolate kick band, then energy envelope + autocorrelation.
+  1045→  1045→    // Previous version had a NaN bug (runningSum could go negative → sqrt(negative) = NaN).
+  1046→  1046→    const cutoff = 150; // Hz — isolate kick/bass band
+  1047→  1047→    const a = 1 - Math.exp(-2 * Math.PI * cutoff / sr);
+  1048→  1048→    const lowpassed = new Float32Array(samples.length);
+  1049→  1049→    let lpState = 0;
+  1050→  1050→    for (let i = 0; i < samples.length; i++) {
+  1051→  1051→      lpState += a * (samples[i] - lpState);
+  1052→  1052→      lowpassed[i] = lpState;
+  1053→  1053→    }
+  1054→  1054→
+  1055→  1055→    // Energy envelope: RMS in 50ms windows, 10ms hop
+  1056→  1056→    const hopSize = Math.floor(sr * 0.01);
+  1057→  1057→    const frameSize = Math.floor(sr * 0.05);
+  1058→  1058→    const energies: number[] = [];
+  1059→  1059→    for (let i = 0; i + frameSize < lowpassed.length; i += hopSize) {
+  1060→  1060→      let sumSq = 0;
+  1061→  1061→      for (let j = 0; j < frameSize; j++) {
+  1062→  1062→        sumSq += lowpassed[i + j] * lowpassed[i + j];
+  1063→  1063→      }
+  1064→  1064→      energies.push(Math.sqrt(sumSq / frameSize));
+  1065→  1065→    }
+  1066→  1066→
+  1067→  1067→    if (energies.length < 20) return 0;
+  1068→  1068→
+  1069→  1069→    // Normalize (remove DC)
+  1070→  1070→    const mean = energies.reduce((x, y) => x + y, 0) / energies.length;
+  1071→  1071→    if (mean < 0.0001 || !isFinite(mean)) return 0;
+  1072→  1072→    const normalized = energies.map(e => e - mean);
+  1073→  1073→
+  1074→  1074→    // Autocorrelation — search for tempo
+  1075→  1075→    const hopSec = 0.01;
+  1076→  1076→    const minLag = Math.floor(0.3 / hopSec);  // 200 BPM
+  1077→  1077→    const maxLag = Math.floor(1.0 / hopSec);  // 60 BPM
+  1078→  1078→    const maxLagClamped = Math.min(maxLag, Math.floor(energies.length / 2));
+  1079→  1079→
+  1080→  1080→    let bestLag = 0, bestCorr = -Infinity;
+  1081→  1081→    for (let lag = minLag; lag <= maxLagClamped; lag++) {
+  1082→  1082→      let corr = 0, count = 0;
+  1083→  1083→      for (let i = 0; i < energies.length - lag; i++) {
+  1084→  1084→        corr += normalized[i] * normalized[i + lag];
+  1085→  1085→        count++;
+  1086→  1086→      }
+  1087→  1087→      corr = count > 0 ? corr / count : 0;
+  1088→  1088→      if (!isFinite(corr)) continue;
+  1089→  1089→      if (corr > bestCorr) {
+  1090→  1090→        bestCorr = corr;
+  1091→  1091→        bestLag = lag;
+  1092→  1092→      }
+  1093→  1093→    }
+  1094→  1094→
+  1095→  1095→    if (bestLag === 0 || bestCorr < 0.001 || !isFinite(bestCorr)) return 0;
+  1096→  1096→
+  1097→  1097→    const periodSec = bestLag * hopSec;
+  1098→  1098→    let bpm = 60 / periodSec;
+  1099→  1099→    if (bpm < 60 || bpm > 200) return 0;
+  1100→  1100→    // Fold into 120-160 range (psytrance)
+  1101→  1101→    while (bpm < 120) bpm *= 2;
+  1102→  1102→    while (bpm > 170) bpm /= 2;
+  1103→  1103→    return Math.round(bpm);
+  1104→  1104→  }
+  1105→  1105→
+  1106→  1106→  private estimateDecay(samples: Float32Array, sr: number): number {
+  1107→  1107→    // FIXED: use RMS window tracking instead of raw sample abs().
+  1108→  1108→    // Previous version returned ~5ms because it triggered on the first zero-crossing
+  1109→  1109→    // of the sine wave (abs crosses 0 every cycle).
+  1110→  1110→    // Find the loudest peak, then track RMS in short windows until it drops to 10%.
+  1111→  1111→    let peakIdx = -1;
+  1112→  1112→    let peakVal = 0;
+  1113→  1113→    const searchEnd = Math.min(samples.length, sr * 10);
+  1114→  1114→    for (let i = Math.floor(sr * 0.1); i < searchEnd - 1; i++) {
+  1115→  1115→      const abs = Math.abs(samples[i]);
+  1116→  1116→      if (abs > peakVal) {
+  1117→  1117→        peakVal = abs;
+  1118→  1118→        peakIdx = i;
+  1119→  1119→      }
+  1120→  1120→    }
+  1121→  1121→    if (peakIdx < 0 || peakVal < 0.05) return 0.1;
+  1122→  1122→
+  1123→  1123→    // Track RMS in 5ms windows after the peak
+  1124→  1124→    const windowSize = Math.floor(sr * 0.005);
+  1125→  1125→    const targetRms = peakVal * 0.1;
+  1126→  1126→    for (let w = 0; w + windowSize < samples.length - peakIdx; w += windowSize) {
+  1127→  1127→      let sumSq = 0;
+  1128→  1128→      for (let j = 0; j < windowSize; j++) {
+  1129→  1129→        const s = samples[peakIdx + w + j];
+  1130→  1130→        sumSq += s * s;
+  1131→  1131→      }
+  1132→  1132→      const rms = Math.sqrt(sumSq / windowSize);
+  1133→  1133→      // Skip the first 3ms (attack phase)
+  1134→  1134→      if (w > sr * 0.003 && rms <= targetRms) {
+  1135→  1135→        return Math.max(0.01, (w + windowSize) / sr);
+  1136→  1136→      }
+  1137→  1137→    }
+  1138→  1138→    return 0.2;
+  1139→  1139→  }
+  1140→  1140→
+  1141→  1141→  private computeRegularity(transientIndices: number[]): number {
+  1142→  1142→    if (transientIndices.length < 3) return 0;
+  1143→  1143→    const intervals: number[] = [];
+  1144→  1144→    for (let i = 1; i < transientIndices.length; i++) {
+  1145→  1145→      intervals.push(transientIndices[i] - transientIndices[i - 1]);
+  1146→  1146→    }
+  1147→  1147→    const meanInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+  1148→  1148→    const variance = intervals.reduce((a, b) => a + (b - meanInterval) ** 2, 0) / intervals.length;
+  1149→  1149→    const stdDev = Math.sqrt(variance);
+  1150→  1150→    const cv = meanInterval > 0 ? stdDev / meanInterval : 1;
+  1151→  1151→    return Math.max(0, Math.min(1, 1 - cv));
+  1152→  1152→  }
+  1153→  1153→
+  1154→  1154→  private updateProfile(): void {
+  1155→  1155→    if (this.metricsHistory.length === 0) return;
+  1156→  1156→    const windows = this.metricsHistory;
+  1157→  1157→
+  1158→  1158→    const stats = (vals: number[]) => {
+  1159→  1159→      if (vals.length === 0) return { mean: 0, p10: 0, p90: 0 };
+  1160→  1160→      const sorted = [...vals].sort((a, b) => a - b);
+  1161→  1161→      const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+  1162→  1162→      return {
+  1163→  1163→        mean,
+  1164→  1164→        p10: sorted[Math.floor(sorted.length * 0.1)] || sorted[0],
+  1165→  1165→        p90: sorted[Math.floor(sorted.length * 0.9)] || sorted[sorted.length - 1],
+  1166→  1166→      };
+  1167→  1167→    };
+  1168→  1168→
+  1169→  1169→    // ── Task T1: only include a stat block when every window in the history
+  1170→  1170→    //    actually produced the value. This keeps the profile object clean —
+  1171→  1171→    //    older windows (or V1 listener frames) that don't have the new fields
+  1172→  1172→    //    won't pollute the means with undefined → NaN.
+  1173→  1173→    const optionalStats = (key: keyof ReferenceMetrics) => {
+  1174→  1174→      const vals = windows
+  1175→  1175→        .map(w => (w as unknown as Record<string, unknown>)[key as string])
+  1176→  1176→        .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+  1177→  1177→      return vals.length > 0 ? stats(vals) : undefined;
+  1178→  1178→    };
+  1179→  1179→
+  1180→  1180→    this.profile = {
+  1181→  1181→      bpm: { ...stats(windows.map(w => w.bpm)), count: windows.length },
+  1182→  1182→      rms: stats(windows.map(w => w.rms)),
+  1183→  1183→      lufs: stats(windows.map(w => w.lufs)),
+  1184→  1184→      subEnergy: stats(windows.map(w => w.subEnergy)),
+  1185→  1185→      lowEnergy: stats(windows.map(w => w.lowEnergy)),
+  1186→  1186→      midEnergy: stats(windows.map(w => w.midEnergy)),
+  1187→  1187→      highEnergy: stats(windows.map(w => w.highEnergy)),
+  1188→  1188→      airEnergy: stats(windows.map(w => w.airEnergy)),
+  1189→  1189→      spectralCentroid: stats(windows.map(w => w.spectralCentroid)),
+  1190→  1190→      transientDensity: stats(windows.map(w => w.transientDensity)),
+  1191→  1191→      kickDecayMs: stats(windows.map(w => w.kickDecayMs)),
+  1192→  1192→      bassDecayMs: stats(windows.map(w => w.bassDecayMs)),
+  1193→  1193→      stereoWidth: stats(windows.map(w => w.stereoWidth)),
+  1194→  1194→      energy: stats(windows.map(w => w.energy)),
+  1195→  1195→      // ── Task T1: extended rolling stats (undefined if no windows have them) ──
+  1196→  1196→      spectralCrest: optionalStats('spectralCrest'),
+  1197→  1197→      hnr: optionalStats('hnr'),
+  1198→  1198→      inharmonicity: optionalStats('inharmonicity'),
+  1199→  1199→      spectralSlopeDb: optionalStats('spectralSlopeDb'),
+  1200→  1200→      transientSharpness: optionalStats('transientSharpness'),
+  1201→  1201→      transientDecayMs: optionalStats('transientDecayMs'),
+  1202→  1202→      stereoBalance: optionalStats('stereoBalance'),
+  1203→  1203→      stereoCorrelation: optionalStats('stereoCorrelation'),
+  1204→  1204→      msRatio: optionalStats('msRatio'),
+  1205→  1205→      windowCount: windows.length,
+  1206→  1206→      lastUpdated: Date.now(),
+  1207→  1207→      sourceStream: this.stream?.id || 'unknown',
+  1208→  1208→    };
+  1209→  1209→  }
+  1210→  1210→}
+  1211→  1211→

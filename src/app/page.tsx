@@ -30,6 +30,14 @@ interface RefMetrics {
   bassDecayMs: number; stereoWidth: number; energy: number;
   detectedKey?: { root: number; rootName: string; scale: string; confidence: number };
   detectedStyle?: { style: string; confidence: number };
+  // ── Task P2 (musical intelligence): per-instrument density + regularity ──
+  // Populated by the V2 listener from the kick-band + high-band transient
+  // grids. Optional — when present, the MusicAnalyzer uses them directly to
+  // pick the kick/hat gate pattern; when undefined, it estimates from total
+  // transient density + highEnergy.
+  kickDensity?: number;
+  hatDensity?: number;
+  rhythmicRegularity?: number;
 }
 
 type RefProfile = ReferenceProfile;
@@ -120,6 +128,16 @@ export default function PSY4Page() {
   // Detected effects + reference timbre + current timbre + comparison +
   // unique elements + synthesis plan. Pulled via engine.getDeepAnalysis().
   const [deepAnalysis, setDeepAnalysis] = useState<any>(null);
+
+  // ── Task P2 (musical intelligence): MusicAnalyzer snapshot ──
+  // Detected section (intro/groove/build/drop/break/outro) + bar + energy,
+  // melodic contour (rising/falling/arch/wave), rhythmic pattern (kick/hat
+  // gate strings + syncopation), recent musical events (dropHit, riserStart,
+  // breakStart, chordChange, keyChange), and harmonic rhythm (bars per
+  // chord change). Pulled via engine.getMusicalAnalysis() on every analyzer
+  // tick. Optional chaining throughout so the UI gracefully no-ops before
+  // the first liveTrack() call returns a snapshot.
+  const [musicalAnalysis, setMusicalAnalysis] = useState<any>(null);
 
   // ── Task D1: DJ-style phase sync ──
   // Live sync status (synced indicator, phase offset, BPM match, downbeat
@@ -217,6 +235,13 @@ export default function PSY4Page() {
             //    radio's groove. Optional — when undefined, the groove
             //    dimension gracefully no-ops.
             grooveInfo: m.grooveInfo,
+            // ── Task P2 (musical intelligence): pass per-instrument density +
+            //    rhythmic regularity so the MusicAnalyzer can pick an accurate
+            //    kick/hat gate pattern. Optional — when undefined, the analyzer
+            //    estimates from total transient density + highEnergy.
+            kickDensity: m.kickDensity,
+            hatDensity: m.hatDensity,
+            rhythmicRegularity: m.rhythmicRegularity,
           });
         }
       });
@@ -334,6 +359,11 @@ export default function PSY4Page() {
             if (engineRef.current?.getDeepAnalysis) {
               try { setDeepAnalysis(engineRef.current.getDeepAnalysis()); } catch {}
             }
+            // ── Task P2 (musical intelligence): pull MusicAnalyzer snapshot ──
+            // Optional chaining so we degrade gracefully if P2 isn't merged.
+            if (engineRef.current?.getMusicalAnalysis) {
+              try { setMusicalAnalysis(engineRef.current.getMusicalAnalysis()); } catch {}
+            }
             // ── Task D1: pull DJ sync status + mirror toggle state ──
             // Optional chaining so we degrade gracefully if D1 isn't merged.
             if (engineRef.current?.getSyncStatus) {
@@ -399,6 +429,8 @@ export default function PSY4Page() {
     setCurrentChord(null); setProgressionInfo(null);
     setPursuitDashboard(null); setMelodyState(null);
     setDeepAnalysis(null);
+    // ── Task P2: clear the musical analysis snapshot ──
+    setMusicalAnalysis(null);
     // ── Task D1: clear sync status (the engine is gone) ──
     // We DON'T reset syncEnabled — the user's toggle choice persists across
     // restarts. When the engine is restarted, the new engine's PhaseSync
@@ -1921,6 +1953,282 @@ export default function PSY4Page() {
                     Engine runs the effects detector + timbre fingerprint + uniqueness detector + synthesis router on every
                     reference update (every ~10s). Modes + sends auto-apply every 10s (anti-thrash). The dashboard updates
                     live — wait for ≥2 analysis windows for unique-element detection.
+                  </p>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ─── MUSICAL ANALYSIS (Task P2) ─── */}
+        {/* MusicAnalyzer output — hears MUSIC, not just features. Shows the
+            detected section (intro/groove/build/drop/break/outro) + bar +
+            energy, the melodic contour (rising/falling/arch/wave), the
+            rhythmic pattern (kick/hat gate strings + syncopation), the
+            recent musical events (dropHit, riserStart, breakStart,
+            chordChange, keyChange), and the harmonic rhythm (bars per
+            chord change). Visible in analyze mode when the engine is
+            running. Optional chaining throughout so the UI gracefully
+            no-ops before the first liveTrack() call returns a snapshot. */}
+        {mode === 'analyze' && engineOn && (
+          <Card className="border-slate-800 bg-slate-900/60">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Music className="w-4 h-4 text-emerald-400" />
+                MUSICAL ANALYSIS
+                <span className="text-[10px] text-slate-500 font-mono ml-2">section · contour · rhythm · events · harmony</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {!musicalAnalysis ? (
+                <div className="text-[11px] text-amber-400 font-mono py-6 text-center">
+                  ⚠ Waiting for reference features — connect a stream and the musical analysis
+                  (section / contour / rhythm / events / harmonic rhythm) appears here within ~10s.
+                </div>
+              ) : (
+                <>
+                  {/* ─── 1. SECTION ─── */}
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider font-mono mb-2 text-cyan-400 flex items-center gap-1">
+                      <Layers className="w-3 h-3" /> Section (energy-driven state machine)
+                    </div>
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3 flex flex-wrap items-center gap-3">
+                      <Badge className={
+                        musicalAnalysis.section?.label === 'drop' ? 'bg-rose-600 text-white'
+                        : musicalAnalysis.section?.label === 'build' ? 'bg-amber-600 text-white'
+                        : musicalAnalysis.section?.label === 'variation' ? 'bg-fuchsia-600 text-white'
+                        : musicalAnalysis.section?.label === 'break' ? 'bg-cyan-600 text-white'
+                        : musicalAnalysis.section?.label === 'groove' ? 'bg-emerald-600 text-white'
+                        : musicalAnalysis.section?.label === 'intro' ? 'bg-slate-500 text-white'
+                        : musicalAnalysis.section?.label === 'outro' ? 'bg-slate-500 text-white'
+                        : 'bg-slate-700 text-white'
+                      }>
+                        {(musicalAnalysis.section?.label ?? '—').toUpperCase()}
+                      </Badge>
+                      <span className="text-[10px] font-mono text-slate-300">
+                        bar {(musicalAnalysis.section?.bar ?? 0).toString()} / {(musicalAnalysis.section?.barsInSection ?? 0).toString()}
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-300">
+                        conf {((musicalAnalysis.section?.confidence ?? 0) * 100).toFixed(0)}%
+                      </span>
+                      <div className="flex items-center gap-2 ml-auto min-w-[140px]">
+                        <span className="text-[9px] font-mono text-slate-500">ENERGY</span>
+                        <div className="flex-1 h-2 bg-slate-800 rounded-sm overflow-hidden">
+                          <div
+                            className="h-full bg-gradient-to-r from-emerald-500 via-amber-500 to-rose-500 transition-all duration-300"
+                            style={{ width: `${Math.max(2, Math.min(100, (musicalAnalysis.section?.energy ?? 0) * 100))}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] font-mono text-slate-300 w-8 text-right">
+                          {(musicalAnalysis.section?.energy ?? 0).toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ─── 2. MELODIC CONTOUR ─── */}
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider font-mono mb-2 text-fuchsia-400 flex items-center gap-1">
+                      <TrendingUp className="w-3 h-3" /> Melodic Contour (spectral centroid shape)
+                    </div>
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3 grid grid-cols-3 gap-3 text-center">
+                      <div>
+                        <div className="text-[9px] font-mono text-slate-500 uppercase">Shape</div>
+                        <div className={
+                          `text-sm font-mono font-bold mt-1 ${
+                            musicalAnalysis.contour?.shape === 'rising' ? 'text-emerald-300'
+                            : musicalAnalysis.contour?.shape === 'falling' ? 'text-amber-300'
+                            : musicalAnalysis.contour?.shape === 'descending' ? 'text-rose-300'
+                            : musicalAnalysis.contour?.shape === 'arch' ? 'text-fuchsia-300'
+                            : musicalAnalysis.contour?.shape === 'wave' ? 'text-cyan-300'
+                            : 'text-slate-300'
+                          }`
+                        }>
+                          {(musicalAnalysis.contour?.shape ?? '—').toUpperCase()}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[9px] font-mono text-slate-500 uppercase">Range</div>
+                        <div className="text-sm font-mono font-bold mt-1 text-fuchsia-300">
+                          {(musicalAnalysis.contour?.range ?? 0).toFixed(1)}<span className="text-[9px] text-slate-500 ml-0.5">st</span>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[9px] font-mono text-slate-500 uppercase">Direction</div>
+                        <div className={`text-sm font-mono font-bold mt-1 ${
+                          (musicalAnalysis.contour?.direction ?? 0) > 0.1 ? 'text-emerald-300'
+                          : (musicalAnalysis.contour?.direction ?? 0) < -0.1 ? 'text-amber-300'
+                          : 'text-slate-300'
+                        }`}>
+                          {(musicalAnalysis.contour?.direction ?? 0) > 0.1 ? '↑'
+                          : (musicalAnalysis.contour?.direction ?? 0) < -0.1 ? '↓'
+                          : '→'} {((musicalAnalysis.contour?.direction ?? 0) * 100).toFixed(0)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ─── 3. RHYTHMIC PATTERN ─── */}
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider font-mono mb-2 text-amber-400 flex items-center gap-1">
+                      <Drum className="w-3 h-3" /> Rhythmic Pattern (16th-note gates)
+                    </div>
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3 space-y-2">
+                      {/* KICK pattern */}
+                      <div>
+                        <div className="text-[9px] font-mono text-slate-500 uppercase mb-1">Kick</div>
+                        <div className="flex gap-px">
+                          {(musicalAnalysis.rhythm?.kickPattern ?? '................').split('').map((c: string, i: number) => (
+                            <div
+                              key={`k-${i}`}
+                              className={`flex-1 h-5 rounded-sm transition-all ${
+                                c === 'x' ? 'bg-amber-500' : 'bg-slate-800'
+                              }`}
+                              title={`step ${i + 1}: ${c === 'x' ? 'hit' : 'rest'}`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      {/* HAT pattern */}
+                      <div>
+                        <div className="text-[9px] font-mono text-slate-500 uppercase mb-1">Hats</div>
+                        <div className="flex gap-px">
+                          {(musicalAnalysis.rhythm?.hatPattern ?? '................').split('').map((c: string, i: number) => (
+                            <div
+                              key={`h-${i}`}
+                              className={`flex-1 h-5 rounded-sm transition-all ${
+                                c === 'x' ? 'bg-cyan-500' : 'bg-slate-800'
+                              }`}
+                              title={`step ${i + 1}: ${c === 'x' ? 'hit' : 'rest'}`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      {/* Syncopation + Density bars */}
+                      <div className="grid grid-cols-2 gap-3 pt-1">
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-[9px] font-mono text-slate-500 uppercase">Syncopation</span>
+                            <span className="text-[10px] font-mono text-amber-300">{((musicalAnalysis.rhythm?.syncopation ?? 0) * 100).toFixed(0)}%</span>
+                          </div>
+                          <div className="h-2 bg-slate-800 rounded-sm overflow-hidden mt-1">
+                            <div
+                              className="h-full bg-amber-500 transition-all duration-300"
+                              style={{ width: `${Math.max(2, (musicalAnalysis.rhythm?.syncopation ?? 0) * 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-[9px] font-mono text-slate-500 uppercase">Density</span>
+                            <span className="text-[10px] font-mono text-cyan-300">{((musicalAnalysis.rhythm?.density ?? 0) * 100).toFixed(0)}%</span>
+                          </div>
+                          <div className="h-2 bg-slate-800 rounded-sm overflow-hidden mt-1">
+                            <div
+                              className="h-full bg-cyan-500 transition-all duration-300"
+                              style={{ width: `${Math.max(2, (musicalAnalysis.rhythm?.density ?? 0) * 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ─── 4. HARMONIC RHYTHM + RECENT EVENTS ─── */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {/* Harmonic rhythm */}
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3 md:col-span-1">
+                      <div className="text-[9px] font-mono text-slate-500 uppercase mb-2 flex items-center gap-1">
+                        <Piano className="w-3 h-3" /> Harmonic Rhythm
+                      </div>
+                      <div className="text-2xl font-mono font-bold text-emerald-300">
+                        {(musicalAnalysis.harmonicRhythm ?? 0).toFixed(1)}
+                        <span className="text-[10px] text-slate-500 ml-1 font-normal">bars/chord</span>
+                      </div>
+                      <div className="text-[9px] font-mono text-slate-500 mt-2">
+                        {(musicalAnalysis.recentKeyChanges?.length ?? 0) > 0
+                          ? `${musicalAnalysis.recentKeyChanges.length} recent key change${musicalAnalysis.recentKeyChanges.length === 1 ? '' : 's'}`
+                          : 'no key changes detected'}
+                      </div>
+                      {(musicalAnalysis.recentKeyChanges?.length ?? 0) > 0 && (
+                        <div className="mt-1 text-[9px] font-mono text-fuchsia-300 max-h-12 overflow-y-auto">
+                          {musicalAnalysis.recentKeyChanges.map((kc: any, i: number) => (
+                            <div key={`kc-${i}`}>
+                              {kc.from} → {kc.to}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Recent events */}
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3 md:col-span-2">
+                      <div className="text-[9px] font-mono text-slate-500 uppercase mb-2 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3" /> Recent Musical Events (last 60s)
+                      </div>
+                      {(musicalAnalysis.events?.length ?? 0) === 0 ? (
+                        <div className="text-[10px] text-slate-500 font-mono py-3 text-center">
+                          No events detected yet — drops, risers, breaks, and chord changes appear here.
+                        </div>
+                      ) : (
+                        <div className="space-y-1 max-h-40 overflow-y-auto">
+                          {/* Show last 5, newest first */}
+                          {musicalAnalysis.events
+                            .slice()
+                            .reverse()
+                            .slice(0, 5)
+                            .map((ev: any, i: number) => {
+                              const evColor =
+                                ev.type === 'dropHit' ? 'text-rose-300 bg-rose-950/40 border-rose-800'
+                                : ev.type === 'breakStart' ? 'text-cyan-300 bg-cyan-950/40 border-cyan-800'
+                                : ev.type === 'riserStart' ? 'text-amber-300 bg-amber-950/40 border-amber-800'
+                                : ev.type === 'chordChange' ? 'text-emerald-300 bg-emerald-950/40 border-emerald-800'
+                                : ev.type === 'keyChange' ? 'text-fuchsia-300 bg-fuchsia-950/40 border-fuchsia-800'
+                                : ev.type === 'sectionBoundary' ? 'text-slate-300 bg-slate-800/40 border-slate-700'
+                                : ev.type === 'melodicPeak' ? 'text-violet-300 bg-violet-950/40 border-violet-800'
+                                : 'text-slate-300 bg-slate-800/40 border-slate-700';
+                              return (
+                                <div
+                                  key={`ev-${i}`}
+                                  className={`text-[10px] font-mono px-2 py-1 rounded border flex items-center gap-2 ${evColor}`}
+                                >
+                                  <span className="font-bold w-24 flex-shrink-0">{ev.type}</span>
+                                  <span className="text-slate-400 w-10 flex-shrink-0">
+                                    {(ev.confidence * 100).toFixed(0)}%
+                                  </span>
+                                  <span className="text-slate-500 truncate">
+                                    {ev.type === 'sectionBoundary' && ev.data
+                                      ? `${ev.data.from ?? '?'} → ${ev.data.to ?? '?'} (e=${(ev.data.energy ?? 0).toFixed(2)})`
+                                      : ev.type === 'dropHit' && ev.data
+                                      ? `energy ${(ev.data.energy ?? 0).toFixed(2)} @ bar ${ev.data.bar ?? '?'}`
+                                      : ev.type === 'breakStart' && ev.data
+                                      ? `${(ev.data.fromEnergy ?? 0).toFixed(2)} → ${(ev.data.toEnergy ?? 0).toFixed(2)} @ bar ${ev.data.bar ?? '?'}`
+                                      : ev.type === 'riserStart' && ev.data
+                                      ? `slope ${(ev.data.slopePerSec ?? 0).toFixed(3)}/s @ bar ${ev.data.bar ?? '?'}`
+                                      : ev.type === 'keyChange' && ev.data
+                                      ? `${ev.data.from ?? '?'} → ${ev.data.to ?? '?'}`
+                                      : ev.type === 'chordChange' && ev.data
+                                      ? `Δ ${(ev.data.delta ?? 0).toFixed(3)} @ bar ${ev.data.bar ?? '?'}`
+                                      : ev.type === 'melodicPeak' && ev.data
+                                      ? `centroid ${Math.round(ev.data.centroid ?? 0)}Hz @ bar ${ev.data.bar ?? '?'}`
+                                      : ''}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <p className="text-[10px] text-slate-500 font-mono">
+                    <Music className="w-3 h-3 inline mr-1" />
+                    The MusicAnalyzer runs on every reference window (~10s) — it tracks energy + centroid +
+                    flatness + transient histories over a 5-minute rolling window, detects section boundaries
+                    (intro/groove/build/drop/break/outro) from energy transitions, and emits musical events
+                    (dropHit, riserStart, breakStart, chordChange, keyChange, melodicPeak). The engine
+                    reacts to dropHit/breakStart/riserStart by forcing a flow transition — when the radio
+                    drops, we drop; when the radio builds, we build.
                   </p>
                 </>
               )}

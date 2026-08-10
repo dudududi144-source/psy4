@@ -78,6 +78,22 @@ import {
   LearnedPatternEngineParams,
   LearningStatus,
 } from './learningMemory';
+// ── Task P2 (musical intelligence): hears MUSIC, not just features. The
+//    ReferenceListenerV2 extracts ACOUSTIC features (BPM, LUFS, spectral
+//    bands, centroid, transient density). The MusicAnalyzer extracts MUSICAL
+//    features from those same windows: section boundaries (intro/groove/build/
+//    drop/break/outro), riser + drop + break events, rhythmic pattern (kick +
+//    hat gate strings), melodic contour (rising/falling/arch/wave), chord-
+//    change rate (harmonic rhythm), and key modulations. The engine reacts to
+//    dropHit / breakStart / riserStart events by calling flowEngine.transitionTo
+//    — when the radio drops, we drop; when the radio builds, we build. This is
+//    true musical synchronization, not just feature matching. ──
+import {
+  MusicAnalyzer,
+  type MusicalAnalysis,
+  type MusicalEvent,
+  type MusicAnalyzerFeatures,
+} from './musicAnalyzer';
 // ── Task W1: unified AudioWorklet audio backend. The WorkletEngine replaces
 //    the 1054-node Web Audio graph with a single AudioWorkletNode that
 //    contains ALL DSP (Moog ladder, polyBLEP, Schroeder reverb, bus
@@ -911,6 +927,23 @@ export class Psy4EngineV2 {
   private activeSurprise: SurpriseEvent | null = null;
   private surpriseReverseHitScheduled = false;
 
+  // ── Task P2 (musical intelligence): MusicAnalyzer instance ──
+  // The analyzer is constructed eagerly (no async init needed) and updated
+  // on every liveTrack() call with the latest reference features. It
+  // maintains its own rolling histories + event log internally; the engine
+  // only reads getRecentEvents() and getMusicalAnalysis() from it.
+  //
+  // `lastMusicalEventTime` is the wall-clock seconds (performance.now()/1000)
+  // of the last event we already reacted to. On each liveTrack() call we
+  // pull getRecentEvents(now - lastMusicalEventTime) to find NEW events and
+  // route them to flowEngine.transitionTo(). This avoids re-triggering the
+  // same dropHit on every update.
+  // `musicalAnalysis` is the latest snapshot returned by update() — exposed
+  // via getMusicalAnalysis() for UI display.
+  private musicAnalyzer: MusicAnalyzer = new MusicAnalyzer();
+  private lastMusicalEventTime = 0;
+  private musicalAnalysis: MusicalAnalysis | null = null;
+
   // ── Task D1: DJ-style phase sync ──
   // The PhaseSync aligns our beat grid with the radio's beat grid so the
   // kick drums hit together. It is OPTIONAL — when syncEnabled is false,
@@ -1250,6 +1283,13 @@ export class Psy4EngineV2 {
     this.currentSection = this.currentFlow.label;
     this.lastAutomationSection = '';
     this.leadCutoffOverride = -1;
+    // ── Task P2: reset the MusicAnalyzer so stale histories from a previous
+    //    play session don't bias the new session's first detections. The
+    //    analyzer is cheap to construct; the rolling histories + event log
+    //    rebuild from scratch on the first liveTrack() call. ──
+    this.musicAnalyzer = new MusicAnalyzer();
+    this.musicalAnalysis = null;
+    this.lastMusicalEventTime = 0;
     this.syncLegacyAccess();
     this.onSectionChange?.(this.currentSection);
     // Task L1: reset drop counters + adaptive state on a fresh start.
@@ -2097,6 +2137,15 @@ export class Psy4EngineV2 {
     // present, the engine forwards it to the DJController so it can match
     // the radio's swing amount + push/pull feel.
     grooveInfo?: GrooveInfo;
+    // ── Task P2 (musical intelligence): per-instrument density + regularity ──
+    // Optional — populated by the V2 listener from the kick-band + high-band
+    // transient grids. When present, the MusicAnalyzer uses them to pick a
+    // more accurate kick/hat gate pattern (instead of estimating from total
+    // transient density + highEnergy). When absent, the analyzer falls back
+    // to the estimate; nothing breaks.
+    kickDensity?: number;
+    hatDensity?: number;
+    rhythmicRegularity?: number;
   }): void {
     if (isFinite(refMetrics.lufs)) this.targetLufs = refMetrics.lufs;
     if (refMetrics.energy !== undefined && isFinite(refMetrics.energy)) {
@@ -2296,6 +2345,143 @@ export class Psy4EngineV2 {
     //    audio thread — the audio path is unchanged.
     this.applyLearnedPatternProactively();
     this.runLearningTick();
+
+    // ── Task P2 (musical intelligence): run the MusicAnalyzer ──
+    // Hand the latest reference features to the analyzer. It returns a fresh
+    // MusicalAnalysis snapshot and may have emitted new events (dropHit,
+    // breakStart, riserStart, chordChange, keyChange, melodicPeak,
+    // sectionBoundary). We then route the MUSICAL events to the flow engine
+    // — when the radio drops, we drop; when the radio builds, we build.
+    // This is the heart of "matching music, not just features".
+    this.updateMusicAnalyzer(refMetrics);
+  }
+
+  /**
+   * Task P2: feed the latest reference features to the MusicAnalyzer and
+   * react to any newly-emitted musical events.
+   *
+   * The analyzer is called every liveTrack() (~10s). It maintains its own
+   * rolling histories + event log; we only pull NEW events since our last
+   * check and route them to flowEngine.transitionTo(). Cooldowns inside the
+   * analyzer prevent the same event firing repeatedly while the condition
+   * persists (e.g. energy sustained high after a drop).
+   */
+  private updateMusicAnalyzer(refMetrics: {
+    energy?: number;
+    spectralCentroid: number;
+    transientDensity?: number;
+    bpm?: number;
+    subEnergy?: number;
+    highEnergy?: number;
+    lowEnergy?: number;
+    midEnergy?: number;
+    airEnergy?: number;
+    detectedKey?: { root: number; scale: string; confidence: number };
+    spectralFlatness?: number;
+    hnr?: number;
+    kickDensity?: number;
+    hatDensity?: number;
+    rhythmicRegularity?: number;
+  }): void {
+    // Build the feature snapshot. Guard every field — the analyzer also
+    // guards internally, but skipping on missing required fields avoids
+    // polluting the histories with zero/NaN samples.
+    if (!isFinite(refMetrics.spectralCentroid) || refMetrics.spectralCentroid <= 0) {
+      return;
+    }
+    const features: MusicAnalyzerFeatures = {
+      energy: refMetrics.energy ?? 0,
+      spectralCentroid: refMetrics.spectralCentroid,
+      transientDensity: refMetrics.transientDensity ?? 0,
+      bpm: refMetrics.bpm ?? this._bpm,
+      subEnergy: refMetrics.subEnergy ?? 0,
+      highEnergy: refMetrics.highEnergy ?? 0,
+      detectedKey: refMetrics.detectedKey,
+      spectralFlatness: refMetrics.spectralFlatness,
+      hnr: refMetrics.hnr,
+      kickDensity: refMetrics.kickDensity,
+      hatDensity: refMetrics.hatDensity,
+      lowEnergy: refMetrics.lowEnergy,
+      midEnergy: refMetrics.midEnergy,
+      airEnergy: refMetrics.airEnergy,
+      rhythmicRegularity: refMetrics.rhythmicRegularity,
+    };
+
+    // Run the analyzer — this updates all rolling histories, runs the
+    // detectors, and may emit new events into the analyzer's log.
+    this.musicalAnalysis = this.musicAnalyzer.update(features);
+
+    // ── React to NEW musical events (since our last check) ──
+    // We compute the wall-clock seconds elapsed since the last check and
+    // pull events from that window. Any event in the window is "new" —
+    // we route musical events to the flow engine here.
+    const nowSec = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+    const windowSec = this.lastMusicalEventTime > 0
+      ? Math.max(0.5, nowSec - this.lastMusicalEventTime)
+      : 1.0;
+    this.lastMusicalEventTime = nowSec;
+
+    const newEvents: MusicalEvent[] = this.musicAnalyzer.getRecentEvents(windowSec);
+    if (newEvents.length === 0 || !this.flowEngine) return;
+
+    // Route each event type to the appropriate flow transition.
+    // `bars` is the planned length of the forced section — short for drops
+    // (so we can re-react to a follow-up break), longer for builds.
+    for (const ev of newEvents) {
+      switch (ev.type) {
+        case 'dropHit':
+          // The radio just dropped — force our flow into DROP at peak energy.
+          // bars=2 → short forced section so we can re-react if the radio
+          // breaks immediately after.
+          this.flowEngine.transitionTo({ label: 'DROP', energy: 0.95 }, 2);
+          if (typeof console !== 'undefined') {
+            console.log(
+              `[PSY4] MusicAnalyzer: dropHit @ bar ${ev.data?.bar ?? '?'} ` +
+              `(energy ${ev.data?.energy?.toFixed(2) ?? '?'}, conf ${(ev.confidence * 100).toFixed(0)}%) — forcing DROP`,
+            );
+          }
+          break;
+        case 'breakStart':
+          // The radio dropped to a break — force our flow into BREAK.
+          this.flowEngine.transitionTo({ label: 'BREAK', energy: 0.3 }, 2);
+          if (typeof console !== 'undefined') {
+            console.log(
+              `[PSY4] MusicAnalyzer: breakStart @ bar ${ev.data?.bar ?? '?'} ` +
+              `(energy ${ev.data?.toEnergy?.toFixed(2) ?? '?'}) — forcing BREAK`,
+            );
+          }
+          break;
+        case 'riserStart':
+          // The radio started a build — force our flow into BUILD over 4
+          // bars (longer than drop/break so the tension can develop).
+          this.flowEngine.transitionTo({ label: 'BUILD', energy: 0.7 }, 4);
+          if (typeof console !== 'undefined') {
+            console.log(
+              `[PSY4] MusicAnalyzer: riserStart @ bar ${ev.data?.bar ?? '?'} ` +
+              `(slope ${ev.data?.slopePerSec?.toFixed(3) ?? '?'}/s) — forcing BUILD`,
+            );
+          }
+          break;
+        // Other event types (chordChange, keyChange, melodicPeak,
+        // sectionBoundary, rhythmicFill) are surfaced via
+        // getMusicalAnalysis() for the UI but don't force a flow transition.
+        // The harmony engine + melody engine will pick them up on the next
+        // bar boundary via the existing scheduleStep path.
+        default:
+          break;
+      }
+    }
+  }
+
+  /**
+   * Task P2: return the latest MusicalAnalysis snapshot (or null before the
+   * first liveTrack() call with valid reference features). The UI reads this
+   * on every analyzer tick to render the MUSICAL ANALYSIS card — current
+   * section, melodic contour, rhythmic pattern, recent events, harmonic
+   * rhythm.
+   */
+  getMusicalAnalysis(): MusicalAnalysis | null {
+    return this.musicalAnalysis;
   }
 
   // ─── Task T1: synthesis character pursuit ──────────────────────────────────
