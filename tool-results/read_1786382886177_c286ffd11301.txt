@@ -1,0 +1,830 @@
+     1→/**
+     2→ * FLOW ENGINE (Task F1)
+     3→ * =====================
+     4→ *
+     5→ * Replaces the fixed `arrangement` array in Psy4EngineV2 with a dynamic,
+     6→ * creative, radio-responsive flow engine.
+     7→ *
+     8→ * ## Why
+     9→ * The old arrangement was a fixed recipe:
+    10→ *   INTRO(4) → GROOVE(4) → BUILD(4) → DROP(8) → VARIATION(4) → BREAK(4) →
+    11→ *   FINAL DROP(8) → OUTRO(4)
+    12→ * Every play-through walked the same path with the same section lengths.
+    13→ * The user's complaint: "Section מהווה בעיה על זרימה חופשית — צריך למצוא
+    14→ * פתרון שלא יתקע אותנו בנוסחה קבועה אלא יותר יצירתיות."
+    15→ *
+    16→ * ## How
+    17→ * The FlowEngine computes the current musical state from four inputs:
+    18→ *   1. Radio energy (if connected) — follows the radio's energy curve.
+    19→ *   2. Time since last transition — don't stay in the same energy too long.
+    20→ *      Every 8-16 bars, consider a shift.
+    21→ *   3. Musical logic — after a DROP, VARIATION or BREAK (never DROP→DROP).
+    22→ *      After a BREAK, BUILD (never BREAK→BREAK).
+    23→ *   4. Surprise — 5-10% chance per transition of an unexpected event:
+    24→ *      filter sweep, drop-out, echo throw, reverse hit, stutter, silence.
+    25→ *
+    26→ * ## Continuous automation
+    27→ * The state is NOT a section switch — it's a continuous FlowState that
+    28→ * smoothly ramps:
+    29→ *   - filterCutoff (Hz, exponential — ears hear log-Hz)
+    30→ *   - reverbAmount (0-1)
+    31→ *   - delayAmount (0-1)
+    32→ *   - tension (0-1, rises in builds, peaks at drops, releases in breaks)
+    33→ *   - surprise (0-1, probability of unexpected events)
+    34→ *
+    35→ * These ramps are SMOOTH (per-bar interpolation toward target with a
+    36→ * 1-4 bar time constant). The engine applies them via setTrackEffect /
+    37→ * setSendLevel which both use setTargetAtTime internally — no clicks.
+    38→ *
+    39→ * ## World-aware
+    40→ * Different worlds have different flow characteristics:
+    41→ *   - dark-psy:        more drops, shorter breaks, high baseline energy (0.6+)
+    42→ *   - progressive-psy: long slow builds (16-32 bars), fewer drops, more groove
+    43→ *   - goa:             continuous energy, few breaks, lots of melodic variation
+    44→ *   - hypnotic:        very long sections (32-64 bars), minimal transitions
+    45→ *   - forest:          organic, unpredictable flow, more surprises
+    46→ *
+    47→ * The flow engine queries the current World for these characteristics via
+    48→ * setWorld() — called by the engine's start() and switchWorld().
+    49→ *
+    50→ * ## Fallback
+    51→ * Works WITHOUT a radio connection — uses an internal energy curve derived
+    52→ * from the world's energyCurve + bar count. Responds WHEN a radio is
+    53→ * connected — onReferenceEnergyChange() forces a transition consideration
+    54→ * when the radio's energy shifts significantly.
+    55→ */
+    56→
+    57→import { SeededRng } from './musicalGrammar';
+    58→import type { World, WorldId } from './worlds';
+    59→
+    60→const clamp = (v: number, a: number, b: number) => v < a ? a : (v > b ? b : v);
+    61→const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+    62→
+    63→// ─── Public types ───────────────────────────────────────────────────────────
+    64→
+    65→/**
+    66→ * The full musical state at the current bar. This is what the engine reads
+    67→ * to decide which tracks fire, what energy/density to use, and how to
+    68→ * automate the FX chain.
+    69→ *
+    70→ * `label` is kept for backwards compatibility with onSectionChange — the
+    71→ * engine still fires section-change callbacks with a human-readable label.
+    72→ * But the label is now a CONSEQUENCE of the energy/tension state, not the
+    73→ * driver — the flow engine picks a label that describes the current state.
+    74→ */
+    75→export type FlowState = {
+    76→  // ── Discrete musical parameters (replace ArrangementSection fields) ──
+    77→  energy: number;          // 0-1 current energy target (smoothed)
+    78→  density: number;         // 0-1 event density (smoothed)
+    79→  bassOn: boolean;         // bass track active
+    80→  leadOn: boolean;         // lead+pad+arp tracks active
+    81→  acidOn: boolean;         // acid mode (303-style bass/lead)
+    82→  hatDensity: number;      // 0-1 multiplier on world.hatDensity
+    83→  percDensity: number;     // 0-1 multiplier on world.percDensity
+    84→  fxDensity: number;       // 0-1 multiplier on FX sends
+    85→  label: string;           // human-readable state name (INTRO/GROOVE/...)
+    86→
+    87→  // ── Continuous automation (NEW — not in ArrangementSection) ──
+    88→  filterCutoff: number;    // Hz, automated (lead filter target)
+    89→  reverbAmount: number;    // 0-1, automated (per-track reverb send multiplier)
+    90→  delayAmount: number;     // 0-1, automated (per-track delay send multiplier)
+    91→  tension: number;         // 0-1, how tense the current moment is
+    92→  surprise: number;        // 0-1, probability of unexpected events
+    93→
+    94→  // ── Section framing (for engine's existing scheduleStep logic) ──
+    95→  sectionBars: number;     // planned total bars for the current section
+    96→  barInSection: number;    // current bar within the section (0-based)
+    97→};
+    98→
+    99→/**
+   100→ * A surprise event returned by maybeSurprise(). The engine handles each type:
+   101→ *   filterSweep: ramp the lead filter open then closed (or vice versa)
+   102→ *   dropOut:     briefly mute everything except the kick (DJ "brake" effect)
+   103→ *   echoThrow:   send the last note to a long delay (DJ echo throw)
+   104→ *   reverseHit:  play a reversed impact (build tension)
+   105→ *   stutter:     rapidly retrigger the last note (DJ stutter effect)
+   106→ *   silence:     a brief moment of silence before the next hit (dramatic pause)
+   107→ */
+   108→export interface SurpriseEvent {
+   109→  type: 'filterSweep' | 'dropOut' | 'echoThrow' | 'reverseHit' | 'stutter' | 'silence';
+   110→  startBar: number;        // bar (absolute) when the event starts
+   111→  durationBars: number;    // how many bars the event lasts
+   112→  intensity: number;       // 0-1, how dramatic the event should be
+   113→}
+   114→
+   115→// ─── Internal state machine ────────────────────────────────────────────────
+   116→
+   117→/**
+   118→ * A musical archetype — a "section type" in the flow. Each archetype defines
+   119→ * a target energy/density/tension/etc. that the FlowEngine smooths toward.
+   120→ *
+   121→ * Archetypes are NOT sections — they're TARGET STATES. The flow engine
+   122→ * picks an archetype based on musical logic + radio energy + world character,
+   123→ * then smoothly transitions the current FlowState toward it over 1-4 bars.
+   124→ */
+   125→interface Archetype {
+   126→  label: string;
+   127→  energy: number;          // target energy
+   128→  density: number;         // target density
+   129→  bass: boolean;
+   130→  lead: boolean;
+   131→  acid: boolean;
+   132→  hatDensity: number;
+   133→  percDensity: number;
+   134→  fxDensity: number;
+   135→  filterCutoff: number;    // target lead cutoff (Hz)
+   136→  reverbAmount: number;    // target reverb send multiplier
+   137→  delayAmount: number;     // target delay send multiplier
+   138→  tension: number;         // target tension
+   139→  surprise: number;        // target surprise probability
+   140→}
+   141→
+   142→// ── Archetype table ──
+   143→// These are the MUSICAL TARGETS — the values the flow engine smooths toward.
+   144→// Section lengths and transitions are dynamic; the archetypes themselves are
+   145→// fixed musical characters.
+   146→const ARCHETYPES: Record<string, Archetype> = {
+   147→  INTRO: {
+   148→    label: 'INTRO',
+   149→    energy: 0.25, density: 0.30, bass: false, lead: false, acid: false,
+   150→    hatDensity: 0.4, percDensity: 0.3, fxDensity: 0.5,
+   151→    filterCutoff: 1200, reverbAmount: 0.60, delayAmount: 0.10,
+   152→    tension: 0.20, surprise: 0.05,
+   153→  },
+   154→  GROOVE: {
+   155→    label: 'GROOVE',
+   156→    energy: 0.50, density: 0.55, bass: true, lead: false, acid: false,
+   157→    hatDensity: 0.7, percDensity: 0.6, fxDensity: 0.6,
+   158→    filterCutoff: 1800, reverbAmount: 0.40, delayAmount: 0.20,
+   159→    tension: 0.35, surprise: 0.06,
+   160→  },
+   161→  BUILD: {
+   162→    label: 'BUILD',
+   163→    energy: 0.70, density: 0.75, bass: true, lead: false, acid: false,
+   164→    hatDensity: 0.9, percDensity: 0.8, fxDensity: 0.8,
+   165→    filterCutoff: 3500, reverbAmount: 0.35, delayAmount: 0.30,
+   166→    tension: 0.80, surprise: 0.08,
+   167→  },
+   168→  DROP: {
+   169→    label: 'DROP',
+   170→    energy: 0.95, density: 0.95, bass: true, lead: true, acid: false,
+   171→    hatDensity: 1.0, percDensity: 0.9, fxDensity: 0.9,
+   172→    filterCutoff: 4000, reverbAmount: 0.25, delayAmount: 0.30,
+   173→    tension: 1.00, surprise: 0.10,
+   174→  },
+   175→  VARIATION: {
+   176→    label: 'VARIATION',
+   177→    energy: 0.78, density: 0.70, bass: true, lead: true, acid: true,
+   178→    hatDensity: 0.9, percDensity: 0.7, fxDensity: 0.85,
+   179→    filterCutoff: 3200, reverbAmount: 0.35, delayAmount: 0.45,
+   180→    tension: 0.65, surprise: 0.15,
+   181→  },
+   182→  BREAK: {
+   183→    label: 'BREAK',
+   184→    energy: 0.25, density: 0.30, bass: false, lead: false, acid: false,
+   185→    hatDensity: 0.3, percDensity: 0.2, fxDensity: 0.7,
+   186→    filterCutoff: 700, reverbAmount: 0.70, delayAmount: 0.50,
+   187→    tension: 0.30, surprise: 0.07,
+   188→  },
+   189→  OUTRO: {
+   190→    label: 'OUTRO',
+   191→    energy: 0.25, density: 0.30, bass: true, lead: false, acid: false,
+   192→    hatDensity: 0.4, percDensity: 0.3, fxDensity: 0.5,
+   193→    filterCutoff: 1000, reverbAmount: 0.60, delayAmount: 0.15,
+   194→    tension: 0.15, surprise: 0.05,
+   195→  },
+   196→};
+   197→
+   198→// ── World flow profiles ──
+   199→// Each world has its own flow characteristics that shape:
+   200→//   - baseline energy (where the energy curve starts and tends to return to)
+   201→//   - section length range (min/max bars per section before forced transition)
+   202→//   - transition preferences (which archetypes each world favors)
+   203→//   - surprise rate multiplier
+   204→//   - drop likelihood (some worlds drop more often)
+   205→interface WorldFlowProfile {
+   206→  baselineEnergy: number;       // 0-1, the world's resting energy
+   207→  minSectionBars: number;       // minimum bars before a transition is considered
+   208→  maxSectionBars: number;       // maximum bars before a forced transition
+   209→  dropLikelihood: number;       // 0-1, how often transitions lead to a DROP
+   210→  breakLikelihood: number;      // 0-1, how often transitions lead to a BREAK
+   211→  buildLikelihood: number;      // 0-1, how often transitions lead to a BUILD
+   212→  surpriseRateMult: number;     // multiplier on the archetype's surprise prob
+   213→  // archetype weighting — biases the next-archetype picker
+   214→  weights: Partial<Record<keyof typeof ARCHETYPES, number>>;
+   215→}
+   216→
+   217→const WORLD_FLOW_PROFILES: Record<WorldId, WorldFlowProfile> = {
+   218→  'dark-psy': {
+   219→    baselineEnergy: 0.65,
+   220→    minSectionBars: 6, maxSectionBars: 24,
+   221→    dropLikelihood: 0.45, breakLikelihood: 0.15, buildLikelihood: 0.25,
+   222→    surpriseRateMult: 1.2,
+   223→    weights: { DROP: 1.4, VARIATION: 1.2, BUILD: 0.9, BREAK: 0.7, GROOVE: 0.8 },
+   224→  },
+   225→  'progressive-psy': {
+   226→    baselineEnergy: 0.45,
+   227→    minSectionBars: 12, maxSectionBars: 32,
+   228→    dropLikelihood: 0.25, breakLikelihood: 0.20, buildLikelihood: 0.40,
+   229→    surpriseRateMult: 0.7,
+   230→    weights: { GROOVE: 1.4, BUILD: 1.3, VARIATION: 1.1, DROP: 0.9, BREAK: 0.9 },
+   231→  },
+   232→  'morning-psy': {
+   233→    baselineEnergy: 0.55,
+   234→    minSectionBars: 8, maxSectionBars: 24,
+   235→    dropLikelihood: 0.35, breakLikelihood: 0.20, buildLikelihood: 0.30,
+   236→    surpriseRateMult: 0.9,
+   237→    weights: { DROP: 1.2, VARIATION: 1.2, BUILD: 1.1, GROOVE: 1.0, BREAK: 0.9 },
+   238→  },
+   239→  'goa': {
+   240→    baselineEnergy: 0.65,
+   241→    minSectionBars: 8, maxSectionBars: 28,
+   242→    dropLikelihood: 0.40, breakLikelihood: 0.10, buildLikelihood: 0.25,
+   243→    surpriseRateMult: 1.1,
+   244→    weights: { VARIATION: 1.5, DROP: 1.2, BUILD: 1.0, GROOVE: 0.9, BREAK: 0.5 },
+   245→  },
+   246→  'forest': {
+   247→    baselineEnergy: 0.60,
+   248→    minSectionBars: 4, maxSectionBars: 20,
+   249→    dropLikelihood: 0.40, breakLikelihood: 0.18, buildLikelihood: 0.22,
+   250→    surpriseRateMult: 1.6,
+   251→    weights: { DROP: 1.2, VARIATION: 1.3, BUILD: 0.9, BREAK: 0.8, GROOVE: 0.9 },
+   252→  },
+   253→  'deep-psy': {
+   254→    baselineEnergy: 0.45,
+   255→    minSectionBars: 12, maxSectionBars: 32,
+   256→    dropLikelihood: 0.25, breakLikelihood: 0.20, buildLikelihood: 0.30,
+   257→    surpriseRateMult: 0.8,
+   258→    weights: { GROOVE: 1.3, BUILD: 1.2, VARIATION: 1.0, DROP: 0.9, BREAK: 1.0 },
+   259→  },
+   260→  'hypnotic': {
+   261→    baselineEnergy: 0.50,
+   262→    minSectionBars: 24, maxSectionBars: 64,
+   263→    dropLikelihood: 0.20, breakLikelihood: 0.15, buildLikelihood: 0.25,
+   264→    surpriseRateMult: 0.5,
+   265→    weights: { GROOVE: 1.6, BUILD: 1.0, VARIATION: 0.8, DROP: 0.7, BREAK: 0.7 },
+   266→  },
+   267→  'cosmic': {
+   268→    baselineEnergy: 0.55,
+   269→    minSectionBars: 10, maxSectionBars: 28,
+   270→    dropLikelihood: 0.30, breakLikelihood: 0.22, buildLikelihood: 0.28,
+   271→    surpriseRateMult: 1.0,
+   272→    weights: { VARIATION: 1.2, BUILD: 1.1, DROP: 1.0, GROOVE: 1.0, BREAK: 1.0 },
+   273→  },
+   274→  'organic-psy': {
+   275→    baselineEnergy: 0.50,
+   276→    minSectionBars: 8, maxSectionBars: 24,
+   277→    dropLikelihood: 0.30, breakLikelihood: 0.22, buildLikelihood: 0.28,
+   278→    surpriseRateMult: 1.1,
+   279→    weights: { VARIATION: 1.2, GROOVE: 1.1, BUILD: 1.0, DROP: 1.0, BREAK: 1.0 },
+   280→  },
+   281→  'acid-psy': {
+   282→    baselineEnergy: 0.60,
+   283→    minSectionBars: 8, maxSectionBars: 24,
+   284→    dropLikelihood: 0.40, breakLikelihood: 0.15, buildLikelihood: 0.25,
+   285→    surpriseRateMult: 1.3,
+   286→    weights: { VARIATION: 1.4, DROP: 1.2, BUILD: 1.0, GROOVE: 0.9, BREAK: 0.7 },
+   287→  },
+   288→};
+   289→
+   290→// ─── FlowEngine ─────────────────────────────────────────────────────────────
+   291→
+   292→export class FlowEngine {
+   293→  private current: FlowState;
+   294→  private target: FlowState;
+   295→  private currentArchetype: Archetype;
+   296→  private world: World | null = null;
+   297→  private worldProfile: WorldFlowProfile = WORLD_FLOW_PROFILES['dark-psy'];
+   298→
+   299→  // ── Radio energy tracking ──
+   300→  private refEnergyHistory: number[] = [];
+   301→  private static readonly REF_ENERGY_HISTORY_MAX = 16;
+   302→  private lastRefEnergyShiftBar = -9999;
+   303→
+   304→  // ── Section timing ──
+   305→  private barCount = 0;             // total bars since start (never resets)
+   306→  private lastTransitionBar = 0;    // bar count at the last transition
+   307→  private currentSectionBars = 8;   // planned length of the current section
+   308→  private barInSection = 0;         // current bar within the section
+   309→
+   310→  // ── Surprise state ──
+   311→  private lastSurpriseBar = -9999;
+   312→  private pendingSurprise: SurpriseEvent | null = null;
+   313→  private activeSurprise: SurpriseEvent | null = null;
+   314→  private static readonly SURPRISE_COOLDOWN_BARS = 16;
+   315→
+   316→  // ── Constructor ──
+   317→  constructor(private rng: SeededRng) {
+   318→    this.currentArchetype = ARCHETYPES.INTRO;
+   319→    this.current = this.archetypeToFlowState(this.currentArchetype, 8, 0);
+   320→    this.target = { ...this.current };
+   321→  }
+   322→
+   323→  // ─── Public API ──────────────────────────────────────────────────────────
+   324→
+   325→  /**
+   326→   * Set the current world. Called by the engine on start() and switchWorld().
+   327→   * The world shapes: baseline energy, section length range, transition
+   328→   * preferences, surprise rate, archetype weights.
+   329→   *
+   330→   * If the new world's profile differs significantly from the current state,
+   331→   * the next transition will adapt — we DON'T force an immediate transition
+   332→   * (the music keeps flowing organically).
+   333→   */
+   334→  setWorld(world: World): void {
+   335→    this.world = world;
+   336→    const profile = WORLD_FLOW_PROFILES[world.id];
+   337→    if (profile) {
+   338→      this.worldProfile = profile;
+   339→    }
+   340→  }
+   341→
+   342→  /**
+   343→   * Called every bar by the engine. Returns the CURRENT flow state (smoothed
+   344→   * toward the target). The engine uses this to drive scheduleStep.
+   345→   *
+   346→   * `bar` is the absolute bar count (the engine's totalBars). `refEnergy` is
+   347→   * the current radio energy (0 if no radio connected).
+   348→   *
+   349→   * Side effects:
+   350→   *   - May transition to a new archetype (updating `target`)
+   351→   *   - Smooths `current` toward `target` (1-4 bar time constant)
+   352→   *   - Tracks radio energy history for shift detection
+   353→   *   - May queue a surprise event (retrievable via maybeSurprise)
+   354→   */
+   355→  tick(bar: number, refEnergy: number): FlowState {
+   356→    this.barCount = bar;
+   357→
+   358→    // ── Track radio energy history ──
+   359→    if (refEnergy > 0 && isFinite(refEnergy)) {
+   360→      this.refEnergyHistory.push(clamp(refEnergy, 0, 1));
+   361→      if (this.refEnergyHistory.length > FlowEngine.REF_ENERGY_HISTORY_MAX) {
+   362→        this.refEnergyHistory.shift();
+   363→      }
+   364→    }
+   365→
+   366→    // ── Consider a transition ──
+   367→    const barsSinceTransition = bar - this.lastTransitionBar;
+   368→    const minBars = this.worldProfile.minSectionBars;
+   369→
+   370→    // Force transition when the planned section length is reached — this
+   371→    // guarantees the engine's bar-within-section never exceeds the planned
+   372→    // length (which would cause riser/energy-curve indexing issues in
+   373→    // scheduleStep). The flow engine picks a new planned length on each
+   374→    // transition, so this respects the organic section-length variation
+   375→    // (some sections are 4 bars, some are 32).
+   376→    const shouldForce = barsSinceTransition >= this.currentSectionBars;
+   377→
+   378→    // Consider an early transition (radio energy shift, random chance)
+   379→    // once we're past minBars. Rising probability up to currentSectionBars.
+   380→    const shouldConsider = barsSinceTransition >= minBars;
+   381→
+   382→    if (shouldForce || (shouldConsider && this.shouldTransition(bar, refEnergy, barsSinceTransition))) {
+   383→      this.transition(bar, refEnergy);
+   384→    }
+   385→
+   386→    // ── Update bar-in-section ──
+   387→    this.barInSection = bar - this.lastTransitionBar;
+   388→
+   389→    // ── Smooth current toward target ──
+   390→    // Different time constants for different parameters:
+   391→    //   - filterCutoff: slow (4-bar time constant, exponential in log-Hz)
+   392→    //   - reverbAmount/delayAmount: medium (2-bar time constant)
+   393→    //   - energy/density: medium (2-bar)
+   394→    //   - tension/surprise: fast (1-bar) — these are more "moment-to-moment"
+   395→    //   - hatDensity/percDensity/fxDensity: medium (2-bar)
+   396→    //
+   397→    // The smoothing rate is per-bar. With a 1-bar time constant, the value
+   398→    // moves ~63% of the way to target each bar. With 4 bars, ~22% per bar.
+   399→    //
+   400→    // We compute the rate from the section's planned length so short sections
+   401→    // transition faster (more urgency) and long sections transition slower
+   402→    // (more patience). This makes hypnotic's 64-bar sections evolve gradually
+   403→    // while forest's 4-bar surprises snap quickly.
+   404→    const sectionLen = Math.max(4, this.currentSectionBars);
+   405→    const fastRate = clamp(1.0 / Math.max(1, sectionLen * 0.25), 0.15, 0.7);   // ~1-bar
+   406→    const medRate  = clamp(1.0 / Math.max(2, sectionLen * 0.5),  0.10, 0.4);   // ~2-bar
+   407→    const slowRate = clamp(1.0 / Math.max(4, sectionLen),         0.05, 0.25); // ~4-bar
+   408→
+   409→    // Continuous params (smooth toward target)
+   410→    this.current.energy       = lerp(this.current.energy,       this.target.energy,       medRate);
+   411→    this.current.density      = lerp(this.current.density,      this.target.density,      medRate);
+   412→    this.current.hatDensity   = lerp(this.current.hatDensity,   this.target.hatDensity,   medRate);
+   413→    this.current.percDensity  = lerp(this.current.percDensity,  this.target.percDensity,  medRate);
+   414→    this.current.fxDensity    = lerp(this.current.fxDensity,    this.target.fxDensity,    medRate);
+   415→    this.current.reverbAmount = lerp(this.current.reverbAmount, this.target.reverbAmount, medRate);
+   416→    this.current.delayAmount  = lerp(this.current.delayAmount,  this.target.delayAmount,  medRate);
+   417→    this.current.tension      = lerp(this.current.tension,      this.target.tension,      fastRate);
+   418→    this.current.surprise     = lerp(this.current.surprise,     this.target.surprise,     fastRate);
+   419→
+   420→    // filterCutoff: exponential interpolation (ears hear log-Hz)
+   421→    const lc = Math.log(Math.max(80, this.current.filterCutoff));
+   422→    const lt = Math.log(Math.max(80, this.target.filterCutoff));
+   423→    this.current.filterCutoff = Math.exp(lerp(lc, lt, slowRate));
+   424→
+   425→    // Discrete flags follow the target immediately (they're booleans — no
+   426→    // smoothing needed, the engine gates tracks on them)
+   427→    this.current.bassOn = this.target.bassOn;
+   428→    this.current.leadOn = this.target.leadOn;
+   429→    this.current.acidOn = this.target.acidOn;
+   430→    this.current.label = this.target.label;
+   431→
+   432→    // Update section framing
+   433→    this.current.sectionBars = this.currentSectionBars;
+   434→    this.current.barInSection = this.barInSection;
+   435→
+   436→    // Maybe queue a surprise event
+   437→    this.maybeQueueSurprise(bar);
+   438→
+   439→    return this.current;
+   440→  }
+   441→
+   442→  /**
+   443→   * Called when the radio's energy shifts significantly. Forces a transition
+   444→   * consideration on the next tick — if the radio is building, we build; if
+   445→   * the radio drops, we drop.
+   446→   *
+   447→   * `energy` is the new radio energy (0-1). The engine calls this from
+   448→   * liveTrack() when it detects a significant change (>0.15 delta from the
+   449→   * smoothed history).
+   450→   */
+   451→  onReferenceEnergyChange(energy: number): void {
+   452→    if (!isFinite(energy) || energy <= 0) return;
+   453→    const e = clamp(energy, 0, 1);
+   454→    // Push to history immediately so the next tick sees the new value
+   455→    this.refEnergyHistory.push(e);
+   456→    if (this.refEnergyHistory.length > FlowEngine.REF_ENERGY_HISTORY_MAX) {
+   457→      this.refEnergyHistory.shift();
+   458→    }
+   459→    // Mark this bar as a "shift" — the next transition consideration will
+   460→    // fire even if we're below minBars (radio energy shifts are high-priority)
+   461→    this.lastRefEnergyShiftBar = this.barCount;
+   462→  }
+   463→
+   464→  /**
+   465→   * Force a transition to a specific archetype. Used by the engine when:
+   466→   *   - The style changes (switchWorld may want to reset the flow)
+   467→   *   - The user explicitly requests a section change
+   468→   *
+   469→   * `partial.label` selects the archetype; other fields override the
+   470→   * archetype's defaults (e.g., to set a custom section length).
+   471→   * `bars` is the planned length of the new section.
+   472→   */
+   473→  transitionTo(partial: Partial<FlowState> & { label?: string }, bars: number): void {
+   474→    const label = partial.label || this.currentArchetype.label;
+   475→    const arch = ARCHETYPES[label] || this.currentArchetype;
+   476→    this.currentArchetype = arch;
+   477→    this.target = this.archetypeToFlowState(arch, bars, 0);
+   478→    // Apply overrides
+   479→    if (partial.energy !== undefined) this.target.energy = partial.energy;
+   480→    if (partial.density !== undefined) this.target.density = partial.density;
+   481→    if (partial.bassOn !== undefined) this.target.bassOn = partial.bassOn;
+   482→    if (partial.leadOn !== undefined) this.target.leadOn = partial.leadOn;
+   483→    if (partial.filterCutoff !== undefined) this.target.filterCutoff = partial.filterCutoff;
+   484→    if (partial.reverbAmount !== undefined) this.target.reverbAmount = partial.reverbAmount;
+   485→    if (partial.delayAmount !== undefined) this.target.delayAmount = partial.delayAmount;
+   486→    if (partial.tension !== undefined) this.target.tension = partial.tension;
+   487→    if (partial.surprise !== undefined) this.target.surprise = partial.surprise;
+   488→    this.currentSectionBars = Math.max(2, bars);
+   489→    this.lastTransitionBar = this.barCount;
+   490→    this.barInSection = 0;
+   491→  }
+   492→
+   493→  /**
+   494→   * Get the current (smoothed) flow state. Identical to the last value
+   495→   * returned by tick(). Useful for the engine to read state between ticks.
+   496→   */
+   497→  getCurrent(): FlowState {
+   498→    return this.current;
+   499→  }
+   500→
+   501→  /**
+   502→   * Pop the next pending surprise event (or null if none). The engine calls
+   503→   * this each bar and handles the returned event — triggers a riser, mutes
+   504→   * tracks, etc.
+   505→   *
+   506→   * Once an event is popped, it's marked as "active" and won't be returned
+   507→   * again. A new surprise won't be queued until the cooldown elapses.
+   508→   */
+   509→  maybeSurprise(bar: number): SurpriseEvent | null {
+   510→    if (this.pendingSurprise && this.pendingSurprise.startBar <= bar) {
+   511→      this.activeSurprise = this.pendingSurprise;
+   512→      this.pendingSurprise = null;
+   513→      this.lastSurpriseBar = bar;
+   514→      return this.activeSurprise;
+   515→    }
+   516→    // Clear the active surprise once its duration has elapsed
+   517→    if (this.activeSurprise && bar >= this.activeSurprise.startBar + this.activeSurprise.durationBars) {
+   518→      this.activeSurprise = null;
+   519→    }
+   520→    return null;
+   521→  }
+   522→
+   523→  /**
+   524→   * Return the currently-active surprise event (if any). The engine can read
+   525→   * this each step to apply the ongoing effect (e.g., keep tracks muted during
+   526→   * a dropOut, keep the filter swept during a filterSweep).
+   527→   */
+   528→  getActiveSurprise(): SurpriseEvent | null {
+   529→    return this.activeSurprise;
+   530→  }
+   531→
+   532→  // ─── Internal logic ──────────────────────────────────────────────────────
+   533→
+   534→  /**
+   535→   * Decide whether to transition this bar. Considers:
+   536→   *   - Time since last transition (rising probability from minBars to maxBars)
+   537→   *   - Radio energy shift (high-priority — transitions on shift even if early)
+   538→   *   - Random chance (so the flow isn't predictable)
+   539→   */
+   540→  private shouldTransition(bar: number, refEnergy: number, barsSinceTransition: number): boolean {
+   541→    // Radio energy shift — high-priority trigger
+   542→    const barsSinceShift = bar - this.lastRefEnergyShiftBar;
+   543→    if (barsSinceShift <= 1 && barsSinceTransition >= 2) {
+   544→      return true;
+   545→    }
+   546→
+   547→    // Radio energy divergence — if the radio's energy has drifted far from
+   548→    // the current archetype's target, transition to chase it
+   549→    if (refEnergy > 0 && Math.abs(refEnergy - this.target.energy) > 0.25 && barsSinceTransition >= 2) {
+   550→      return true;
+   551→    }
+   552→
+   553→    // Rising probability from minBars to currentSectionBars (linear ramp).
+   554→    // At minBars: ~0% chance per bar. At currentSectionBars: ~30% chance.
+   555→    // This gives the flow organic variation — sometimes a section ends early
+   556→    // (radio-driven or random), sometimes it runs the full planned length.
+   557→    const minBars = this.worldProfile.minSectionBars;
+   558→    const planned = Math.max(minBars + 1, this.currentSectionBars);
+   559→    const progress = clamp((barsSinceTransition - minBars) / Math.max(1, planned - minBars), 0, 1);
+   560→    const chance = progress * 0.30;
+   561→    return this.rng.chance(chance);
+   562→  }
+   563→
+   564→  /**
+   565→   * Pick the next archetype and apply it. Uses:
+   566→   *   - Musical logic (no DROP→DROP, no BREAK→BREAK)
+   567→   *   - Radio energy (chase the radio's level)
+   568→   *   - World profile (archetype weights, likelihoods)
+   569→   *   - Random chance (so the flow isn't formulaic)
+   570→   */
+   571→  private transition(bar: number, refEnergy: number): void {
+   572→    const prevLabel = this.currentArchetype.label;
+   573→    const nextLabel = this.pickNextArchetype(prevLabel, refEnergy);
+   574→    const nextArch = ARCHETYPES[nextLabel];
+   575→
+   576→    // Pick section length — world profile's range, biased by archetype.
+   577→    // Drops are longer (8-32 bars), builds are shorter (4-16), breaks are
+   578→    // short (4-12), grooves are medium (8-24), intros/outros are short.
+   579→    const sectionLen = this.pickSectionLength(nextLabel);
+   580→
+   581→    // Apply the new archetype
+   582→    this.currentArchetype = nextArch;
+   583→    this.target = this.archetypeToFlowState(nextArch, sectionLen, 0);
+   584→
+   585→    // Blend in radio energy if available — bias the target energy toward
+   586→    // the radio's current level so we chase it.
+   587→    if (refEnergy > 0 && isFinite(refEnergy)) {
+   588→      const blend = 0.5; // 50% archetype, 50% radio
+   589→      this.target.energy = clamp(
+   590→        this.target.energy * (1 - blend) + refEnergy * blend,
+   591→        0, 1,
+   592→      );
+   593→      // Density follows energy loosely
+   594→      this.target.density = clamp(
+   595→        this.target.density * (1 - blend * 0.5) + refEnergy * blend * 0.5,
+   596→        0, 1,
+   597→      );
+   598→      // If radio is much brighter than our target, open the filter
+   599→      if (refEnergy > this.target.energy + 0.15) {
+   600→        this.target.filterCutoff = clamp(this.target.filterCutoff * 1.3, 200, 12000);
+   601→      } else if (refEnergy < this.target.energy - 0.15) {
+   602→        this.target.filterCutoff = clamp(this.target.filterCutoff * 0.7, 200, 12000);
+   603→      }
+   604→    }
+   605→
+   606→    this.currentSectionBars = sectionLen;
+   607→    this.lastTransitionBar = bar;
+   608→    this.barInSection = 0;
+   609→  }
+   610→
+   611→  /**
+   612→   * Pick the next archetype based on musical logic + radio energy + world profile.
+   613→   *
+   614→   * Musical logic (hard rules):
+   615→   *   - DROP → DROP         : FORBIDDEN (boring)
+   616→   *   - BREAK → BREAK       : FORBIDDEN (too sparse)
+   617→   *   - INTRO → INTRO       : FORBIDDEN (no progress)
+   618→   *   - OUTRO → anything but OUTRO : FORBIDDEN (we're winding down)
+   619→   *
+   620→   * Musical logic (soft preferences):
+   621→   *   - After DROP     : VARIATION (most common) or BREAK (common)
+   622→   *   - After BUILD    : DROP (most common) or VARIATION
+   623→   *   - After BREAK    : BUILD (most common) or GROOVE
+   624→   *   - After GROOVE   : BUILD (most common) or BREAK or DROP (surprise)
+   625→   *   - After VARIATION: BREAK (most common) or DROP
+   626→   *   - After INTRO    : GROOVE (almost always)
+   627→   *
+   628→   * Radio energy can override the soft preferences — if the radio is at 0.9
+   629→   * energy and we just came out of a BREAK, we might skip BUILD and go
+   630→   * straight to DROP (chase the radio).
+   631→   */
+   632→  private pickNextArchetype(prevLabel: string, refEnergy: number): string {
+   633→    // OUTRO is terminal — once we're here, stay
+   634→    if (prevLabel === 'OUTRO') return 'OUTRO';
+   635→
+   636→    // Define allowed next archetypes per current label (musical logic)
+   637→    const allowed: Record<string, string[]> = {
+   638→      INTRO:      ['GROOVE', 'BUILD', 'DROP'],  // rarely straight to drop (surprise)
+   639→      GROOVE:     ['BUILD', 'BREAK', 'DROP', 'VARIATION'],
+   640→      BUILD:      ['DROP', 'VARIATION'],
+   641→      DROP:       ['VARIATION', 'BREAK', 'GROOVE'],
+   642→      VARIATION:  ['BREAK', 'DROP', 'GROOVE'],
+   643→      BREAK:      ['BUILD', 'GROOVE', 'DROP'],
+   644→      OUTRO:      ['OUTRO'],
+   645→    };
+   646→
+   647→    const candidates = allowed[prevLabel] || ['GROOVE'];
+   648→    const profile = this.worldProfile;
+   649→
+   650→    // Weight each candidate
+   651→    const weights = candidates.map(label => {
+   652→      let w = profile.weights[label as keyof typeof ARCHETYPES] ?? 1.0;
+   653→
+   654→      // Radio energy influence: if the radio is high-energy, boost high-energy archetypes
+   655→      if (refEnergy > 0) {
+   656→        const arch = ARCHETYPES[label];
+   657→        const energyDelta = Math.abs(arch.energy - refEnergy);
+   658→        // Closer energy = higher weight (inverse distance)
+   659→        const closeness = clamp(1 - energyDelta, 0.1, 1.5);
+   660→        w *= closeness;
+   661→      }
+   662→
+   663→      // Apply world profile likelihoods
+   664→      if (label === 'DROP') w *= profile.dropLikelihood * 2;
+   665→      if (label === 'BREAK') w *= profile.breakLikelihood * 2;
+   666→      if (label === 'BUILD') w *= profile.buildLikelihood * 2;
+   667→
+   668→      // INTRO→DROP is a surprise — penalize unless surprise rate is high
+   669→      if (prevLabel === 'INTRO' && label === 'DROP') {
+   670→        w *= 0.2 * profile.surpriseRateMult;
+   671→      }
+   672→
+   673→      return Math.max(0.05, w);
+   674→    });
+   675→
+   676→    // Weighted random pick
+   677→    const total = weights.reduce((a, b) => a + b, 0);
+   678→    let r = this.rng.next() * total;
+   679→    for (let i = 0; i < candidates.length; i++) {
+   680→      r -= weights[i];
+   681→      if (r <= 0) return candidates[i];
+   682→    }
+   683→    return candidates[candidates.length - 1];
+   684→  }
+   685→
+   686→  /**
+   687→   * Pick a section length for the new archetype. World profile sets the range;
+   688→   * the archetype biases toward shorter or longer:
+   689→   *   - DROP / FINAL DROP : longer (more bars to develop the drop)
+   690→   *   - BUILD             : shorter (builds shouldn't overstay)
+   691→   *   - BREAK             : short (breaks are punctuation, not paragraphs)
+   692→   *   - GROOVE / VARIATION: medium
+   693→   *   - INTRO / OUTRO     : short
+   694→   */
+   695→  private pickSectionLength(label: string): number {
+   696→    const profile = this.worldProfile;
+   697→    const min = profile.minSectionBars;
+   698→    const max = profile.maxSectionBars;
+   699→
+   700→    // Bias multipliers — shift the random pick within [min, max]
+   701→    const bias: Record<string, number> = {
+   702→      INTRO: 0.3,
+   703→      GROOVE: 0.5,
+   704→      BUILD: 0.4,
+   705→      DROP: 0.75,
+   706→      VARIATION: 0.55,
+   707→      BREAK: 0.25,
+   708→      OUTRO: 0.3,
+   709→    };
+   710→
+   711→    const b = bias[label] ?? 0.5;
+   712→    // Bias toward the low or high end of the range
+   713→    // b < 0.5 → bias low; b > 0.5 → bias high
+   714→    const r = this.rng.next();
+   715→    // Power curve: r^k. k > 1 biases low, k < 1 biases high.
+   716→    const k = b < 0.5 ? 1 / (b * 2 + 0.1) : (1 - b) * 2 + 0.1;
+   717→    const biased = Math.pow(r, k);
+   718→    const len = Math.round(min + biased * (max - min));
+   719→    // Round to a multiple of 4 (musical phrases are usually 4 or 8 bars)
+   720→    const rounded = Math.max(4, Math.round(len / 4) * 4);
+   721→    return clamp(rounded, min, max);
+   722→  }
+   723→
+   724→  /**
+   725→   * Build a FlowState from an archetype + section framing.
+   726→   */
+   727→  private archetypeToFlowState(arch: Archetype, sectionBars: number, barInSection: number): FlowState {
+   728→    // Apply world profile's surprise rate multiplier
+   729→    const surpriseMult = this.worldProfile?.surpriseRateMult ?? 1.0;
+   730→    return {
+   731→      energy: arch.energy,
+   732→      density: arch.density,
+   733→      bassOn: arch.bass,
+   734→      leadOn: arch.lead,
+   735→      acidOn: arch.acid,
+   736→      hatDensity: arch.hatDensity,
+   737→      percDensity: arch.percDensity,
+   738→      fxDensity: arch.fxDensity,
+   739→      label: arch.label,
+   740→      filterCutoff: arch.filterCutoff,
+   741→      reverbAmount: arch.reverbAmount,
+   742→      delayAmount: arch.delayAmount,
+   743→      tension: arch.tension,
+   744→      surprise: clamp(arch.surprise * surpriseMult, 0, 0.4),
+   745→      sectionBars,
+   746→      barInSection,
+   747→    };
+   748→  }
+   749→
+   750→  /**
+   751→   * Maybe queue a surprise event for the current bar. Called from tick().
+   752→   *
+   753→   * Probability is the current FlowState's `surprise` value. The event is
+   754→   * queued (not fired immediately) so the engine can pop it via maybeSurprise()
+   755→   * on the next bar — this gives the engine a chance to schedule the effect
+   756→   * ahead of time (lookahead scheduler).
+   757→   *
+   758→   * Respects a cooldown so surprises don't fire too often (every 16 bars min).
+   759→   * Doesn't queue during INTRO or OUTRO (those are framing sections — surprises
+   760→   * belong in the body of the track).
+   761→   */
+   762→  private maybeQueueSurprise(bar: number): void {
+   763→    // Already have a pending surprise — don't queue another
+   764→    if (this.pendingSurprise) return;
+   765→    // Active surprise is still running — wait for it to finish
+   766→    if (this.activeSurprise) return;
+   767→    // Cooldown
+   768→    if (bar - this.lastSurpriseBar < FlowEngine.SURPRISE_COOLDOWN_BARS) return;
+   769→    // No surprises in INTRO or OUTRO
+   770→    if (this.currentArchetype.label === 'INTRO' || this.currentArchetype.label === 'OUTRO') return;
+   771→
+   772→    // Probability check
+   773→    if (!this.rng.chance(this.current.surprise)) return;
+   774→
+   775→    // Pick a surprise type. Forest and acid-psy get more variety; hypnotic
+   776→    // gets only the subtle ones (filterSweep, echoThrow).
+   777→    const profile = this.worldProfile;
+   778→    let types: SurpriseEvent['type'][];
+   779→    if (this.currentArchetype.label === 'BREAK') {
+   780→      // Subtle surprises in breaks — don't shatter the calm
+   781→      types = ['echoThrow', 'filterSweep'];
+   782→    } else if (this.currentArchetype.label === 'DROP') {
+   783→      // Dramatic surprises in drops
+   784→      types = ['dropOut', 'stutter', 'reverseHit', 'silence', 'filterSweep'];
+   785→    } else if (this.currentArchetype.label === 'VARIATION') {
+   786→      types = ['echoThrow', 'filterSweep', 'stutter', 'reverseHit'];
+   787→    } else if (this.currentArchetype.label === 'BUILD') {
+   788→      // Tension-building surprises
+   789→      types = ['reverseHit', 'filterSweep', 'stutter'];
+   790→    } else {
+   791→      types = ['echoThrow', 'filterSweep'];
+   792→    }
+   793→
+   794→    // Forest gets more variety (organic unpredictability)
+   795→    if (profile.surpriseRateMult > 1.3 && this.rng.chance(0.3)) {
+   796→      types = ['filterSweep', 'dropOut', 'echoThrow', 'reverseHit', 'stutter', 'silence'];
+   797→    }
+   798→
+   799→    const type = types[Math.floor(this.rng.next() * types.length)] || 'filterSweep';
+   800→    const intensity = clamp(0.4 + this.current.energy * 0.5 + this.rng.next() * 0.2, 0.3, 1.0);
+   801→
+   802→    // Duration depends on type:
+   803→    //   - silence: very short (1 bar) — dramatic pause
+   804→    //   - dropOut: short (1-2 bars) — quick brake
+   805→    //   - stutter: short (1 bar) — rapid retrigger
+   806→    //   - echoThrow: medium (2-4 bars) — let the echo ring out
+   807→    //   - reverseHit: short (1 bar) — single reversed hit
+   808→    //   - filterSweep: medium (2-4 bars) — let the sweep develop
+   809→    let durationBars: number;
+   810→    switch (type) {
+   811→      case 'silence':    durationBars = 1; break;
+   812→      case 'dropOut':    durationBars = this.rng.int(1, 2); break;
+   813→      case 'stutter':    durationBars = 1; break;
+   814→      case 'reverseHit': durationBars = 1; break;
+   815→      case 'echoThrow':  durationBars = this.rng.int(2, 4); break;
+   816→      case 'filterSweep':durationBars = this.rng.int(2, 4); break;
+   817→      default:           durationBars = 2;
+   818→    }
+   819→
+   820→    // Schedule the surprise for the NEXT bar (gives the engine's lookahead
+   821→    // scheduler time to prepare)
+   822→    this.pendingSurprise = {
+   823→      type,
+   824→      startBar: bar + 1,
+   825→      durationBars,
+   826→      intensity,
+   827→    };
+   828→  }
+   829→}
+   830→

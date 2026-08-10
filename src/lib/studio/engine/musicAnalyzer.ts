@@ -38,6 +38,8 @@
  * (groove section, static contour, offbeat hats) instead of crashing.
  */
 
+import { SCALES } from './musicalGrammar';
+
 // ─── Public types ───────────────────────────────────────────────────────────
 
 export interface MusicalEvent {
@@ -128,6 +130,13 @@ const MELODIC_PEAK_COOLDOWN_SEC = 20;
 
 /** Window over which contour + slope are measured (≈ 4 bars at 140 BPM). */
 const SLOPE_WINDOW_SEC = 16;
+
+/**
+ * Cooldown for melodic-motif extraction (Task P5). The analyzer updates
+ * every ~10s but the centroid only changes meaningfully over a longer
+ * window — extracting every 30s avoids learning the same motif repeatedly.
+ */
+const MOTIF_EXTRACT_COOLDOWN_SEC = 30;
 
 /** Default rhythmic patterns (16-char gate strings, 16th-note resolution). */
 const KICK_PATTERNS: Record<string, string> = {
@@ -298,6 +307,144 @@ export class MusicAnalyzer {
   getContour(): MelodicContour {
     return { ...this.contour };
   }
+
+  // ─── Task P5: melodic motif extraction ────────────────────────────────────
+
+  /**
+   * Extract a melodic motif (sequence of scale degrees) from the recent
+   * spectral-centroid history. This is the pitch-detection proxy used by
+   * the VocabularyLearner — we don't have raw audio, so we approximate
+   * "the radio's melody" by tracking the spectral centroid over a ~60s
+   * window (6-8 reference samples). Each sample's centroid Hz → MIDI note
+   * → quantized scale degree (relative to the engine's musical key).
+   *
+   * The result is a SHORT motif (4-8 notes of typical 8th-note duration)
+   * whose contour mirrors the radio's macro-melodic motion. The
+   * MusicalDirector's transformation pipeline (transpose / invert /
+   * fragment / sequence) develops it further, so even a coarse contour
+   * approximation produces musical material that connects to the radio.
+   *
+   * Cooldown: 30s. Extracting more often would just produce the same
+   * motif repeatedly (the analyzer updates every ~10s but the centroid
+   * only changes meaningfully over a longer window).
+   *
+   * Returns null if:
+   *   - The cooldown hasn't elapsed.
+   *   - There aren't enough samples (<4) in the window.
+   *   - The contour is "static" (centroids all within ±100 Hz — no
+   *     meaningful motion to learn).
+   *   - The root/scale are invalid.
+   */
+  extractRecentMelodicMotif(
+    root: number,
+    scale: string,
+  ): { notes: number[]; durations: number[]; velocities: number[] } | null {
+    if (!isFinite(root) || root < 0 || root > 127) return null;
+    const sc = SCALES[scale] || SCALES.minor;
+    const now = this.now();
+    if (now - this.lastMotifExtractTime < MOTIF_EXTRACT_COOLDOWN_SEC) return null;
+
+    // Pull the last ~60s of spectral samples (≈ 6 samples at 10s hops).
+    const windowSec = 60;
+    const cutoff = now - windowSec;
+    const pts = this.spectralHistory.filter(p => p.time >= cutoff);
+    if (pts.length < 4) return null;
+
+    // Reject static contours (peak-to-trough < 100 Hz = pedal note, not
+    // a melodic motif worth learning).
+    const centroids = pts.map(p => p.centroid);
+    const peak = Math.max(...centroids);
+    const trough = Math.min(...centroids);
+    if (peak - trough < 100) return null;
+
+    // Convert each centroid → MIDI → scale degree. Sample energy → velocity.
+    const notes: number[] = [];
+    const durations: number[] = [];
+    const velocities: number[] = [];
+
+    for (let i = 0; i < pts.length; i++) {
+      const c = pts[i].centroid;
+      if (!isFinite(c) || c <= 0) continue;
+      // Hz → MIDI (A4=440Hz=69).
+      const midi = 12 * Math.log2(c / 440) + 69;
+      if (!isFinite(midi) || midi < 12 || midi > 127) continue;
+      const deg = this.midiToScaleDegree(midi, root, sc);
+      if (!isFinite(deg)) continue;
+
+      // Find the energy sample at (or very near) this time. We search the
+      // energy history backwards from the end for a sample within ±1s.
+      let energy = 0.5;
+      for (let j = this.energyHistory.length - 1; j >= 0; j--) {
+        if (Math.abs(this.energyHistory[j].time - pts[i].time) < 2) {
+          energy = this.energyHistory[j].value;
+          break;
+        }
+      }
+      // Map energy 0..1 → velocity 0.35..0.9.
+      const vel = clamp(0.35 + energy * 0.55, 0.25, 0.95);
+
+      // Skip duplicate consecutive degrees (motif shouldn't repeat the
+      // same note 6 times — that's a pedal, not a melody). We replace
+      // the previous note's duration instead of pushing a new entry.
+      if (notes.length > 0 && notes[notes.length - 1] === deg) {
+        durations[durations.length - 1] += 2;
+        // Keep the louder velocity.
+        if (vel > velocities[velocities.length - 1]) {
+          velocities[velocities.length - 1] = vel;
+        }
+        continue;
+      }
+
+      notes.push(deg);
+      durations.push(2); // 8th note by default (16th-step units)
+      velocities.push(vel);
+    }
+
+    // Need 4-8 distinct notes for a meaningful motif.
+    if (notes.length < 4 || notes.length > 12) {
+      this.lastMotifExtractTime = now;
+      return null;
+    }
+    // Trim to first 8 if longer (keeps motifs singable).
+    const trimmed = notes.length > 8
+      ? {
+          notes: notes.slice(0, 8),
+          durations: durations.slice(0, 8),
+          velocities: velocities.slice(0, 8),
+        }
+      : { notes, durations, velocities };
+
+    this.lastMotifExtractTime = now;
+    return trimmed;
+  }
+
+  /**
+   * Convert a MIDI note to a scale degree (root-relative integer that may
+   * be negative or >7 — wraps octaves via MelodyEngine.scaleNote).
+   *
+   * Algorithm: precompute all scale pitches over a 7-octave range centered
+   * on the root, find the nearest MIDI in that list, return the degree.
+   * O(sc.length × 7) per call — trivial.
+   */
+  private midiToScaleDegree(midi: number, root: number, sc: number[]): number {
+    let bestDeg = 0;
+    let bestDist = Infinity;
+    const n = sc.length;
+    for (let octave = -3; octave <= 4; octave++) {
+      for (let i = 0; i < n; i++) {
+        const candMidi = root + octave * 12 + sc[i];
+        const d = Math.abs(candMidi - midi);
+        if (d < bestDist) {
+          bestDist = d;
+          bestDeg = octave * n + i;
+        }
+      }
+    }
+    return bestDeg;
+  }
+
+  /** Wall-clock seconds of the last motif extraction (cooldown tracker). */
+  private lastMotifExtractTime = 0;
 
   /**
    * Build the full MusicalAnalysis snapshot (used by the engine + UI).

@@ -147,6 +147,17 @@ export default function PSY4Page() {
   const [syncStatus, setSyncStatus] = useState<any>(null);
   const [syncEnabled, setSyncEnabled] = useState<boolean>(false);
 
+  // ── Task P4: phrase-level sync state ──
+  // Live phrase-sync state (ref bar-in-phrase, our bar-in-phrase, estimated
+  // phrase length, alignment %, realignment counter). Pulled via
+  // engine.getPhraseSyncState() on every analyzer tick. The
+  // `phraseSyncFlash` state briefly lights up when the realignment counter
+  // increases (a realignment just happened) — driven by a useEffect that
+  // watches the counter + auto-clears after 600ms.
+  const [phraseSyncState, setPhraseSyncState] = useState<any>(null);
+  const [phraseSyncFlash, setPhraseSyncFlash] = useState<boolean>(false);
+  const prevRealignmentsRef = useRef<number>(0);
+
   // ── Task T1 (active learning): cross-session memory dashboard ──
   // Pulled via engine.getLearningStatus() on every analyzer tick. Shows
   // total patterns learned, average + current match score, improvement
@@ -154,6 +165,16 @@ export default function PSY4Page() {
   // rolling match-score history (last 20 samples) for the trend graph.
   // The "Reset learning" button clears the memory + localStorage.
   const [learningStatus, setLearningStatus] = useState<any>(null);
+
+  // ── Task P5 (adaptive learning): musical vocabulary dashboard ──
+  // Pulled via engine.getVocabularyStats() on every analyzer tick. Shows
+  // the count of learned melodic motifs + rhythmic patterns the engine
+  // has extracted from the radio, the top 3 of each (visualized as note
+  // sequences + gate strings), the average effectiveness score (how well
+  // the quotes are working), and a "Learning..." indicator when the
+  // learner has absorbed new material in the last 30s. The vocabulary
+  // persists across sessions via localStorage (psy4_vocabulary_v1).
+  const [vocabularyStats, setVocabularyStats] = useState<any>(null);
 
   // Refs
   const listenerRef = useRef<any>(null);
@@ -372,10 +393,20 @@ export default function PSY4Page() {
             if (engineRef.current?.isSyncEnabled) {
               try { setSyncEnabled(engineRef.current.isSyncEnabled()); } catch {}
             }
+            // ── Task P4: pull phrase-sync state ──
+            // Optional chaining so we degrade gracefully if P4 isn't merged.
+            if (engineRef.current?.getPhraseSyncState) {
+              try { setPhraseSyncState(engineRef.current.getPhraseSyncState()); } catch {}
+            }
             // ── Task T1 (active learning): pull learning status ──
             // Optional chaining so we degrade gracefully if T1 isn't merged.
             if (engineRef.current?.getLearningStatus) {
               try { setLearningStatus(engineRef.current.getLearningStatus()); } catch {}
+            }
+            // ── Task P5 (adaptive learning): pull vocabulary stats ──
+            // Optional chaining so we degrade gracefully if P5 isn't merged.
+            if (engineRef.current?.getVocabularyStats) {
+              try { setVocabularyStats(engineRef.current.getVocabularyStats()); } catch {}
             }
           } catch {}
           // Track D: pull style classification + active world on every tick.
@@ -436,12 +467,19 @@ export default function PSY4Page() {
     // restarts. When the engine is restarted, the new engine's PhaseSync
     // will pick up the toggle state on the first toggle click.
     setSyncStatus(null);
+    // ── Task P4: clear phrase-sync state (the engine is gone) ──
+    setPhraseSyncState(null);
+    setPhraseSyncFlash(false);
+    prevRealignmentsRef.current = 0;
     // ── Task T1 (active learning): keep the learning status visible ──
     // We DON'T clear learningStatus — the engine saved its memory to
     // localStorage on stop(), and the next engine instance will reload it.
     // Clearing here would briefly show "no patterns" before the new engine
     // loads them, which is misleading. The status refreshes on the next
     // analyzer tick after restart.
+    // ── Task P5 (adaptive learning): same pattern — keep the vocabulary
+    // stats visible across stop/start (the vocabulary persists to
+    // localStorage and reloads on the next engine instance). ──
     prevDeltaRef.current = {};
     lastSwitchToastRef.current = '';
   }, []);
@@ -498,7 +536,7 @@ export default function PSY4Page() {
     }
     if (next) {
       toast.success('MASTER SYNC enabled', {
-        description: 'Full DJ controller: BPM + phase + key (Camelot) + groove (swing/push-pull) + energy + beat-grid.',
+        description: 'Full DJ controller: BPM + phase + key (Camelot) + groove (swing/push-pull) + energy + beat-grid + phrase.',
       });
     } else {
       toast.info('MASTER SYNC disabled', {
@@ -506,6 +544,23 @@ export default function PSY4Page() {
       });
     }
   }, [syncEnabled]);
+
+  // ── Task P4: watch the phrase-sync realignment counter + flash the UI ──
+  // When the counter increases (a realignment just happened), set the flash
+  // state to true and auto-clear it after 600ms. The flash adds a brief
+  // ring + bg pulse to the PHRASE SYNC card so the user can SEE that a
+  // realignment fired (otherwise the only feedback is the counter going up
+  // by 1, which is easy to miss).
+  useEffect(() => {
+    const count = phraseSyncState?.realignments ?? 0;
+    if (count > prevRealignmentsRef.current) {
+      setPhraseSyncFlash(true);
+      const t = setTimeout(() => setPhraseSyncFlash(false), 600);
+      prevRealignmentsRef.current = count;
+      return () => clearTimeout(t);
+    }
+    prevRealignmentsRef.current = count;
+  }, [phraseSyncState?.realignments]);
 
   // ─── Cleanup ──────────────────────────────────────────────────────────────
 
@@ -1397,6 +1452,152 @@ export default function PSY4Page() {
                     </div>
                   </div>
 
+                  {/* ── PHRASE SYNC (Task P4 — phrase-level structural sync) ── */}
+                  {/* Complements the BEAT-GRID / PHRASE block above (which is
+                      driven by the DJController's reactive energy-transition
+                      detector). This block shows the PhraseSync's PROACTIVE
+                      structural alignment: the radio's estimated phrase
+                      length + bar position vs our own, the alignment %, the
+                      realignment counter, and a flash when a realignment
+                      just fired. When the radio drops, we drop at the same
+                      time — not 3 bars off. */}
+                  <div className={`bg-slate-950 border rounded p-3 transition-all duration-300 ${
+                    phraseSyncFlash
+                      ? 'border-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.4)]'
+                      : phraseSyncState && phraseSyncState.alignment > 0.75
+                        ? 'border-emerald-700'
+                        : phraseSyncState && phraseSyncState.alignment > 0.4
+                          ? 'border-amber-700'
+                          : 'border-slate-800'
+                  }`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-1.5">
+                        <LayoutGrid className={`w-3.5 h-3.5 ${phraseSyncFlash ? 'text-emerald-300' : 'text-emerald-400'}`} />
+                        <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">
+                          Phrase Sync · structural
+                        </span>
+                      </div>
+                      <span className={`text-[10px] font-mono font-bold ${
+                        !phraseSyncState || phraseSyncState.lastRefBoundaryTime === 0
+                          ? 'text-slate-500'
+                          : phraseSyncState.alignment > 0.75
+                            ? 'text-emerald-400'
+                            : phraseSyncState.alignment > 0.4
+                              ? 'text-amber-400'
+                              : 'text-rose-400'
+                      }`}>
+                        {!phraseSyncState || phraseSyncState.lastRefBoundaryTime === 0
+                          ? '○ NO REF'
+                          : phraseSyncFlash
+                            ? '✦ REALIGN'
+                            : `● ${phraseSyncState.alignment > 0.75 ? 'ALIGNED' : phraseSyncState.alignment > 0.4 ? 'DRIFT' : 'OFF'}`}
+                      </span>
+                    </div>
+                    {(() => {
+                      if (!phraseSyncState || phraseSyncState.lastRefBoundaryTime === 0) {
+                        return (
+                          <div className="text-[10px] text-slate-500 font-mono text-center py-2">
+                            Waiting for the radio's first section boundary — connect a stream and
+                            the MusicAnalyzer will detect drop / break / build events within ~30s.
+                          </div>
+                        );
+                      }
+                      const refBar = phraseSyncState.refPhraseBar ?? 0;
+                      const ownBar = phraseSyncState.ownPhraseBar ?? 0;
+                      const refLen = Math.max(4, Math.min(16, phraseSyncState.refPhraseLength ?? 8));
+                      const ownLen = Math.max(4, Math.min(16, phraseSyncState.ownPhraseLength ?? 8));
+                      const maxLen = Math.max(refLen, ownLen);
+                      const cells = Array.from({ length: maxLen }, (_, i) => i);
+                      const renderRow = (label: string, current: number, len: number, color: 'fuchsia' | 'cyan') => {
+                        const colorClasses = color === 'fuchsia'
+                          ? { active: 'bg-fuchsia-500 border-fuchsia-300', idle: 'bg-fuchsia-950 border-fuchsia-900', text: 'text-fuchsia-300' }
+                          : { active: 'bg-cyan-500 border-cyan-300', idle: 'bg-cyan-950 border-cyan-900', text: 'text-cyan-300' };
+                        return (
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[10px] font-mono ${colorClasses.text} w-10`}>{label}</span>
+                            <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${maxLen}, 1fr)` }}>
+                              {cells.map(b => {
+                                const isActive = b === current && b < len;
+                                const isStart = b === 0;
+                                const isBeyondLen = b >= len;
+                                return (
+                                  <div
+                                    key={b}
+                                    className={`relative h-5 rounded border flex items-center justify-center transition-all duration-100 ${
+                                      isBeyondLen
+                                        ? 'bg-slate-900 border-slate-800 opacity-30'
+                                        : isActive ? colorClasses.active : colorClasses.idle
+                                    } ${isStart && !isBeyondLen ? 'ring-1 ring-offset-1 ring-offset-slate-950' : ''}`}
+                                    style={isStart && !isBeyondLen ? { boxShadow: `0 0 0 1px ${color === 'fuchsia' ? 'rgb(217 70 239)' : 'rgb(34 211 238)'}` } : undefined}
+                                  >
+                                    <span className={`text-[8px] font-mono font-bold ${isActive ? 'text-white' : 'text-slate-600'}`}>
+                                      {b + 1}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      };
+                      return (
+                        <div className="space-y-1.5">
+                          {renderRow('REF', refBar, refLen, 'fuchsia')}
+                          {renderRow('OURS', ownBar, ownLen, 'cyan')}
+                        </div>
+                      );
+                    })()}
+                    {/* Stats footer — alignment %, ref phrase length, realignment counter */}
+                    {phraseSyncState && phraseSyncState.lastRefBoundaryTime > 0 && (
+                      <div className="grid grid-cols-3 gap-2 mt-2.5 pt-2 border-t border-slate-800">
+                        <div>
+                          <div className="text-[9px] text-slate-500 uppercase font-mono tracking-wider">alignment</div>
+                          <div className={`text-sm font-mono font-bold ${
+                            phraseSyncState.alignment > 0.75 ? 'text-emerald-300'
+                            : phraseSyncState.alignment > 0.4 ? 'text-amber-300'
+                            : 'text-rose-300'
+                          }`}>
+                            {(phraseSyncState.alignment * 100).toFixed(0)}%
+                          </div>
+                          <div className="h-1 bg-slate-800 rounded mt-0.5 overflow-hidden">
+                            <div
+                              className={`h-full rounded transition-all duration-200 ${
+                                phraseSyncState.alignment > 0.75 ? 'bg-emerald-500'
+                                : phraseSyncState.alignment > 0.4 ? 'bg-amber-500'
+                                : 'bg-rose-500'
+                              }`}
+                              style={{ width: `${(phraseSyncState.alignment * 100).toFixed(1)}%` }}
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] text-slate-500 uppercase font-mono tracking-wider">ref phrase</div>
+                          <div className="text-sm font-mono font-bold text-fuchsia-300">
+                            {phraseSyncState.refPhraseLength ?? 8}-bar
+                          </div>
+                          <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+                            {phraseSyncState.lastRefSectionLabel
+                              ? `last: ${phraseSyncState.lastRefSectionLabel}`
+                              : 'no boundary yet'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] text-slate-500 uppercase font-mono tracking-wider">realignments</div>
+                          <div className={`text-sm font-mono font-bold ${phraseSyncFlash ? 'text-emerald-300 animate-pulse' : 'text-slate-300'}`}>
+                            {phraseSyncState.realignments ?? 0}
+                          </div>
+                          <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+                            {phraseSyncState.realignments > 0
+                              ? `last ${(phraseSyncState.lastRealignment > 0
+                                ? Math.max(0, ((typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000 - phraseSyncState.lastRealignment)).toFixed(0)
+                                : '0')}s ago`
+                              : 'never'}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   {/* ── Beat grid visualization (per-bar, 4 beats) ── */}
                   <div className="bg-slate-950 border border-slate-800 rounded p-3">
                     <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-2 flex items-center justify-between">
@@ -2229,6 +2430,206 @@ export default function PSY4Page() {
                     (dropHit, riserStart, breakStart, chordChange, keyChange, melodicPeak). The engine
                     reacts to dropHit/breakStart/riserStart by forcing a flow transition — when the radio
                     drops, we drop; when the radio builds, we build.
+                  </p>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ─── VOCABULARY (Task P5 — adaptive learning) ─── */}
+        {/* VocabularyLearner output — the engine's learned musical vocabulary.
+            Shows the count of learned melodic motifs (note sequences extracted
+            from the radio's spectral centroid) + rhythmic patterns (gate
+            strings from the analyzer), the top 3 of each (visualized as note
+            sequences + gate strings), the average effectiveness score (how
+            well the quotes are working based on 30s match-score deltas), and
+            a "Learning..." indicator when the learner has absorbed new
+            material in the last 30s. Visible in analyze mode when the engine
+            is running. Optional chaining throughout so the UI gracefully
+            no-ops before the first liveTrack() call returns a snapshot. */}
+        {mode === 'analyze' && engineOn && (
+          <Card className="border-slate-800 bg-slate-900/60">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Brain className="w-4 h-4 text-fuchsia-400" />
+                VOCABULARY
+                <span className="text-[10px] text-slate-500 font-mono ml-2">learned motifs · rhythms · effectiveness</span>
+                {vocabularyStats?.learning && (
+                  <Badge className="bg-fuchsia-600/30 text-fuchsia-200 border border-fuchsia-700/40 ml-auto animate-pulse">
+                    Learning…
+                  </Badge>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {!vocabularyStats || (vocabularyStats.motifCount === 0 && vocabularyStats.rhythmCount === 0) ? (
+                <div className="text-[11px] text-amber-400 font-mono py-6 text-center">
+                  ⚠ Waiting for musical content — connect a stream and the engine learns the radio's
+                  melodic motifs + rhythmic patterns within ~60s (the motif extractor needs ≥4
+                  reference windows to build a contour).
+                </div>
+              ) : (
+                <>
+                  {/* ─── 1. SUMMARY STATS ─── */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3 grid grid-cols-4 gap-3 text-center">
+                    <div>
+                      <div className="text-[9px] font-mono text-slate-500 uppercase">Motifs</div>
+                      <div className="text-xl font-mono font-bold mt-1 text-fuchsia-300">
+                        {vocabularyStats.motifCount ?? 0}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] font-mono text-slate-500 uppercase">Rhythms</div>
+                      <div className="text-xl font-mono font-bold mt-1 text-amber-300">
+                        {vocabularyStats.rhythmCount ?? 0}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] font-mono text-slate-500 uppercase">Avg Effect</div>
+                      <div className={`text-xl font-mono font-bold mt-1 ${
+                        (vocabularyStats.avgEffectiveness ?? 0) > 0.6 ? 'text-emerald-300'
+                        : (vocabularyStats.avgEffectiveness ?? 0) > 0.4 ? 'text-amber-300'
+                        : 'text-rose-300'
+                      }`}>
+                        {((vocabularyStats.avgEffectiveness ?? 0) * 100).toFixed(0)}%
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] font-mono text-slate-500 uppercase">Active</div>
+                      <div className="text-xl font-mono font-bold mt-1 text-cyan-300">
+                        {vocabularyStats.activeQuoteCount ?? 0}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ─── 2. TOP LEARNED MOTIFS ─── */}
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider font-mono mb-2 text-fuchsia-400 flex items-center gap-1">
+                      <Piano className="w-3 h-3" /> Top Learned Motifs (quoted in lead, 30% probability)
+                    </div>
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3 space-y-2">
+                      {(vocabularyStats.topMotifs?.length ?? 0) === 0 ? (
+                        <div className="text-[10px] text-slate-500 font-mono py-2 text-center">
+                          No motifs learned yet — the radio's melodic contour needs to vary by ≥100 Hz
+                          over a 60s window for a motif to be extracted.
+                        </div>
+                      ) : (
+                        vocabularyStats.topMotifs.map((m: any, i: number) => (
+                          <div key={`vm-${i}`} className="flex items-center gap-3">
+                            {/* Effectiveness badge */}
+                            <div className="flex-shrink-0 w-10 text-right">
+                              <span className={`text-[10px] font-mono font-bold ${
+                                (m.effectiveness ?? 0) > 0.6 ? 'text-emerald-300'
+                                : (m.effectiveness ?? 0) > 0.4 ? 'text-amber-300'
+                                : 'text-rose-300'
+                              }`}>
+                                {((m.effectiveness ?? 0) * 100).toFixed(0)}%
+                              </span>
+                              <div className="text-[8px] font-mono text-slate-600">×{m.useCount ?? 0}</div>
+                            </div>
+                            {/* Note sequence visualization */}
+                            <div className="flex-1 flex items-end gap-px h-8">
+                              {(m.notes ?? []).map((deg: number, j: number) => {
+                                // Map scale degree to a vertical position (higher degree = higher bar).
+                                // Degrees can be negative / >7 — normalize to 0..1 over a 14-degree range.
+                                const normalized = ((deg + 3) % 14) / 14;
+                                const height = Math.max(8, Math.min(100, 20 + normalized * 80));
+                                const vel = (m.velocities?.[j] ?? 0.5);
+                                return (
+                                  <div
+                                    key={`vm-${i}-n-${j}`}
+                                    className="flex-1 bg-gradient-to-t from-fuchsia-700 to-fuchsia-300 rounded-sm transition-all"
+                                    style={{
+                                      height: `${height}%`,
+                                      opacity: 0.4 + vel * 0.6,
+                                    }}
+                                    title={`note ${j + 1}: degree ${deg} (vel ${vel.toFixed(2)})`}
+                                  />
+                                );
+                              })}
+                            </div>
+                            {/* Notes count */}
+                            <div className="flex-shrink-0 text-[9px] font-mono text-slate-500 w-12 text-right">
+                              {m.notes?.length ?? 0} notes
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* ─── 3. TOP LEARNED RHYTHMS ─── */}
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider font-mono mb-2 text-amber-400 flex items-center gap-1">
+                      <Drum className="w-3 h-3" /> Top Learned Rhythms (quoted in drums, 40% probability)
+                    </div>
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3 space-y-2">
+                      {(vocabularyStats.topRhythms?.length ?? 0) === 0 ? (
+                        <div className="text-[10px] text-slate-500 font-mono py-2 text-center">
+                          No rhythms learned yet — the analyzer needs ≥1 reference window with a
+                          detected kick/hat pattern.
+                        </div>
+                      ) : (
+                        vocabularyStats.topRhythms.map((r: any, i: number) => (
+                          <div key={`vr-${i}`} className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className={`text-[10px] font-mono font-bold w-10 text-right ${
+                                (r.effectiveness ?? 0) > 0.6 ? 'text-emerald-300'
+                                : (r.effectiveness ?? 0) > 0.4 ? 'text-amber-300'
+                                : 'text-rose-300'
+                              }`}>
+                                {((r.effectiveness ?? 0) * 100).toFixed(0)}%
+                              </span>
+                              <span className="text-[8px] font-mono text-slate-600">×{r.useCount ?? 0}</span>
+                            </div>
+                            {/* Kick gate */}
+                            <div className="flex items-center gap-2">
+                              <span className="text-[8px] font-mono text-slate-500 w-8">KICK</span>
+                              <div className="flex gap-px flex-1">
+                                {(r.kickPattern ?? '................').split('').map((c: string, j: number) => (
+                                  <div
+                                    key={`vr-${i}-k-${j}`}
+                                    className={`flex-1 h-3 rounded-sm transition-all ${
+                                      c === 'x' ? 'bg-amber-500' : 'bg-slate-800'
+                                    }`}
+                                    title={`step ${j + 1}: ${c === 'x' ? 'hit' : 'rest'}`}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                            {/* Hat gate */}
+                            <div className="flex items-center gap-2">
+                              <span className="text-[8px] font-mono text-slate-500 w-8">HATS</span>
+                              <div className="flex gap-px flex-1">
+                                {(r.hatPattern ?? '................').split('').map((c: string, j: number) => (
+                                  <div
+                                    key={`vr-${i}-h-${j}`}
+                                    className={`flex-1 h-3 rounded-sm transition-all ${
+                                      c === 'x' ? 'bg-cyan-500' : 'bg-slate-800'
+                                    }`}
+                                    title={`step ${j + 1}: ${c === 'x' ? 'hit' : 'rest'}`}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <p className="text-[10px] text-slate-500 font-mono">
+                    <Brain className="w-3 h-3 inline mr-1" />
+                    The VocabularyLearner extracts melodic motifs (scale-degree sequences) from the
+                    radio's spectral centroid + rhythmic patterns (kick/hat gate strings) from the
+                    analyzer. The MusicalDirector quotes a learned motif in 30% of leads (with the same
+                    development pipeline — transpose / invert / fragment / sequence — applied, so the
+                    quote EVOLVES) and a learned rhythm in 40% of drum phrases (blended with the
+                    phrase's character gating so a 'break' stays sparse even if the radio's pattern is
+                    dense). Each quote is tracked for 30s — if the match score improved, the entry's
+                    effectiveness rises; if it worsened, it decays. Low-effectiveness entries get
+                    pruned so the vocabulary stays fresh. Persists across sessions via localStorage.
                   </p>
                 </>
               )}

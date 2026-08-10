@@ -53,6 +53,7 @@ import { SeededRng, BASS_PATTERNS } from './musicalGrammar';
 import { HarmonyEngine, Chord, ChordVoicing } from './harmonyEngine';
 import { MelodyEngine, type Motif } from './melodyEngine';
 import type { World } from './worlds';
+import type { VocabularyLearner, LearnedRhythm } from './vocabularyLearner';
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
@@ -209,6 +210,22 @@ export class MusicalDirector {
   /** Cached reference to the last-composed motif signature (for variation). */
   private lastMotifId: string = '';
 
+  /**
+   * Task P5: linked VocabularyLearner — supplies learned motifs + rhythms
+   * (quoted from the radio) that the director can blend into composition.
+   *
+   * When set, composeLead() uses a learned motif 30% of the time (the same
+   * development pipeline still applies, so the quote EVOLVES across
+   * phrases). composeDrums() uses a learned rhythm 40% of the time. Each
+   * use is tracked via `markUsed()` so the learner can reinforce the
+   * effectiveness score based on the next 30s match score.
+   *
+   * `null` (or never called) → no vocabulary quoting; the director uses
+   * fresh material only. This keeps backwards compatibility with callers
+   * that haven't wired up the learner yet.
+   */
+  private vocabulary: VocabularyLearner | null = null;
+
   constructor(
     private harmony: HarmonyEngine,
     private melody: MelodyEngine,
@@ -227,6 +244,17 @@ export class MusicalDirector {
     this.harmony = harmony;
     this.melody = melody;
     this.rng = rng;
+  }
+
+  /**
+   * Task P5: link the VocabularyLearner so the director can quote learned
+   * motifs + rhythms in composition. Pass `null` to disable quoting.
+   *
+   * Called by the engine after the learner is constructed (which happens
+   * eagerly in the engine constructor — same pattern as LearningMemory).
+   */
+  setVocabularyLearner(v: VocabularyLearner | null): void {
+    this.vocabulary = v;
   }
 
   // ── Phrase composition ─────────────────────────────────────────────────
@@ -282,14 +310,39 @@ export class MusicalDirector {
     const motifIds: string[] = [];
 
     // Drums (kick, clap, hats, perc) — character-driven rhythmic patterns.
-    this.composeDrums(notes, character, energy, world, bars, s16);
+    // ── Task P5 (adaptive learning): with 40% probability, use a LEARNED
+    //    rhythm quoted from the radio's vocabulary instead of the world
+    //    default. The learned kick + hat patterns are blended with the
+    //    character's structural gating (e.g. break stays sparse even if
+    //    the radio's pattern is dense) so the quote respects the phrase's
+    //    musical role. The learned rhythm is marked as "in use" so the
+    //    VocabularyLearner can reinforce its effectiveness based on the
+    //    next 30s match score. ──
+    let usedRhythmId: string | null = null;
+    if (this.vocabulary && this.rng.chance(0.40)) {
+      const learnedRhythm = this.vocabulary.getRhythmForPhrase(energy, world.id);
+      if (learnedRhythm) {
+        this.composeDrumsWithLearnedRhythm(
+          notes, learnedRhythm, character, energy, world, bars, s16,
+        );
+        usedRhythmId = learnedRhythm.id;
+      }
+    }
+    if (!usedRhythmId) {
+      this.composeDrums(notes, character, energy, world, bars, s16);
+    }
+    if (usedRhythmId && this.vocabulary) {
+      this.vocabulary.markUsed(usedRhythmId, 'rhythm');
+    }
 
     // Bass — follows the chord progression with passing tones / walking lines.
     this.composeBass(notes, progression, character, energy, world, bars, s16);
 
     // Lead — motif-driven, with development based on phase.
+    // Task P5: passes world.id so composeLead can query the vocabulary
+    // learner for a learned motif to quote.
     const leadMotifId = this.composeLead(
-      notes, character, energy, phase, bars, s16,
+      notes, character, energy, phase, bars, s16, world.id,
     );
     if (leadMotifId) motifIds.push(leadMotifId);
 
@@ -749,6 +802,154 @@ export class MusicalDirector {
     }
   }
 
+  /**
+   * Task P5: Compose the drum tracks using a LEARNED rhythm quoted from the
+   * radio's vocabulary, blended with the phrase's character-driven gating.
+   *
+   * This is an ALTERNATIVE code path to composeDrums() — used when the
+   * VocabularyLearner supplies a learned rhythm and the director's 40%
+   * probability gate fires. The result blends:
+   *   - The radio's kick + hat + perc gate patterns (the "quote").
+   *   - The phrase's character gating (break stays sparse even if the
+   *     radio's pattern is dense; builds still skip bar 0 hats; etc.).
+   *   - The world's velocity + density scaling (so the quote SOUNDS like
+   *     our engine, not like a sample replay).
+   *
+   * The clap logic + triplet fill come from the existing character-driven
+   * methods (the radio's pattern doesn't carry clap information, and the
+   * build's triplet roll is an engine convention).
+   *
+   * Blending rules:
+   *   - KICK: hit if the learned kickPattern has 'x' AND the character
+   *     allows it (break = sparse, only steps 0+8 — we don't want to ruin
+   *     a break with full 4-on-floor even if the radio's pattern says so).
+   *   - CLAP: keep the existing character-driven clap (clapPlaysAt).
+   *   - HATS: hit if the learned hatPattern has 'x' AND the character
+   *     allows hats (no hats in breaks; build skips bar 0). Velocity
+   *     follows the world's hatDensity + barEnergy.
+   *   - PERC: hit if the learned percPattern has 'x' OR the world's
+   *     percPattern has 'x' (blend — the learned perc adds the radio's
+   *     syncopation, the world perc keeps our world's identity).
+   *
+   * Task ID: P5-ADAPTIVE-LEARNING.
+   */
+  private composeDrumsWithLearnedRhythm(
+    notes: PhraseNote[],
+    rhythm: LearnedRhythm,
+    character: PhraseCharacter,
+    energy: number,
+    world: World,
+    bars: number,
+    s16: number,
+  ): void {
+    const stepsPerBar = 16;
+    const totalSteps = bars * stepsPerBar;
+
+    // Guard against malformed learned patterns (shouldn't happen — the
+    // VocabularyLearner normalizes gates to 16 chars — but be defensive).
+    const kick = rhythm.kickPattern.length === 16 ? rhythm.kickPattern : 'x...x...x...x...';
+    const hat = rhythm.hatPattern.length === 16 ? rhythm.hatPattern : '.x.x.x.x.x.x.x.x';
+    const perc = rhythm.percPattern.length === 16 ? rhythm.percPattern : '................';
+
+    for (let step = 0; step < totalSteps; step++) {
+      const bar = Math.floor(step / stepsPerBar);
+      const stepInBar = step % stepsPerBar;
+      const time = step * s16;
+      const barEnergy = this.barEnergy(character, energy, bar, bars);
+
+      // ── KICK (track 0) — learned pattern, character-gated ──
+      const kickInPattern = kick.charAt(stepInBar) === 'x';
+      // Break always sparse (steps 0+8 only), even if the radio's pattern
+      // says otherwise — character wins over the quote for the kick's
+      // structural role.
+      const kickAllowedByChar = character !== 'break' || stepInBar === 0 || stepInBar === 8;
+      // Build bar 0: sparse (kick on 0, 8 only) even if the radio's pattern
+      // is dense — keeps the build's intro restraint.
+      const buildBar0Sparse = character === 'build' && bar === 0
+        && stepInBar !== 0 && stepInBar !== 8;
+      if (kickInPattern && kickAllowedByChar && !buildBar0Sparse) {
+        const isDownbeat = stepInBar === 0;
+        const isLastBarBuildup = character === 'build' && bar === bars - 1;
+        const vel = isDownbeat
+          ? clamp(0.55 + barEnergy * 0.25, 0.4, 0.95)
+          : clamp(0.40 + barEnergy * 0.20, 0.3, 0.8);
+        const buildupBoost = isLastBarBuildup && stepInBar >= 12
+          ? (stepInBar - 12) * 0.04
+          : 0;
+        notes.push({
+          time,
+          track: 0,
+          midi: 0,
+          velocity: clamp(vel + buildupBoost, 0, 1),
+          duration: 0,
+        });
+      }
+
+      // ── CLAP (track 1) — keep the existing character-driven clap ──
+      const clapPlays = this.clapPlaysAt(character, bar, bars, stepInBar, barEnergy);
+      if (clapPlays) {
+        const vel = clamp(0.30 + barEnergy * 0.20, 0.2, 0.6);
+        notes.push({ time, track: 1, midi: 0, velocity: vel, duration: 0 });
+      }
+
+      // ── HATS (track 2) — learned pattern, character-gated ──
+      // No hats in breaks; build skips bar 0; release fades.
+      const hatInPattern = hat.charAt(stepInBar) === 'x';
+      const hatAllowed = character !== 'break' && !(character === 'build' && bar === 0);
+      if (hatInPattern && hatAllowed) {
+        const hatProb = clamp(world.hatDensity * (0.5 + 0.5 * barEnergy), 0, 1);
+        // Release fades hats out in the last bar.
+        const releaseFade = character === 'release'
+          ? lerp(1.0, 0.3, bar / Math.max(1, bars - 1))
+          : 1.0;
+        if (this.rng.chance(hatProb * releaseFade)) {
+          const isAccent = stepInBar === 3 || stepInBar === 7
+            || stepInBar === 11 || stepInBar === 15;
+          const vel = isAccent
+            ? clamp(0.30 + barEnergy * 0.20, 0.25, 0.55)
+            : clamp(0.20 + barEnergy * 0.10, 0.15, 0.40);
+          const isOpenHat = stepInBar === 7 || stepInBar === 15;
+          notes.push({
+            time,
+            track: 2,
+            midi: isOpenHat ? 1 : 0,
+            velocity: vel,
+            duration: 0,
+          });
+        }
+      }
+
+      // ── PERC (track 3) — blend learned + world patterns ──
+      // No perc in breaks. Build enters perc from bar 2.
+      if (character !== 'break' && !(character === 'build' && bar < 2)) {
+        const percInLearned = perc.charAt(stepInBar) === 'x';
+        const worldPerc = world.percPattern.length === 16
+          && world.percPattern.charAt(stepInBar) === 'x';
+        const percHit = percInLearned || worldPerc;
+        const percProb = clamp(world.percDensity * (0.4 + 0.6 * barEnergy), 0, 1);
+        // Release fades perc out.
+        const releaseFade = character === 'release'
+          ? lerp(1.0, 0.2, bar / Math.max(1, bars - 1))
+          : 1.0;
+        if (percHit && this.rng.chance(percProb * releaseFade)) {
+          notes.push({
+            time,
+            track: 3,
+            midi: 0,
+            velocity: 0.18 + barEnergy * 0.10,
+            duration: 0,
+          });
+        }
+      }
+    }
+
+    // Keep the triplet fill for builds — that's an engine convention the
+    // radio's pattern doesn't carry.
+    if (character === 'build' && bars >= 2) {
+      this.composeTripletFill(notes, bars, s16, energy);
+    }
+  }
+
   // ── Bass composition ───────────────────────────────────────────────────
 
   /**
@@ -949,6 +1150,7 @@ export class MusicalDirector {
     phase: DevelopmentPhase,
     bars: number,
     s16: number,
+    worldId: string,
   ): string {
     const stepsPerBar = 16;
     const totalSteps = bars * stepsPerBar;
@@ -968,10 +1170,43 @@ export class MusicalDirector {
     //   - contrast:   invert the contour (B section that still relates to A).
     //   - climax:     shorten (diminution) + sequence up — fast + climbing.
     //   - resolution: elongate (augmentation) — slow, calm resolution.
-    const baseMotif = this.melody.getCurrentMotif();
+    //
+    // ── Task P5 (adaptive learning): with 30% probability (when a
+    //    VocabularyLearner is linked and has usable motifs), use a LEARNED
+    //    motif quoted from the radio's vocabulary as the BASE motif instead
+    //    of the freshly-generated one. The same transformation pipeline
+    //    (transpose / invert / fragment / sequence / elongate) then applies,
+    //    so the quote EVOLVES across phrases rather than being a static
+    //    repeat. The learned motif is marked as "in use" so the learner
+    //    can reinforce its effectiveness based on the next 30s match score.
+    //    ──
+    let baseMotif = this.melody.getCurrentMotif();
+    let quoteLabel = '';
+    let usedLearnedId: string | null = null;
+    if (this.vocabulary && this.rng.chance(0.30)) {
+      const learned = this.vocabulary.getMotifForPhrase(energy, worldId);
+      if (learned && learned.notes.length >= 3) {
+        baseMotif = {
+          notes: [...learned.notes],
+          durations: [...learned.durations],
+          velocities: [...learned.velocities],
+          rests: learned.notes.map(() => false),
+        };
+        quoteLabel = ' (quote)';
+        usedLearnedId = learned.id;
+      }
+    }
+
     const { motif: transformedMotif, label: motifLabel } =
       this.transformMotifForPhase(phase, baseMotif, this.rng);
     this.melody.setMotif(transformedMotif);
+
+    // Mark the learned motif as in use AFTER setMotif succeeds (so the
+    // learner's 30s effectiveness window starts when the quote actually
+    // starts playing, not when the motif was merely fetched).
+    if (usedLearnedId && this.vocabulary) {
+      this.vocabulary.markUsed(usedLearnedId, 'motif');
+    }
 
     // Determine octave shift based on development phase.
     //   - variation: +12 (octave up — brighter, more intense).
@@ -1035,8 +1270,11 @@ export class MusicalDirector {
     // Return the transformation label (e.g. "A", "A' (transposed +3rd)",
     // "B (inverted)", "A'' (diminution + sequence)", "A (augmentation)")
     // so the Phrase's motifIds array reflects the actual development.
+    // Task P5: append "(quote)" when the base motif was a vocabulary quote
+    // so the UI / debugging surface shows that the lead is quoting the
+    // radio's vocabulary rather than generating fresh material.
     if (!playedAny) return '';
-    return motifLabel;
+    return motifLabel + quoteLabel;
   }
 
   /**

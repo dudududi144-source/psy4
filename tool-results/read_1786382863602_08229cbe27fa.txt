@@ -1,0 +1,881 @@
+     1→/**
+     2→ * MusicAnalyzer — hears MUSIC, not just features.
+     3→ *
+     4→ * The reference listener extracts ACOUSTIC features (BPM, LUFS, spectral bands).
+     5→ * This module extracts MUSICAL features:
+     6→ *   - Melodic contour (rising/falling/arch)
+     7→ *   - Rhythmic pattern (kick on 1,5,9,13? offbeat hats? syncopation?)
+     8→ *   - Chord change detection (harmonic rhythm)
+     9→ *   - Section boundaries (intro → groove → drop → break)
+    10→ *   - Riser/drop detection (energy builds and releases)
+    11→ *   - Key modulation detection
+    12→ *
+    13→ * This is what separates "matching frequencies" from "matching music".
+    14→ *
+    15→ * DESIGN
+    16→ * ------
+    17→ * The reference listener emits a fresh feature window every ~10s. update() is
+    18→ * called with that snapshot. Internally we keep bounded rolling histories
+    19→ * (default 5-minute window) of the scalar features that drive the detectors,
+    20→ * plus an event log (60s retention) of musical events the engine can react to.
+    21→ *
+    22→ * All time values are wall-clock seconds (via performance.now()/1000 with a
+    23→ * Date.now() fallback). The engine reads getRecentEvents(secondsBack) and
+    24→ * reacts to anything newer than its last check — typically the events emitted
+    25→ * by the most recent update() call.
+    26→ *
+    27→ * EFFICIENCY
+    28→ * ----------
+    29→ * update() is O(n) with n ≤ ~30 history samples per axis (5-min window / 10s
+    30→ * hop). No allocation in the steady state beyond the rare event push. No
+    31→ * per-block work — the analyzer runs ONLY on reference windows.
+    32→ *
+    33→ * GUARDS
+    34→ * ------
+    35→ * Every feature is guarded against NaN/undefined/zero. Missing data → the
+    36→ * relevant detector no-ops and the previous estimate is retained. The first
+    37→ * update() with no prior history returns a conservative default analysis
+    38→ * (groove section, static contour, offbeat hats) instead of crashing.
+    39→ */
+    40→
+    41→// ─── Public types ───────────────────────────────────────────────────────────
+    42→
+    43→export interface MusicalEvent {
+    44→  type:
+    45→    | 'chordChange'
+    46→    | 'sectionBoundary'
+    47→    | 'riserStart'
+    48→    | 'dropHit'
+    49→    | 'breakStart'
+    50→    | 'keyChange'
+    51→    | 'melodicPeak'
+    52→    | 'rhythmicFill';
+    53→  time: number;           // wall-clock seconds (performance.now()/1000)
+    54→  confidence: number;     // 0..1
+    55→  data?: any;             // type-specific payload (see emit* methods)
+    56→}
+    57→
+    58→export interface MelodicContour {
+    59→  shape: 'rising' | 'falling' | 'arch' | 'descending' | 'wave' | 'static';
+    60→  range: number;          // semitones, peak-to-trough over the analysis window
+    61→  direction: number;      // -1..1, net linear direction
+    62→}
+    63→
+    64→export interface RhythmicPattern {
+    65→  kickPattern: string;    // 16-char gate string ('x' = hit, '.' = rest)
+    66→  hatPattern: string;     // 16-char gate string
+    67→  syncopation: number;    // 0..1, how offbeat-heavy
+    68→  density: number;        // 0..1, hits per bar normalized
+    69→}
+    70→
+    71→export interface SectionState {
+    72→  label: 'intro' | 'groove' | 'build' | 'drop' | 'variation' | 'break' | 'outro';
+    73→  bar: number;            // bar within section (0-based)
+    74→  barsInSection: number;  // estimated section length (bars)
+    75→  energy: number;         // 0..1 current section energy
+    76→  confidence: number;     // 0..1 — rises with history depth
+    77→}
+    78→
+    79→export interface MusicalAnalysis {
+    80→  events: MusicalEvent[];           // detected events (last 60s, newest last)
+    81→  contour: MelodicContour;          // current melodic contour
+    82→  rhythm: RhythmicPattern;          // current rhythmic pattern
+    83→  section: SectionState;            // current section
+    84→  harmonicRhythm: number;           // bars per chord change (running average)
+    85→  recentKeyChanges: { time: number; from: string; to: string }[];
+    86→}
+    87→
+    88→// ─── Input shape (extended from the spec; all extra fields are optional) ─────
+    89→
+    90→export interface MusicAnalyzerFeatures {
+    91→  energy: number;
+    92→  spectralCentroid: number;
+    93→  transientDensity: number;
+    94→  bpm: number;
+    95→  subEnergy: number;
+    96→  highEnergy: number;
+    97→  detectedKey?: { root: number; scale: string; confidence: number };
+    98→  // Extended (Task T1 + listener V2) — all optional so older callers no-op:
+    99→  spectralFlatness?: number;
+   100→  hnr?: number;
+   101→  kickDensity?: number;
+   102→  hatDensity?: number;
+   103→  lowEnergy?: number;
+   104→  midEnergy?: number;
+   105→  airEnergy?: number;
+   106→  rhythmicRegularity?: number;
+   107→}
+   108→
+   109→// ─── Constants ──────────────────────────────────────────────────────────────
+   110→
+   111→const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
+   112→
+   113→/** Rolling history window (seconds). 5 minutes ≈ 30 reference windows. */
+   114→const HISTORY_WINDOW_SEC = 300;
+   115→
+   116→/** Events older than this are pruned from the log. */
+   117→const EVENT_RETENTION_SEC = 60;
+   118→
+   119→/** Cooldowns prevent the same detector firing on every update while the
+   120→ *  condition persists — we only emit on the TRANSITION. */
+   121→const DROP_COOLDOWN_SEC = 30;
+   122→const RISER_COOLDOWN_SEC = 30;
+   123→const BREAK_COOLDOWN_SEC = 30;
+   124→const CHORD_COOLDOWN_SEC = 4;
+   125→const KEY_CHANGE_COOLDOWN_SEC = 20;
+   126→const SECTION_MIN_BARS = 4;          // don't re-label more often than this
+   127→const MELODIC_PEAK_COOLDOWN_SEC = 20;
+   128→
+   129→/** Window over which contour + slope are measured (≈ 4 bars at 140 BPM). */
+   130→const SLOPE_WINDOW_SEC = 16;
+   131→
+   132→/** Default rhythmic patterns (16-char gate strings, 16th-note resolution). */
+   133→const KICK_PATTERNS: Record<string, string> = {
+   134→  fourOnFloor: 'x...x...x...x...',
+   135→  twoBar:      'x.......x.......',
+   136→  halfTime:    'x...............',
+   137→  eighth:      'x.x.x.x.x.x.x.x.',
+   138→  gallop:      'x.x.x...x.x.x...',
+   139→  busy:        'x.xxx.x.xxx.x...',
+   140→  none:        '................',
+   141→};
+   142→
+   143→const HAT_PATTERNS: Record<string, string> = {
+   144→  offbeat: '.x.x.x.x.x.x.x.x',
+   145→  steady:  'x.x.x.x.x.x.x.x.',
+   146→  busy:    'xxxxxxxxxxxxxxxx',
+   147→  sparse:  '..x.....x.....x.',
+   148→  triplet: 'x..x..x..x..x..x',
+   149→  none:    '................',
+   150→};
+   151→
+   152→const DEFAULT_CONTOUR: MelodicContour = {
+   153→  shape: 'static',
+   154→  range: 0,
+   155→  direction: 0,
+   156→};
+   157→
+   158→const DEFAULT_RHYTHM: RhythmicPattern = {
+   159→  kickPattern: KICK_PATTERNS.fourOnFloor,
+   160→  hatPattern: HAT_PATTERNS.offbeat,
+   161→  syncopation: 0.3,
+   162→  density: 0.5,
+   163→};
+   164→
+   165→// ─── MusicAnalyzer ──────────────────────────────────────────────────────────
+   166→
+   167→export class MusicAnalyzer {
+   168→  // Bounded rolling histories — pruned to HISTORY_WINDOW_SEC every update.
+   169→  private energyHistory: { time: number; value: number }[] = [];
+   170→  private spectralHistory: { time: number; centroid: number; value: number }[] = [];
+   171→  private flatnessHistory: { time: number; value: number }[] = [];
+   172→  private transientHistory: { time: number; value: number }[] = [];
+   173→  private highEnergyHistory: { time: number; value: number }[] = [];
+   174→
+   175→  // Detected events (newest last). Pruned to EVENT_RETENTION_SEC.
+   176→  private events: MusicalEvent[] = [];
+   177→
+   178→  // Section state — the label flips on transitions; bar accumulates within.
+   179→  private section: SectionState = {
+   180→    label: 'groove',
+   181→    bar: 0,
+   182→    barsInSection: 8,
+   183→    energy: 0.5,
+   184→    confidence: 0,
+   185→  };
+   186→
+   187→  // Running estimates returned by the getters.
+   188→  private contour: MelodicContour = { ...DEFAULT_CONTOUR };
+   189→  private rhythm: RhythmicPattern = { ...DEFAULT_RHYTHM };
+   190→  private harmonicRhythm = 4; // bars per chord (default 4 — typical 4-bar harmony)
+   191→
+   192→  // Bar accumulation across updates. update() runs every ~10s, so we convert
+   193→  // elapsed wall-clock seconds to elapsed bars via the latest BPM.
+   194→  private barCount = 0;
+   195→  private lastUpdateTime = 0;
+   196→  private sectionStartBar = 0;
+   197→  private lastBpm = 140;
+   198→
+   199→  // Cooldown timestamps (wall-clock seconds). Zero = "never fired".
+   200→  private lastDropTime = 0;
+   201→  private lastRiserTime = 0;
+   202→  private lastBreakTime = 0;
+   203→  private lastChordTime = 0;
+   204→  private lastKeyTime = 0;
+   205→  private lastMelodicPeakTime = 0;
+   206→
+   207→  // Chord-change rate tracking (running average → harmonicRhythm).
+   208→  private chordChanges = 0;
+   209→  private firstChordTime = 0;
+   210→  // Cached previous-sample harmonic-content proxies (for delta computation).
+   211→  private lastHnr: number | null = null;
+   212→  private lastSubEnergy: number | null = null;
+   213→
+   214→  // Key tracking — emit keyChange when root or scale shifts with confidence.
+   215→  private lastKey: { root: number; scale: string } | null = null;
+   216→  private recentKeyChanges: { time: number; from: string; to: string }[] = [];
+   217→
+   218→  // Whether we've seen at least one drop — disambiguates intro vs outro.
+   219→  private hasDroppedOnce = false;
+   220→
+   221→  // ─── Public API ──────────────────────────────────────────────────────────
+   222→
+   223→  /**
+   224→   * Called every reference window (~10s) with the latest acoustic features.
+   225→   * Updates all rolling histories, runs the detectors, emits new events,
+   226→   * and returns the current MusicalAnalysis snapshot.
+   227→   */
+   228→  update(features: MusicAnalyzerFeatures): MusicalAnalysis {
+   229→    const now = this.now();
+   230→
+   231→    // ── 1. Push to histories (guarded against NaN / undefined / zero) ──
+   232→    if (typeof features.energy === 'number' && isFinite(features.energy)) {
+   233→      this.energyHistory.push({ time: now, value: clamp(features.energy, 0, 1) });
+   234→    }
+   235→    if (typeof features.spectralCentroid === 'number' && isFinite(features.spectralCentroid) && features.spectralCentroid > 0) {
+   236→      const c = features.spectralCentroid;
+   237→      this.spectralHistory.push({ time: now, centroid: c, value: c });
+   238→    }
+   239→    if (typeof features.spectralFlatness === 'number' && isFinite(features.spectralFlatness)) {
+   240→      this.flatnessHistory.push({ time: now, value: clamp(features.spectralFlatness, 0, 1) });
+   241→    }
+   242→    if (typeof features.transientDensity === 'number' && isFinite(features.transientDensity) && features.transientDensity >= 0) {
+   243→      this.transientHistory.push({ time: now, value: features.transientDensity });
+   244→    }
+   245→    if (typeof features.highEnergy === 'number' && isFinite(features.highEnergy)) {
+   246→      this.highEnergyHistory.push({ time: now, value: clamp(features.highEnergy, 0, 1) });
+   247→    }
+   248→
+   249→    // ── 2. Prune histories ──
+   250→    this.pruneHistory(this.energyHistory, now);
+   251→    this.pruneSpectralHistory(this.spectralHistory, now);
+   252→    this.pruneHistory(this.flatnessHistory, now);
+   253→    this.pruneHistory(this.transientHistory, now);
+   254→    this.pruneHistory(this.highEnergyHistory, now);
+   255→    this.pruneEvents(now);
+   256→
+   257→    // ── 3. Update BPM + accumulate elapsed bars ──
+   258→    if (typeof features.bpm === 'number' && isFinite(features.bpm) && features.bpm > 0) {
+   259→      this.lastBpm = clamp(features.bpm, 30, 220);
+   260→    }
+   261→    if (this.lastUpdateTime > 0) {
+   262→      const dtSec = Math.max(0, now - this.lastUpdateTime);
+   263→      // 4/4 time: 1 bar = 4 beats = (4 * 60 / bpm) seconds.
+   264→      const barsPerSec = this.lastBpm / 240;
+   265→      this.barCount += dtSec * barsPerSec;
+   266→    }
+   267→    this.lastUpdateTime = now;
+   268→
+   269→    // ── 4. Run the detectors (each emits events internally) ──
+   270→    this.detectSectionAndTransitions(features, now);
+   271→    this.detectChordChanges(features, now);
+   272→    this.detectKeyChange(features, now);
+   273→    this.updateContour(now);
+   274→    this.updateRhythm(features);
+   275→
+   276→    // ── 5. Update the section's bar-within-section counter ──
+   277→    this.section.bar = Math.max(0, Math.floor(this.barCount - this.sectionStartBar));
+   278→    this.section.barsInSection = Math.max(this.section.barsInSection, this.section.bar + 1);
+   279→
+   280→    return this.getAnalysis();
+   281→  }
+   282→
+   283→  /** Get events from the last `secondsBack` seconds (newest last). */
+   284→  getRecentEvents(secondsBack: number): MusicalEvent[] {
+   285→    if (secondsBack <= 0) return [...this.events];
+   286→    const cutoff = this.now() - secondsBack;
+   287→    return this.events.filter((e) => e.time >= cutoff);
+   288→  }
+   289→
+   290→  getCurrentSection(): SectionState {
+   291→    return { ...this.section };
+   292→  }
+   293→
+   294→  getRhythm(): RhythmicPattern {
+   295→    return { ...this.rhythm };
+   296→  }
+   297→
+   298→  getContour(): MelodicContour {
+   299→    return { ...this.contour };
+   300→  }
+   301→
+   302→  /**
+   303→   * Build the full MusicalAnalysis snapshot (used by the engine + UI).
+   304→   * The events list is the last 60s (newest last). All fields are
+   305→   * defensive copies so callers can't mutate internal state.
+   306→   */
+   307→  getAnalysis(): MusicalAnalysis {
+   308→    return {
+   309→      events: this.events.map((e) => ({ ...e })),
+   310→      contour: { ...this.contour },
+   311→      rhythm: { ...this.rhythm },
+   312→      section: { ...this.section },
+   313→      harmonicRhythm: this.harmonicRhythm,
+   314→      recentKeyChanges: this.recentKeyChanges.map((k) => ({ ...k })),
+   315→    };
+   316→  }
+   317→
+   318→  // ─── Section detection (Steps 2 + 3) ─────────────────────────────────────
+   319→
+   320→  /**
+   321→   * Section detection — the KEY insight is that sections are defined by
+   322→   * ENERGY changes, not absolute values. We compute:
+   323→   *   - current energy (latest sample)
+   324→   *   - short-term slope (over SLOPE_WINDOW_SEC ≈ 4 bars)
+   325→   *   - long-term min/max (to detect sustained regions)
+   326→   *
+   327→   * Then we apply a state machine:
+   328→   *   - if rising > 0.02/s AND energy 0.4-0.8 AND prev not build → BUILD, emit riserStart
+   329→   *   - if energy > 0.8 AND (prev was build OR energy was < 0.6 recently) → DROP, emit dropHit
+   330→   *   - if energy > 0.7 AND prev was drop AND not rising → VARIATION
+   331→   *   - if energy < 0.4 AND prev was drop/variation AND falling < -0.02/s → BREAK, emit breakStart
+   332→   *   - if energy < 0.4 AND prev not drop/intro AND !hasDroppedOnce → INTRO
+   333→   *   - if energy < 0.4 AND prev not outro AND hasDroppedOnce AND not falling → OUTRO
+   334→   *   - else (0.4-0.7 stable) → GROOVE
+   335→   *
+   336→   * Transitions are gated by SECTION_MIN_BARS so we don't flicker.
+   337→   */
+   338→  private detectSectionAndTransitions(features: MusicAnalyzerFeatures, now: number): void {
+   339→    const hist = this.energyHistory;
+   340→    if (hist.length === 0) return;
+   341→
+   342→    const currentEnergy = hist[hist.length - 1].value;
+   343→    const slope = this.slope(hist, SLOPE_WINDOW_SEC);
+   344→    const longWindow = this.valuesInWindow(hist, HISTORY_WINDOW_SEC);
+   345→    const recentMax = longWindow.length > 0 ? Math.max(...longWindow) : currentEnergy;
+   346→    const recentMin = longWindow.length > 0 ? Math.min(...longWindow) : currentEnergy;
+   347→    const shortWindow = this.valuesInWindow(hist, SLOPE_WINDOW_SEC);
+   348→    const shortMin = shortWindow.length > 0 ? Math.min(...shortWindow) : currentEnergy;
+   349→
+   350→    const prevLabel = this.section.label;
+   351→    const barsInSection = Math.max(0, this.barCount - this.sectionStartBar);
+   352→
+   353→    // Update the section's energy estimate (smoothed).
+   354→    this.section.energy = currentEnergy;
+   355→
+   356→    let nextLabel: SectionState['label'] = prevLabel;
+   357→    let emittedRiser = false;
+   358→    let emittedDrop = false;
+   359→    let emittedBreak = false;
+   360→
+   361→    // ── DROP detection: energy crosses 0.8 after being below 0.6 recently ──
+   362→    if (
+   363→      currentEnergy >= 0.8 &&
+   364→      shortMin < 0.6 &&
+   365→      now - this.lastDropTime > DROP_COOLDOWN_SEC &&
+   366→      prevLabel !== 'drop'
+   367→    ) {
+   368→      nextLabel = 'drop';
+   369→      this.hasDroppedOnce = true;
+   370→      this.lastDropTime = now;
+   371→      emittedDrop = true;
+   372→    }
+   373→    // ── BUILD / riser: rising slope + energy 0.4-0.8 + not already in build ──
+   374→    else if (
+   375→      slope > 0.02 &&
+   376→      currentEnergy > 0.4 &&
+   377→      currentEnergy < 0.85 &&
+   378→      prevLabel !== 'build' &&
+   379→      prevLabel !== 'drop' &&
+   380→      now - this.lastRiserTime > RISER_COOLDOWN_SEC
+   381→    ) {
+   382→      nextLabel = 'build';
+   383→      this.lastRiserTime = now;
+   384→      emittedRiser = true;
+   385→    }
+   386→    // ── VARIATION: sustained high but no longer peak-rising, after a drop ──
+   387→    else if (
+   388→      currentEnergy >= 0.65 &&
+   389→      currentEnergy < 0.85 &&
+   390→      Math.abs(slope) < 0.02 &&
+   391→      (prevLabel === 'drop' || prevLabel === 'variation') &&
+   392→      barsInSection >= SECTION_MIN_BARS
+   393→    ) {
+   394→      nextLabel = 'variation';
+   395→    }
+   396→    // ── BREAK: sudden energy drop after a drop/variation ──
+   397→    else if (
+   398→      currentEnergy < 0.4 &&
+   399→      recentMax > 0.65 &&
+   400→      slope < -0.02 &&
+   401→      (prevLabel === 'drop' || prevLabel === 'variation' || prevLabel === 'build') &&
+   402→      now - this.lastBreakTime > BREAK_COOLDOWN_SEC
+   403→    ) {
+   404→      nextLabel = 'break';
+   405→      this.lastBreakTime = now;
+   406→      emittedBreak = true;
+   407→    }
+   408→    // ── OUTRO: low + not falling + we've dropped at least once ──
+   409→    else if (
+   410→      currentEnergy < 0.4 &&
+   411→      Math.abs(slope) < 0.015 &&
+   412→      this.hasDroppedOnce &&
+   413→      prevLabel !== 'outro' &&
+   414→      barsInSection >= SECTION_MIN_BARS
+   415→    ) {
+   416→      nextLabel = 'outro';
+   417→    }
+   418→    // ── INTRO: low + not falling + haven't dropped yet ──
+   419→    else if (
+   420→      currentEnergy < 0.4 &&
+   421→      Math.abs(slope) < 0.015 &&
+   422→      !this.hasDroppedOnce &&
+   423→      prevLabel !== 'intro' &&
+   424→      prevLabel !== 'outro'
+   425→    ) {
+   426→      nextLabel = 'intro';
+   427→    }
+   428→    // ── GROOVE: stable mid-energy ──
+   429→    else if (
+   430→      currentEnergy >= 0.4 &&
+   431→      currentEnergy < 0.7 &&
+   432→      Math.abs(slope) < 0.02 &&
+   433→      prevLabel !== 'groove' &&
+   434→      barsInSection >= SECTION_MIN_BARS
+   435→    ) {
+   436→      nextLabel = 'groove';
+   437→    }
+   438→
+   439→    // ── Apply the transition ──
+   440→    if (nextLabel !== prevLabel) {
+   441→      // Force at least SECTION_MIN_BARS between flips (except for the initial
+   442→      // transition into a new label from a fresh start).
+   443→      if (barsInSection < SECTION_MIN_BARS && prevLabel !== 'groove' && this.barCount > SECTION_MIN_BARS) {
+   444→        // Too soon — suppress the flip but keep computing slopes.
+   445→      } else {
+   446→        this.section.label = nextLabel;
+   447→        this.sectionStartBar = Math.floor(this.barCount);
+   448→        this.section.bar = 0;
+   449→        this.section.barsInSection = this.estimateSectionLength(nextLabel);
+   450→        this.section.confidence = this.historyConfidence();
+   451→        this.emit('sectionBoundary', now, this.section.confidence, {
+   452→          from: prevLabel,
+   453→          to: nextLabel,
+   454→          energy: currentEnergy,
+   455→          bar: Math.floor(this.barCount),
+   456→        });
+   457→      }
+   458→    } else {
+   459→      // Same section — keep confidence fresh.
+   460→      this.section.confidence = this.historyConfidence();
+   461→    }
+   462→
+   463→    // ── Emit riser / drop / break events (separate from sectionBoundary) ──
+   464→    if (emittedRiser) {
+   465→      this.emit('riserStart', now, 0.7, {
+   466→        fromEnergy: shortMin,
+   467→        toEnergy: currentEnergy,
+   468→        slopePerSec: slope,
+   469→        bar: Math.floor(this.barCount),
+   470→      });
+   471→    }
+   472→    if (emittedDrop) {
+   473→      this.emit('dropHit', now, 0.85, {
+   474→        energy: currentEnergy,
+   475→        recentMax,
+   476→        bar: Math.floor(this.barCount),
+   477→      });
+   478→    }
+   479→    if (emittedBreak) {
+   480→      this.emit('breakStart', now, 0.75, {
+   481→        fromEnergy: recentMax,
+   482→        toEnergy: currentEnergy,
+   483→        slopePerSec: slope,
+   484→        bar: Math.floor(this.barCount),
+   485→      });
+   486→    }
+   487→  }
+   488→
+   489→  /**
+   490→   * Estimate a plausible section length (in bars) for the given label.
+   491→   * Used as a planning hint; the actual length is open-ended.
+   492→   */
+   493→  private estimateSectionLength(label: SectionState['label']): number {
+   494→    switch (label) {
+   495→      case 'intro': return 8;
+   496→      case 'groove': return 16;
+   497→      case 'build': return 8;
+   498→      case 'drop': return 16;
+   499→      case 'variation': return 8;
+   500→      case 'break': return 8;
+   501→      case 'outro': return 8;
+   502→      default: return 8;
+   503→    }
+   504→  }
+   505→
+   506→  // ─── Rhythmic pattern estimation (Step 4) ────────────────────────────────
+   507→
+   508→  /**
+   509→   * Estimate the kick + hat gate patterns from transient / kick / hat
+   510→   * densities and the BPM. We convert "per second" densities to "per bar"
+   511→   * using the 4/4 bar duration (240/BPM seconds), then pick the closest
+   512→   * canonical pattern.
+   513→   *
+   514→   * Syncopation is approximated: if transient density is high but kick
+   515→   * density is low, the rhythm is offbeat-heavy → high syncopation. If
+   516→   * transient ≈ kick × 2 (typical 4-on-floor + offbeat hats), syncopation
+   517→   * is moderate. If everything aligns to the beat grid, syncopation is low.
+   518→   */
+   519→  private updateRhythm(features: MusicAnalyzerFeatures): void {
+   520→    const bpm = this.lastBpm;
+   521→    const barSec = 240 / bpm; // 4/4
+   522→    const td = typeof features.transientDensity === 'number' ? features.transientDensity : 0;
+   523→    const kd = typeof features.kickDensity === 'number' ? features.kickDensity : 0;
+   524→    const hd = typeof features.hatDensity === 'number' ? features.hatDensity : 0;
+   525→    const reg = typeof features.rhythmicRegularity === 'number' ? features.rhythmicRegularity : 0.5;
+   526→
+   527→    const transientsPerBar = td * barSec;
+   528→    const kicksPerBar = kd > 0 ? kd * barSec : this.estimateKicksFromTransient(transientsPerBar, features.highEnergy ?? 0);
+   529→    const hatsPerBar = hd > 0 ? hd * barSec : this.estimateHatsFromTransient(transientsPerBar, features.highEnergy ?? 0);
+   530→
+   531→    // ── Kick pattern: pick the closest canonical pattern by hit count ──
+   532→    let kickPattern = KICK_PATTERNS.fourOnFloor;
+   533→    if (kicksPerBar <= 0.5) kickPattern = KICK_PATTERNS.none;
+   534→    else if (kicksPerBar <= 1.5) kickPattern = KICK_PATTERNS.halfTime;
+   535→    else if (kicksPerBar <= 2.5) kickPattern = KICK_PATTERNS.twoBar;
+   536→    else if (kicksPerBar <= 4.5) kickPattern = KICK_PATTERNS.fourOnFloor;
+   537→    else if (kicksPerBar <= 6.5) kickPattern = KICK_PATTERNS.gallop;
+   538→    else if (kicksPerBar <= 8.5) kickPattern = KICK_PATTERNS.eighth;
+   539→    else kickPattern = KICK_PATTERNS.busy;
+   540→
+   541→    // ── Hat pattern: pick by hat density ──
+   542→    let hatPattern = HAT_PATTERNS.offbeat;
+   543→    if (hatsPerBar <= 0.5) hatPattern = HAT_PATTERNS.none;
+   544→    else if (hatsPerBar <= 3.5) hatPattern = HAT_PATTERNS.sparse;
+   545→    else if (hatsPerBar <= 6.5) hatPattern = HAT_PATTERNS.offbeat;
+   546→    else if (hatsPerBar <= 9.5) hatPattern = HAT_PATTERNS.steady;
+   547→    else if (hatsPerBar <= 14) hatPattern = HAT_PATTERNS.triplet;
+   548→    else hatPattern = HAT_PATTERNS.busy;
+   549→
+   550→    // ── Syncopation: high when transients are dense but kicks are sparse ──
+   551→    const offbeatRatio = kicksPerBar > 0
+   552→      ? clamp((transientsPerBar - kicksPerBar) / Math.max(1, transientsPerBar), 0, 1)
+   553→      : transientsPerBar > 6 ? 0.7 : 0.3;
+   554→    // Blend with rhythmic regularity (low regularity → high syncopation).
+   555→    const syncopation = clamp(0.5 * offbeatRatio + 0.5 * (1 - reg), 0, 1);
+   556→
+   557→    // ── Density: normalize transients/bar to 0..1 (16 = max) ──
+   558→    const density = clamp(transientsPerBar / 16, 0, 1);
+   559→
+   560→    this.rhythm = { kickPattern, hatPattern, syncopation, density };
+   561→  }
+   562→
+   563→  /**
+   564→   * Fallback when the listener doesn't expose kickDensity: estimate kicks/bar
+   565→   * from total transient density + highEnergy. 4-on-floor is the most common
+   566→   * pattern, so we bias toward 4.
+   567→   */
+   568→  private estimateKicksFromTransient(transientsPerBar: number, highEnergy: number): number {
+   569→    if (transientsPerBar <= 0) return 0;
+   570→    // High-energy content usually means hats/percussion on top of kicks.
+   571→    // Heuristic: if transients are ~4, all 4 are kicks. If transients are
+   572→    // ~8, half are kicks (4 kicks + 4 hats). If transients are ~16, ~25%
+   573→    // are kicks (4 kicks + 12 hats/perc).
+   574→    const kickRatio = highEnergy > 0.4 ? 0.35 : 0.6;
+   575→    const est = transientsPerBar * kickRatio;
+   576→    // Snap to nearest canonical value (0, 1, 2, 4, 6, 8, 12) so the pattern
+   577→    // picker lands cleanly.
+   578→    const snapPoints = [0, 1, 2, 4, 6, 8, 12];
+   579→    return snapPoints.reduce((best, p) => (Math.abs(p - est) < Math.abs(best - est) ? p : best), 4);
+   580→  }
+   581→
+   582→  private estimateHatsFromTransient(transientsPerBar: number, highEnergy: number): number {
+   583→    if (transientsPerBar <= 0) return 0;
+   584→    // If high energy is significant, hats are likely present.
+   585→    if (highEnergy < 0.1) return 0;
+   586→    const est = transientsPerBar * (highEnergy > 0.4 ? 0.5 : 0.3);
+   587→    const snapPoints = [0, 2, 4, 6, 8, 12, 16];
+   588→    return snapPoints.reduce((best, p) => (Math.abs(p - est) < Math.abs(best - est) ? p : best), 8);
+   589→  }
+   590→
+   591→  // ─── Melodic contour detection (Step 5) ──────────────────────────────────
+   592→
+   593→  /**
+   594→   * Estimate melodic contour from the spectral centroid history. Spectral
+   595→   * centroid is a proxy for "brightness" which tracks melodic register —
+   596→   * when the melody moves up, more energy shifts to higher partials and
+   597→   * the centroid rises. This is a coarse but well-known approximation.
+   598→   *
+   599→   * Shapes:
+   600→   *   - rising: monotonic increase over the window
+   601→   *   - falling: monotonic decrease
+   602→   *   - arch: rises then falls (peaked phrase)
+   603→   *   - descending: same as falling but stronger slope
+   604→   *   - wave: alternating up/down (oscillating phrase)
+   605→   *   - static: stable (pedal note)
+   606→   *
+   607→   * Range = peak-to-trough centroid mapped to semitones via 12*log2(peak/trough).
+   608→   */
+   609→  private updateContour(now: number): void {
+   610→    const hist = this.spectralHistory;
+   611→    if (hist.length < 2) {
+   612→      this.contour = { ...DEFAULT_CONTOUR };
+   613→      return;
+   614→    }
+   615→
+   616→    const cutoff = now - SLOPE_WINDOW_SEC;
+   617→    const pts = hist.filter((p) => p.time >= cutoff);
+   618→    if (pts.length < 2) {
+   619→      this.contour = { ...DEFAULT_CONTOUR };
+   620→      return;
+   621→    }
+   622→
+   623→    const centroids = pts.map((p) => p.centroid);
+   624→    const first = centroids[0];
+   625→    const last = centroids[centroids.length - 1];
+   626→    const peak = Math.max(...centroids);
+   627→    const trough = Math.min(...centroids);
+   628→    const peakIdx = centroids.indexOf(peak);
+   629→    const troughIdx = centroids.indexOf(trough);
+   630→
+   631→    const slopePerSec = (last - first) / Math.max(0.001, pts[pts.length - 1].time - pts[0].time);
+   632→    const direction = clamp(slopePerSec / 200, -1, 1); // ±200 Hz/s = saturated
+   633→
+   634→    // Range in semitones (12 * log2(peak/trough)).
+   635→    let range = 0;
+   636→    if (trough > 0 && peak > trough) {
+   637→      range = 12 * Math.log2(peak / trough);
+   638→    }
+   639→
+   640→    let shape: MelodicContour['shape'];
+   641→    const amplitude = peak - trough;
+   642→    if (amplitude < 150) {
+   643→      // Very stable centroid → static (pedal note / drone).
+   644→      shape = 'static';
+   645→    } else if (peakIdx > pts.length * 0.4 && peakIdx < pts.length * 0.7 && troughIdx < pts.length * 0.3) {
+   646→      // Peak in the middle, trough at the start → arch.
+   647→      shape = 'arch';
+   648→    } else if (slopePerSec > 80) {
+   649→      shape = 'rising';
+   650→    } else if (slopePerSec < -80) {
+   651→      shape = slopePerSec < -200 ? 'descending' : 'falling';
+   652→    } else if (this.isWave(centroids)) {
+   653→      shape = 'wave';
+   654→    } else if (slopePerSec > 0) {
+   655→      shape = 'rising';
+   656→    } else if (slopePerSec < 0) {
+   657→      shape = 'falling';
+   658→    } else {
+   659→      shape = 'static';
+   660→    }
+   661→
+   662→    this.contour = { shape, range: clamp(range, 0, 36), direction };
+   663→
+   664→    // ── Emit melodicPeak when we just crossed a local maximum ──
+   665→    if (
+   666→      peakIdx === centroids.length - 1 &&
+   667→      peak > first + 400 &&
+   668→      now - this.lastMelodicPeakTime > MELODIC_PEAK_COOLDOWN_SEC
+   669→    ) {
+   670→      this.lastMelodicPeakTime = now;
+   671→      this.emit('melodicPeak', now, 0.6, {
+   672→        centroid: peak,
+   673→        range,
+   674→        bar: Math.floor(this.barCount),
+   675→      });
+   676→    }
+   677→  }
+   678→
+   679→  /**
+   680→   * Detect wave shape — alternating sign of consecutive deltas.
+   681→   * Returns true if at least half the deltas flip sign.
+   682→   */
+   683→  private isWave(values: number[]): boolean {
+   684→    if (values.length < 4) return false;
+   685→    let signChanges = 0;
+   686→    let prevSign = 0;
+   687→    for (let i = 1; i < values.length; i++) {
+   688→      const d = values[i] - values[i - 1];
+   689→      const sign = d > 50 ? 1 : d < -50 ? -1 : 0;
+   690→      if (sign !== 0 && prevSign !== 0 && sign !== prevSign) signChanges++;
+   691→      if (sign !== 0) prevSign = sign;
+   692→    }
+   693→    return signChanges >= Math.floor(values.length / 3);
+   694→  }
+   695→
+   696→  // ─── Chord change detection (Step 6) ─────────────────────────────────────
+   697→
+   698→  /**
+   699→   * Detect chord changes from harmonic-content proxies. We don't have a
+   700→   * direct chord detector, but we can detect harmonic CONTENT changes:
+   701→   *   - spectralFlatness shifts (timbre changes — often a chord change)
+   702→   *   - HNR shifts (more/less harmonicity — a new chord has different
+   703→   *     harmonic structure)
+   704→   *   - subEnergy shifts (bass note changes — root motion)
+   705→   *
+   706→   * When the combined delta exceeds a threshold, we emit chordChange and
+   707→   * update the running harmonic rhythm (bars per chord change).
+   708→   */
+   709→  private detectChordChanges(features: MusicAnalyzerFeatures, now: number): void {
+   710→    // Build a "harmonic signature" from the available features.
+   711→    const flat = typeof features.spectralFlatness === 'number' ? features.spectralFlatness : null;
+   712→    const hnr = typeof features.hnr === 'number' ? features.hnr : null;
+   713→    const sub = typeof features.subEnergy === 'number' ? features.subEnergy : null;
+   714→
+   715→    // Need at least 2 samples to compute a delta.
+   716→    if (flat === null && hnr === null && sub === null) return;
+   717→
+   718→    const lastFlat = this.flatnessHistory.length >= 2
+   719→      ? this.flatnessHistory[this.flatnessHistory.length - 2]?.value
+   720→      : null;
+   721→
+   722→    // Combined delta — each axis weighted to [0,1].
+   723→    let delta = 0;
+   724→    let weight = 0;
+   725→    if (flat !== null && lastFlat !== null) {
+   726→      delta += Math.abs(flat - lastFlat) * 1.5;
+   727→      weight += 1.5;
+   728→    }
+   729→    if (hnr !== null && this.lastHnr !== null) {
+   730→      delta += Math.abs(hnr - this.lastHnr) * 2.0;
+   731→      weight += 2.0;
+   732→    }
+   733→    if (sub !== null && this.lastSubEnergy !== null) {
+   734→      delta += Math.abs(sub - this.lastSubEnergy) * 1.0;
+   735→      weight += 1.0;
+   736→    }
+   737→    const normalizedDelta = weight > 0 ? delta / weight : 0;
+   738→
+   739→    // Cache the latest values for next-update comparison.
+   740→    if (hnr !== null) this.lastHnr = hnr;
+   741→    if (sub !== null) this.lastSubEnergy = sub;
+   742→
+   743→    // Threshold: combined normalized delta > 0.15 → likely chord change.
+   744→    // Cooldown prevents firing on every update if the harmonic content is
+   745→    // noisy.
+   746→    if (
+   747→      normalizedDelta > 0.15 &&
+   748→      now - this.lastChordTime > CHORD_COOLDOWN_SEC
+   749→    ) {
+   750→      this.lastChordTime = now;
+   751→      this.chordChanges++;
+   752→      if (this.firstChordTime === 0) this.firstChordTime = now;
+   753→      const elapsedBars = this.barCount; // bars since analyzer start
+   754→      if (this.chordChanges > 1 && elapsedBars > 0) {
+   755→        // Running average: bars per chord change.
+   756→        this.harmonicRhythm = clamp(elapsedBars / this.chordChanges, 0.5, 32);
+   757→      }
+   758→      this.emit('chordChange', now, clamp(normalizedDelta / 0.5, 0.3, 0.95), {
+   759→        delta: normalizedDelta,
+   760→        bar: Math.floor(this.barCount),
+   761→      });
+   762→    }
+   763→  }
+   764→
+   765→  // ─── Key modulation detection (Step 1, "keyChange" event) ────────────────
+   766→
+   767→  /**
+   768→   * Emit a keyChange event when the detected key's root or scale shifts
+   769→   * with confidence > 0.4. We only act on confident detections to avoid
+   770→   * firing on detector wobble.
+   771→   */
+   772→  private detectKeyChange(features: MusicAnalyzerFeatures, now: number): void {
+   773→    const k = features.detectedKey;
+   774→    if (!k || typeof k.root !== 'number' || !k.scale) return;
+   775→    if (typeof k.confidence !== 'number' || k.confidence < 0.4) return;
+   776→
+   777→    if (this.lastKey === null) {
+   778→      this.lastKey = { root: k.root, scale: k.scale };
+   779→      return;
+   780→    }
+   781→
+   782→    const rootChanged = this.lastKey.root !== k.root;
+   783→    const scaleChanged = this.lastKey.scale !== k.scale;
+   784→    if ((!rootChanged && !scaleChanged) || now - this.lastKeyTime < KEY_CHANGE_COOLDOWN_SEC) {
+   785→      return;
+   786→    }
+   787→
+   788→    const fromName = `${this.noteName(this.lastKey.root)} ${this.lastKey.scale}`;
+   789→    const toName = `${this.noteName(k.root)} ${k.scale}`;
+   790→    this.lastKeyTime = now;
+   791→    this.recentKeyChanges.push({ time: now, from: fromName, to: toName });
+   792→    // Prune key changes older than 5 minutes.
+   793→    const cutoff = now - 300;
+   794→    this.recentKeyChanges = this.recentKeyChanges.filter((kc) => kc.time >= cutoff);
+   795→    this.lastKey = { root: k.root, scale: k.scale };
+   796→    this.emit('keyChange', now, k.confidence, { from: fromName, to: toName });
+   797→  }
+   798→
+   799→  private noteName(root: number): string {
+   800→    const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+   801→    const idx = ((Math.round(root) % 12) + 12) % 12;
+   802→    return names[idx];
+   803→  }
+   804→
+   805→  // ─── Utilities ───────────────────────────────────────────────────────────
+   806→
+   807→  private now(): number {
+   808→    if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+   809→      return performance.now() / 1000;
+   810→    }
+   811→    return Date.now() / 1000;
+   812→  }
+   813→
+   814→  private pruneHistory(hist: { time: number; value: number }[], now: number): void {
+   815→    const cutoff = now - HISTORY_WINDOW_SEC;
+   816→    while (hist.length > 0 && hist[0].time < cutoff) hist.shift();
+   817→  }
+   818→
+   819→  private pruneSpectralHistory(hist: { time: number; centroid: number; value: number }[], now: number): void {
+   820→    const cutoff = now - HISTORY_WINDOW_SEC;
+   821→    while (hist.length > 0 && hist[0].time < cutoff) hist.shift();
+   822→  }
+   823→
+   824→  private pruneEvents(now: number): void {
+   825→    const cutoff = now - EVENT_RETENTION_SEC;
+   826→    while (this.events.length > 0 && this.events[0].time < cutoff) this.events.shift();
+   827→  }
+   828→
+   829→  /**
+   830→   * Linear slope (value-units per second) over the most recent `windowSec`
+   831→   * of a value history. Returns 0 if there isn't enough data.
+   832→   */
+   833→  private slope(hist: { time: number; value: number }[], windowSec: number): number {
+   834→    if (hist.length < 2) return 0;
+   835→    const cutoff = this.now() - windowSec;
+   836→    let first: { time: number; value: number } | null = null;
+   837→    let last: { time: number; value: number } | null = null;
+   838→    for (const p of hist) {
+   839→      if (p.time < cutoff) continue;
+   840→      if (first === null) first = p;
+   841→      last = p;
+   842→    }
+   843→    if (!first || !last) return 0;
+   844→    const dt = last.time - first.time;
+   845→    if (dt <= 0) return 0;
+   846→    return (last.value - first.value) / dt;
+   847→  }
+   848→
+   849→  private valuesInWindow(hist: { time: number; value: number }[], windowSec: number): number[] {
+   850→    const cutoff = this.now() - windowSec;
+   851→    const out: number[] = [];
+   852→    for (const p of hist) {
+   853→      if (p.time >= cutoff) out.push(p.value);
+   854→    }
+   855→    return out;
+   856→  }
+   857→
+   858→  /**
+   859→   * Confidence rises with history depth. 0 samples → 0, 5+ samples → 0.8.
+   860→   */
+   861→  private historyConfidence(): number {
+   862→    const n = this.energyHistory.length;
+   863→    if (n === 0) return 0;
+   864→    if (n >= 8) return 0.85;
+   865→    return clamp(0.3 + (n - 1) * 0.08, 0.3, 0.85);
+   866→  }
+   867→
+   868→  /**
+   869→   * Push an event onto the log. The log is bounded by EVENT_RETENTION_SEC
+   870→   * (pruned on the next update), so this never grows unboundedly.
+   871→   */
+   872→  private emit(
+   873→    type: MusicalEvent['type'],
+   874→    time: number,
+   875→    confidence: number,
+   876→    data?: any,
+   877→  ): void {
+   878→    this.events.push({ type, time, confidence: clamp(confidence, 0, 1), data });
+   879→  }
+   880→}
+   881→

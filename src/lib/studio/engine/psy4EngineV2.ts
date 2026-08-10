@@ -51,6 +51,15 @@ import { PhaseSync, PhaseInfo } from './phaseSync';
 // The DJController is a PEER of PhaseSync — it reads the existing phase
 // sync state and extends it with the additional dimensions.
 import { DJController, DJSyncState, GrooveInfo } from './djController';
+// ── Task P4 (phrase-level sync): aligns our 4-8 bar phrase boundaries
+//    with the radio's. Beat sync (PhaseSync) aligns individual beats;
+//    section sync (MusicAnalyzer + flowEngine.transitionTo) aligns section
+//    types; phrase sync aligns the STRUCTURAL unit — when the radio starts
+//    a new 8-bar phrase, we start a new phrase too (not 3 bars into our
+//    current one). The PhraseSync is OPTIONAL — when master sync is off,
+//    checkRealignment() always returns { realign: false }. Constructed
+//    eagerly so the toggle state persists across stop/start cycles.
+import { PhraseSync, PhraseSyncState } from './phraseSync';
 // ── Task M1 (Musical Director): phrase-level composer that replaces the
 // step-by-step note decision in scheduleStep. The director composes full
 // 4-8 bar phrases ahead of time with musical phrasing (build/drop/break),
@@ -94,6 +103,23 @@ import {
   type MusicalEvent,
   type MusicAnalyzerFeatures,
 } from './musicAnalyzer';
+// ── Task P5 (adaptive learning): learns MUSICAL CONTENT (motifs + rhythms)
+//    from the radio, blends learned material into composition. Where
+//    LearningMemory (T1) stores parameter configurations, VocabularyLearner
+//    stores actual melodic motifs (scale-degree sequences) + rhythmic
+//    patterns (16-char gate strings) extracted from the radio's spectral
+//    features. The MusicalDirector queries this vocabulary when composing
+//    phrases — with 30% probability the lead quotes a learned motif (the
+//    same development pipeline still applies, so the quote evolves); with
+//    40% probability the drums use a learned rhythm (blended with character
+//    gating so a 'break' still stays sparse). Effectiveness tracking
+//    reinforces motifs/rhythms that improve the match score over the next
+//    30s and prunes those that don't. Persists across sessions via
+//    localStorage (separate key from LearningMemory). ──
+import {
+  VocabularyLearner,
+  type VocabularyStats,
+} from './vocabularyLearner';
 // ── Task W1: unified AudioWorklet audio backend. The WorkletEngine replaces
 //    the 1054-node Web Audio graph with a single AudioWorkletNode that
 //    contains ALL DSP (Moog ladder, polyBLEP, Schroeder reverb, bus
@@ -978,6 +1004,21 @@ export class Psy4EngineV2 {
   // to the key it would have been in without DJ sync).
   private appliedKeyShift = 0;
 
+  // ── Task P4 (phrase-level sync): PhraseSync instance ──
+  // The PhraseSync tracks ref phrase boundaries (from MusicAnalyzer's
+  // sectionBoundary / dropHit / breakStart / riserStart events), estimates
+  // the radio's phrase length from the intervals between boundaries, and
+  // decides whether to realign our phrase mid-flow. When realign is needed,
+  // the engine calls flowEngine.transitionTo(...) with the suggested
+  // archetype + energy + phrase length to start a new phrase aligned with
+  // the radio. The PhraseSync is a PEER of the DJController — they both
+  // touch phrase alignment but at different layers (DJController snaps the
+  // bar counter reactively on energy transitions; PhraseSync proactively
+  // starts a new phrase via flowEngine.transitionTo on musical section
+  // boundaries). Constructed eagerly so the master-sync toggle persists
+  // across stop/start cycles.
+  private phraseSync: PhraseSync = new PhraseSync();
+
   // ── Task T1 (active learning): cross-session memory ────────────────────
   //    LearningMemory stores successful (refFeatures, engineParams, matchScore)
   //    triples. The engine queries it for a "head start" when similar radio
@@ -1009,6 +1050,26 @@ export class Psy4EngineV2 {
   private static readonly LEARNING_STORE_THRESHOLD = 0.6;  // store when match > 0.6
   private static readonly LEARNING_RECALL_THRESHOLD = 0.4;  // recall when match < 0.4
   private static readonly LEARNING_PROACTIVE_MIN_REINFORCEMENT = 2;
+
+  // ── Task P5 (adaptive learning): musical vocabulary memory ─────────────
+  //    VocabularyLearner stores MUSICAL CONTENT (motifs + rhythms) extracted
+  //    from the radio, NOT parameter configs. The MusicalDirector queries
+  //    this vocabulary when composing phrases — quoting learned motifs in
+  //    the lead and learned rhythms in the drums. Persists across sessions
+  //    via a separate localStorage key (psy4_vocabulary_v1).
+  //
+  //    Constructed eagerly so the vocabulary loads once per engine instance
+  //    (load() is called in the constructor). All operations are O(n) with
+  //    n <= 30. NOT reset on stop() — the vocabulary accumulates across
+  //    sessions (the whole point of "the engine's music EVOLVES based on
+  //    what it hears").
+  //
+  //    `lastVocabularyTickTime` is the ms timestamp of the last vocabulary
+  //    learn pass. The pass runs at most every 30s — invoked from
+  //    liveTrack() so no separate timer is needed.
+  private vocabularyLearner: VocabularyLearner = new VocabularyLearner();
+  private lastVocabularyTickTime = 0;
+  private static readonly VOCABULARY_TICK_INTERVAL_MS = 30_000;
 
   onSectionChange: ((section: string) => void) | null = null;
 
@@ -1290,6 +1351,11 @@ export class Psy4EngineV2 {
     this.musicAnalyzer = new MusicAnalyzer();
     this.musicalAnalysis = null;
     this.lastMusicalEventTime = 0;
+    // ── Task P4: reset the PhraseSync so stale boundary-interval history
+    //    from a previous play session doesn't bias the new session's phrase
+    //    length estimate. The master-sync toggle is preserved (user's
+    //    choice survives a restart). ──
+    this.phraseSync.reset();
     this.syncLegacyAccess();
     this.onSectionChange?.(this.currentSection);
     // Task L1: reset drop counters + adaptive state on a fresh start.
@@ -1331,10 +1397,19 @@ export class Psy4EngineV2 {
     this.djController.reset();
     this.swingAdjust = 0;
     this.appliedKeyShift = 0;
+    // ── Task P4: reset PhraseSync boundary tracking + realignment state.
+    //    Preserves the master-sync toggle so the user's choice survives a
+    //    stop/start cycle. ──
+    this.phraseSync.reset();
     // ── Task M1: reset the Musical Director's phrase state ──
     this.director?.reset();
     // ── Task T1 (active learning): flush the memory to localStorage ──
     try { this.learningMemory.save(); } catch { /* private browsing */ }
+    // ── Task P5 (adaptive learning): flush the vocabulary to localStorage ──
+    // The vocabulary is NOT reset on stop() — it accumulates across sessions
+    // (the whole point of adaptive learning). We only persist the latest
+    // state so the next session picks up where this one left off.
+    try { this.vocabularyLearner.save(); } catch { /* private browsing */ }
   }
 
   private get bpm(): number {
@@ -2063,9 +2138,11 @@ export class Psy4EngineV2 {
     // fresh phrase with the new key.
     if (this.director) {
       this.director.setEngines(this.harmony, this.melody, this.musicRng);
+      this.director.setVocabularyLearner(this.vocabularyLearner);
       this.director.reset();
     } else {
       this.director = new MusicalDirector(this.harmony, this.melody, this.musicRng);
+      this.director.setVocabularyLearner(this.vocabularyLearner);
     }
   }
 
@@ -2354,6 +2431,15 @@ export class Psy4EngineV2 {
     // — when the radio drops, we drop; when the radio builds, we build.
     // This is the heart of "matching music, not just features".
     this.updateMusicAnalyzer(refMetrics);
+
+    // ── Task P5 (adaptive learning): learn the radio's musical vocabulary ──
+    // Extract melodic motifs + rhythmic patterns from the latest analysis
+    // and store them in the VocabularyLearner. The MusicalDirector will
+    // quote them in future phrases (30% of leads, 40% of drums). Also
+    // ticks the effectiveness evaluation: any motifs/rhythms that have
+    // been in use for 30s get reinforced or decayed based on the change
+    // in match score since they were marked used.
+    this.updateVocabularyLearner();
   }
 
   /**
@@ -2434,6 +2520,12 @@ export class Psy4EngineV2 {
           // bars=2 → short forced section so we can re-react if the radio
           // breaks immediately after.
           this.flowEngine.transitionTo({ label: 'DROP', energy: 0.95 }, 2);
+          // ── Task P4: tell the PhraseSync the radio hit a phrase boundary.
+          //    It records the boundary, estimates the phrase length from
+          //    intervals, and sets a pending realignment flag. The engine's
+          //    tick() will call checkRealignment() next bar to decide whether
+          //    we need to cut our phrase short / finish early / no-op. ──
+          this.phraseSync.onSectionBoundary(nowSec, 'drop');
           if (typeof console !== 'undefined') {
             console.log(
               `[PSY4] MusicAnalyzer: dropHit @ bar ${ev.data?.bar ?? '?'} ` +
@@ -2444,6 +2536,8 @@ export class Psy4EngineV2 {
         case 'breakStart':
           // The radio dropped to a break — force our flow into BREAK.
           this.flowEngine.transitionTo({ label: 'BREAK', energy: 0.3 }, 2);
+          // ── Task P4: record the phrase boundary for PhraseSync. ──
+          this.phraseSync.onSectionBoundary(nowSec, 'break');
           if (typeof console !== 'undefined') {
             console.log(
               `[PSY4] MusicAnalyzer: breakStart @ bar ${ev.data?.bar ?? '?'} ` +
@@ -2455,6 +2549,8 @@ export class Psy4EngineV2 {
           // The radio started a build — force our flow into BUILD over 4
           // bars (longer than drop/break so the tension can develop).
           this.flowEngine.transitionTo({ label: 'BUILD', energy: 0.7 }, 4);
+          // ── Task P4: record the phrase boundary for PhraseSync. ──
+          this.phraseSync.onSectionBoundary(nowSec, 'build');
           if (typeof console !== 'undefined') {
             console.log(
               `[PSY4] MusicAnalyzer: riserStart @ bar ${ev.data?.bar ?? '?'} ` +
@@ -2462,10 +2558,24 @@ export class Psy4EngineV2 {
             );
           }
           break;
+        case 'sectionBoundary':
+          // ── Task P4: section transitions (intro → groove → build → drop →
+          //    variation → break → outro) are ALSO phrase boundaries in dance
+          //    music. We don't force a flow transition here (the archetype
+          //    may already match — e.g., we're already in DROP when the
+          //    radio's section flips from drop to variation, both at high
+          //    energy). But we DO tell the PhraseSync a boundary fired, so
+          //    it can predict the next one + decide whether to realign. ──
+          this.phraseSync.onSectionBoundary(
+            nowSec,
+            typeof ev.data?.to === 'string' ? ev.data.to : 'groove',
+          );
+          break;
         // Other event types (chordChange, keyChange, melodicPeak,
-        // sectionBoundary, rhythmicFill) are surfaced via
-        // getMusicalAnalysis() for the UI but don't force a flow transition.
-        // The harmony engine + melody engine will pick them up on the next
+        // rhythmicFill) are surfaced via getMusicalAnalysis() for the UI
+        // but don't force a flow transition AND don't fire a phrase
+        // boundary (they're intra-phrase events, not structural). The
+        // harmony engine + melody engine will pick them up on the next
         // bar boundary via the existing scheduleStep path.
         default:
           break;
@@ -2482,6 +2592,133 @@ export class Psy4EngineV2 {
    */
   getMusicalAnalysis(): MusicalAnalysis | null {
     return this.musicalAnalysis;
+  }
+
+  // ─── Task P5 (adaptive learning): vocabulary learner integration ─────────
+
+  /**
+   * Task P5: extract musical vocabulary from the latest MusicAnalyzer output
+   * and feed it to the VocabularyLearner.
+   *
+   * Two paths run here, both throttled to a 30s minimum interval (the
+   * analyzer updates every ~10s but motif extraction has its own 30s
+   * cooldown inside the analyzer; we additionally throttle the rhythm
+   * learn + the tick evaluation so we don't re-learn the same rhythm on
+   * every reference window):
+   *
+   *   1. MOTIF EXTRACTION — calls musicAnalyzer.extractRecentMelodicMotif()
+   *      with the engine's current musicalKey (root + scale). If the
+   *      analyzer returns a non-null motif (≥4 distinct scale degrees over
+   *      the last 60s of spectral-centroid history), the learner stores it
+   *      (or dedupes against an existing similar motif).
+   *
+   *   2. RHYTHM EXTRACTION — always called (a "no-percussion" rhythm is
+   *      still data). The analyzer's rhythmic pattern (kick + hat gate
+   *      strings) is passed to the learner. If an identical pattern is
+   *      already stored, its useCount is bumped instead of duplicating.
+   *
+   *   3. EFFECTIVENESS TICK — calls vocabularyLearner.tickEvaluation() with
+   *      the current match score from LearningMemory (recentAvgScore). The
+   *      learner reinforces or decays any motifs/rhythms that have been in
+   *      use for ≥30s, then prunes low-effectiveness entries.
+   *
+   * Guards: no-ops when musicalAnalysis is null, when the analyzer hasn't
+   * been initialized, or when the LearningMemory hasn't produced a match
+   * score yet (recentAvgScore === 0 → tickEvaluation still runs but with
+   * no delta).
+   */
+  private updateVocabularyLearner(): void {
+    if (!this.musicalAnalysis) return;
+
+    const nowMs = Date.now();
+    const intervalPassed = nowMs - this.lastVocabularyTickTime
+      >= Psy4EngineV2.VOCABULARY_TICK_INTERVAL_MS;
+
+    // ── 1. Motif extraction (every tick — the analyzer's own 30s cooldown
+    //    handles dedup; we just call it every liveTrack so a fresh motif
+    //    is learned as soon as the cooldown elapses). ──
+    if (this.musicalKey && typeof this.musicalKey.root === 'number'
+        && typeof this.musicalKey.scale === 'string') {
+      try {
+        const motif = this.musicAnalyzer.extractRecentMelodicMotif(
+          this.musicalKey.root,
+          this.musicalKey.scale,
+        );
+        if (motif && motif.notes.length >= 4) {
+          this.vocabularyLearner.learnMotif(motif);
+        }
+      } catch {
+        // extraction can throw on edge-case inputs (NaN centroid, etc.);
+        // a single bad window shouldn't poison the vocabulary pipeline.
+      }
+    }
+
+    // ── 2. Rhythm extraction (throttled to 30s — the analyzer's rhythm
+    //    field is stable across consecutive windows, so re-learning every
+    //    10s would just bump useCount redundantly). ──
+    if (intervalPassed) {
+      const rhythm = this.musicalAnalysis.rhythm;
+      if (rhythm && typeof rhythm.kickPattern === 'string'
+          && typeof rhythm.hatPattern === 'string') {
+        try {
+          this.vocabularyLearner.learnRhythm({
+            kickPattern: rhythm.kickPattern,
+            hatPattern: rhythm.hatPattern,
+            percPattern: '................', // analyzer doesn't expose perc; learner derives
+          });
+        } catch {
+          // rhythm learn can throw on malformed gates — defensive guard.
+        }
+      }
+      this.lastVocabularyTickTime = nowMs;
+    }
+
+    // ── 3. Effectiveness tick — always runs (so reinforcements happen as
+    //    soon as the 30s evaluation window elapses for an in-use entry,
+    //    regardless of the rhythm-learn throttle). ──
+    let matchScore = 0;
+    try {
+      const status = this.learningMemory.getStatus();
+      matchScore = typeof status.recentAvgScore === 'number' ? status.recentAvgScore : 0;
+    } catch {
+      // learning memory not yet initialized — matchScore stays 0.
+    }
+    try {
+      this.vocabularyLearner.tickEvaluation(matchScore);
+    } catch {
+      // tick can throw if activeUses got into a weird state — defensive.
+    }
+  }
+
+  /**
+   * Task P5: return the current VocabularyLearner stats (or null before the
+   * engine is constructed). The UI reads this on every analyzer tick to
+   * render the VOCABULARY card — learned motif count + top 3 (visualized as
+   * note sequences), learned rhythm count + top 3 (gate strings), average
+   * effectiveness, and a "Learning..." indicator when the learner has
+   * absorbed new material in the last 30s.
+   */
+  getVocabularyStats(): VocabularyStats | null {
+    try {
+      return this.vocabularyLearner.getStats();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Task P4: return the current PhraseSync state for UI display. The UI
+   * reads this on every analyzer tick to render the PHRASE SYNC indicator
+   * — two 8-bar grids (reference + ours) showing the current bar position,
+   * alignment %, realignment counter, and a flash when a realignment
+   * happens.
+   *
+   * Safe to call before start() — the PhraseSync is constructed eagerly so
+   * the state is always available (returns a default-zero state before the
+   * first ref boundary fires).
+   */
+  getPhraseSyncState(): PhraseSyncState {
+    return this.phraseSync.getState();
   }
 
   // ─── Task T1: synthesis character pursuit ──────────────────────────────────
@@ -3779,6 +4016,57 @@ export class Psy4EngineV2 {
           // now" DJ move.
           this.bar = 0;
         }
+        // ── Task P4: phrase-level sync per-bar tick ──
+        // Push our latest bar / phrase length / absolute bar counter to the
+        // PhraseSync, then ask it whether to realign this bar. If realign,
+        // call flowEngine.transitionTo(...) with the suggested archetype +
+        // energy + phrase length to start a new phrase aligned with the
+        // radio. We also manually reset this.bar to 0 because transitionTo
+        // resets the flow engine's barInSection but NOT our engine's bar
+        // (the engine only resets this.bar when the flow LABEL changes, so
+        // a same-label realignment — e.g., DROP → DROP — wouldn't reset it).
+        //
+        // We run this BEFORE the flow engine's tick() (next block) so the
+        // flow engine smooths toward the new archetype immediately. The
+        // flow engine's tick() will see the new target + set current.label
+        // accordingly; if the label changed, the engine's existing logic
+        // resets this.bar = 0 again (no-op when we already set it to 0).
+        //
+        // Master-sync guard: PhraseSync.checkRealignment() returns
+        // { realign: false } when master sync is off, so this whole block
+        // is a no-op in free-run mode (just two cheap method calls).
+        const p4PhraseLen = clamp(this.currentFlow?.sectionBars ?? 8, 4, 8);
+        this.phraseSync.onOwnBar(this.bar, p4PhraseLen, this.totalBars);
+        const p4Realign = this.phraseSync.checkRealignment();
+        if (p4Realign.realign && this.flowEngine) {
+          // Start a new phrase aligned with the radio. The suggested label
+          // + energy are derived from the radio's section label at the
+          // boundary (drop → DROP/0.95, break → BREAK/0.30, build →
+          // BUILD/0.70, etc.). The suggested bars matches the radio's
+          // estimated phrase length (default 8).
+          this.flowEngine.transitionTo(
+            {
+              label: p4Realign.suggestedLabel ?? this.currentFlow?.label ?? 'GROOVE',
+              energy: p4Realign.suggestedEnergy ?? this.currentFlow?.energy ?? 0.7,
+            },
+            p4Realign.suggestedBars ?? p4PhraseLen,
+          );
+          // Manually reset our bar-in-section so scheduleStep's energy-curve
+          // indexing + riser logic restart at phrase position 0. This is
+          // the "cut short and align" DJ move — the flow engine's transition
+          // already reset its own barInSection, but our `this.bar` is only
+          // reset by the flow-label-change branch in the next block; a
+          // same-label realignment (DROP → DROP) wouldn't trigger it.
+          this.bar = 0;
+          if (typeof console !== 'undefined') {
+            console.log(
+              `[PSY4] PhraseSync: realign (${p4Realign.reason}) — ` +
+              `offset ${p4Realign.offsetBars > 0 ? '+' : ''}${p4Realign.offsetBars} bars, ` +
+              `new phrase ${p4Realign.suggestedLabel ?? '?'} ` +
+              `(${p4Realign.suggestedBars ?? p4PhraseLen} bars @ energy ${p4Realign.suggestedEnergy?.toFixed(2) ?? '?'})`,
+            );
+          }
+        }
         // ── Task F1: dynamic flow engine drives section transitions ──
         // The flow engine decides WHEN to transition (based on radio energy,
         // time since last transition, musical logic, and the world's flow
@@ -4613,6 +4901,10 @@ export class Psy4EngineV2 {
   setMasterSync(enabled: boolean): void {
     const wasEnabled = this.djController.isMasterSyncEnabled();
     this.djController.setMasterSync(enabled);
+    // ── Task P4: forward the master-sync toggle to the PhraseSync. When
+    //    off, checkRealignment() returns { realign: false } — the engine
+    //    runs free. State is still computed for UI display. ──
+    this.phraseSync.setMasterSync(enabled);
     // When DISABLING master sync, reverse any key shift we applied so the
     // engine returns to the key it would have been in without DJ sync.
     if (wasEnabled && !enabled && this.appliedKeyShift !== 0) {

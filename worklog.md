@@ -5289,3 +5289,205 @@ NEXT (future tasks, NOT done here — left for P4+):
 - Tuning the detector thresholds against real radio streams (the current values are heuristic — energy > 0.8 for drop, slope > 0.02/s for build, etc.).
 - A real chord detector (chromagram or pitch detection) to replace the spectral-flatness proxy.
 - A separated lead-track centroid for more accurate melodic contour detection.
+
+---
+Task ID: P5-ADAPTIVE-LEARNING (Phase 5 — real-time adaptation: learn melodies and rhythms from the radio)
+Agent: Z.ai Code (main)
+Task: Build an adaptive learning system that learns MUSICAL CONTENT (motifs + rhythms) from the radio, stores it in a vocabulary, and blends it into our compositions. The engine's music should EVOLVE based on what it hears — not just match parameters (T1), but actually incorporate the radio's musical ideas.
+
+Work Log:
+- Read worklog.md RESEARCH-DEEP (#5: development techniques unused; #7: no musical intelligence layer), P2-MUSIC-INTELLIGENCE (MusicAnalyzer detects contour/rhythm/sections/events), T1 (LearningMemory stores parameter configs), P3-DEVELOPMENT (transformMotifForPhase pipeline). Confirmed THE GAP: the engine matches PARAMETERS but doesn't learn MUSICAL CONTENT.
+- Read the 5 key files:
+  - `musicAnalyzer.ts` (881 lines): MusicAnalyzer.update() pushes to spectralHistory + energyHistory + transientHistory on every reference window (~10s). Detects contour shape (rising/falling/arch/wave/static) from spectral centroid, kick/hat gate patterns from kickDensity+hatDensity (16-char gates), section boundaries from energy transitions. Has getRecentEvents() + getAnalysis() for engine consumption.
+  - `musicalDirector.ts` (1750 lines): composePhrase() calls composeDrums/composeBass/composeLead/composePad/composeArp. composeLead() does baseMotif = melody.getCurrentMotif() → transformMotifForPhase(phase, baseMotif, rng) → melody.setMotif(transformed) → nextNote() per step. transformMotifForPhase: statement=identity, variation=transpose/fragment, contrast=invert, climax=shorten+sequence, resolution=elongate. composeDrums() uses kickPlaysAt/clapPlaysAt/composeHats/composePerc — all character-driven (break=sparse, drop=full, build=rising).
+  - `psy4EngineV2.ts` (4872 lines): liveTrack() is the entry point for reference features. Already calls applySynthesisPursuit, applyEffectsPursuit, applyDeepPursuit, phaseSync, djController, applyLearnedPatternProactively, runLearningTick, updateMusicAnalyzer. The musicalKey field = {root: number, scale: string}. Has learningMemory (T1) + musicAnalyzer (P2) as eagerly-constructed private fields.
+  - `melodyEngine.ts` (834 lines): Motif = {notes: number[] (scale degrees), durations: number[] (16th steps), velocities: number[], rests: boolean[]}. Has setMotif(m) which installs + rebuilds the A A' B A'' phrase table. transpose/invert/fragment/elongate/shorten/sequence all operate on scale degrees (clean — stays in scale).
+  - `learningMemory.ts` (260 lines): stores (refFeatures, engineParams, matchScore) triples. Persists to localStorage 'psy4_learning_memory_v1'. Has getStatus().recentAvgScore for the current match score.
+
+STEP 1 — Created VocabularyLearner module
+- File: src/lib/studio/engine/vocabularyLearner.ts (~640 lines)
+- Exports: VocabularyLearner class + 4 interfaces (LearnedMotif, LearnedRhythm, VocabularyStats, ActiveUse internal)
+- API: learnMotif({notes, durations, velocities}), learnRhythm({kickPattern, hatPattern, percPattern?}), getMotifForPhrase(energy, style), getRhythmForPhrase(energy, style), markUsed(id, kind), setMatchScore(score), tickEvaluation(currentScore), reinforce(id, eff), getStats(), clear(), save(), load()
+- Dedup: motifs dedupe by ≥85% scale-degree match (lengths within ±2); rhythms dedupe by identical 16-char gates. Duplicate learns bump useCount + refresh sourceTime instead of adding copies.
+- Selection: weighted random by effectiveness × (1 + useCount × 0.1). Energy gating: low-energy phrases avoid high-register motifs (avg degree > 7).
+- Effectiveness tracking: markUsed(id, kind) captures the baseline match score; tickEvaluation() (called every liveTrack) reinforces entries whose 30s window has elapsed, using tanh-squashed delta. Low-effectiveness entries (<0.10) get pruned (but never the last 3 — keeps vocabulary non-empty during noisy early sessions).
+- Persistence: localStorage 'psy4_vocabulary_v1' with graceful fallback (try/catch around setItem/getItem + checkStorage guard). save() called automatically every 60s via tickEvaluation + on engine stop(). load() called in constructor.
+- Guards: every input validated (motifs need ≥3 notes with matching-length arrays; rhythms need 16-char gates after normalizeGate). Malformed input silently rejected — no throw.
+
+STEP 2 — Extended MusicAnalyzer to extract note sequences
+- Added import { SCALES } from './musicalGrammar' (top of file, before types).
+- Added MOTIF_EXTRACT_COOLDOWN_SEC = 30 constant.
+- Added private lastMotifExtractTime field + private midiToScaleDegree(midi, root, sc) helper (precomputes all scale pitches over 7 octaves, returns nearest degree — O(sc.length × 7) per call, trivial).
+- Added public extractRecentMelodicMotif(root, scale): {notes, durations, velocities} | null. Pipeline:
+  1. Validate root + scale; check 30s cooldown.
+  2. Pull last 60s of spectralHistory (≈ 6 samples at 10s hops).
+  3. Reject if <4 samples OR if peak-to-trough centroid < 100 Hz (static = pedal, not a melody).
+  4. For each sample: Hz → MIDI (12·log2(f/440)+69) → nearest scale degree (root-relative integer, may be negative/>7).
+  5. Velocity from the time-aligned energy sample (mapped 0.35..0.9).
+  6. Consecutive duplicate degrees → merge (extend previous note's duration, keep louder velocity) — avoids pedal notes inflating the motif length.
+  7. Trim to 8 notes max. Reject if <4 distinct notes.
+  8. Update lastMotifExtractTime + return.
+- Returns null on cooldown / insufficient samples / static contour / invalid key — graceful no-op.
+
+STEP 3 — Rhythm extraction
+- The analyzer already estimates kickPattern + hatPattern (16-char gates) in its rhythm field. No new code needed in the analyzer — the engine just calls vocabularyLearner.learnRhythm({kickPattern, hatPattern, percPattern: '...'}) from liveTrack. The VocabularyLearner.derivePercPattern() helper builds a perc pattern from the kick+hat gates (fills gaps on the "e" and "a" of each beat) when percPattern isn't supplied.
+
+STEP 4 — Blended learned material into MusicalDirector composition
+- musicalDirector.ts: imported VocabularyLearner + LearnedRhythm types. Added `private vocabulary: VocabularyLearner | null = null;` field + `setVocabularyLearner(v)` method. Linked from psy4EngineV2.refreshMusicalGenerators (both fresh-director + setEngines paths).
+- composeLead() (signature extended with `worldId: string`): with 30% probability (when vocabulary is linked), fetches a learned motif via getMotifForPhrase(energy, worldId). If found, builds a Motif from the learned notes/durations/velocities (rests = all false) and uses it as baseMotif INSTEAD of melody.getCurrentMotif(). The same transformMotifForPhase pipeline (transpose/invert/fragment/shorten+sequence/elongate) then applies, so the quote EVOLVES across phrases. After setMotif succeeds, calls vocabulary.markUsed(id, 'motif'). Returns motifLabel + ' (quote)' so the phrase's motifIds surface indicates a quote.
+- composeDrums() (unchanged — kept as fallback path). Added new private composeDrumsWithLearnedRhythm(notes, rhythm, character, energy, world, bars, s16) — used when the 40% probability gate fires AND getRhythmForPhrase returns a learned rhythm. Blends:
+  - KICK: learned kickPattern's 'x' AND character gating (break = steps 0+8 only; build bar 0 = sparse).
+  - CLAP: keep the existing character-driven clapPlaysAt() (radio's pattern doesn't carry clap info).
+  - HATS: learned hatPattern's 'x' AND character gating (no hats in breaks; build skips bar 0). Velocity from world.hatDensity × barEnergy.
+  - PERC: learned percPattern OR world.percPattern (blend — adds radio syncopation while keeping world identity).
+  - Triplet fill kept for builds (engine convention the radio doesn't carry).
+- composePhrase() orchestrates: 40% rhythm path → fall back to composeDrums; 30% motif path inside composeLead. Both mark used entries for effectiveness tracking.
+
+STEP 5 — Effectiveness tracking
+- VocabularyLearner.markUsed(id, kind) captures {startMs, baselineScore: lastKnownMatchScore}. Active uses are deduped by id (no double-tracking).
+- VocabularyLearner.tickEvaluation(currentMatchScore) (called from psy4EngineV2.updateVocabularyLearner every liveTrack): for each active use older than 30s, computes delta = currentScore - baseline; reinforces via EMA blend (weight 0.35) with REINFORCE_DELTA × tanh(delta × 8) (±0.18 max per evaluation, tanh-squashed so noisy windows don't whipsaw). Prunes entries below 0.10 effectiveness (but never the last 3). Periodic save every 60s.
+- Psy4EngineV2 passes learningMemory.getStatus().recentAvgScore as the current match score — this is the same score T1's learning loop computes, so the vocabulary effectiveness tracks the SAME match score the parameter-learning uses.
+
+STEP 6 — Integrated into psy4EngineV2
+- Imported VocabularyLearner + VocabularyStats types.
+- Added `private vocabularyLearner: VocabularyLearner = new VocabularyLearner();` (eager construction — loads from localStorage in constructor, same pattern as LearningMemory). Added `lastVocabularyTickTime` + `VOCABULARY_TICK_INTERVAL_MS = 30_000` for rhythm-learn throttling.
+- In refreshMusicalGenerators(): both the fresh-director + setEngines paths now call `this.director.setVocabularyLearner(this.vocabularyLearner)`.
+- In liveTrack() (end, after updateMusicAnalyzer): calls this.updateVocabularyLearner().
+- Added private updateVocabularyLearner() method:
+  1. Motif extraction: calls musicAnalyzer.extractRecentMelodicMotif(musicalKey.root, musicalKey.scale). If non-null + ≥4 notes → vocabularyLearner.learnMotif(). Wrapped in try/catch (defensive against NaN centroid edge cases). The analyzer's own 30s cooldown handles motif dedup.
+  2. Rhythm extraction (throttled to 30s): pulls musicalAnalysis.rhythm + calls vocabularyLearner.learnRhythm() with kickPattern + hatPattern + empty percPattern (learner derives).
+  3. Effectiveness tick (always runs): pulls learningMemory.getStatus().recentAvgScore → vocabularyLearner.tickEvaluation(). Reinforces/decays entries whose 30s window has elapsed.
+- Added public getVocabularyStats(): VocabularyStats | null for UI.
+- In stop(): added `try { this.vocabularyLearner.save(); } catch {}` alongside the existing learningMemory.save() — persists the vocabulary to localStorage on engine stop. The vocabulary is NOT reset on stop (it accumulates across sessions — the whole point of adaptive learning).
+
+STEP 7 — UI: VOCABULARY card in page.tsx
+- Added `vocabularyStats` state + polling in analyzer tick (getVocabularyStats()) + clear-on-stop is intentionally NOT done (the vocabulary persists, like learningStatus — same pattern as T1).
+- Added the VOCABULARY card in analyze mode (between MUSICAL ANALYSIS and A/B SPECTRAL VISUALIZATION), with:
+  - Header: Brain icon + "VOCABULARY" title + "Learning…" pulse badge when learner absorbed new material in the last 30s.
+  - Empty state: "⚠ Waiting for musical content — connect a stream and the engine learns the radio's melodic motifs + rhythmic patterns within ~60s."
+  - Summary stats: 4-up grid (Motifs count / Rhythms count / Avg Effectiveness % color-coded green-amber-rose / Active quotes count).
+  - Top Learned Motifs (top 3): each row shows effectiveness % + useCount × N + note-sequence bar visualization (height = normalized scale degree 0..14; opacity = velocity; color = fuchsia gradient). Empty state if no motifs.
+  - Top Learned Rhythms (top 3): each row shows effectiveness % + useCount + 16-step KICK gate (amber filled) + 16-step HATS gate (cyan filled). Empty state if no rhythms.
+  - Footer explanation: how the VocabularyLearner extracts motifs from spectral centroid + rhythms from analyzer, how the MusicalDirector quotes them (30% leads, 40% drums) with the same development pipeline applied, how effectiveness is tracked over 30s, and that it persists across sessions via localStorage.
+- All access uses optional chaining (vocabularyStats?.learning, m.notes ?? [], r.kickPattern ?? '...') throughout — degrades gracefully before the first liveTrack() returns a snapshot.
+
+CONSTRAINTS HONORED:
+- Did NOT break existing functionality: composeDrums() kept as fallback path; composeLead() unchanged when vocabulary is null or 30% gate doesn't fire; LearningMemory + MusicAnalyzer + MelodyEngine + HarmonyEngine all unchanged. The new code is purely ADDITIVE — new field, new method, new optional code path.
+- Non-blocking: learning runs in liveTrack() (~10s interval). Motif extraction has a 30s cooldown inside the analyzer; rhythm learning is throttled to 30s via lastVocabularyTickTime; effectiveness tick runs every liveTrack but is O(activeUses) ≤ ~5. No per-block work, no separate timer, no audio-thread work.
+- Guards against missing data: every input validated (motif needs ≥3 notes with matching arrays; rhythm needs 16-char gates; musicalAnalysis must be non-null; musicalKey.root must be a finite number 0..127; learningMemory.getStatus() wrapped in try/catch). Malformed input → graceful no-op, never throws.
+- localStorage persistence with fallback: VocabularyLearner.checkStorage() returns false in SSR/private-browsing; save() + load() silently no-op. Tried/catched throughout.
+- TypeScript strict mode: all types explicit (no `any` in vocabularyLearner.ts or the new code in musicAnalyzer/musicalDirector/psy4EngineV2). page.tsx uses `any` for the snapshot (consistent with existing deepAnalysis/musicalAnalysis state pattern in the file).
+- Optional chaining in UI: vocabularyStats?.learning, m.notes ?? [], r.kickPattern ?? '...' throughout the card.
+
+VERIFICATION:
+- `npx tsc --noEmit --skipLibCheck 2>&1 | grep -E "vocabularyLearner|musicalDirector|psy4EngineV2|page.tsx|musicAnalyzer" | head` → EMPTY (0 errors in any touched file).
+- `bun run lint 2>&1 | grep -E "vocabularyLearner|musicalDirector|psy4EngineV2|page.tsx|musicAnalyzer" | grep error` → EMPTY (0 lint errors in any touched file).
+- Dev server smoke test: `curl http://localhost:3000/` → HTTP 200, ✓ Compiled. dev.log shows zero new compile errors after all changes.
+
+DELIVERABLE: An adaptive learning system that learns melodic motifs (scale-degree sequences extracted from the radio's spectral centroid via Hz→MIDI→scale-degree quantization) and rhythmic patterns (16-char kick/hat gate strings from the analyzer) from the radio, stores them in a VocabularyLearner (with dedup, weighted-random recall, effectiveness tracking via 30s match-score deltas, and localStorage persistence), and blends them into composition. The MusicalDirector quotes a learned motif in 30% of leads (with the same transpose/invert/fragment/sequence/elongate development pipeline applied so the quote EVOLVES) and a learned rhythm in 40% of drum phrases (blended with character gating so a 'break' stays sparse even if the radio's pattern is dense). The engine's music now EVOLVES based on what it hears — not just matching parameters (T1), but actually incorporating the radio's musical ideas. The UI surfaces the full vocabulary (motif count + top 3 visualized as note sequences, rhythm count + top 3 visualized as gate strings, average effectiveness, active quotes, "Learning…" indicator) so the user can see the engine's musical vocabulary growing in real time.
+
+HONEST GAP (limitation):
+- PHYSICAL LISTENING UNVERIFIED — verification via TypeScript + ESLint pass + dev server compile. The signal chain is well-formed: liveTrack → updateVocabularyLearner → musicAnalyzer.extractRecentMelodicMotif (centroid → MIDI → scale degree) → vocabularyLearner.learnMotif → director.composeLead (30% chance) fetches learned motif → transformMotifForPhase applies development → melody.setMotif installs → nextNote per step fires the quote. But the audible result (does the lead ACTUALLY quote the radio's melodies?) is asserted by construction, not by listening.
+- The motif extraction is a COARSE APPROXIMATION: spectral centroid is a proxy for melodic register (well-known but breaks down when the arrangement changes — e.g. pad swells in the high register while the lead stays in the mid register). A real pitch detector would need a chromagram or fundamental-frequency tracking on raw audio, which the reference listener doesn't currently expose. The 60s window gives only ~6 samples — enough for a 4-8 note macro-contour motif, but not enough for fine-grained melodic detail. The MusicalDirector's transformation pipeline (transpose/invert/sequence) compensates by developing the coarse contour into richer material.
+- The effectiveness tracking depends on learningMemory.getStatus().recentAvgScore — which comes from T1's match-score computation. If T1's score is noisy or biased, the vocabulary effectiveness will be too. The tanh-squash on the delta (±0.18 max per evaluation) limits the damage from a single noisy window, but a sustained bias could still skew the vocabulary over time.
+- The 30% / 40% quoting probabilities are heuristic — they balance "fresh material" vs "quoted material" so the engine doesn't sound like a copy of the radio. These constants (0.30, 0.40) are in composeLead + composePhrase and can be tuned. A future enhancement could make them adaptive (higher when effectiveness is high, lower when it's low).
+
+ARTIFACTS:
+- src/lib/studio/engine/vocabularyLearner.ts (NEW, ~640 lines) — VocabularyLearner class + 4 interfaces + ActiveUse internal type.
+- src/lib/studio/engine/musicAnalyzer.ts (extended, +130 lines) — SCALES import + MOTIF_EXTRACT_COOLDOWN_SEC constant + lastMotifExtractTime field + midiToScaleDegree helper + extractRecentMelodicMotif public method.
+- src/lib/studio/engine/musicalDirector.ts (extended, +170 lines net) — VocabularyLearner/LearnedRhythm imports + vocabulary field + setVocabularyLearner method + composeDrumsWithLearnedRhythm private method + composeLead signature extended with worldId + 30% learned-motif path in composeLead + 40% learned-rhythm path in composePhrase + "(quote)" label suffix.
+- src/lib/studio/engine/psy4EngineV2.ts (extended, +120 lines) — VocabularyLearner/VocabularyStats imports + vocabularyLearner field + lastVocabularyTickTime + VOCABULARY_TICK_INTERVAL_MS + setVocabularyLearner calls in refreshMusicalGenerators + updateVocabularyLearner private method (called from liveTrack) + getVocabularyStats public method + vocabularyLearner.save() in stop().
+- src/app/page.tsx (extended, +200 lines) — vocabularyStats state + polling in analyzer tick + (intentionally no clear in stopEngine) + VOCABULARY card (summary stats / top motifs as note bars / top rhythms as gate strings / "Learning…" pulse badge / footer explanation).
+- agent-ctx/P5-ADAPTIVE-LEARNING-z-ai-code.md (NEW) — work record for this task.
+
+NEXT (future tasks, NOT done here — left for P6+):
+- A real pitch detector (chromagram or HPS on raw audio) to replace the spectral-centroid proxy. The reference listener would need to expose raw FFT bins or time-domain samples to the analyzer.
+- Adaptive quoting probabilities (raise 30%/40% when effectiveness is high; lower when low) — currently fixed constants.
+- Style-aware vocabulary filtering: getMotifForPhrase(energy, style) currently passes style through as informational only; a future enhancement would partition the vocabulary by style so a dark-psy phrase doesn't quote a morning-psy motif.
+- Counterpoint rules: when a learned motif is quoted, check it against the current chord progression for dissonances (the existing snapToLiveChordTone handles strong-beat snapping, but a contrapuntal check would catch passing-tone clashes).
+- Vocabulary "forgetting" — currently low-effectiveness entries get pruned, but there's no time-based decay. A future enhancement would slowly decay all entries' effectiveness toward 0.5 (neutral) over hours/days so the vocabulary adapts to long-term shifts in the radio's musical content.
+
+---
+Task ID: P4-PHRASE-SYNC (Phase 4 — Structural pursuit: phrase-level sync)
+Agent: Z.ai Code (main)
+Task: Add phrase-level synchronization. Beat sync (PhaseSync, D1) aligns individual beats. Section sync (MusicAnalyzer, P2) aligns section TYPES (we drop when the radio drops). But NEITHER aligns PHRASES — the 4-8 bar structural units of dance music. Professional DJ software (Traktor/Serato/CDJs) aligns phrase boundaries: when the radio starts a new 8-bar phrase, we start a new phrase too — not 3 bars into our current phrase. This prevents our "drop" from landing in the middle of the radio's "break". Build a PhraseSync module + integrate into psy4EngineV2 + UI indicator.
+
+Work Log:
+- Read worklog.md (RESEARCH-DEEP + P2-MUSIC-INTELLIGENCE + D1 + D1-upgrade + P5-ADAPTIVE-LEARNING entries) to confirm context: the playing engine is Psy4EngineV2 in src/lib/studio/engine/psy4EngineV2.ts; MusicAnalyzer (P2) emits sectionBoundary / dropHit / breakStart / riserStart events from updateMusicAnalyzer(); DJController (D1 upgrade) does beat-level phase sync + has its own reactive `phraseRealign` flag (fires on 4-bar smoothed-energy transitions, only snaps bar counter to 0); FlowEngine.transitionTo() accepts Partial<FlowState> & { label? } + bars and resets barInSection to 0.
+- Read psy4EngineV2.ts liveTrack() (lines 2102-2356) + updateMusicAnalyzer() (lines 2415-2530) + tick() per-bar (lines 3663-3927) + start() (lines 1269-1322) + stop() (lines 1349-1370) + setMasterSync() (lines 4646-4662) — identified 6 integration points: import, private field, start() reset, stop() reset, setMasterSync forward, updateMusicAnalyzer event routing, tick() per-bar realignment, getPhraseSyncState() public method.
+- Read flowEngine.ts transitionTo() (lines 473-491) + FlowState type (lines 75-97) + ARCHETYPES table (lines 146-200) — confirmed transitionTo sets barInSection = 0 + lastTransitionBar = barCount; the engine's `this.bar` is only reset when the flow LABEL changes, so a same-label realignment (DROP → DROP) wouldn't reset it automatically.
+- Read musicAnalyzer.ts MusicalEvent interface (lines 43-56) + getRecentEvents() (lines 284-288) + sectionBoundary emit (lines 451-456) + dropHit/breakStart/riserStart emit (lines 472-486) — confirmed event shape: { type, time, confidence, data?: any } where data.bar is the MusicAnalyzer's bar count and data.to is the new section label for sectionBoundary events.
+- Read djController.ts DJSyncState interface (lines 280-290) + tickBar() (lines 469-527) + pendingPhraseRealign (lines 588-610) — confirmed the existing phraseRealign is reactive (4-bar smoothed-energy delta) + only snaps bar = 0; PhraseSync complements this by being proactive (fires on MusicAnalyzer's musical section detection) + calling flowEngine.transitionTo() with the right archetype.
+
+STEP 1-3 — Created src/lib/studio/engine/phraseSync.ts (NEW, ~430 lines)
+- PhraseSyncState interface — 11 fields: refPhraseBar, refPhraseLength, ownPhraseBar, ownPhraseLength, alignment (0..1), lastRealignment (sec), realignments (counter), lastRefBoundaryTime, nextPredictedRefBoundaryBar, lastRefSectionLabel, masterSync.
+- RealignmentDecision interface — { realign, reason, offsetBars, suggestedLabel?, suggestedEnergy?, suggestedBars? } — the suggested* fields are populated when realign === true so the engine can pass them directly to flowEngine.transitionTo().
+- PhraseSync class — 6 public methods (setMasterSync, onSectionBoundary, onOwnBar, checkRealignment, getState, reset) + 6 private fields (boundaryIntervals, lastBoundaryOwnBar, latestTotalBars, pendingRefBoundary, pendingSectionLabel, masterSync).
+- STEP 2 — Phrase boundary detection (in onSectionBoundary): records the wall-clock time + label of each ref section boundary; computes the interval (in our bars) between consecutive boundaries using latestTotalBars (passed in via onOwnBar's totalBars parameter — a reasonable proxy for the radio's bar counter because PhaseSync keeps our BPM locked to the radio's); pushes valid intervals (4-16 bars) to a bounded history (INTERVAL_HISTORY_MAX = 6); estimates the radio's phrase length via the MEDIAN of recent intervals (more robust than the mean to outliers); predicts the next boundary: lastBoundaryOwnBar + refPhraseLength; sets pendingRefBoundary = true for checkRealignment() to consume on the next bar.
+- STEP 3 — Alignment logic (in checkRealignment): master-sync guard (returns realign: false when off) + pending-boundary guard + anti-thrash cooldown (6s between realignments) + decision tree: |offsetBars| <= 1 → no realign (already aligned); ownBar >= ownLen - 1 → no realign (near own boundary, will align naturally); ownBar > ownLen / 2 → no realign (past 50%, finish phrase first); ownBar < 2 → realign (early-cut); else (2 to 50%) → realign (mid-phrase-cut). Suggests the archetype via sectionLabelToArchetype (drop→DROP, break→BREAK, build→BUILD, intro→INTRO, outro→OUTRO, variation→VARIATION, else→GROOVE) + energy via sectionLabelToEnergy (drop→0.95, break→0.30, build→0.70, intro→0.25, outro→0.25, variation→0.85, groove→0.50 — matches ARCHETYPES table) + phrase length (radio's estimated phrase length, default 8).
+- Alignment computation (in onOwnBar): alignment = 1 - |ownPhraseBar - refPhraseBar| / max(ownPhraseLength, refPhraseLength), clamped to [0, 1]. Returns 0 when no ref data yet.
+- reset() preserves masterSync toggle (user's choice survives a restart) but clears all boundary tracking + realignment state.
+
+STEP 4 — Integration into psy4EngineV2.ts (extended, +85 lines)
+- Imported PhraseSync, PhraseSyncState from ./phraseSync (after DJController import).
+- Added `private phraseSync: PhraseSync = new PhraseSync();` field (constructed eagerly so the master-sync toggle persists across stop/start cycles, mirroring the DJController pattern).
+- In start(): call this.phraseSync.reset() right after the MusicAnalyzer reset (so stale boundary-interval history from a previous play session doesn't bias the new session's phrase length estimate). Master-sync toggle preserved.
+- In stop(): call this.phraseSync.reset() after djController.reset() (clears boundary tracking but preserves master-sync toggle).
+- In setMasterSync(enabled): call this.phraseSync.setMasterSync(enabled) after djController.setMasterSync(enabled) — forwards the toggle. When off, checkRealignment() returns { realign: false, reason: 'master-sync-off' }.
+- In updateMusicAnalyzer() (the for loop over new events): extended the switch statement to call phraseSync.onSectionBoundary(nowSec, label) for all 4 boundary-firing event types:
+  - dropHit → onSectionBoundary(nowSec, 'drop') (in addition to existing transitionTo DROP)
+  - breakStart → onSectionBoundary(nowSec, 'break') (in addition to existing transitionTo BREAK)
+  - riserStart → onSectionBoundary(nowSec, 'build') (in addition to existing transitionTo BUILD)
+  - sectionBoundary → onSectionBoundary(nowSec, ev.data?.to ?? 'groove') (NEW case — previously fell through to default no-op; section transitions are ALSO phrase boundaries in dance music, even when we don't force a flow transition because the archetype already matches)
+  - Other event types (chordChange, keyChange, melodicPeak, rhythmicFill) still no-op — intra-phrase events, not structural.
+- In tick() per-bar (between the DJController's tickBar call and the flow engine's tick()): compute p4PhraseLen = clamp(this.currentFlow?.sectionBars ?? 8, 4, 8); call phraseSync.onOwnBar(this.bar, p4PhraseLen, this.totalBars); call const p4Realign = phraseSync.checkRealignment(); if p4Realign.realign && this.flowEngine: call flowEngine.transitionTo({ label: p4Realign.suggestedLabel, energy: p4Realign.suggestedEnergy }, p4Realign.suggestedBars ?? p4PhraseLen); manually set this.bar = 0 (transitionTo resets the flow engine's barInSection but NOT our engine's bar — the engine only resets this.bar when the flow LABEL changes, so a same-label realignment like DROP → DROP wouldn't reset it automatically); log to console for debugging.
+- Added public method getPhraseSyncState(): PhraseSyncState — returns the live state for UI display. Safe to call before start() — returns a default-zero state.
+
+STEP 5 — UI: PHRASE SYNC indicator in page.tsx (extended, +160 lines)
+- Added phraseSyncState (any) + phraseSyncFlash (boolean) + prevRealignmentsRef (number) state to the React component.
+- Added a polling pull in the analyzer tick (alongside the existing getSyncStatus() pull): if (engineRef.current?.getPhraseSyncState) { try { setPhraseSyncState(engineRef.current.getPhraseSyncState()); } catch {} }.
+- Added a useEffect that watches phraseSyncState?.realignments — when it increases (a realignment just happened), sets phraseSyncFlash = true and auto-clears after 600ms via setTimeout. The flash adds a brief ring + shadow pulse to the PHRASE SYNC card so the user can SEE that a realignment fired.
+- Cleared phraseSyncState + phraseSyncFlash + prevRealignmentsRef in stopEngine so stale data doesn't persist across engine restarts.
+- Added the PHRASE SYNC block inside the DJ CONTROLLER card, placed right after the existing BEAT-GRID / PHRASE block (so both are visible — the existing one is from DJController, the new one is from PhraseSync, and they show different data):
+  - Header: LayoutGrid icon + "Phrase Sync · structural" label + status badge (color-coded: emerald when alignment > 75%, amber > 40%, rose otherwise). Shows "○ NO REF" before the first ref boundary, "✦ REALIGN" during the flash, "● ALIGNED/DRIFT/OFF" otherwise.
+  - Border color: pulses emerald with shadow-[0_0_12px_rgba(52,211,153,0.4)] glow when phraseSyncFlash is true (the visual flash). Otherwise matches the status color.
+  - Two 8-bar grids (REF row fuchsia + OURS row cyan), with phrase-start cells ringed. The grid uses maxLen = max(refLen, ownLen) cells so we can visualize phrases of different lengths (e.g., radio 8-bar + ours 4-bar — the 4 cells beyond ownLen are dimmed). The active cell (current bar) is filled; others are dark.
+  - Empty state: "Waiting for the radio's first section boundary — connect a stream and the MusicAnalyzer will detect drop / break / build events within ~30s."
+  - Stats footer (3-column grid): alignment % (large color-coded number + progress bar) + ref phrase length (e.g., "8-bar") + last section label (e.g., "last: drop") + realignment counter (large number, pulses emerald during the flash) + "last Ns ago" (computed from lastRealignment timestamp vs performance.now()/1000).
+- Updated the toggleSync toast description to include "+ phrase" in the master-sync-enabled message (was "BPM + phase + key + groove + energy + beat-grid", now "BPM + phase + key + groove + energy + beat-grid + phrase").
+
+CONSTRAINTS HONORED:
+- Did NOT break existing functionality: master sync is OPTIONAL (default off). When masterSync is false, checkRealignment() returns { realign: false, reason: 'master-sync-off' } and the per-bar tick logic is a no-op (just two cheap method calls — onOwnBar updates internal state for UI display, checkRealignment early-returns). All existing liveTrack consumers (applySynthesisPursuit, applyEffectsPursuit, applyDeepPursuit, phaseSync, djController, applyLearnedPatternProactively, runLearningTick, updateMusicAnalyzer) are unchanged — the PhraseSync calls are purely additive.
+- Realignment is smooth (not abrupt cuts mid-phrase unless necessary): only cut mid-phrase if we're <50% through AND the radio just hit a boundary AND we're more than 1 bar off AND we're not within 1 bar of our own boundary. The 6s anti-thrash cooldown prevents back-to-back realignments. The decision tree has 3 "no realign" paths (already-aligned, near-own-boundary, late-finish) and only 2 "realign" paths (early-cut, mid-phrase-cut) — the bias is toward letting phrases finish naturally.
+- Guarded against missing data: onSectionBoundary returns early if time is not finite; onOwnBar guards bar and phraseLength for finiteness + non-negativity; checkRealignment early-returns { realign: false } if master sync is off, if no pending boundary, if no ref data, or if within the cooldown. The UI uses optional chaining throughout (phraseSyncState?.realignments ?? 0, etc.) and shows an empty state when lastRefBoundaryTime === 0.
+- TypeScript strict mode: zero tsc errors in phraseSync.ts / psy4EngineV2.ts / page.tsx (verified). All types explicit (no any in phraseSync.ts; page.tsx uses any for the snapshot state, consistent with the existing syncStatus / musicalAnalysis / deepAnalysis / pursuitDashboard state pattern).
+- The PhraseSync never throws — all public methods catch malformed input and return safe defaults (no-op or { realign: false }).
+
+VERIFICATION:
+- `npx tsc --noEmit --skipLibCheck 2>&1 | grep -E "phraseSync|psy4EngineV2|page.tsx" | head` → EMPTY (0 errors in target files).
+- `bun run lint 2>&1 | grep -E "phraseSync|psy4EngineV2|page.tsx" | grep error` → EMPTY (0 lint errors in target files).
+- Total tsc error count = 56 (unchanged from the P1-CLEANUP / P2-MUSIC-INTELLIGENCE / P5-ADAPTIVE-LEARNING baseline — all 56 are pre-existing in unrelated files: examples/websocket/*, scripts/independent-proof.ts, src/lib/studio/artifacts/index.ts, src/lib/studio/audit/bypassAttacks.ts, src/lib/studio/dsp/masterChain.ts, src/lib/studio/engine/engineWorklet.ts, src/lib/studio/engine/forensic/*, src/lib/studio/engine/multisampleGenerator.ts, src/lib/studio/engine/reference/*, src/lib/studio/tests/index.ts).
+- Lint passes cleanly (exit 0) across the ENTIRE project — no warnings, no errors.
+- Dev server smoke test: `curl http://localhost:3000/` → HTTP 200. dev.log shows "✓ Compiled in Nms" with no errors after the changes.
+
+DELIVERABLE: A PhraseSync module that aligns our 4-8 bar phrase boundaries with the radio's. When the radio drops, our drop lands at the same time — not 3 bars off. The detection is driven by the MusicAnalyzer's sectionBoundary / dropHit / breakStart / riserStart events (the most reliable structural signal in the system — 30s cooldowns + slope checks + min-bar thresholds, far more robust than the DJController's 4-bar smoothed-energy transition detector). The realignment is decided per-bar via the spec's decision tree (early-cut / mid-phrase-cut / late-finish / near-boundary / already-aligned) and executed via flowEngine.transitionTo() with the right archetype + energy + phrase length. The UI shows the live alignment as two 8-bar grids + an alignment % + a realignment counter that flashes when a realignment fires.
+
+HONEST GAP (limitation):
+- PHYSICAL LISTENING UNVERIFIED — verification via TypeScript + ESLint pass + dev server compile. The signal chain is well-formed: MusicAnalyzer emits sectionBoundary / dropHit / breakStart / riserStart → updateMusicAnalyzer() calls phraseSync.onSectionBoundary() → PhraseSync records the boundary + sets pendingRefBoundary → next tick() calls phraseSync.checkRealignment() → if realign, calls flowEngine.transitionTo() + resets this.bar = 0 → flow engine smooths toward the new archetype. But the audible result (does our drop ACTUALLY land at the same time as the radio's drop?) is asserted by construction, not by listening.
+- The phrase-length estimate uses OUR bar counter as a proxy for the radio's — reasonable because PhaseSync keeps our BPM locked to the radio's, but breaks down if the BPM hasn't converged yet (first 5-10s after a stream connects). The median-of-recent-intervals estimator is robust to a single bad sample, but a sustained BPM mismatch would pollute the estimate. A future enhancement would track the radio's bar counter directly (the MusicAnalyzer already has barCount, but it's not exposed).
+- The 6s cooldown is a heuristic — prevents thrashing when dropHit + sectionBoundary fire close together, but also means we won't realign twice in quick succession even if it's the right thing to do (e.g., a quick drop → break → drop within 6s would only get one realignment). Tuning this against real radio streams is left for a future task.
+- The "sectionBoundary" event is treated as a phrase boundary — standard assumption in dance music (sections = phrases), but breaks down for non-4/4 music or highly irregular arrangements. The MIN_PHRASE_LENGTH = 4 guard rejects intervals shorter than 4 bars, so a 3-bar bridge wouldn't pollute the estimate, but it also means we'd miss a genuine 3-bar phrase if one existed.
+- No proactive realignment on PREDICTED boundaries — the PhraseSync computes nextPredictedRefBoundaryBar but doesn't use it for realignment decisions. Currently we only realign when a boundary EVENT fires (reactive). A future enhancement would anticipate the predicted boundary 1-2 bars ahead and pre-align (smoother than waiting for the event + cutting mid-phrase).
+
+ARTIFACTS:
+- src/lib/studio/engine/phraseSync.ts (NEW, ~430 lines) — PhraseSync class + PhraseSyncState + RealignmentDecision interfaces. 6 public methods + 6 private fields + 6 helper functions (clamp, clampInt, median, sectionLabelToArchetype, sectionLabelToEnergy, nowSec).
+- src/lib/studio/engine/psy4EngineV2.ts (extended, +85 lines) — import + 1 private field + start()/stop() reset + setMasterSync forward + updateMusicAnalyzer sectionBoundary case + onSectionBoundary calls for dropHit/breakStart/riserStart + tick() per-bar phraseSync.onOwnBar + checkRealignment + transitionTo + bar=0 reset + getPhraseSyncState() public method.
+- src/app/page.tsx (extended, +160 lines) — phraseSyncState + phraseSyncFlash + prevRealignmentsRef state + analyzer-tick pull + stopEngine clear + useEffect flash trigger + PHRASE SYNC block (status badge + two 8-bar grids + alignment % + realignment counter + flash on realignment) + updated toggleSync toast description.
+- agent-ctx/P4-PHRASE-SYNC-z-ai-code.md (NEW) — work record for this task.
+
+NEXT (future tasks, NOT done here — left for P6+):
+- Proactive realignment on predicted boundaries — use nextPredictedRefBoundaryBar to anticipate the next ref boundary 1-2 bars ahead and pre-align (instead of waiting for the event + cutting mid-phrase). Smoother than the current reactive approach.
+- Track the radio's bar counter directly — expose MusicAnalyzer.barCount so PhraseSync can use the radio's actual bar counter instead of our proxy. Eliminates the BPM-mismatch window.
+- Tune the realignment thresholds against real radio streams — the current values (EARLY_CUT_BARS = 2, REALIGN_COOLDOWN_SEC = 6, MIN_PHRASE_LENGTH = 4) are heuristic. They'll need tuning based on observed behavior with real streams.
+- Phrase-length-aware composition — feed the estimated ref phrase length into the MusicalDirector so it composes phrases that match the radio's phrase length (currently the director uses the flow engine's sectionBars, which is independent of the radio's phrase structure).
+- Visual phrase ruler — extend the UI to show a timeline of past + predicted phrase boundaries (not just the current phrase) so the user can see the phrase structure of both the radio and our engine over a 32-bar window.
