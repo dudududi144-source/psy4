@@ -307,22 +307,22 @@ export default function ReferenceTrainingPage() {
 
   const startEngine = useCallback(async () => {
     try {
-      // Use LiteEngine — pure Web Audio API, no AudioWorklet, never crashes
-      const { Psy4LiteEngine } = await import('@/lib/studio/engine/psy4LiteEngine');
+      // Use EngineV2 — pooled voices, factory presets, step sequencer (from PSY6)
+      const { Psy4EngineV2 } = await import('@/lib/studio/engine/psy4EngineV2');
 
       if (engineRef.current) {
         engineRef.current.stop();
       }
 
-      const engine = new Psy4LiteEngine();
+      const engine = new Psy4EngineV2();
       engine.start(worldId);
       engine.onSectionChange = (section) => {
-        // Could update UI here if needed
+        // Could update UI here
       };
       engineRef.current = engine;
       setEnginePlaying(true);
 
-      // Attach self-analyzer immediately (no worklet loading delay)
+      // Attach self-analyzer immediately
       const analyser = engine.getAnalyser();
       if (analyser) {
         const { SelfAnalyzer } = await import('@/lib/studio/engine/reference/selfAnalyzer');
@@ -330,9 +330,6 @@ export default function ReferenceTrainingPage() {
         analyzer.attach(analyser, engine.ctx!);
         analyzer.onMetrics(m => {
           setSelfMetrics(m);
-
-          // FEEDBACK LOOP: feed self-metrics back to engine for live correction
-          // This lets the engine know its OWN LUFS and adjust
           if (engineRef.current && (engineRef.current as any).selfTrack) {
             (engineRef.current as any).selfTrack(m);
           }
@@ -341,7 +338,7 @@ export default function ReferenceTrainingPage() {
         selfAnalyzerRef.current = analyzer;
       }
 
-      toast.success('Engine started (Lite mode — pure Web Audio)');
+      toast.success('Engine V2 started — pooled voices, factory presets');
     } catch (err) {
       toast.error(`Engine error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -814,12 +811,12 @@ export default function ReferenceTrainingPage() {
               {enginePlaying && (
                 <div className="mt-4 p-3 bg-emerald-950/30 border border-emerald-800 rounded text-xs font-mono">
                   <p className="text-emerald-400 mb-1">ENGINE SYNCED TO RADIO:</p>
-                  <p>Engine BPM: {engineRef.current?.world?.bpm || '—'}</p>
+                  <p>Engine BPM: {(engineRef.current as any)?._bpm || (engineRef.current as any)?.world?.bpm || '—'}</p>
                   <p>Musical Key: {(() => {
-                    const key = engineRef.current?.getMusicalKey?.();
+                    const key = (engineRef.current as any)?.getMusicalKey?.();
                     return key ? `${key.scale} (root MIDI ${key.root})` : 'detecting...';
                   })()}</p>
-                  <p className="text-slate-500 mt-1">The engine follows the radio's key, scale, and BPM automatically.</p>
+                  <p className="text-slate-500 mt-1">Engine V2: pooled voices, factory presets, 8 tracks</p>
                 </div>
               )}
             </CardContent>
