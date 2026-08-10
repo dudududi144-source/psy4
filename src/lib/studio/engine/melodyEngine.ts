@@ -28,6 +28,7 @@
  */
 
 import { SeededRng, scaleNote, PROGRESSIONS } from './musicalGrammar';
+import type { HarmonyEngine } from './harmonyEngine';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -96,6 +97,26 @@ export class MelodyEngine {
   /** Track last bar at which we did an incremental evolution. */
   private lastEvolveBar = -1;
 
+  /**
+   * Task V2c: linked HarmonyEngine for chord-tone snapping on strong beats.
+   *
+   * The MelodyEngine generates phrases using the static PROGRESSIONS[scale]
+   * table for chord-tone snapping — but the live HarmonyEngine (Task H1)
+   * generates a DIFFERENT progression (with voice leading, modal interchange,
+   * energy-driven extensions, etc.). So the lead's chord-tone snapping could
+   * target a chord that the pad isn't actually playing, causing dissonance.
+   *
+   * When `harmony` is set, `nextNote()` re-checks the live chord on strong
+   * beats (step % 4 === 0) and snaps the note to the nearest chord tone of
+   * the LIVE chord. This eliminates the dissonance: the lead always plays a
+   * chord tone on strong beats, regardless of which chord the pad is on.
+   *
+   * `null` (or never called) → no live snapping; the engine uses the static
+   * PROGRESSIONS[scale] snapping done at phrase-build time only. This keeps
+   * backwards compatibility with pre-V2c callers.
+   */
+  private harmony: HarmonyEngine | null = null;
+
   constructor(
     private root: number,
     private scale: string,
@@ -106,6 +127,21 @@ export class MelodyEngine {
   }
 
   // ─── Key / configuration ────────────────────────────────────────────────
+
+  /**
+   * Task V2c: link the live HarmonyEngine so the melody can snap strong-beat
+   * notes to the chord tones of the chord the pad is ACTUALLY playing.
+   *
+   * This should be called after the HarmonyEngine is constructed (which
+   * happens in psy4EngineV2.refreshMusicalGenerators()). The link is
+   * re-established on every key change because both engines are rebuilt.
+   *
+   * Pass `null` to disable live chord-tone snapping (revert to the static
+   * PROGRESSIONS[scale] snapping done at phrase-build time).
+   */
+  setHarmonyEngine(harmony: HarmonyEngine | null): void {
+    this.harmony = harmony;
+  }
 
   /**
    * Update root + scale (called on key change). Rebuilds the phrase so the
@@ -587,6 +623,18 @@ export class MelodyEngine {
    * Returns null for rests or steps with no scheduled event.
    *
    * The lead plays at root+12 (one octave above the bass root).
+   *
+   * Task V2c: if a HarmonyEngine is linked, the note is re-checked on strong
+   * beats (step % 4 === 0) against the LIVE chord the pad is playing. If the
+   * note's pitch class is NOT a chord tone, it's snapped to the nearest chord
+   * tone (preserving the original octave as closely as possible). This
+   * eliminates dissonance between the lead and the pad — the lead always
+   * plays a chord tone on strong beats, regardless of which chord the pad's
+   * progression has reached.
+   *
+   * On weak beats (step % 4 !== 0), the original note is preserved —
+   * passing tones / neighbor tones on weak beats are musically valid (they
+   * create tension that resolves on the next strong beat).
    */
   nextNote(
     step: number,
@@ -599,9 +647,76 @@ export class MelodyEngine {
     const event = this.phraseEvents[phraseStep];
     if (!event || event.isRest) return null;
 
-    const midi = scaleNote(this.root + 12, this.scale, event.scaleDeg);
+    let midi = scaleNote(this.root + 12, this.scale, event.scaleDeg);
+
+    // ── Task V2c: melody-harmony synchronization ──
+    // On strong beats (every quarter note = step % 4 === 0), snap the note
+    // to the nearest chord tone of the LIVE chord (the one the pad is
+    // playing right now). This makes the lead harmonize with the pad on
+    // every downbeat — no clashing non-chord tones on strong beats.
+    if (this.harmony) {
+      const isStrongBeat = step % 4 === 0;
+      if (isStrongBeat) {
+        midi = this.snapToLiveChordTone(midi);
+      }
+    }
+
     const vel = clamp(event.velocity * (0.6 + energy * 0.4), 0.1, 1.0);
     return { note: midi, velocity: vel, duration: event.duration };
+  }
+
+  /**
+   * Task V2c: snap a MIDI note to the nearest chord tone of the live chord.
+   *
+   * If the note is already a chord tone (any octave), it's returned unchanged.
+   * Otherwise, the nearest chord-tone pitch class is found, and the note is
+   * shifted to the octave that minimizes movement from the original note
+   * (so the melodic contour is preserved as much as possible).
+   *
+   * If the harmony engine has no current chord (e.g. before the first chord
+   * plays, or outside a lead section), the note is returned unchanged — the
+   * static PROGRESSIONS[scale] snapping from placeMotifInPhrase still applies.
+   */
+  private snapToLiveChordTone(midi: number): number {
+    if (!this.harmony) return midi;
+    const chord = this.harmony.getCurrentChord();
+    if (!chord || chord.notes.length === 0) return midi;
+
+    // Pitch classes of the live chord.
+    const chordPCs = chord.notes.map(n => ((n % 12) + 12) % 12);
+    const midiPC = ((midi % 12) + 12) % 12;
+
+    // Already a chord tone? Leave it alone — preserves melodic identity.
+    if (chordPCs.includes(midiPC)) return midi;
+
+    // Find the nearest chord-tone pitch class (chromatic distance, wraparound).
+    let nearestPC = chordPCs[0];
+    let nearestDist = Infinity;
+    for (const pc of chordPCs) {
+      const d = Math.min(
+        Math.abs(pc - midiPC),
+        12 - Math.abs(pc - midiPC),
+      );
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearestPC = pc;
+      }
+    }
+
+    // Place the snapped pitch class at the octave closest to the original
+    // note. We pick the octave so the result is within a half-octave of the
+    // original — this keeps the melodic contour smooth (no jumps).
+    const octaveBase = midi - midiPC; // midi with PC zeroed out
+    let snapped = octaveBase + nearestPC;
+    // If we wrapped past 0/11, snap may be off by an octave — correct it.
+    while (snapped - midi > 6) snapped -= 12;
+    while (midi - snapped > 6) snapped += 12;
+
+    // Clamp to a sane lead range (don't snap above MIDI 96 or below 36).
+    while (snapped > 96) snapped -= 12;
+    while (snapped < 36) snapped += 12;
+
+    return snapped;
   }
 
   /**

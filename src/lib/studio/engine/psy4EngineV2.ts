@@ -29,6 +29,7 @@ import { TrackEffectsRack, TrackRackConfig } from './effectsRack';
 import { ChorusSend, PhaserSend, DistortionSend, BitcrushSend } from './sendEffects';
 import { MultibandCompressor } from './multibandCompressor';
 import { detectSynthesisCharacter, SynthesisCharacter } from './synthesisDetector';
+import { SchedulerWorker } from './schedulerWorker';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -275,6 +276,27 @@ interface StepData {
 interface Pattern {
   name: string;
   data: Record<number, { len: number; steps: StepData[] }>;
+}
+
+// ─── Arrangement section type (Task V2b: section-based effects automation) ──
+//
+// Each entry in the `arrangement` array describes a section of the song:
+//   - bars:     section length in bars
+//   - density:  0..1 — drives energy / velocity / hat+perc probability
+//   - bass:     whether the bass track is active in this section
+//   - lead:     whether the lead+pad+arp tracks are active in this section
+//   - label:    human-readable name (INTRO / GROOVE / BUILD / DROP / ...)
+//
+// Task V2b's `applySectionAutomation(section, bar, step)` reads this struct
+// to decide which effects automation profile to apply. The same struct is
+// used by `scheduleStep()` to gate tracks and by `tick()` to advance the
+// arrangement when `bar >= section.bars`.
+export interface ArrangementSection {
+  bars: number;
+  density: number;
+  bass: boolean;
+  lead: boolean;
+  label: string;
 }
 
 // ─── Synth voice pool ───────────────────────────────────────────────────────
@@ -603,7 +625,15 @@ export class Psy4EngineV2 {
   private wtPositionOverride = -1;
 
   // Scheduler
+  // ── Task V2a: Worker-based scheduler (replaces main-thread setTimeout) ──
+  // The SchedulerWorker posts `{type:'tick'}` messages from a separate thread,
+  // so main-thread GC/React renders don't jitter the 15ms musical clock. If
+  // Worker is unavailable (SSR / old browser), the wrapper falls back to a
+  // main-thread setInterval automatically. The `timer` field is kept as a
+  // last-resort fallback path for environments where neither Worker nor
+  // setInterval-with-onTick is desired — currently unused.
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private scheduler: SchedulerWorker = new SchedulerWorker();
   private step = 0;
   private bar = 0;
   private nextTime = 0;
@@ -621,7 +651,7 @@ export class Psy4EngineV2 {
   private bassPatternIdx = 0;
 
   // Arrangement
-  private arrangement = [
+  private arrangement: ArrangementSection[] = [
     { bars: 4, density: 0.3, bass: false, lead: false, label: 'INTRO' },
     { bars: 4, density: 0.5, bass: true, lead: false, label: 'GROOVE' },
     { bars: 4, density: 0.7, bass: true, lead: false, label: 'BUILD' },
@@ -631,6 +661,18 @@ export class Psy4EngineV2 {
     { bars: 8, density: 1.0, bass: true, lead: true, label: 'FINAL DROP' },
     { bars: 4, density: 0.3, bass: true, lead: false, label: 'OUTRO' },
   ];
+
+  // ── Task V2b: section-based effects automation state ──
+  // Per-section automation profiles are applied through setSendLevel /
+  // setTrackEffect (which both use setTargetAtTime inside the rack for
+  // smooth, click-free ramps). The `lastAutomationSection` field tracks
+  // which section we last applied static levels for — so we only re-push
+  // the static send levels when the section changes (not every step).
+  // The `leadCutoffOverride` field is the live lead filter cutoff used by
+  // the BUILD-section filter sweep; -1 means "no override" (use the world
+  // timbre + reference pursuit blend as before).
+  private lastAutomationSection = '';
+  private leadCutoffOverride = -1;
 
   onSectionChange: ((section: string) => void) | null = null;
 
@@ -909,6 +951,11 @@ export class Psy4EngineV2 {
     this.bar = 0;
     this.sectionIdx = 0;
     this.currentSection = this.arrangement[0].label;
+    // Task V2b: reset section-automation state so the first section's static
+    // levels get pushed on the first tick. Also clear any leftover lead
+    // cutoff override from a previous session so the lead starts clean.
+    this.lastAutomationSection = '';
+    this.leadCutoffOverride = -1;
     this.onSectionChange?.(this.currentSection);
     this.nextTime = this.ctx!.currentTime + 0.03;
     this.scheduleNextTick();
@@ -916,6 +963,11 @@ export class Psy4EngineV2 {
 
   stop(): void {
     this.playing = false;
+    // Task V2a: stop the Worker-based scheduler. The SchedulerWorker keeps
+    // the underlying Worker instance alive across stop/start cycles (cheap
+    // restart) — it just stops posting ticks. We also clear the legacy
+    // `timer` field for the (currently unused) setTimeout fallback path.
+    this.scheduler.stop();
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     if (this.ctx) {
       for (const v of this.synthPool) v.panic(this.ctx);
@@ -1279,9 +1331,23 @@ export class Psy4EngineV2 {
    *   pan, haasDelayMs, haasMix,
    *   outputGain,
    *   sendReverb, sendDelay, sendChorus, sendPhaser, sendDistortion, sendBitcrush
+   *
+   * Task V2b addition: 'cutoff' is special-cased for the LEAD track (idx 5).
+   * The lead's filter cutoff lives inside the AdvancedSynthVoice (not the
+   * rack — the rack is post-voice). So we store the override here and apply
+   * it in triggerSynth() when the lead's voice is about to fire. Pass -1
+   * to clear the override (revert to world timbre + reference pursuit blend).
+   * Any non-negative value (Hz) is clamped to [200, 16000] and used directly.
    */
   setTrackEffect(trackIdx: number, effectName: string, value: number): void {
     if (!Number.isFinite(value)) return;
+    // Task V2b: lead filter cutoff override (for BUILD-section filter sweeps).
+    // Stored on the engine; applied in triggerSynth() when the lead fires.
+    if (effectName === 'cutoff') {
+      if (trackIdx !== 5) return; // only LEAD has a sweepable filter override
+      this.leadCutoffOverride = value < 0 ? -1 : clamp(value, 200, 16000);
+      return;
+    }
     if (trackIdx < 0 || trackIdx >= this.racks.length) return;
     this.racks[trackIdx].setParameter(effectName, value);
   }
@@ -1329,6 +1395,164 @@ export class Psy4EngineV2 {
     this.multiband?.setParameter(name, value);
   }
 
+  // ─── Task V2b: section-based effects automation ─────────────────────────────
+  //
+  // Commercial psytrance rides the mix alongside the arrangement: reverb
+  // washes out in breaks, sucks dry in drops, delay throws in transitions,
+  // filter sweeps open in builds, chorus thickens in the variation. The
+  // pre-V2b engine left all the per-track send levels STATIC once the world
+  // was applied — so a DROP and a BREAK had the same reverb tail, which is
+  // exactly what makes a generated track sound "produced-but-not-mixed".
+  //
+  // applySectionAutomation() is called every step from scheduleStep(). It
+  // does two things:
+  //   1. When the section CHANGES, push a fresh set of static send levels
+  //      (reverb/delay/chorus/phaser per section type) via setSendLevel().
+  //      These ride on top of the world's per-track send levels (the rack
+  //      uses setTargetAtTime, so the ramps are smooth and click-free).
+  //   2. On EVERY step inside a BUILD section's last 2 bars, compute the
+  //      filter sweep progress and call setTrackEffect(5, 'cutoff', value)
+  //      to ramp the lead filter 800 Hz → 4000 Hz. The lead's noteOn in
+  //      triggerSynth reads leadCutoffOverride and applies it to the voice's
+  //      filter.frequency ramp — so the sweep is sample-accurate per note.
+  //
+  // Section profiles (per the task spec):
+  //   INTRO       : reverb 0.60 / delay 0.10 / no chorus / no phaser
+  //   GROOVE      : reverb 0.40 / delay 0.20 / slight chorus on lead
+  //   BUILD       : rising lead filter cutoff 800→4000 Hz (last 2 bars),
+  //                 increasing delay feedback, riser FX
+  //   DROP        : reverb 0.25 (punchy) / delay 0.30 / full chorus on lead,
+  //                 phaser on arp
+  //   VARIATION   : reverb 0.35 / delay 0.40 (echo throws) / phaser on lead
+  //   BREAK       : reverb 0.70 / delay 0.50 / filter closing on lead
+  //   FINAL DROP  : reverb 0.20 / delay 0.30 / full effects
+  //   OUTRO       : same as INTRO (wash out)
+  //
+  // Tracks: 0=KICK 1=SNARE 2=HATS 3=PERC 4=BASS 5=LEAD 6=PAD 7=ARP.
+  applySectionAutomation(section: ArrangementSection, bar: number, step: number): void {
+    if (!this.ctx) return;
+
+    // ── (1) Static levels — only re-push when the section label changes ──
+    // The rack's setParameter uses setTargetAtTime(0.05s), so re-pushing
+    // every step would be a no-op once the value has settled. We track the
+    // last-applied section to avoid spamming the audio thread.
+    if (section.label !== this.lastAutomationSection) {
+      this.lastAutomationSection = section.label;
+      this.applyStaticSectionLevels(section);
+    }
+
+    // ── (2) BUILD filter sweep — per-step ramp in the last 2 bars ──
+    // Sweep the lead filter cutoff from 800 Hz → 4000 Hz across the last 2
+    // bars of a BUILD section. 2 bars × 16 steps = 32 steps total. We
+    // compute a linear progress 0..1 and interpolate.
+    //
+    // The lead's AdvancedSynthVoice.noteOn() already does an exponential
+    // filter sweep on every note (cut*3 → cut over atk+dec*0.7), so the
+    // sweep value here is the BASELINE cutoff for each note. As the baseline
+    // climbs across the 32 steps, each successive note opens brighter — the
+    // signature "filter opening" build effect.
+    if (section.label === 'BUILD' && bar >= section.bars - 2) {
+      const sweepStartBar = section.bars - 2;
+      const totalSteps = 2 * 16; // 2 bars × 16 steps
+      const stepInSweep = (bar - sweepStartBar) * 16 + step;
+      const progress = clamp(stepInSweep / Math.max(1, totalSteps - 1), 0, 1);
+      // Exponential sweep feels more natural than linear (ears hear log-Hz).
+      const startHz = 800;
+      const endHz = 4000;
+      const sweepHz = startHz * Math.pow(endHz / startHz, progress);
+      this.setTrackEffect(5, 'cutoff', clamp(sweepHz, 200, 16000));
+    } else if (this.leadCutoffOverride > 0) {
+      // Outside a BUILD sweep, clear the override so the lead reverts to its
+      // world timbre + reference pursuit cutoff. This also covers the BREAK
+      // case: we leave the lead cutoff alone (world timbre is already dark
+      // for BREAK energy 0.3) and rely on the high reverb to wash it out.
+      this.leadCutoffOverride = -1;
+    }
+
+    // ── (2b) BREAK filter closing — gradual close across the section ──
+    // Over a 4-bar BREAK, drop the lead cutoff from ~1800 Hz to ~600 Hz for
+    // a "filter closing" release effect. This complements the high reverb
+    // (0.70) and delay (0.50) — the lead recedes into the wash.
+    if (section.label === 'BREAK' && section.bars > 0) {
+      const breakProgress = clamp(bar / Math.max(1, section.bars), 0, 1);
+      const startHz = 1800;
+      const endHz = 600;
+      // Exponential close.
+      const sweepHz = startHz * Math.pow(endHz / startHz, breakProgress);
+      this.setTrackEffect(5, 'cutoff', clamp(sweepHz, 200, 16000));
+    }
+  }
+
+  /**
+   * Apply the static send levels (reverb/delay/chorus/phaser) for a given
+   * section. Called once per section change from applySectionAutomation().
+   *
+   * All ramps are smooth (the rack uses setTargetAtTime(0.05s) internally)
+   * so a section change doesn't produce clicks or zipper noise. The values
+   * are applied IN ADDITION to the world's per-track send levels — the
+   * section automation is layered on top, so a world with extra phaser on
+   * goa leads will still get its goa character plus the section's phaser
+   * boost during drops.
+   *
+   * Tracks: 0=KICK 1=SNARE 2=HATS 3=PERC 4=BASS 5=LEAD 6=PAD 7=ARP.
+   */
+  private applyStaticSectionLevels(section: ArrangementSection): void {
+    // Profile lookup — returns the target send levels per section type.
+    // Each profile is a tuple of [reverb, delay, chorus, phaser] for the
+    // melodic tracks (5/6/7) and a separate (reverb, delay) for the atmos
+    // tracks (1/2/3). Kick (0) and bass (4) always stay dry-ish — they
+    // need to stay punchy and centered regardless of section.
+    interface SectionProfile {
+      // melodic (LEAD/PAD/ARP) sends
+      melReverb: number; melDelay: number; melChorus: number; melPhaser: number;
+      // atmos (SNARE/HATS/PERC) sends
+      atmoReverb: number; atmoDelay: number;
+      // ARP-specific phaser (for DROP, VARIATION)
+      arpPhaser?: number;
+      // LEAD-specific chorus (for GROOVE slight, DROP full)
+      leadChorus?: number;
+    }
+
+    const profiles: Record<string, SectionProfile> = {
+      INTRO:       { melReverb: 0.60, melDelay: 0.10, melChorus: 0.00, melPhaser: 0.00, atmoReverb: 0.30, atmoDelay: 0.05 },
+      GROOVE:      { melReverb: 0.40, melDelay: 0.20, melChorus: 0.15, melPhaser: 0.10, atmoReverb: 0.22, atmoDelay: 0.10, leadChorus: 0.20 },
+      BUILD:       { melReverb: 0.35, melDelay: 0.30, melChorus: 0.20, melPhaser: 0.15, atmoReverb: 0.25, atmoDelay: 0.18 },
+      DROP:        { melReverb: 0.25, melDelay: 0.30, melChorus: 0.30, melPhaser: 0.20, atmoReverb: 0.18, atmoDelay: 0.12, leadChorus: 0.35, arpPhaser: 0.30 },
+      VARIATION:   { melReverb: 0.35, melDelay: 0.40, melChorus: 0.25, melPhaser: 0.25, atmoReverb: 0.22, atmoDelay: 0.18, leadChorus: 0.25, arpPhaser: 0.20 },
+      BREAK:       { melReverb: 0.70, melDelay: 0.50, melChorus: 0.10, melPhaser: 0.10, atmoReverb: 0.50, atmoDelay: 0.30 },
+      'FINAL DROP':{ melReverb: 0.20, melDelay: 0.30, melChorus: 0.32, melPhaser: 0.22, atmoReverb: 0.16, atmoDelay: 0.12, leadChorus: 0.38, arpPhaser: 0.30 },
+      OUTRO:       { melReverb: 0.60, melDelay: 0.10, melChorus: 0.00, melPhaser: 0.00, atmoReverb: 0.30, atmoDelay: 0.05 },
+    };
+
+    const p = profiles[section.label] || profiles.GROOVE;
+
+    // Melodic tracks (5 LEAD, 6 PAD, 7 ARP) — push reverb/delay/chorus/phaser.
+    for (const ti of [5, 6, 7]) {
+      this.setSendLevel(ti, 'reverb', p.melReverb);
+      this.setSendLevel(ti, 'delay', p.melDelay);
+      this.setSendLevel(ti, 'chorus', p.melChorus);
+      this.setSendLevel(ti, 'phaser', p.melPhaser);
+    }
+
+    // LEAD-specific chorus bump (GROOVE = slight, DROP/FINAL DROP = full).
+    if (p.leadChorus !== undefined) {
+      this.setSendLevel(5, 'chorus', p.leadChorus);
+    }
+
+    // ARP-specific phaser bump (DROP = full, VARIATION = medium).
+    if (p.arpPhaser !== undefined) {
+      this.setSendLevel(7, 'phaser', p.arpPhaser);
+    }
+
+    // Atmos tracks (1 SNARE, 2 HATS, 3 PERC) — push reverb/delay only.
+    // Kick (0) and bass (4) are left at their world defaults — they need
+    // to stay punchy and centered regardless of section.
+    for (const ti of [1, 2, 3]) {
+      this.setSendLevel(ti, 'reverb', p.atmoReverb);
+      this.setSendLevel(ti, 'delay', p.atmoDelay);
+    }
+  }
+
   /**
    * Re-create the MelodyEngine and AcidPattern with the current musicalKey.
    * Called whenever the reference listener reports a new key — this is what
@@ -1348,6 +1572,11 @@ export class Psy4EngineV2 {
     // root/scale, and a fresh progression is generated so the pad can fall
     // back on it before the next section boundary triggers a regeneration.
     this.harmony = new HarmonyEngine(this.musicalKey.root, this.musicalKey.scale);
+    // ── Task V2c: re-link the melody engine to the harmony engine ──
+    // The MelodyEngine queries the HarmonyEngine for chord tones on strong
+    // beats so the lead always harmonizes with the pad. We re-link here so
+    // a key change (which rebuilds both engines) doesn't break the link.
+    this.melody.setHarmonyEngine(this.harmony);
     // Use a mid-level energy estimate for the default progression; the next
     // section boundary will regenerate with the section's actual energy.
     this.currentProgression = this.harmony.generateProgression(4, 0.5);
@@ -1894,12 +2123,34 @@ export class Psy4EngineV2 {
 
   getAnalyser(): AnalyserNode | null { return this.analyser; }
 
+  /**
+   * Task V2a: kick off the scheduler using the Worker-based tick.
+   *
+   * The SchedulerWorker posts `{type:'tick'}` messages from a separate
+   * thread, which the main thread's `onTick` callback turns into a call to
+   * `this.tick()`. Because the worker thread has no other work, its 15ms
+   * interval fires far more reliably than main-thread `setTimeout(15ms)`,
+   * which is subject to React renders, GC, layout, and the HTML5 4ms clamp.
+   *
+   * If `Worker` isn't available (SSR, old browser, CSP), the SchedulerWorker
+   * transparently falls back to a main-thread `setInterval` — the engine
+   * keeps running, just without the jitter reduction. Either way we never
+   * touch `this.timer` here; that field is retained only for the unlikely
+   * case of an explicit fallback demand (currently unused).
+   *
+   * Re-entrant safety: `start()` checks `this.playing` first, so calling
+   * `scheduleNextTick` while already ticking is a no-op (the worker's
+   * onTick handler is idempotent — `tick()` early-returns if `!playing`).
+   */
   private scheduleNextTick(): void {
     if (!this.playing) return;
-    this.timer = setTimeout(() => {
-      this.tick();
-      this.scheduleNextTick();
-    }, 15);
+    // Wire the tick callback once. Setting onTick is cheap (just a field
+    // assignment) so it's safe to set every call; if it's already set to
+    // the same closure, this is a no-op in practice.
+    this.scheduler.onTick = () => { this.tick(); };
+    // Start the worker at 15ms. If the worker is already running, this is
+    // a no-op (it just confirms the interval).
+    this.scheduler.start(15);
   }
 
   private tick(): void {
@@ -2031,6 +2282,15 @@ export class Psy4EngineV2 {
     const root = key.root;
     const sc = key.scale;
     const sd = 60 / this.bpm / 4;
+
+    // ── Task V2b: section-based effects automation ──
+    // Apply per-section send levels (reverb/delay/chorus/phaser) on section
+    // changes, and per-step filter sweep during BUILD's last 2 bars (and a
+    // closing sweep during BREAK). Cheap: only re-pushes static levels when
+    // the section label changes; the sweep computation is a handful of ops.
+    // Called BEFORE the rest of the step scheduling so the new send levels
+    // are in effect when the note for this step fires.
+    this.applySectionAutomation(section, bar, step);
 
     // ── Energy from world's energyCurve, modulated by section density ──
     const eIdx = clamp(
@@ -2401,6 +2661,16 @@ export class Psy4EngineV2 {
       if (isFinite(blended) && blended > 60) {
         p = { ...p, cutoff: clamp(blended, 200, 12000) };
       }
+    }
+
+    // ── Task V2b: section-based filter sweep override ──
+    // If applySectionAutomation() has set a lead cutoff override (e.g. during
+    // the last 2 bars of a BUILD section, sweeping 800 Hz → 4000 Hz), apply
+    // it now. This OVERRIDES the world timbre + reference pursuit blend —
+    // during a sweep, the sweep is the dominant automation. Outside a sweep
+    // (leadCutoffOverride === -1) this is a no-op.
+    if (trackIdx === 5 && this.leadCutoffOverride > 0) {
+      p = { ...p, cutoff: clamp(this.leadCutoffOverride, 200, 16000) };
     }
 
     // Reference pursuit — BASS DECAY matching for bass (4).

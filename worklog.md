@@ -3696,3 +3696,105 @@ Stage Summary:
   - The compression-pursuit proxy uses LUFS swing over recent windows (a heuristic). A true short-term LUFS measurement (e.g. via an OfflineAudioContext K-weighted RMS pass) would be more accurate but heavier.
   - The per-track effect-send snapshot in getPursuitDashboard reads `rack.sendReverb.gain.value` directly — this is the AudioParam's current value, which may lag setTargetAtTime ramps by a few hundred ms. For UI display this is fine; for precise convergence tracking a future task could expose a `getSendLevel()` getter on the rack that returns the ramped target.
 - Full work record saved to /home/z/my-project/agent-ctx/T1-z-ai-code.md.
+
+---
+Task ID: V2
+Agent: Z.ai Code (Final polish — scheduler to Worker, section automation, melody-harmony sync)
+Task: Address the three confirmed gaps from the post-ROAST-3 audit: (1) the scheduler was still main-thread `setTimeout(15ms)` causing jitter; (2) no section-based effects automation (reverb/delay/chorus/phaser sends were static); (3) the MelodyEngine didn't query the HarmonyEngine for chord tones — the lead could play non-chord tones on strong beats, clashing with the pad.
+
+Work Log:
+
+V2.1 — Read existing assets (worklog.md ROAST-3 + E1/H1/M1/S1/T1/I1 entries + the touched files):
+- `psy4EngineV2.ts`: confirmed `scheduleNextTick()` at line 1899 used `this.timer = setTimeout(... 15)` on the main thread. The previously-built `psy4-engine.js` worklet (Task 2) was dead code — never wired into V2's main engine. The spec calls for a LIGHTER fix: move just the scheduler loop to a Web Worker (not a full worklet rewrite).
+- `psy4EngineV2.ts`: confirmed `arrangement` was an inline array literal with no exported type. No `applySectionAutomation` method existed. `setTrackEffect` routed to `racks[ti].setParameter(name, value)` but had NO 'cutoff' case — the rack doesn't have a filter (filters live in `AdvancedSynthVoice`).
+- `psy4EngineV2.ts::triggerSynth`: confirmed `leadTimbre.cutoff` (from `w.leadTimbre.cutoff * (0.7 + 0.6 * w.brightness)`) overrides the preset's cutoff, then `centroidToCutoff(this.refSpectralCentroid)` blends in 40% reference pursuit. There was no hook for a section-automation override.
+- `melodyEngine.ts`: confirmed `placeMotifInPhrase(... snapChordTones: true)` snaps to chord tones from the STATIC `PROGRESSIONS[scale]` table — NOT the live HarmonyEngine's current chord. The HarmonyEngine (Task H1) generates a different progression (voice-led, modal interchange, energy-driven extensions) so the lead's static snapping could target a chord the pad isn't actually playing. `nextNote()` did no live re-checking.
+- `harmonyEngine.ts`: confirmed `isChordTone(midi)` and `getCurrentChord()` are public — perfect hooks for the melody engine to query. No import cycle (harmonyEngine doesn't import melodyEngine).
+
+V2.2 — Created `/home/z/my-project/src/lib/studio/engine/schedulerWorker.ts` (new, ~200 lines):
+- Inline Web Worker via Blob URL — no separate public/ file needed. Worker source is a tiny string with three message types: 'start', 'stop', 'setInterval'. Uses worker-internal `setInterval(15ms)` (not chained setTimeout) because the worker thread has no other work, so the HTML5 4ms clamp doesn't apply.
+- Lazy Blob URL creation: `cachedBlobUrl` is created on first `start()` and reused across start/stop cycles (avoids leaking Blob URLs across long sessions). The URL is created via `URL.createObjectURL(new Blob([workerCode], { type: 'application/javascript' }))` and guarded with `typeof Blob/URL` checks for SSR safety.
+- `SchedulerWorker` class: `onTick` callback, `start(intervalMs)`, `stop()`, `setInterval(ms)`, `dispose()`. The Worker is created lazily inside `start()` (NOT at construction) so importing the module is SSR-safe. If `Worker` is unavailable or `new Worker()` throws (CSP, old browser), it falls back to a main-thread `setInterval` and `usesWorker` returns false. The Worker is kept alive across stop/start cycles (cheap restart — just post 'start' again).
+- Worker `onerror` handler: if the worker errors (CSP block, blob URL blocked), it tears down and falls back to `setInterval` automatically. The engine keeps running in every environment.
+
+V2.3 — Wired SchedulerWorker into `psy4EngineV2.ts`:
+- Imported `SchedulerWorker` from `./schedulerWorker`.
+- Added `private scheduler: SchedulerWorker = new SchedulerWorker();` field. The legacy `private timer: ReturnType<typeof setTimeout> | null = null;` field is kept for the (currently unused) setTimeout fallback path.
+- Replaced `scheduleNextTick()` body: `this.scheduler.onTick = () => { this.tick(); }; this.scheduler.start(15);` — was `this.timer = setTimeout(() => { this.tick(); this.scheduleNextTick(); }, 15);`.
+- `stop()` now calls `this.scheduler.stop()` in addition to the legacy `clearTimeout(this.timer)`.
+- The Worker-based scheduler reduces jitter because the worker thread is not affected by main-thread React renders, GC pauses, layout thrash, or the HTML5 4ms setTimeout clamp. The 15ms tick fires much more reliably, which matters because the scheduler's lookahead window is 60ms — at 145 BPM a 16th note is ~103ms, so a 5-15ms jitter was producing audible swing and occasional double-triggers on rolls.
+- SSR/old-browser fallback is automatic via the SchedulerWorker wrapper.
+
+V2.4 — Added lead cutoff override plumbing (V2b prerequisite):
+- New field `private leadCutoffOverride = -1;` — when > 0, overrides the lead's filter cutoff in triggerSynth (overrides BOTH world timbre AND reference pursuit blend). -1 = no override (use existing logic).
+- Extended `setTrackEffect(trackIdx, effectName, value)`: special-cases `effectName === 'cutoff'` and `trackIdx === 5` (LEAD only — the rack has no filter, so cutoff can't go through `racks[5].setParameter`). Stores the value in `leadCutoffOverride` (clamped to [200, 16000], or -1 to clear). All other effect names route to the rack as before.
+- In `triggerSynth`, after the existing timbre + reference pursuit cutoff computation, added: `if (trackIdx === 5 && this.leadCutoffOverride > 0) { p = { ...p, cutoff: clamp(this.leadCutoffOverride, 200, 16000) }; }`. The AdvancedSynthVoice.noteOn() already does an exponential filter sweep (cut*3 → cut over atk+dec*0.7), so the override value becomes the baseline cutoff for each note — successive notes with rising override values produce the signature "filter opening" sweep.
+
+V2.5 — Defined `ArrangementSection` interface + converted the inline `arrangement` array:
+- Exported `interface ArrangementSection { bars: number; density: number; bass: boolean; lead: boolean; label: string; }`.
+- Changed `private arrangement = [...]` to `private arrangement: ArrangementSection[] = [...]` — same data, now typed so `applySectionAutomation(section, ...)` has a proper signature.
+- Added `private lastAutomationSection = '';` field to track the last-applied section label (avoids spamming the audio thread with setSendLevel calls every step when the value has already settled — the rack uses setTargetAtTime(0.05s) internally so re-pushing is a no-op once settled, but tracking the label keeps the call count low).
+
+V2.6 — Added `applySectionAutomation(section, bar, step)` method (V2b):
+- Called every step from `scheduleStep()` (added `this.applySectionAutomation(section, bar, step);` as the first action, BEFORE the rest of the step scheduling — so new send levels are in effect when the step's note fires).
+- Two parts:
+  (1) Static levels — only re-pushed when `section.label !== this.lastAutomationSection`. Calls `applyStaticSectionLevels(section)` which looks up a per-section profile and pushes reverb/delay/chorus/phaser send levels for melodic (5/6/7) and atmos (1/2/3) tracks. Kick (0) and bass (4) are untouched — they need to stay punchy and centered regardless of section.
+  (2) Per-step filter sweep:
+    - BUILD section, last 2 bars: computes a linear progress (0..1) across 32 steps (2 bars × 16 steps), interpolates exponentially from 800 Hz → 4000 Hz (exponential because ears hear log-Hz), and calls `setTrackEffect(5, 'cutoff', sweepHz)`. As the override climbs, each successive lead note opens brighter — the signature psytrance filter-opening build.
+    - Outside a BUILD sweep: clears the override (`leadCutoffOverride = -1`) so the lead reverts to world timbre + reference pursuit cutoff. (Unless we're in a BREAK — see below.)
+    - BREAK section: over the section's bars, exponentially closes the lead cutoff from 1800 Hz → 600 Hz for a "filter closing" release effect that complements the high reverb (0.70) and delay (0.50) — the lead recedes into the wash.
+- Section profiles (per the task spec):
+  - INTRO       : melReverb 0.60 / melDelay 0.10 / no chorus / no phaser / atmoReverb 0.30
+  - GROOVE      : melReverb 0.40 / melDelay 0.20 / slight chorus on lead (0.20) / atmoReverb 0.22
+  - BUILD       : melReverb 0.35 / melDelay 0.30 / melChorus 0.20 / melPhaser 0.15 + per-step filter sweep
+  - DROP        : melReverb 0.25 (punchy) / melDelay 0.30 / full chorus on lead (0.35) / phaser on arp (0.30)
+  - VARIATION   : melReverb 0.35 / melDelay 0.40 (echo throws) / phaser on lead (0.25) / arp phaser 0.20
+  - BREAK       : melReverb 0.70 / melDelay 0.50 / filter closing sweep on lead
+  - FINAL DROP  : melReverb 0.20 / melDelay 0.30 / full effects (lead chorus 0.38, arp phaser 0.30)
+  - OUTRO       : same as INTRO (wash out)
+- All ramps are smooth — setSendLevel/setTrackEffect route to `racks[ti].setParameter(...)` which uses `setTargetAtTime(0.05s)` internally. No audio glitches on section changes.
+- Reset on `start()`: `lastAutomationSection = ''` and `leadCutoffOverride = -1` so the first section's static levels get pushed on the first tick and no leftover sweep from a previous session bleeds in.
+
+V2.7 — Melody-harmony synchronization (V2c):
+- In `melodyEngine.ts`: added `import type { HarmonyEngine } from './harmonyEngine';` (type-only import — no runtime cycle).
+- Added `private harmony: HarmonyEngine | null = null;` field.
+- Added `setHarmonyEngine(harmony: HarmonyEngine | null): void` — sets the link. Pass `null` to disable live snapping (revert to the static PROGRESSIONS[scale] snapping done at phrase-build time).
+- In `nextNote(step, bar, energy)`: on strong beats (`step % 4 === 0`), if `this.harmony` is set, call `snapToLiveChordTone(midi)` to re-check the note against the LIVE chord the pad is playing. On weak beats, the original note is preserved — passing tones / neighbor tones on weak beats are musically valid.
+- New private method `snapToLiveChordTone(midi)`:
+  - Queries `this.harmony.getCurrentChord()` — if null (no chord has played yet, or outside a lead section), returns the note unchanged (the static PROGRESSIONS[scale] snapping from `placeMotifInPhrase` still applies).
+  - Computes pitch classes of the live chord (chord.notes mod 12).
+  - If the note's PC is already a chord tone, returns it unchanged — preserves melodic identity.
+  - Otherwise finds the nearest chord-tone PC (chromatic distance with wraparound).
+  - Places the snapped PC at the octave closest to the original note (within a half-octave) so the melodic contour is preserved.
+  - Clamps to a sane lead range (MIDI 36-96) — never snaps above MIDI 96 (C7) or below 36 (C2).
+- This eliminates dissonance: the lead always plays a chord tone on strong beats, regardless of which chord the pad's progression has reached. The static PROGRESSIONS[scale] snapping from `placeMotifInPhrase` still runs (so the phrase has good chord-tone tendencies even before the harmony engine kicks in), but the live snapping at noteOn time is the dominant mechanism.
+
+V2.8 — Linked the engines in `psy4EngineV2.ts::refreshMusicalGenerators()`:
+- After `this.melody = new MelodyEngine(...)` and `this.harmony = new HarmonyEngine(...)`, added `this.melody.setHarmonyEngine(this.harmony);`.
+- This is called whenever the key changes (which rebuilds both engines) — so the link is automatically re-established on every key change. The link is also established at engine `init()` time (which calls `refreshMusicalGenerators()`).
+
+Verification:
+- `npx tsc --noEmit --skipLibCheck 2>&1 | grep -E "schedulerWorker|psy4EngineV2|melodyEngine|harmonyEngine"` → EMPTY (zero TS errors in any touched file).
+- `npx eslint src/lib/studio/engine/schedulerWorker.ts src/lib/studio/engine/psy4EngineV2.ts src/lib/studio/engine/melodyEngine.ts src/lib/studio/engine/harmonyEngine.ts --max-warnings=0` → EXIT 0 (zero errors, zero warnings).
+- `bun run lint 2>&1 | grep -E "schedulerWorker|psy4EngineV2|melodyEngine|harmonyEngine" | grep error` → EMPTY (no errors in any touched file; pre-existing errors in proAudioNodes/continuousTrainer/perVoiceAnalyzer/renderWorker/selfAnalyzer/tests are unchanged — none of these files were touched by V2).
+- Dev server compiles cleanly: dev.log shows "✓ Compiled in Nms" with no errors after the changes; GET / returns 200 in 91ms (compile: 6ms, render: 85ms) — incremental compile is fast.
+
+Stage Summary:
+- **PART 1 (V2a) — Scheduler moved to a Web Worker.** A new `SchedulerWorker` class wraps an inline Blob-URL Worker that posts `{type:'tick'}` messages from a separate thread. The main thread's `scheduleNextTick()` now registers `onTick = () => this.tick()` and calls `scheduler.start(15)`. Because the worker thread has no other work, its 15ms interval fires far more reliably than main-thread `setTimeout(15ms)` (which is subject to React renders, GC, layout, and the HTML5 4ms clamp). SSR/old-browser fallback is automatic — if `Worker` is unavailable, the wrapper falls back to a main-thread `setInterval`. The Worker is created lazily on first `start()` (SSR-safe module import) and kept alive across stop/start cycles (cheap restart). The legacy `setTimeout` path is preserved as a fallback but currently unused.
+- **PART 2 (V2b) — Section-based effects automation.** A new `applySectionAutomation(section, bar, step)` method is called every step from `scheduleStep()`. On section changes, it pushes per-section send levels (reverb/delay/chorus/phaser) for melodic (LEAD/PAD/ARP) and atmos (SNARE/HATS/PERC) tracks via `setSendLevel` (which uses `setTargetAtTime(0.05s)` internally for smooth, click-free ramps). Section profiles match the spec: INTRO washes (reverb 0.60), DROP stays punchy (reverb 0.25), BREAK washes hard (reverb 0.70 + delay 0.50), VARIATION gets echo throws (delay 0.40), GROOVE has slight lead chorus. The BUILD section gets a per-step filter sweep on the lead: in the last 2 bars, the cutoff ramps exponentially from 800 Hz → 4000 Hz across 32 steps via `setTrackEffect(5, 'cutoff', value)`. The BREAK section gets a closing sweep (1800 Hz → 600 Hz) for a "filter receding" release effect. All automation uses smooth ramps (no audio glitches).
+- **PART 3 (V2c) — Melody-harmony synchronization.** `MelodyEngine.setHarmonyEngine(harmony)` links the melody to the live harmony engine. In `nextNote()`, on strong beats (`step % 4 === 0`), the lead's note is re-checked against the LIVE chord the pad is playing (via `harmony.getCurrentChord()`). If the note's pitch class isn't a chord tone, it's snapped to the nearest chord-tone PC at the octave closest to the original note (preserves melodic contour). On weak beats, the original note is preserved (passing tones / neighbor tones are musically valid). This eliminates dissonance: the lead always harmonizes with the pad on strong beats, regardless of which chord the pad's progression has reached. The link is established at engine init and re-established on every key change (in `refreshMusicalGenerators()`).
+- **Constraints honored:**
+  - Did NOT break existing functionality — all existing public APIs (start, stop, liveTrack, selfTrack, applyMusicalUnderstanding, setWorld, getPursuitStatus, triggerDrum, triggerSynth signature, setTrackEffect for non-'cutoff' names, setSendLevel, setMasterParam, getSynthesisCharacter, getPursuitDashboard, getHarmony, getCurrentChord, getMelodyState if present) are preserved.
+  - The Worker is created lazily (not at module load) — SSR safe.
+  - All automation uses setTargetAtTime or gradual ramps — no audio glitches. The rack's setParameter uses setTargetAtTime(0.05s); the lead cutoff override is applied per-note via the AdvancedSynthVoice's existing exponentialRampToValueAtTime on filter.frequency; the filter sweep itself ramps exponentially (ears hear log-Hz).
+  - TypeScript strict mode passes — zero tsc errors in schedulerWorker/psy4EngineV2/melodyEngine/harmonyEngine.
+  - The 175 pre-existing tsc errors in OTHER files (proAudioNodes, continuousTrainer, perVoiceAnalyzer, renderWorker, selfAnalyzer, tests, examples, scripts, artifacts, audit, dsp, forensic, skills) are unchanged — none of these files were touched by V2.
+- **REMAINING GAP (honest):**
+  - PHYSICAL LISTENING UNVERIFIED — verification via TypeScript + ESLint pass and code audit. Cannot run dev server to actually hear the output in this environment. The signal chain is well-formed: SchedulerWorker posts ticks → tick() runs scheduleStep() → applySectionAutomation pushes send levels + computes filter sweep → triggerSynth applies leadCutoffOverride to AdvancedSynthVoice.noteOn → noteOn's exponentialRampToValueAtTime on filter.frequency produces the sweep. But the audible result of the section transitions and the sweep curve is asserted by construction, not by listening.
+  - The Worker-based scheduler reduces jitter but does not eliminate it entirely — the worker's setInterval is still subject to the underlying OS timer resolution (typically 1-5ms on modern OSes, but can be worse on Windows). A truly sample-accurate scheduler would require an AudioWorkletProcessor with a sample-count clock (the dead `psy4-engine.js` worklet attempted this). The Worker approach is the right trade-off for V2: massive jitter reduction with zero risk of breaking the existing audio graph.
+  - The melody-harmony snapping uses `step % 4 === 0` as the "strong beat" definition (every quarter note). The existing `placeMotifInPhrase` uses `stepWithinBar === 0` (downbeat) and `stepWithinBar === 8` (beat 3) — slightly different conventions. The V2c snapping is layered on top of the static snapping, so the result is: downbeat + beat 3 get snapped twice (static first, live second — the live snapping wins), beats 2 and 4 get snapped once (live only). This is more aggressive than the spec required but matches the "strong beats = step % 4 === 0" definition in the task description.
+- **Artifacts:**
+  - `src/lib/studio/engine/schedulerWorker.ts` (new, ~200 lines) — inline Blob-URL Worker wrapper with SSR fallback.
+  - `src/lib/studio/engine/psy4EngineV2.ts` (extended) — SchedulerWorker import + field; replaced setTimeout in scheduleNextTick; scheduler.stop() in stop(); leadCutoffOverride field + 'cutoff' special-case in setTrackEffect; leadCutoffOverride applied in triggerSynth; ArrangementSection interface exported; arrangement typed; lastAutomationSection + leadCutoffOverride fields; applySectionAutomation + applyStaticSectionLevels methods; applySectionAutomation called in scheduleStep; reset on start(); melody.setHarmonyEngine(harmony) in refreshMusicalGenerators.
+  - `src/lib/studio/engine/melodyEngine.ts` (extended) — type-only HarmonyEngine import; harmony field; setHarmonyEngine method; snapToLiveChordTone private method; chord-tone snapping in nextNote on strong beats.
+- Full work record saved to /home/z/my-project/agent-ctx/V2-z-ai-code.md.
