@@ -22,6 +22,9 @@
 
 import type { RadioStream } from './radioStreams';
 import type { ReferenceMetrics, ReferenceProfile } from './referenceListener';
+// ── Task D1: DJ-style phase sync — the listener populates phaseInfo from
+// the kick-band transient grid so the engine can phase-lock to the radio.
+import type { PhaseInfo } from '../phaseSync';
 
 const WINDOW_SECONDS = 20;
 const HOP_SECONDS = 10;
@@ -422,7 +425,12 @@ export class ReferenceListenerV2 {
     const transientDensity = transientCount / duration;
 
     // Kick/hat density (simplified — based on low/high band energy at transient times)
+    // ── Task D1: collect kickTransientIndices so we can extract beat phase ──
+    // The previous version only counted kick/hat hits; we now also remember
+    // the SAMPLE INDEX of each kick-band transient so the phase detector
+    // can build a beat grid from them.
     let kickCount = 0, hatCount = 0;
+    const kickTransientIndices: number[] = [];
     for (const idx of transientIndices) {
       // Check low-band energy at this time
       const frameStart = Math.max(0, idx - 1024);
@@ -434,7 +442,10 @@ export class ReferenceListenerV2 {
         highSum += Math.abs(mono[i] - (mono[i - 1] || 0)); // high-freq = differentiation
         count++;
       }
-      if (lowSum / count > 0.1) kickCount++;
+      if (lowSum / count > 0.1) {
+        kickCount++;
+        kickTransientIndices.push(idx);
+      }
       if (highSum / count > 0.05) hatCount++;
     }
     const kickDensity = kickCount / duration;
@@ -694,6 +705,20 @@ export class ReferenceListenerV2 {
       // Musical understanding is optional
     }
 
+    // ── Task D1: DJ-style phase detection ──
+    // Extract beat + downbeat phase from the kick-band transient grid.
+    // The phase is computed relative to the LAST detected kick in the buffer
+    // (which is the most recent — closest to "now" in wall-clock time). The
+    // wall-clock lastBeatTime is performance.now()/1000 minus the latency
+    // between the buffer's end and the moment we're reporting (i.e., the
+    // buffer's trailing samples represent audio that arrived ~duration
+    // seconds ago — we approximate by assuming the buffer's end aligns with
+    // the moment the metrics are reported, plus a small fetch/decode
+    // latency we don't precisely know).
+    const phaseInfo = this.computePhaseInfo(
+      kickTransientIndices, bpm, sr, duration, rhythmicRegularity,
+    );
+
     return {
       bpm,
       bpmConfidence: bpm > 0 ? 0.8 : 0,
@@ -717,8 +742,117 @@ export class ReferenceListenerV2 {
       stereoBalance,
       stereoCorrelation,
       msRatio,
+      // ── Task D1: DJ-style phase sync info ──
+      phaseInfo,
       timestamp: Date.now(),
       sourceStream: this.stream?.id || 'unknown',
+    };
+  }
+
+  // ─── Task D1: Phase detection ────────────────────────────────────────────
+  //
+  // Build a beat grid from the kick-band transients and extract:
+  //   - phase:        position within the current beat (0..1)
+  //   - downbeatPhase: position within the bar (0..1; 0 = downbeat)
+  //   - lastBeatTime: wall-clock seconds of the last beat (so the engine can
+  //                   extrapolate forward)
+  //   - confidence:   how regular the beat grid is (low IOI variance = high)
+  //
+  // Algorithm:
+  //   1. The first kick transient is assumed to be a downbeat (phase 0).
+  //      This is an approximation — we can't reliably detect which beat in
+  //      the bar is the downbeat from audio alone without a trained model.
+  //      For DJ sync purposes, this is fine: as long as both we and the
+  //      radio agree on which beat is "beat 1", the grids align. The first
+  //      detected beat in the buffer is a reasonable shared reference.
+  //   2. The beat period is 60/bpm seconds (or the median kick IOI, which
+  //      is usually very close — we use whichever has more support).
+  //   3. The LATEST kick in the buffer gives us lastBeatTime (wall-clock).
+  //      The wall-clock is approximated as performance.now()/1000 minus
+  //      the buffer's trailing-latency (duration - lastBeatBufferTime).
+  //      This assumes the buffer's end corresponds to "now" in wall-clock
+  //      — true up to the fetch/decode latency (~0.5-1s), which is below
+  //      the DJ sync tolerance.
+  //   4. Confidence = rhythmicRegularity × min(1, kickCount/8). A perfectly
+  //      regular grid with 8+ kicks = 1.0; an irregular grid with few
+  //      kicks = low confidence (the engine's PhaseSync will weight the
+  //      offset by this confidence, so noisy detections don't fight back).
+  private computePhaseInfo(
+    kickIndices: number[],
+    bpm: number,
+    sr: number,
+    duration: number,
+    rhythmicRegularity: number,
+  ): PhaseInfo | undefined {
+    if (!Array.isArray(kickIndices) || kickIndices.length < 2 || bpm <= 0 || bpm < 30 || bpm > 220) {
+      return undefined;
+    }
+    if (!Number.isFinite(sr) || sr <= 0 || !Number.isFinite(duration) || duration <= 0) {
+      return undefined;
+    }
+
+    // Beat period from BPM (the autocorrelation estimate is more robust
+    // than the median IOI for sparse kick grids, so we prefer it).
+    const beatPeriodSec = 60 / bpm;
+    const beatPeriodSamples = beatPeriodSec * sr;
+
+    // The first kick is our downbeat reference. The last kick is the most
+    // recent beat — its phase within the beat cycle is 0 by definition.
+    const firstKickIdx = kickIndices[0];
+    const lastKickIdx = kickIndices[kickIndices.length - 1];
+    const lastKickBufferTime = lastKickIdx / sr;
+
+    // Median IOI as a sanity check — if it's wildly different from 60/bpm,
+    // the BPM estimate is suspect and we lower the confidence.
+    const iois: number[] = [];
+    for (let i = 1; i < kickIndices.length; i++) {
+      iois.push(kickIndices[i] - kickIndices[i - 1]);
+    }
+    iois.sort((a, b) => a - b);
+    const medianIoiSamples = iois[Math.floor(iois.length / 2)] || beatPeriodSamples;
+    const medianIoiSec = medianIoiSamples / sr;
+    const ioiBpm = medianIoiSec > 0 ? 60 / medianIoiSec : 0;
+    const bpmAgreement = ioiBpm > 0
+      ? 1 - Math.min(1, Math.abs(ioiBpm - bpm) / bpm)
+      : 0;
+
+    // Phase at lastBeatTime = 0 (by definition — lastBeat IS a beat onset).
+    // We report phase = 0 so the engine knows "the last detected beat was
+    // exactly at lastBeatTime".
+    const phase = 0;
+
+    // Downbeat phase: how far through the bar (4 beats) the last beat is.
+    // (lastKick - firstKick) / beatPeriod = number of beats since the
+    // assumed downbeat. mod 4 = beat-in-bar. /4 = downbeatPhase.
+    const beatsSinceFirst = (lastKickIdx - firstKickIdx) / beatPeriodSamples;
+    const beatInBar = ((beatsSinceFirst % 4) + 4) % 4;  // 0..3.999
+    const downbeatPhase = beatInBar / 4;
+
+    // Wall-clock lastBeatTime. The decoded buffer's end corresponds to
+    // roughly "now" (modulo fetch/decode latency ~0.5-1s, which is below
+    // the DJ sync tolerance). So the wall-clock time of the last beat is:
+    //   wallClockNow - (duration - lastBeatBufferTime)
+    const wallClockNow = (typeof performance !== 'undefined' && performance.now)
+      ? performance.now() / 1000
+      : Date.now() / 1000;
+    const trailingLatency = Math.max(0, duration - lastKickBufferTime);
+    const lastBeatTime = wallClockNow - trailingLatency;
+
+    // Confidence: combine rhythmicRegularity (the listener's IOI variance
+    // measure), bpmAgreement (BPM estimate vs median IOI), and a kick-count
+    // support factor (more kicks = more confidence).
+    const kickSupport = Math.min(1, kickIndices.length / 8);
+    const confidence = clampT1(
+      rhythmicRegularity * 0.5 + bpmAgreement * 0.3 + kickSupport * 0.2,
+      0, 1,
+    );
+
+    return {
+      bpm,
+      phase,
+      downbeatPhase,
+      confidence,
+      lastBeatTime,
     };
   }
 

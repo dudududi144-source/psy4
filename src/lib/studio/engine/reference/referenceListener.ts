@@ -18,6 +18,11 @@
  */
 
 import type { RadioStream } from './radioStreams';
+// ── Task D1: DJ-style phase sync — the listener populates phaseInfo from
+// its transient analysis so the engine can phase-lock to the radio. The
+// PhaseInfo type lives in phaseSync.ts to keep the engine's sync module
+// self-contained. The import is type-only so there's no runtime dependency.
+import type { PhaseInfo } from '../phaseSync';
 
 export interface ReferenceMetrics {
   // Tempo
@@ -89,6 +94,13 @@ export interface ReferenceMetrics {
   stereoBalance?: number;       // -1..1 — -1 = full L, 0 = centered, +1 = full R.
   stereoCorrelation?: number;   // -1..1 — 1 = mono, 0 = uncorrelated, -1 = out of phase.
   msRatio?: number;             // 0..1 — side energy / (mid + side) energy. High = wide.
+
+  // ── Task D1: DJ-style phase sync ──
+  // Populated by the V2 listener from the kick-band transient grid. The
+  // engine's PhaseSync consumes this to phase-lock its beat grid to the
+  // radio's. Optional — the V1 listener and any caller that doesn't run
+  // the new analysis simply omit it, and the engine gracefully no-ops.
+  phaseInfo?: PhaseInfo;
 
   timestamp: number;
   sourceStream: string;

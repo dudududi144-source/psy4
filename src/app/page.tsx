@@ -12,7 +12,7 @@ import {
   Zap, Brain, CheckCircle2, Music, Gauge, Waves, Sparkles, TrendingUp,
   TrendingDown, Target, ArrowUp, ArrowDown, Check, Shuffle,
   Cpu, SlidersHorizontal, Layers, Piano, ListMusic, AudioWaveform,
-  Fingerprint, ScanSearch, Wand2,
+  Fingerprint, ScanSearch, Wand2, Disc3, Link2, Link2Off,
 } from 'lucide-react';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
@@ -118,6 +118,14 @@ export default function PSY4Page() {
   // unique elements + synthesis plan. Pulled via engine.getDeepAnalysis().
   const [deepAnalysis, setDeepAnalysis] = useState<any>(null);
 
+  // ── Task D1: DJ-style phase sync ──
+  // Live sync status (synced indicator, phase offset, BPM match, downbeat
+  // alignment, beat grid). Pulled via engine.getSyncStatus() on every
+  // analyzer tick. The toggle state is mirrored locally so the UI shows
+  // the user's last choice even before the engine is started.
+  const [syncStatus, setSyncStatus] = useState<any>(null);
+  const [syncEnabled, setSyncEnabled] = useState<boolean>(false);
+
   // Refs
   const listenerRef = useRef<any>(null);
   const analyzerRef = useRef<any>(null);
@@ -187,6 +195,12 @@ export default function PSY4Page() {
             stereoBalance: m.stereoBalance,
             stereoCorrelation: m.stereoCorrelation,
             msRatio: m.msRatio,
+            // ── Task D1: pass the reference listener's phaseInfo (built
+            //    from kick-band transients) so the engine's PhaseSync can
+            //    phase-lock our beat grid to the radio's. Optional — when
+            //    undefined (no kick transients, low confidence, or V1
+            //    listener), the PhaseSync gracefully no-ops.
+            phaseInfo: m.phaseInfo,
           });
         }
       });
@@ -295,6 +309,14 @@ export default function PSY4Page() {
             if (engineRef.current?.getDeepAnalysis) {
               try { setDeepAnalysis(engineRef.current.getDeepAnalysis()); } catch {}
             }
+            // ── Task D1: pull DJ sync status + mirror toggle state ──
+            // Optional chaining so we degrade gracefully if D1 isn't merged.
+            if (engineRef.current?.getSyncStatus) {
+              try { setSyncStatus(engineRef.current.getSyncStatus()); } catch {}
+            }
+            if (engineRef.current?.isSyncEnabled) {
+              try { setSyncEnabled(engineRef.current.isSyncEnabled()); } catch {}
+            }
           } catch {}
           // Track D: pull style classification + active world on every tick.
           // Optional chaining so we degrade gracefully if Track C isn't merged yet.
@@ -344,6 +366,11 @@ export default function PSY4Page() {
     setCurrentChord(null); setProgressionInfo(null);
     setPursuitDashboard(null); setMelodyState(null);
     setDeepAnalysis(null);
+    // ── Task D1: clear sync status (the engine is gone) ──
+    // We DON'T reset syncEnabled — the user's toggle choice persists across
+    // restarts. When the engine is restarted, the new engine's PhaseSync
+    // will pick up the toggle state on the first toggle click.
+    setSyncStatus(null);
     prevDeltaRef.current = {};
     lastSwitchToastRef.current = '';
   }, []);
@@ -381,6 +408,28 @@ export default function PSY4Page() {
       try { engineRef.current.start?.(newWorld); } catch {}
     }
   }, []);
+
+  // ── Task D1: toggle DJ-style phase sync on/off ──
+  // Forwards the user's choice to the engine's PhaseSync. The engine's
+  // getSyncStatus() will reflect the new state on the next analyzer tick.
+  // Safe to call before the engine is started — we just store the choice
+  // locally; when the engine starts, the user can toggle again.
+  const toggleSync = useCallback(() => {
+    const next = !syncEnabled;
+    setSyncEnabled(next);
+    if (engineRef.current?.setSyncEnabled) {
+      try { engineRef.current.setSyncEnabled(next); } catch {}
+    }
+    if (next) {
+      toast.success('DJ SYNC enabled', {
+        description: 'Engine phase-locks its beat grid to the radio. Gradual BPM convergence + downbeat alignment.',
+      });
+    } else {
+      toast.info('DJ SYNC disabled', {
+        description: 'Engine reverts to free-running BPM (still tracks the radio BPM via applyMusicalUnderstanding).',
+      });
+    }
+  }, [syncEnabled]);
 
   // ─── Cleanup ──────────────────────────────────────────────────────────────
 
@@ -774,6 +823,245 @@ export default function PSY4Page() {
                   <Shuffle className="w-3 h-3" />
                   AUTO-SWITCH active — engine follows the detected style automatically. Pick a world manually to override.
                 </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ─── DJ SYNC (Task D1) ─── */}
+        {/* DJ-style phase sync — phase-locked beat matching + downbeat
+            alignment. The engine's PhaseSync aligns its beat grid with the
+            radio's beat grid so the kick drums hit together (the
+            Serato/Traktor/CDJ sync model). Visible in listen + analyze +
+            train when the engine is running. */}
+        {(mode === 'listen' || mode === 'analyze' || mode === 'train') && engineOn && (
+          <Card className="border-slate-800 bg-slate-900/60">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Disc3 className={`w-4 h-4 ${syncEnabled ? 'text-emerald-400' : 'text-slate-500'}`} />
+                DJ SYNC
+                <span className="text-[10px] text-slate-500 font-mono ml-2">phase-locked · downbeat · beat grid</span>
+                {/* Toggle button — top-right of the header */}
+                <button
+                  type="button"
+                  onClick={toggleSync}
+                  className={`ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-mono font-bold border transition-colors ${
+                    syncEnabled
+                      ? 'bg-emerald-600 text-white border-emerald-500 hover:bg-emerald-700'
+                      : 'bg-slate-700 text-slate-200 border-slate-600 hover:bg-slate-600'
+                  }`}
+                  aria-pressed={syncEnabled}
+                  aria-label={syncEnabled ? 'Disable DJ sync' : 'Enable DJ sync'}
+                >
+                  {syncEnabled ? <Link2 className="w-3 h-3" /> : <Link2Off className="w-3 h-3" />}
+                  {syncEnabled ? 'SYNCED' : 'FREE-RUN'}
+                </button>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {!syncEnabled ? (
+                <div className="bg-slate-950 border border-slate-800 rounded p-4 text-center">
+                  <div className="text-[11px] text-slate-400 font-mono">
+                    DJ SYNC is off — the engine runs free (still tracks the radio BPM via
+                    applyMusicalUnderstanding, but does NOT phase-lock the beat grid).
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-mono mt-1">
+                    Click <span className="text-emerald-400 font-bold">FREE-RUN</span> above to engage
+                    phase-locked sync.
+                  </div>
+                </div>
+              ) : !syncStatus || (!syncStatus.refBpm && !syncStatus.ownBpm) ? (
+                <div className="bg-slate-950 border border-slate-800 rounded p-4 text-center">
+                  <div className="text-[11px] text-amber-400 font-mono">
+                    ⚠ Waiting for phase data — connect a stream and let the engine play. The reference
+                    listener extracts beat phase from kick-band transients every ~10s; the engine
+                    records its own beats from <code className="text-cyan-400">triggerDrum(0, ...)</code>.
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* ── Status grid: synced / offset / BPM / downbeat ── */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {/* SYNCED indicator */}
+                    <div className={`bg-slate-950 border rounded p-3 ${syncStatus.synced ? 'border-emerald-700' : 'border-rose-800'}`}>
+                      <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Status</div>
+                      <div className={`flex items-center gap-1.5 ${syncStatus.synced ? 'text-emerald-300' : 'text-rose-300'}`}>
+                        {syncStatus.synced ? <Check className="w-4 h-4" /> : <Activity className="w-4 h-4" />}
+                        <span className="text-base font-bold font-mono">{syncStatus.synced ? 'LOCKED' : 'DRIFT'}</span>
+                      </div>
+                      <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+                        conf {(syncStatus.confidence * 100).toFixed(0)}%
+                      </div>
+                    </div>
+
+                    {/* Phase offset */}
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                      <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Phase Offset</div>
+                      <div className="flex items-baseline gap-1">
+                        <span className={`text-base font-bold font-mono ${
+                          Math.abs(syncStatus.offsetMs) < 16 ? 'text-emerald-300'
+                          : Math.abs(syncStatus.offsetMs) < 50 ? 'text-amber-300'
+                          : 'text-rose-300'
+                        }`}>
+                          {syncStatus.offsetMs > 0 ? '+' : ''}{syncStatus.offsetMs.toFixed(1)}
+                        </span>
+                        <span className="text-[10px] text-slate-500 font-mono">ms</span>
+                      </div>
+                      <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+                        target {syncStatus.targetOffsetMs > 0 ? '+' : ''}{syncStatus.targetOffsetMs.toFixed(0)}ms
+                      </div>
+                    </div>
+
+                    {/* BPM match */}
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                      <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">BPM Match</div>
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-[10px] font-mono text-fuchsia-300">{syncStatus.refBpm.toFixed(1)}</span>
+                        <span className="text-[9px] text-slate-600">vs</span>
+                        <span className="text-[10px] font-mono text-cyan-300">{syncStatus.ownBpm.toFixed(1)}</span>
+                      </div>
+                      <div className="mt-1">
+                        <div className="flex justify-between text-[9px] font-mono mb-0.5">
+                          <span className="text-slate-500">match</span>
+                          <span className={`${
+                            syncStatus.bpmMatchPct > 90 ? 'text-emerald-300'
+                            : syncStatus.bpmMatchPct > 70 ? 'text-amber-300'
+                            : 'text-rose-300'
+                          }`}>{syncStatus.bpmMatchPct.toFixed(0)}%</span>
+                        </div>
+                        <div className="h-1 w-full bg-slate-800 rounded overflow-hidden">
+                          <div
+                            className={`h-full rounded transition-all duration-200 ${
+                              syncStatus.bpmMatchPct > 90 ? 'bg-emerald-500'
+                              : syncStatus.bpmMatchPct > 70 ? 'bg-amber-500'
+                              : 'bg-rose-500'
+                            }`}
+                            style={{ width: `${syncStatus.bpmMatchPct.toFixed(1)}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Downbeat alignment */}
+                    <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                      <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1">Downbeat Align</div>
+                      <div className={`text-base font-bold font-mono ${
+                        syncStatus.downbeatAlignment > 85 ? 'text-emerald-300'
+                        : syncStatus.downbeatAlignment > 50 ? 'text-amber-300'
+                        : 'text-rose-300'
+                      }`}>
+                        {syncStatus.downbeatAlignment.toFixed(0)}%
+                      </div>
+                      <div className="mt-1">
+                        <div className="h-1 w-full bg-slate-800 rounded overflow-hidden">
+                          <div
+                            className={`h-full rounded transition-all duration-200 ${
+                              syncStatus.downbeatAlignment > 85 ? 'bg-emerald-500'
+                              : syncStatus.downbeatAlignment > 50 ? 'bg-amber-500'
+                              : 'bg-rose-500'
+                            }`}
+                            style={{ width: `${syncStatus.downbeatAlignment.toFixed(1)}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── Beat grid visualization ── */}
+                  {/* 4 beats per bar. Two rows: REF (radio, fuchsia) and
+                      OURS (engine, cyan). The current beat-in-bar is
+                      highlighted; the downbeat (beat 0) gets an extra ring. */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                    <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-2 flex items-center justify-between">
+                      <span>Beat Grid</span>
+                      {syncStatus.beatDropPending && (
+                        <span className="text-amber-400 font-bold flex items-center gap-1">
+                          <Zap className="w-3 h-3" /> beat-drop pending
+                        </span>
+                      )}
+                    </div>
+                    {(() => {
+                      const refDb = syncStatus.refDownbeat ?? 0;
+                      const ownDb = syncStatus.ownDownbeat ?? 0;
+                      const refPhase = syncStatus.refPhase ?? 0;
+                      const ownPhase = syncStatus.ownPhase ?? 0;
+                      const beats = [0, 1, 2, 3];
+                      const renderRow = (label: string, current: number, phase: number, color: 'fuchsia' | 'cyan') => {
+                        const colorClasses = color === 'fuchsia'
+                          ? { active: 'bg-fuchsia-500 border-fuchsia-300', idle: 'bg-fuchsia-950 border-fuchsia-800', text: 'text-fuchsia-300', downbeat: 'bg-fuchsia-400' }
+                          : { active: 'bg-cyan-500 border-cyan-300', idle: 'bg-cyan-950 border-cyan-800', text: 'text-cyan-300', downbeat: 'bg-cyan-400' };
+                        return (
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[10px] font-mono ${colorClasses.text} w-10`}>{label}</span>
+                            <div className="flex-1 grid grid-cols-4 gap-1.5">
+                              {beats.map(b => {
+                                const isActive = b === current;
+                                const isDownbeat = b === 0;
+                                return (
+                                  <div
+                                    key={b}
+                                    className={`relative h-8 rounded border-2 flex items-center justify-center transition-all duration-100 ${
+                                      isActive ? colorClasses.active : colorClasses.idle
+                                    } ${isDownbeat ? 'ring-1 ring-offset-1 ring-offset-slate-950' : ''}`}
+                                    style={isDownbeat ? { boxShadow: `0 0 0 1px ${color === 'fuchsia' ? 'rgb(217 70 239)' : 'rgb(34 211 238)'}` } : undefined}
+                                  >
+                                    <span className={`text-[10px] font-mono font-bold ${isActive ? 'text-white' : 'text-slate-600'}`}>
+                                      {b + 1}
+                                    </span>
+                                    {/* Phase progress bar at the bottom of the active beat */}
+                                    {isActive && (
+                                      <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/30 rounded-b">
+                                        <div
+                                          className={`h-full ${colorClasses.downbeat} rounded-b transition-all duration-75`}
+                                          style={{ width: `${(phase * 100).toFixed(1)}%` }}
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      };
+                      return (
+                        <div className="space-y-2">
+                          {renderRow('REF', refDb, refPhase, 'fuchsia')}
+                          {renderRow('OURS', ownDb, ownPhase, 'cyan')}
+                        </div>
+                      );
+                    })()}
+                    <div className="text-[10px] text-slate-500 font-mono mt-2 flex flex-wrap gap-3">
+                      <span><span className="inline-block w-2 h-2 bg-fuchsia-500 rounded-sm mr-1" />radio beat-in-bar</span>
+                      <span><span className="inline-block w-2 h-2 bg-cyan-500 rounded-sm mr-1" />engine beat-in-bar</span>
+                      <span><span className="inline-block w-2 h-2 border-2 border-fuchsia-300 rounded-sm mr-1" />downbeat (bar start)</span>
+                      <span>Δ {(syncStatus.phaseDiff * 100).toFixed(1)}% phase</span>
+                    </div>
+                  </div>
+
+                  {/* ── Convergence footer ── */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                    <div className="flex items-center justify-between text-[10px] font-mono">
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-500 uppercase tracking-wider">BPM convergence</span>
+                        {Math.abs(syncStatus.convergenceBpmDelta) < 0.1 ? (
+                          <span className="text-emerald-400 flex items-center gap-1">
+                            <Check className="w-3 h-3" /> converged
+                          </span>
+                        ) : (
+                          <span className="text-amber-400 flex items-center gap-1">
+                            {syncStatus.convergenceBpmDelta > 0 ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
+                            {syncStatus.convergenceBpmDelta > 0 ? '+' : ''}{syncStatus.convergenceBpmDelta.toFixed(2)} BPM
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-slate-500">
+                        phase Δ = {(syncStatus.phaseDiff * 100).toFixed(1)}%
+                        {syncStatus.phaseDiff < 0.04 && <span className="text-emerald-400 ml-1">· locked</span>}
+                      </div>
+                    </div>
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>
@@ -1884,7 +2172,7 @@ export default function PSY4Page() {
 
       <footer className="border-t border-slate-800 bg-slate-900/60 mt-auto">
         <div className="max-w-7xl mx-auto px-4 py-3 text-[10px] text-slate-500 font-mono flex items-center justify-between flex-wrap gap-2">
-          <span>PSY4 · Engine V2 · Synthesis · Effects · Harmony · Deep Pursuit · Melody · Style Detection · A/B Spectral</span>
+          <span>PSY4 · Engine V2 · Synthesis · Effects · Harmony · Deep Pursuit · Melody · Style Detection · A/B Spectral · DJ Phase Sync</span>
           <span>NO ScriptProcessor · NO AudioWorklet · Pure Web Audio</span>
         </div>
       </footer>

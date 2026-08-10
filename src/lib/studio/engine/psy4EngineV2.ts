@@ -42,6 +42,10 @@ import {
 } from './timbreFingerprint';
 import { detectUniqueElements, UniqueElement } from './uniquenessDetector';
 import { routeSynthesis, SynthesisPlan, SynthesisAdjustment } from './synthesisRouter';
+// ── Task D1: DJ-style phase sync (phase-locked beat matching + downbeat
+// alignment). The PhaseSync aligns our beat grid with the radio's beat
+// grid so the kick drums hit together — the DJ-software sync model. ──
+import { PhaseSync, PhaseInfo, SyncStatus } from './phaseSync';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -764,6 +768,21 @@ export class Psy4EngineV2 {
   private activeSurprise: SurpriseEvent | null = null;
   private surpriseReverseHitScheduled = false;
 
+  // ── Task D1: DJ-style phase sync ──
+  // The PhaseSync aligns our beat grid with the radio's beat grid so the
+  // kick drums hit together. It is OPTIONAL — when syncEnabled is false,
+  // getPhaseOffset() returns 0 and tickBar() returns no nudges. The engine
+  // still works exactly as before (BPM tracking via applyMusicalUnderstanding).
+  //
+  // `pendingBeatDropOffsetSec` is the signed time-jump the engine should
+  // apply to nextTime when a beat-drop is queued by PhaseSync.tickBar().
+  // We store it on the engine because the bar boundary arrives in tick()
+  // and we apply it to nextTime there (before the next scheduleStep call).
+  // `phaseOffsetEnabled` mirrors phaseSync.isSyncEnabled() so the engine
+  // can short-circuit the per-step offset fetch when sync is off.
+  private phaseSync: PhaseSync = new PhaseSync();
+  private pendingBeatDropOffsetSec = 0;
+
   onSectionChange: ((section: string) => void) | null = null;
 
   /**
@@ -1087,6 +1106,13 @@ export class Psy4EngineV2 {
       for (const v of this.synthPool) v.panic(this.ctx);
       for (const v of this.drumPool) v.panic(this.ctx);
     }
+    // ── Task D1: reset PhaseSync own-beat state ──
+    // The reference phase + syncEnabled flag are preserved (the radio is
+    // still playing and the user's toggle choice persists across restarts).
+    // We only clear the own-beat ring buffer + phase offsets + beat-drop
+    // state — these are engine-instance-specific and would be stale after
+    // a restart (the new engine instance has a different audio context).
+    this.phaseSync.reset();
   }
 
   private get bpm(): number {
@@ -1929,6 +1955,11 @@ export class Psy4EngineV2 {
     stereoBalance?: number;
     stereoCorrelation?: number;
     msRatio?: number;
+    // ── Task D1: DJ-style phase sync info from the V2 listener ──
+    // Optional — populated by referenceListenerV2.computePhaseInfo(). When
+    // present, the engine forwards it to phaseSync.setReferencePhase() so
+    // the beat grid can phase-lock to the radio.
+    phaseInfo?: PhaseInfo;
   }): void {
     if (isFinite(refMetrics.lufs)) this.targetLufs = refMetrics.lufs;
     if (refMetrics.energy !== undefined && isFinite(refMetrics.energy)) {
@@ -2079,6 +2110,15 @@ export class Psy4EngineV2 {
     // adjustments) is gated by a 10-second anti-thrash cooldown so the engine
     // doesn't flicker modes when the detector wobbles on borderline material.
     this.applyDeepPursuit();
+    // ── Task D1: forward reference phase info to PhaseSync ──
+    // The V2 listener's computePhaseInfo() builds a PhaseInfo from the kick-
+    // band transient grid. When present, we hand it to the PhaseSync so it
+    // can recompute the target phase offset for the scheduler. When absent
+    // (no kick transients, low confidence, or V1 listener), we no-op — the
+    // PhaseSync gracefully degrades (no offset, no nudge).
+    if (refMetrics.phaseInfo) {
+      this.phaseSync.setReferencePhase(refMetrics.phaseInfo);
+    }
   }
 
   // ─── Task T1: synthesis character pursuit ──────────────────────────────────
@@ -2721,7 +2761,19 @@ export class Psy4EngineV2 {
       // Recompute s16 each step so the BPM ramp changes tempo smoothly
       // without invalidating the scheduler's lookahead window.
       const s16 = 60 / this.bpm / 4;
-      this.scheduleStep(this.step, this.bar, this.nextTime);
+      // ── Task D1: apply DJ-style phase offset to the scheduled time ──
+      // The PhaseSync returns a smoothed offset (seconds) that aligns our
+      // beat grid with the radio's. We add it to nextTime when calling
+      // scheduleStep so every step fires at the phase-correct time. The
+      // offset is small (< 50 ms per step nudge) so there are no audio
+      // glitches. When sync is disabled, getPhaseOffset() returns 0.
+      //
+      // Note: we do NOT add the offset to `this.nextTime` itself — that
+      // would accumulate across steps. The offset is applied to the time
+      // passed to scheduleStep, leaving the scheduler's internal clock
+      // unchanged so the lookahead window stays valid.
+      const phaseOffset = this.phaseSync.getPhaseOffset();
+      this.scheduleStep(this.step, this.bar, this.nextTime + phaseOffset);
       this.step++;
       this.nextTime += s16;
       if (this.step >= 16) {
@@ -2743,6 +2795,42 @@ export class Psy4EngineV2 {
             this.targetBpm = 0;
             this.bpmRampPerBar = 0;
           }
+        }
+        // ── Task D1: DJ-style phase sync per-bar tick ──
+        // tickBar() returns:
+        //   - bpmNudge: small BPM delta to apply this bar (gradual convergence
+        //     toward the ref BPM — 0.1 / 0.3 BPM/bar based on |delta|).
+        //   - doBeatDrop: if true, jump nextTime by beatDropOffsetSec to
+        //     realign downbeats. This is the "soft restart" DJ move —
+        //     happens rarely (only when sync first engages or after a
+        //     major drift). The engine applies the jump by adding it to
+        //     nextTime (advancing or retarding the grid by an integer
+        //     number of beats).
+        //   - beatDropOffsetSec: signed time-jump to apply (if doBeatDrop).
+        const syncAction = this.phaseSync.tickBar(this._bpm);
+        if (syncAction.bpmNudge !== 0) {
+          // Apply the gradual BPM nudge. We don't touch targetBpm /
+          // bpmRampBarsLeft — those are owned by the engine's existing
+          // BPM ramp (which fires when applyMusicalUnderstanding sees a
+          // > 2 BPM delta). Our nudge is a small additional step on top.
+          this._bpm = clamp(
+            Math.round((this._bpm + syncAction.bpmNudge) * 10) / 10,
+            60, 200,
+          );
+        }
+        if (syncAction.doBeatDrop && syncAction.beatDropOffsetSec !== 0) {
+          // Apply the beat-drop: jump nextTime by the signed offset. This
+          // shifts the entire future grid by an integer number of beats,
+          // realigning our downbeats with the radio's. The PhaseSync has
+          // already reset its currentOffset to 0, so the per-step nudge
+          // starts fresh from the new alignment.
+          //
+          // Positive offset = jump forward (we were ahead of the radio).
+          // Negative offset = jump backward (we were behind the radio).
+          // Jumping backward is safe because we're inside the lookahead
+          // window — the next scheduleStep will see the adjusted nextTime
+          // and schedule at the corrected time (still in the future).
+          this.nextTime += syncAction.beatDropOffsetSec;
         }
         // ── Task F1: dynamic flow engine drives section transitions ──
         // The flow engine decides WHEN to transition (based on radio energy,
@@ -3002,6 +3090,26 @@ export class Psy4EngineV2 {
         ? 0.4 + flow.density * 0.3 * aggressionBoost + energy * 0.15
         : 0.3 * aggressionBoost + energy * 0.1;
       this.triggerDrum(0, stepTime, vel);
+      // ── Task D1: report our own beat to the PhaseSync ──
+      // The PhaseSync uses this to compute our predicted phase and align it
+      // with the radio's phase. `isDownbeat` flags bar-start kicks (step % 16
+      // === 0) so the downbeat phase can be tracked separately.
+      //
+      // We pass both the audio-context time (when the kick fires) and the
+      // current wall-clock + ctx.currentTime so PhaseSync can convert audio-
+      // context time → wall-clock time (its unified time base shared with
+      // the listener).
+      if (this.ctx) {
+        const wallNow = (typeof performance !== 'undefined' && performance.now)
+          ? performance.now() / 1000
+          : Date.now() / 1000;
+        this.phaseSync.setOwnBeat(
+          stepTime,
+          this.ctx.currentTime,
+          wallNow,
+          step % 16 === 0,
+        );
+      }
     }
 
     // ── CLAP (track 1) — world-driven clapPattern gate ('x' = hit) ──
@@ -3647,6 +3755,41 @@ export class Psy4EngineV2 {
    * Returns null outside lead sections or before the first chord plays.
    */
   getCurrentChord(): Chord | null { return this.currentChord; }
+
+  // ─── Task D1: DJ-style phase sync public API ──────────────────────────────
+  //
+  // These methods expose the PhaseSync to the UI. The toggle lets the user
+  // enable/disable sync at runtime; the status returns the live sync state
+  // for display (synced indicator, offset, BPM match, downbeat alignment,
+  // beat grid visualization). All methods are safe to call before start() —
+  // they no-op gracefully on an uninitialized engine.
+
+  /**
+   * Enable or disable DJ-style phase sync. When disabled, the engine runs
+   * exactly as before (BPM tracking via applyMusicalUnderstanding + flow
+   * engine, no phase offset, no beat-drop). When enabled, the PhaseSync
+   * smoothly aligns our beat grid with the radio's.
+   *
+   * Safe to call before start() — PhaseSync is constructed eagerly so the
+   * toggle state persists across stop/start cycles.
+   */
+  setSyncEnabled(enabled: boolean): void {
+    this.phaseSync.setSyncEnabled(enabled);
+  }
+
+  /** Returns true if DJ-style phase sync is currently enabled. */
+  isSyncEnabled(): boolean {
+    return this.phaseSync.isSyncEnabled();
+  }
+
+  /**
+   * Returns the current sync status for UI display. The shape mirrors
+   * PhaseSync.getSyncStatus() — see phaseSync.ts for field docs. All fields
+   * are guarded against missing data (zero/false when no ref phase yet).
+   */
+  getSyncStatus(): SyncStatus {
+    return this.phaseSync.getSyncStatus();
+  }
 
   // ─── P1 stubs: adaptive quality + voice stealing ──────────────────────────
   //
