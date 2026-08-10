@@ -25,6 +25,9 @@ import type { ReferenceMetrics, ReferenceProfile } from './referenceListener';
 // ── Task D1: DJ-style phase sync — the listener populates phaseInfo from
 // the kick-band transient grid so the engine can phase-lock to the radio.
 import type { PhaseInfo } from '../phaseSync';
+// ── Task D1 (upgrade): full DJ controller — the listener also populates
+// grooveInfo (swing + push/pull) from the same kick transient grid.
+import type { GrooveInfo } from '../djController';
 
 const WINDOW_SECONDS = 20;
 const HOP_SECONDS = 10;
@@ -719,6 +722,14 @@ export class ReferenceListenerV2 {
       kickTransientIndices, bpm, sr, duration, rhythmicRegularity,
     );
 
+    // ── Task D1 (upgrade): groove / feel analysis ──
+    // Extract swing + push/pull from the same kick transient grid. The
+    // DJController consumes this to match the radio's groove — the subtle
+    // timing feel that makes music "swing" or "push/pull" (the pocket).
+    const grooveInfo = this.computeGrooveInfo(
+      kickTransientIndices, bpm, sr, duration,
+    );
+
     return {
       bpm,
       bpmConfidence: bpm > 0 ? 0.8 : 0,
@@ -744,6 +755,8 @@ export class ReferenceListenerV2 {
       msRatio,
       // ── Task D1: DJ-style phase sync info ──
       phaseInfo,
+      // ── Task D1 (upgrade): groove / feel info ──
+      grooveInfo,
       timestamp: Date.now(),
       sourceStream: this.stream?.id || 'unknown',
     };
@@ -854,6 +867,117 @@ export class ReferenceListenerV2 {
       confidence,
       lastBeatTime,
     };
+  }
+
+  // ─── Task D1 (upgrade): groove / feel detection ──────────────────────────
+  //
+  // Extract the swing amount + push/pull feel from the kick transient grid.
+  // These describe the "pocket" — the subtle timing feel that makes music
+  // groove (swing = how much odd 16ths are delayed; push/pull = whether the
+  // beat sits ahead or behind the theoretical grid, like a live drummer).
+  //
+  // Algorithm:
+  //   1. Build the theoretical beat grid from BPM: gridTime[i] = i * beatPeriod
+  //      (relative to the first kick, which is our reference origin).
+  //   2. For each kick, find the nearest grid beat and measure the deviation
+  //      (actual - theoretical). The MEAN deviation is the push/pull: + = laid
+  //      back, - = pushed.
+  //   3. For swing, look at the IOIs (inter-onset intervals) between
+  //      consecutive kicks. If they alternate short-long-short-long, the
+  //      odd beats are delayed = swing. Swing ratio = (long - short) /
+  //      (long + short), giving 0 for straight and 0.5 for fully swung
+  //      (triplet feel).
+  //   4. Confidence: based on kick count + IOI regularity (more kicks +
+  //      consistent pattern = higher confidence).
+  private computeGrooveInfo(
+    kickIndices: number[],
+    bpm: number,
+    sr: number,
+    duration: number,
+  ): GrooveInfo | undefined {
+    if (!Array.isArray(kickIndices) || kickIndices.length < 3 || bpm <= 0 ||
+        bpm < 30 || bpm > 220 || !Number.isFinite(sr) || sr <= 0 ||
+        !Number.isFinite(duration) || duration <= 0) {
+      return undefined;
+    }
+
+    const beatPeriodSec = 60 / bpm;
+    const beatPeriodSamples = beatPeriodSec * sr;
+
+    // ── Push/pull: mean deviation of kicks from the theoretical grid ──
+    // The first kick defines grid time 0. Each subsequent kick should land
+    // at an integer multiple of beatPeriod. The deviation (signed residual
+    // after rounding to the nearest beat) is the push/pull feel.
+    const firstKick = kickIndices[0];
+    let devSum = 0;
+    let devCount = 0;
+    for (let i = 0; i < kickIndices.length; i++) {
+      const offsetFromFirst = kickIndices[i] - firstKick;
+      const beatsFromFirst = offsetFromFirst / beatPeriodSamples;
+      const nearestBeat = Math.round(beatsFromFirst);
+      const residualBeats = beatsFromFirst - nearestBeat;
+      // Only count residuals within ±0.4 beat (otherwise it's not a grid
+      // beat — it's an off-grid hit like a ghost note).
+      if (Math.abs(residualBeats) < 0.4) {
+        devSum += residualBeats * beatPeriodSec * 1000;  // → ms
+        devCount++;
+      }
+    }
+    const pushPullMs = devCount > 0 ? devSum / devCount : 0;
+
+    // ── Swing: from alternating IOI short/long pattern ──
+    // Collect IOIs between consecutive kicks. If they alternate (short,
+    // long, short, long), the swing ratio = (long - short) / (long + short).
+    // We separate even-indexed and odd-indexed IOIs and compare their means.
+    const iois: number[] = [];
+    for (let i = 1; i < kickIndices.length; i++) {
+      const dt = kickIndices[i] - kickIndices[i - 1];
+      // Only count IOIs that are between 1/4 and 2 beats — longer = phrase
+      // gap, shorter = flam/double-hit.
+      const beats = dt / beatPeriodSamples;
+      if (beats >= 0.2 && beats <= 2.5) {
+        iois.push(dt / sr * 1000);  // → ms
+      }
+    }
+    let swing = 0;
+    if (iois.length >= 4) {
+      // Separate into "short" and "long" buckets using the median as the
+      // threshold. This is more robust than even/odd indexing (which assumes
+      // every other IOI is short — not always true with dropped beats).
+      const sorted = [...iois].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      let shortSum = 0, shortCount = 0;
+      let longSum = 0, longCount = 0;
+      for (const ioi of iois) {
+        if (ioi < median) {
+          shortSum += ioi;
+          shortCount++;
+        } else {
+          longSum += ioi;
+          longCount++;
+        }
+      }
+      if (shortCount > 0 && longCount > 0) {
+        const shortMean = shortSum / shortCount;
+        const longMean = longSum / longCount;
+        const ratio = (longMean - shortMean) / (longMean + shortMean);
+        // Clamp to 0..0.5 (negative ratio = no swing, > 0.5 = extreme).
+        swing = clampT1(ratio, 0, 0.5);
+      }
+    }
+
+    // ── Confidence ──
+    // More kicks + more IOIs = higher confidence. Also penalize if the
+    // push/pull is huge (> 50ms = the grid is suspect).
+    const kickSupport = Math.min(1, kickIndices.length / 8);
+    const ioiSupport = Math.min(1, iois.length / 6);
+    const pushPullSanity = 1 - Math.min(1, Math.abs(pushPullMs) / 80);
+    const confidence = clampT1(
+      kickSupport * 0.4 + ioiSupport * 0.4 + pushPullSanity * 0.2,
+      0, 1,
+    );
+
+    return { swing, pushPullMs, confidence };
   }
 
   // ─── DSP helpers ──────────────────────────────────────────────────────────

@@ -23,6 +23,10 @@ import type { RadioStream } from './radioStreams';
 // PhaseInfo type lives in phaseSync.ts to keep the engine's sync module
 // self-contained. The import is type-only so there's no runtime dependency.
 import type { PhaseInfo } from '../phaseSync';
+// ── Task D1 (upgrade): full DJ controller — the listener also populates
+// grooveInfo (swing + push/pull feel) from the kick-band transient grid
+// so the DJController can match the radio's groove. Type-only import.
+import type { GrooveInfo } from '../djController';
 
 export interface ReferenceMetrics {
   // Tempo
@@ -101,6 +105,14 @@ export interface ReferenceMetrics {
   // radio's. Optional — the V1 listener and any caller that doesn't run
   // the new analysis simply omit it, and the engine gracefully no-ops.
   phaseInfo?: PhaseInfo;
+
+  // ── Task D1 (upgrade): full DJ controller — groove / feel analysis ──
+  // Populated by the V2 listener from the kick-band transient grid. The
+  // DJController consumes this to match the radio's swing amount + push/
+  // pull feel (the "pocket" that makes the groove sit). Optional — the V1
+  // listener and any caller that doesn't run the new analysis simply omit
+  // it, and the DJController gracefully no-ops.
+  grooveInfo?: GrooveInfo;
 
   timestamp: number;
   sourceStream: string;

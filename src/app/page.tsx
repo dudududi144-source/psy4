@@ -13,6 +13,7 @@ import {
   TrendingDown, Target, ArrowUp, ArrowDown, Check, Shuffle,
   Cpu, SlidersHorizontal, Layers, Piano, ListMusic, AudioWaveform,
   Fingerprint, ScanSearch, Wand2, Disc3, Link2, Link2Off,
+  KeyRound, Drum, Flame, LayoutGrid,
 } from 'lucide-react';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
@@ -201,6 +202,11 @@ export default function PSY4Page() {
             //    undefined (no kick transients, low confidence, or V1
             //    listener), the PhaseSync gracefully no-ops.
             phaseInfo: m.phaseInfo,
+            // ── Task D1 (upgrade): pass the reference listener's grooveInfo
+            //    (swing + push/pull feel) so the DJController can match the
+            //    radio's groove. Optional — when undefined, the groove
+            //    dimension gracefully no-ops.
+            grooveInfo: m.grooveInfo,
           });
         }
       });
@@ -414,6 +420,11 @@ export default function PSY4Page() {
   // getSyncStatus() will reflect the new state on the next analyzer tick.
   // Safe to call before the engine is started — we just store the choice
   // locally; when the engine starts, the user can toggle again.
+  //
+  // Task D1 (upgrade): this now toggles MASTER SYNC (the full DJ controller
+  // — BPM + phase + key + groove + energy + beat-grid). When on, ALL
+  // dimensions are engaged; when off, the engine runs free but the sync
+  // state is still computed + exposed for UI display.
   const toggleSync = useCallback(() => {
     const next = !syncEnabled;
     setSyncEnabled(next);
@@ -421,12 +432,12 @@ export default function PSY4Page() {
       try { engineRef.current.setSyncEnabled(next); } catch {}
     }
     if (next) {
-      toast.success('DJ SYNC enabled', {
-        description: 'Engine phase-locks its beat grid to the radio. Gradual BPM convergence + downbeat alignment.',
+      toast.success('MASTER SYNC enabled', {
+        description: 'Full DJ controller: BPM + phase + key (Camelot) + groove (swing/push-pull) + energy + beat-grid.',
       });
     } else {
-      toast.info('DJ SYNC disabled', {
-        description: 'Engine reverts to free-running BPM (still tracks the radio BPM via applyMusicalUnderstanding).',
+      toast.info('MASTER SYNC disabled', {
+        description: 'Engine reverts to free-running (still tracks the radio BPM via applyMusicalUnderstanding).',
       });
     }
   }, [syncEnabled]);
@@ -828,19 +839,22 @@ export default function PSY4Page() {
           </Card>
         )}
 
-        {/* ─── DJ SYNC (Task D1) ─── */}
-        {/* DJ-style phase sync — phase-locked beat matching + downbeat
-            alignment. The engine's PhaseSync aligns its beat grid with the
-            radio's beat grid so the kick drums hit together (the
-            Serato/Traktor/CDJ sync model). Visible in listen + analyze +
-            train when the engine is running. */}
+        {/* ─── DJ CONTROLLER (Task D1 — full DJ sync) ─── */}
+        {/* Full DJ-style sync — BPM + phase + key (Camelot harmonic mixing)
+            + groove (swing + push/pull) + energy (smoothed + transition
+            detection) + beat-grid / phrase alignment. The Pioneer CDJ /
+            Traktor / Serato sync model applied to a generative psytrance
+            engine. Visible in listen + analyze + train when the engine is
+            running. When MASTER SYNC is on, all dimensions are engaged;
+            when off, the engine runs free but the sync state is still
+            computed + displayed (so the user can see how far off we are). */}
         {(mode === 'listen' || mode === 'analyze' || mode === 'train') && engineOn && (
           <Card className="border-slate-800 bg-slate-900/60">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-sm">
                 <Disc3 className={`w-4 h-4 ${syncEnabled ? 'text-emerald-400' : 'text-slate-500'}`} />
-                DJ SYNC
-                <span className="text-[10px] text-slate-500 font-mono ml-2">phase-locked · downbeat · beat grid</span>
+                DJ CONTROLLER
+                <span className="text-[10px] text-slate-500 font-mono ml-2">bpm · phase · key · groove · energy · phrase</span>
                 {/* Toggle button — top-right of the header */}
                 <button
                   type="button"
@@ -851,10 +865,10 @@ export default function PSY4Page() {
                       : 'bg-slate-700 text-slate-200 border-slate-600 hover:bg-slate-600'
                   }`}
                   aria-pressed={syncEnabled}
-                  aria-label={syncEnabled ? 'Disable DJ sync' : 'Enable DJ sync'}
+                  aria-label={syncEnabled ? 'Disable master sync' : 'Enable master sync'}
                 >
                   {syncEnabled ? <Link2 className="w-3 h-3" /> : <Link2Off className="w-3 h-3" />}
-                  {syncEnabled ? 'SYNCED' : 'FREE-RUN'}
+                  {syncEnabled ? 'MASTER' : 'FREE-RUN'}
                 </button>
               </CardTitle>
             </CardHeader>
@@ -862,24 +876,80 @@ export default function PSY4Page() {
               {!syncEnabled ? (
                 <div className="bg-slate-950 border border-slate-800 rounded p-4 text-center">
                   <div className="text-[11px] text-slate-400 font-mono">
-                    DJ SYNC is off — the engine runs free (still tracks the radio BPM via
-                    applyMusicalUnderstanding, but does NOT phase-lock the beat grid).
+                    MASTER SYNC is off — the engine runs free (still tracks the radio BPM via
+                    applyMusicalUnderstanding, but does NOT phase-lock or harmonic-match).
                   </div>
                   <div className="text-[10px] text-slate-500 font-mono mt-1">
                     Click <span className="text-emerald-400 font-bold">FREE-RUN</span> above to engage
-                    phase-locked sync.
+                    full DJ sync (BPM + phase + key + groove + energy + phrase).
                   </div>
                 </div>
               ) : !syncStatus || (!syncStatus.refBpm && !syncStatus.ownBpm) ? (
                 <div className="bg-slate-950 border border-slate-800 rounded p-4 text-center">
                   <div className="text-[11px] text-amber-400 font-mono">
-                    ⚠ Waiting for phase data — connect a stream and let the engine play. The reference
-                    listener extracts beat phase from kick-band transients every ~10s; the engine
+                    ⚠ Waiting for sync data — connect a stream and let the engine play. The reference
+                    listener extracts beat phase, key, groove, and energy every ~10s; the engine
                     records its own beats from <code className="text-cyan-400">triggerDrum(0, ...)</code>.
                   </div>
                 </div>
               ) : (
                 <>
+                  {/* ── Master sync quality bar (prominent at top) ── */}
+                  {/* Aggregates all dimensions into a single 0..100 score.
+                      Weights: phase+BPM 40%, key 25%, energy 15%, groove 10%,
+                      phrase 10%. This is the headline number a DJ would look
+                      at — "how locked is the mix?". */}
+                  <div className={`bg-slate-950 border rounded p-3 ${
+                    syncStatus.syncQuality > 80 ? 'border-emerald-700'
+                    : syncStatus.syncQuality > 60 ? 'border-amber-700'
+                    : 'border-rose-800'
+                  }`}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <Disc3 className={`w-3.5 h-3.5 ${
+                          syncStatus.syncQuality > 80 ? 'text-emerald-400 animate-spin'
+                          : syncStatus.syncQuality > 60 ? 'text-amber-400'
+                          : 'text-rose-400'
+                        }`} style={syncStatus.syncQuality > 80 ? { animationDuration: '3s' } : undefined} />
+                        <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Master Sync Quality</span>
+                      </div>
+                      <span className={`text-lg font-bold font-mono ${
+                        syncStatus.syncQuality > 80 ? 'text-emerald-300'
+                        : syncStatus.syncQuality > 60 ? 'text-amber-300'
+                        : 'text-rose-300'
+                      }`}>
+                        {syncStatus.syncQuality.toFixed(0)}%
+                      </span>
+                    </div>
+                    <div className="h-2 w-full bg-slate-800 rounded overflow-hidden">
+                      <div
+                        className={`h-full rounded transition-all duration-300 ${
+                          syncStatus.syncQuality > 80 ? 'bg-emerald-500'
+                          : syncStatus.syncQuality > 60 ? 'bg-amber-500'
+                          : 'bg-rose-500'
+                        }`}
+                        style={{ width: `${syncStatus.syncQuality.toFixed(1)}%` }}
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-2 mt-2 text-[9px] font-mono">
+                      <span className={syncStatus.synced ? 'text-emerald-400' : 'text-rose-400'}>
+                        ● phase {syncStatus.synced ? 'LOCKED' : 'DRIFT'}
+                      </span>
+                      <span className={syncStatus.keySynced ? 'text-emerald-400' : 'text-amber-400'}>
+                        ● key {syncStatus.keySynced ? 'MATCHED' : 'OFF'}
+                      </span>
+                      <span className={syncStatus.grooveSynced ? 'text-emerald-400' : 'text-amber-400'}>
+                        ● groove {syncStatus.grooveSynced ? 'GROOVE' : 'OFF'}
+                      </span>
+                      <span className={syncStatus.energySynced ? 'text-emerald-400' : 'text-amber-400'}>
+                        ● energy {syncStatus.energySynced ? 'FOLLOW' : 'OFF'}
+                      </span>
+                      <span className={syncStatus.beatGridAligned ? 'text-emerald-400' : 'text-amber-400'}>
+                        ● phrase {syncStatus.beatGridAligned ? 'ALIGNED' : 'OFF'}
+                      </span>
+                    </div>
+                  </div>
+
                   {/* ── Status grid: synced / offset / BPM / downbeat ── */}
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     {/* SYNCED indicator */}
@@ -967,13 +1037,294 @@ export default function PSY4Page() {
                     </div>
                   </div>
 
-                  {/* ── Beat grid visualization ── */}
-                  {/* 4 beats per bar. Two rows: REF (radio, fuchsia) and
-                      OURS (engine, cyan). The current beat-in-bar is
-                      highlighted; the downbeat (beat 0) gets an extra ring. */}
+                  {/* ── KEY sync (Camelot harmonic mixing) ── */}
+                  {/* Shows the reference key vs our key, mapped to Camelot
+                      wheel positions (e.g., 8A = A minor). Compatibility %
+                      is the harmonic-mixing score (0..1). When the radio's
+                      key is incompatible, the suggested shift (semitones)
+                      is shown — when master sync is on, the engine applies
+                      this shift gradually (1 semitone per bar) to reach
+                      the nearest compatible key. */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-1.5">
+                        <KeyRound className="w-3.5 h-3.5 text-violet-400" />
+                        <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Key Sync · Camelot</span>
+                      </div>
+                      <span className={`text-[10px] font-mono font-bold ${syncStatus.keySynced ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {syncStatus.keySynced ? '● MATCHED' : '○ MISMATCH'}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 mb-2">
+                      {/* Reference key */}
+                      <div className="bg-slate-900 border border-fuchsia-900 rounded p-2 text-center">
+                        <div className="text-[9px] text-slate-500 font-mono uppercase">REF</div>
+                        <div className="text-base font-bold font-mono text-fuchsia-300">
+                          {syncStatus.refCamelot ?? '—'}
+                        </div>
+                        <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+                          {syncStatus.refKey ? `${syncStatus.refKey.root} ${syncStatus.refKey.scale}`.slice(0, 14) : '—'}
+                        </div>
+                      </div>
+                      {/* Compatibility */}
+                      <div className="bg-slate-900 border border-slate-700 rounded p-2 text-center">
+                        <div className="text-[9px] text-slate-500 font-mono uppercase">Compat</div>
+                        <div className={`text-base font-bold font-mono ${
+                          syncStatus.keyCompatibility > 0.8 ? 'text-emerald-300'
+                          : syncStatus.keyCompatibility > 0.5 ? 'text-amber-300'
+                          : 'text-rose-300'
+                        }`}>
+                          {(syncStatus.keyCompatibility * 100).toFixed(0)}%
+                        </div>
+                        <div className="h-1 w-full bg-slate-800 rounded overflow-hidden mt-1">
+                          <div
+                            className={`h-full rounded transition-all duration-200 ${
+                              syncStatus.keyCompatibility > 0.8 ? 'bg-emerald-500'
+                              : syncStatus.keyCompatibility > 0.5 ? 'bg-amber-500'
+                              : 'bg-rose-500'
+                            }`}
+                            style={{ width: `${(syncStatus.keyCompatibility * 100).toFixed(1)}%` }}
+                          />
+                        </div>
+                      </div>
+                      {/* Own key */}
+                      <div className="bg-slate-900 border border-cyan-900 rounded p-2 text-center">
+                        <div className="text-[9px] text-slate-500 font-mono uppercase">OURS</div>
+                        <div className="text-base font-bold font-mono text-cyan-300">
+                          {syncStatus.ownCamelot ?? '—'}
+                        </div>
+                        <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+                          {syncStatus.ownKey ? `${syncStatus.ownKey.root} ${syncStatus.ownKey.scale}`.slice(0, 14) : '—'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] font-mono">
+                      <div className="text-slate-500">
+                        suggested shift: <span className={syncStatus.suggestedShift === 0 ? 'text-emerald-400' : 'text-amber-400'}>
+                          {syncStatus.suggestedShift > 0 ? '+' : ''}{syncStatus.suggestedShift} st
+                        </span>
+                      </div>
+                      <div className="text-slate-500">
+                        applied: <span className={syncStatus.appliedShift === 0 ? 'text-slate-400' : 'text-violet-400'}>
+                          {syncStatus.appliedShift > 0 ? '+' : ''}{syncStatus.appliedShift} st
+                        </span>
+                        {syncStatus.appliedShift !== 0 && <span className="text-emerald-400 ml-1">· live</span>}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── GROOVE sync (swing + push/pull) ── */}
+                  {/* Shows the reference groove vs our groove: swing amount
+                      (0..0.5) and push/pull feel (ms, signed). The match %
+                      combines both. When master sync is on, our swing
+                      converges toward the radio's swing (≤0.02/bar) and
+                      the push/pull offset is applied to the scheduler
+                      (capped at ±30ms — glitch-free). */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-1.5">
+                        <Drum className="w-3.5 h-3.5 text-orange-400" />
+                        <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Groove Sync · swing + push/pull</span>
+                      </div>
+                      <span className={`text-[10px] font-mono font-bold ${syncStatus.grooveSynced ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {syncStatus.grooveSynced ? '● GROOVE' : '○ ADJUSTING'}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      {/* Swing */}
+                      <div>
+                        <div className="flex items-baseline justify-between text-[10px] font-mono mb-1">
+                          <span className="text-slate-500 uppercase tracking-wider">Swing</span>
+                          <span className={syncStatus.grooveMatch > 0.85 ? 'text-emerald-300' : syncStatus.grooveMatch > 0.5 ? 'text-amber-300' : 'text-rose-300'}>
+                            {(syncStatus.grooveMatch * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                        <div className="flex items-baseline justify-between mb-1">
+                          <span className="text-[10px] font-mono text-fuchsia-300">{(syncStatus.refSwing * 100).toFixed(0)}%</span>
+                          <span className="text-[9px] text-slate-600">vs</span>
+                          <span className="text-[10px] font-mono text-cyan-300">{(syncStatus.ownSwing * 100).toFixed(0)}%</span>
+                        </div>
+                        <div className="h-1.5 w-full bg-slate-800 rounded overflow-hidden">
+                          <div className="h-full bg-fuchsia-500 rounded transition-all duration-200" style={{ width: `${(syncStatus.refSwing * 200).toFixed(1)}%` }} />
+                        </div>
+                        <div className="h-1.5 w-full bg-slate-800 rounded overflow-hidden mt-0.5">
+                          <div className="h-full bg-cyan-500 rounded transition-all duration-200" style={{ width: `${(syncStatus.ownSwing * 200).toFixed(1)}%` }} />
+                        </div>
+                      </div>
+                      {/* Push/pull */}
+                      <div>
+                        <div className="flex items-baseline justify-between text-[10px] font-mono mb-1">
+                          <span className="text-slate-500 uppercase tracking-wider">Push/Pull</span>
+                          <span className={`${
+                            Math.abs(syncStatus.pushPullMs) < 8 ? 'text-emerald-300'
+                            : Math.abs(syncStatus.pushPullMs) < 20 ? 'text-amber-300'
+                            : 'text-rose-300'
+                          }`}>
+                            {syncStatus.pushPullMs > 0 ? '+' : ''}{syncStatus.pushPullMs.toFixed(1)}ms
+                          </span>
+                        </div>
+                        <div className="text-[10px] font-mono text-slate-400 mb-1">
+                          {syncStatus.pushPullMs > 8 ? 'laid back ↓' : syncStatus.pushPullMs < -8 ? 'pushed ↑' : 'on grid ●'}
+                        </div>
+                        {/* Push/pull meter — center = 0, left = pushed, right = laid back */}
+                        <div className="relative h-1.5 w-full bg-slate-800 rounded overflow-hidden">
+                          <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-600" />
+                          <div
+                            className={`absolute top-0 bottom-0 rounded transition-all duration-200 ${
+                              Math.abs(syncStatus.pushPullMs) < 8 ? 'bg-emerald-500'
+                              : Math.abs(syncStatus.pushPullMs) < 20 ? 'bg-amber-500'
+                              : 'bg-rose-500'
+                            }`}
+                            style={
+                              syncStatus.pushPullMs >= 0
+                                ? { left: '50%', width: `${Math.min(50, Math.abs(syncStatus.pushPullMs) / 60 * 100).toFixed(1)}%` }
+                                : { right: '50%', width: `${Math.min(50, Math.abs(syncStatus.pushPullMs) / 60 * 100).toFixed(1)}%` }
+                            }
+                          />
+                        </div>
+                        <div className="flex justify-between text-[8px] font-mono text-slate-600 mt-0.5">
+                          <span>pushed</span>
+                          <span>laid back</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── ENERGY sync (smoothed + transition detection) ── */}
+                  {/* Shows the reference energy (4-bar smoothed) vs our own
+                      energy (current flow density as proxy). The transition
+                      indicator flags build / drop / break / rise events so
+                      the user can see when the radio's energy curve is
+                      shifting. When master sync is on, the engine's phrase
+                      realignment triggers on transitions (drop / break). */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-1.5">
+                        <Flame className="w-3.5 h-3.5 text-amber-400" />
+                        <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">Energy Sync · smoothed (4-bar MA)</span>
+                      </div>
+                      <span className={`text-[10px] font-mono font-bold ${syncStatus.energySynced ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {syncStatus.energySynced ? '● FOLLOW' : '○ CHASING'}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between mb-1">
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-[10px] font-mono text-fuchsia-300">{(syncStatus.refEnergySmoothed * 100).toFixed(0)}%</span>
+                        <span className="text-[9px] text-slate-600">vs</span>
+                        <span className="text-[10px] font-mono text-cyan-300">{(syncStatus.ownEnergy * 100).toFixed(0)}%</span>
+                      </div>
+                      <span className={`text-[10px] font-mono ${
+                        Math.abs(syncStatus.energyDelta) < 0.12 ? 'text-emerald-300'
+                        : Math.abs(syncStatus.energyDelta) < 0.25 ? 'text-amber-300'
+                        : 'text-rose-300'
+                      }`}>
+                        Δ {syncStatus.energyDelta > 0 ? '+' : ''}{syncStatus.energyDelta.toFixed(2)}
+                      </span>
+                    </div>
+                    {/* Two-row bar (ref + ours) */}
+                    <div className="h-1.5 w-full bg-slate-800 rounded overflow-hidden">
+                      <div className="h-full bg-fuchsia-500 rounded transition-all duration-200" style={{ width: `${(syncStatus.refEnergySmoothed * 100).toFixed(1)}%` }} />
+                    </div>
+                    <div className="h-1.5 w-full bg-slate-800 rounded overflow-hidden mt-0.5">
+                      <div className="h-full bg-cyan-500 rounded transition-all duration-200" style={{ width: `${(syncStatus.ownEnergy * 100).toFixed(1)}%` }} />
+                    </div>
+                    {/* Transition indicator */}
+                    <div className="flex items-center justify-between mt-2 text-[10px] font-mono">
+                      <span className="text-slate-500 uppercase tracking-wider">transition</span>
+                      {syncStatus.energyTransition === 'none' ? (
+                        <span className="text-slate-400">— stable</span>
+                      ) : syncStatus.energyTransition === 'drop' ? (
+                        <span className="text-rose-400 font-bold flex items-center gap-1">
+                          <Zap className="w-3 h-3" /> DROP
+                        </span>
+                      ) : syncStatus.energyTransition === 'break' ? (
+                        <span className="text-sky-400 font-bold flex items-center gap-1">
+                          <Waves className="w-3 h-3" /> BREAK
+                        </span>
+                      ) : syncStatus.energyTransition === 'build' ? (
+                        <span className="text-amber-400 font-bold flex items-center gap-1">
+                          <TrendingUp className="w-3 h-3" /> BUILD
+                        </span>
+                      ) : (
+                        <span className="text-emerald-400 font-bold flex items-center gap-1">
+                          <ArrowUp className="w-3 h-3" /> RISE
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* ── BEAT-GRID / PHRASE alignment ── */}
+                  {/* Shows the reference bar-in-phrase vs our own. A phrase
+                      is 4 bars (psytrance standard). When the radio hits a
+                      phrase boundary (drop / break), our bar-in-phrase
+                      should be 0 too — if not, master sync snaps us to bar
+                      0 on the next transition (the "cut short and drop now"
+                      DJ move). */}
+                  <div className="bg-slate-950 border border-slate-800 rounded p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-1.5">
+                        <LayoutGrid className="w-3.5 h-3.5 text-emerald-400" />
+                        <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">
+                          Beat-Grid · phrase ({syncStatus.phraseLengthBars}-bar)
+                        </span>
+                      </div>
+                      <span className={`text-[10px] font-mono font-bold ${syncStatus.beatGridAligned ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {syncStatus.beatGridAligned ? '● ALIGNED' : '○ DRIFT'}
+                      </span>
+                    </div>
+                    {/* Phrase visualization: 4 cells per phrase, ref row + ours row */}
+                    {(() => {
+                      const refBar = syncStatus.refBarInPhrase ?? 0;
+                      const ownBar = syncStatus.ownBarInPhrase ?? 0;
+                      const phraseLen = syncStatus.phraseLengthBars ?? 4;
+                      const cells = Array.from({ length: phraseLen }, (_, i) => i);
+                      const renderPhraseRow = (label: string, current: number, color: 'fuchsia' | 'cyan') => {
+                        const colorClasses = color === 'fuchsia'
+                          ? { active: 'bg-fuchsia-500 border-fuchsia-300', idle: 'bg-fuchsia-950 border-fuchsia-900', text: 'text-fuchsia-300' }
+                          : { active: 'bg-cyan-500 border-cyan-300', idle: 'bg-cyan-950 border-cyan-900', text: 'text-cyan-300' };
+                        return (
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[10px] font-mono ${colorClasses.text} w-10`}>{label}</span>
+                            <div className="flex-1 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${phraseLen}, 1fr)` }}>
+                              {cells.map(b => {
+                                const isActive = b === current;
+                                const isStart = b === 0;
+                                return (
+                                  <div
+                                    key={b}
+                                    className={`relative h-6 rounded border flex items-center justify-center transition-all duration-100 ${
+                                      isActive ? colorClasses.active : colorClasses.idle
+                                    } ${isStart ? 'ring-1 ring-offset-1 ring-offset-slate-950' : ''}`}
+                                    style={isStart ? { boxShadow: `0 0 0 1px ${color === 'fuchsia' ? 'rgb(217 70 239)' : 'rgb(34 211 238)'}` } : undefined}
+                                  >
+                                    <span className={`text-[9px] font-mono font-bold ${isActive ? 'text-white' : 'text-slate-600'}`}>
+                                      {b + 1}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      };
+                      return (
+                        <div className="space-y-1.5">
+                          {renderPhraseRow('REF', refBar, 'fuchsia')}
+                          {renderPhraseRow('OURS', ownBar, 'cyan')}
+                        </div>
+                      );
+                    })()}
+                    <div className="text-[10px] text-slate-500 font-mono mt-2 flex flex-wrap gap-3">
+                      <span><span className="inline-block w-2 h-2 bg-fuchsia-500 rounded-sm mr-1" />radio bar-in-phrase</span>
+                      <span><span className="inline-block w-2 h-2 bg-cyan-500 rounded-sm mr-1" />engine bar-in-phrase</span>
+                      <span><span className="inline-block w-2 h-2 border-2 border-fuchsia-300 rounded-sm mr-1" />phrase start</span>
+                    </div>
+                  </div>
+
+                  {/* ── Beat grid visualization (per-bar, 4 beats) ── */}
                   <div className="bg-slate-950 border border-slate-800 rounded p-3">
                     <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-2 flex items-center justify-between">
-                      <span>Beat Grid</span>
+                      <span>Beat Grid (in-bar)</span>
                       {syncStatus.beatDropPending && (
                         <span className="text-amber-400 font-bold flex items-center gap-1">
                           <Zap className="w-3 h-3" /> beat-drop pending

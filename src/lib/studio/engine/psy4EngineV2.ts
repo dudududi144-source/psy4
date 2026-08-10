@@ -45,11 +45,77 @@ import { routeSynthesis, SynthesisPlan, SynthesisAdjustment } from './synthesisR
 // ── Task D1: DJ-style phase sync (phase-locked beat matching + downbeat
 // alignment). The PhaseSync aligns our beat grid with the radio's beat
 // grid so the kick drums hit together — the DJ-software sync model. ──
-import { PhaseSync, PhaseInfo, SyncStatus } from './phaseSync';
+import { PhaseSync, PhaseInfo } from './phaseSync';
+// ── Task D1 (upgrade): full DJ controller — extends PhaseSync with key /
+// groove / energy / phrase sync (Pioneer CDJ / Traktor / Serato model).
+// The DJController is a PEER of PhaseSync — it reads the existing phase
+// sync state and extends it with the additional dimensions.
+import { DJController, DJSyncState, GrooveInfo } from './djController';
+// ── Task M1 (Musical Director): phrase-level composer that replaces the
+// step-by-step note decision in scheduleStep. The director composes full
+// 4-8 bar phrases ahead of time with musical phrasing (build/drop/break),
+// rhythmic complexity (syncopation, polyrhythm, ghost notes), melodic
+// development (motif → variation → contrast → climax → resolution), and
+// cohesive interplay between instruments. The scheduler's tick() calls
+// director.getNotesForWindow(start, end) and fires the pre-composed notes. ──
+import {
+  MusicalDirector,
+  PhraseNote,
+  labelToCharacter,
+} from './musicalDirector';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const clamp = (v: number, a: number, b: number) => v < a ? a : (v > b ? b : v);
+
+// ─── Task L1: low-latency scheduler types + constants ──────────────────────
+//
+// Latency modes map to AudioContext `latencyHint` values (set at ctx
+// construction) AND to the initial adaptive lookahead target. The user can
+// switch modes via setLatencyMode(); the new mode applies to the next ctx
+// construction (latencyHint is immutable post-creation) and immediately to
+// the lookahead target.
+//
+//   'interactive' : lowest latency (~15ms output, 30ms lookahead). For live
+//                   performance and DJ beat-matching. Forces when DJ sync
+//                   engages.
+//   'balanced'    : ~30ms output, 60ms lookahead. Default on mobile (better
+//                   stability under thermal throttling).
+//   'playback'    : ~50ms output, 100ms lookahead. Power saving on mobile
+//                   or when the user trades latency for rock-solid timing.
+export type LatencyMode = 'interactive' | 'balanced' | 'playback';
+
+export interface LatencyStatus {
+  /** AudioContext baseLatency + processing latency, in ms. Hardware/output. */
+  outputLatencyMs: number;
+  /** Current scheduler lookahead in ms (adaptive: 30-100ms). */
+  schedulingLatencyMs: number;
+  /** Output + scheduling. Target <30ms total. */
+  totalLatencyMs: number;
+  /** Cumulative count of steps whose scheduled time was already in the past
+   *  when the scheduler tried to fire them (main thread blocked too long). */
+  droppedNotes: number;
+  /** 0..1 estimated CPU load (avgFrameMs / 16.67, from PerformanceMonitor). */
+  cpuLoad: number;
+  /** True if no drops in the last 5 seconds. */
+  stable: boolean;
+  /** Current latency mode. */
+  latencyMode: LatencyMode;
+  /** Live (smoothed) lookahead in ms. */
+  lookaheadMs: number;
+  /** Adaptive controller's target lookahead in ms. */
+  targetLookaheadMs: number;
+  /** Worker tick interval in ms. */
+  workerIntervalMs: number;
+  /** True if the scheduler is using a Web Worker (false = setInterval fallback). */
+  usesWorker: boolean;
+}
+
+const LATENCY_MODE_LOOKAHEAD: Record<LatencyMode, number> = {
+  interactive: 0.03,  // 30ms — lowest practical lookahead (worker ticks at 25ms)
+  balanced:    0.06,  // 60ms — default, mobile-friendly
+  playback:    0.1,   // 100ms — max stability, power-saving on mobile
+};
 
 // ─── Per-track effects rack configs (Task E1) ───────────────────────────────
 //
@@ -601,6 +667,30 @@ export class Psy4EngineV2 {
   private chordIdx = 0;
   private currentChord: Chord | null = null;  // for bass + counterpoint reference
 
+  // ── Task M1: Musical Director — phrase-level composer ──
+  //    Replaces the step-by-step note decision in scheduleStep. The director
+  //    composes full 4-8 bar phrases AHEAD OF TIME with musical phrasing
+  //    (build/drop/break/groove/variation/tension/release characters),
+  //    rhythmic complexity (syncopation, polyrhythm, ghost notes, triplet
+  //    fills), melodic development (motif → variation → contrast → climax →
+  //    resolution), and cohesive interplay between instruments (bass follows
+  //    the chord progression; lead's strong beats align with chord tones; arp
+  //    complements the lead via call-response; pad provides the harmonic
+  //    foundation; drums provide rhythmic coherence).
+  //
+  //    The scheduler's tick() calls director.getNotesForWindow(start, end)
+  //    every 16th-step window and fires the pre-composed notes via
+  //    triggerDrum / triggerSynth. This means notes are COMPOSED before
+  //    they're played, with full phrase context — no more "child pressing
+  //    keys randomly" (per the user's ROAST feedback).
+  //
+  //    Phrases are prepared during the previous phrase for gapless
+  //    transitions (prepareNextPhrase + advancePhrase on section changes).
+  //    The director shares the same HarmonyEngine + MelodyEngine + SeededRng
+  //    instances as the engine, so motif/harmony state stays in sync across
+  //    key changes (refreshMusicalGenerators calls director.setEngines).
+  private director: MusicalDirector | null = null;
+
   // Audio graph
   private master!: GainNode;
   private comp!: DynamicsCompressorNode;
@@ -693,11 +783,35 @@ export class Psy4EngineV2 {
   // Scheduler
   // ── Task V2a: Worker-based scheduler (replaces main-thread setTimeout) ──
   // The SchedulerWorker posts `{type:'tick'}` messages from a separate thread,
-  // so main-thread GC/React renders don't jitter the 15ms musical clock. If
+  // so main-thread GC/React renders don't jitter the 25ms musical clock. If
   // Worker is unavailable (SSR / old browser), the wrapper falls back to a
   // main-thread setInterval automatically. The `timer` field is kept as a
   // last-resort fallback path for environments where neither Worker nor
   // setInterval-with-onTick is desired — currently unused.
+  //
+  // ── Task L1: low-latency adaptive scheduler ──
+  // `lookahead` (seconds) is how far ahead notes are scheduled via Web Audio's
+  // internal scheduler (setValueAtTime / linearRampToValueAtTime / start()).
+  // Larger = more buffer against main-thread jitter, but higher perceived
+  // latency on parameter changes. The adaptive controller tunes this between
+  // 30ms (interactive, tight) and 100ms (playback, safe) based on observed
+  // drops + CPU load.
+  //
+  // `targetLookahead` is the controller's setpoint; `lookahead` is the
+  // smoothed live value (50% per second toward target — no sudden jumps that
+  // would cause scheduling gaps).
+  //
+  // `droppedNotes` counts steps whose scheduled time was already in the past
+  // when the scheduler tried to fire them. Web Audio still plays them
+  // immediately (audible glitch), but the count drives the adaptive grow.
+  //
+  // `lastDropAt` / `lastStabilityCheckAt` are wall-clock (performance.now)
+  // timestamps used by the hysteresis logic (5s drop-free → stable;
+  // 10s stable + CPU<70% → shrink lookahead).
+  //
+  // `latencyMode` is the user-facing mode (interactive/balanced/playback).
+  // It sets the AudioContext latencyHint at construction AND the initial
+  // adaptive target. Forced to 'interactive' when DJ sync engages.
   private timer: ReturnType<typeof setTimeout> | null = null;
   private scheduler: SchedulerWorker = new SchedulerWorker();
   private step = 0;
@@ -705,6 +819,19 @@ export class Psy4EngineV2 {
   private nextTime = 0;
   private sectionIdx = 0;
   private currentSection = 'INTRO';
+
+  // Task L1: low-latency scheduler state.
+  private lookahead = LATENCY_MODE_LOOKAHEAD.interactive;   // 0.03s default
+  private targetLookahead = LATENCY_MODE_LOOKAHEAD.interactive;
+  private latencyMode: LatencyMode = 'interactive';
+  private droppedNotes = 0;
+  private lastDropAt = 0;            // performance.now() of last drop (0 = never)
+  private lastAdaptiveCheckAt = 0;   // throttles adaptive eval to 1Hz
+  private lastStabilityCheckAt = 0;  // start of the current stable window
+  private cpuLoad = 0;               // 0..1, pulled from PerformanceMonitor
+
+  /** Worker tick interval in ms. 25ms = 40 Hz — half the previous 66 Hz rate. */
+  private static readonly SCHEDULER_INTERVAL_MS = 25;
 
   // Tracks and patterns
   private tracks: Track[] = [];
@@ -783,6 +910,25 @@ export class Psy4EngineV2 {
   private phaseSync: PhaseSync = new PhaseSync();
   private pendingBeatDropOffsetSec = 0;
 
+  // ── Task D1 (upgrade): full DJ controller ──
+  // The DJController wraps PhaseSync (it receives the PhaseSync reference
+  // in its constructor) and adds key / groove / energy / phrase sync. When
+  // masterSync is on, it engages ALL dimensions (BPM + phase + key + groove
+  // + energy + beat-grid); when off, the engine runs free but the DJ state
+  // is still computed + exposed for UI display. Constructed eagerly so the
+  // toggle state persists across stop/start cycles (the user's choice
+  // survives a restart).
+  private djController: DJController = new DJController(this.phaseSync);
+  // `swingAdjust` accumulates the per-bar swing adjustment from the
+  // DJController (when master sync is on, this nudges world.swing toward
+  // the radio's swing amount). Added to w.swing in scheduleStep.
+  private swingAdjust = 0;
+  // `appliedKeyShift` is the running semitone offset currently applied to
+  // musicalKey.root by the DJController's key sync. We track it so we can
+  // reverse it cleanly when master sync is disabled (so the engine returns
+  // to the key it would have been in without DJ sync).
+  private appliedKeyShift = 0;
+
   onSectionChange: ((section: string) => void) | null = null;
 
   /**
@@ -794,8 +940,18 @@ export class Psy4EngineV2 {
 
   init(): void {
     if (this.ctx) return;
+    // Task L1: mobile auto-detect — bump 'interactive' to 'balanced' for
+    // stability. Mobile devices have weaker CPUs, thermal throttling, and
+    // smaller audio buffers; 'interactive' (15ms) on a hot phone produces
+    // more drops than it's worth. The user can override via setLatencyMode()
+    // before init() to force 'interactive' on mobile.
+    if (this.latencyMode === 'interactive' && this.isMobileDevice()) {
+      this.latencyMode = 'balanced';
+      this.targetLookahead = LATENCY_MODE_LOOKAHEAD.balanced;
+      this.lookahead = this.targetLookahead;
+    }
     const Ctx = window.AudioContext || (window as any).webkitAudioContext;
-    const c = this.ctx = new Ctx({ latencyHint: 'interactive' });
+    const c = this.ctx = new Ctx({ latencyHint: this.latencyMode });
 
     // Noise buffer
     this.noiseBuffer = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
@@ -1090,7 +1246,30 @@ export class Psy4EngineV2 {
     this.lastAutomationSection = '';
     this.leadCutoffOverride = -1;
     this.onSectionChange?.(this.currentSection);
-    this.nextTime = this.ctx!.currentTime + 0.03;
+    // Task L1: reset drop counters + adaptive state on a fresh start.
+    // The first step plays at ctx.currentTime + 0.04s (40ms) — slightly above
+    // the worker's 25ms tick so the first tick (which fires up to 25ms after
+    // start()) still schedules the first step in the future (15ms margin).
+    // This avoids an immediate drop on Play.
+    this.droppedNotes = 0;
+    this.lastDropAt = 0;
+    this.lastAdaptiveCheckAt = 0;
+    this.lastStabilityCheckAt = (typeof performance !== 'undefined')
+      ? performance.now() : Date.now();
+    this.nextTime = this.ctx!.currentTime + 0.04;
+    // ── Task M1: prepare the first phrase so the director is ready to serve
+    // notes when tick() starts calling getNotesForWindow. We compose a phrase
+    // matching the initial flow state (character from the flow label, energy
+    // from the flow density × world energy curve). The director's
+    // advancePhrase() makes it the current phrase at nextTime. ──
+    if (this.director && this.currentFlow) {
+      const baseE = this.currentWorld.energyCurve[0] ?? 0.5;
+      const phraseEnergy = clamp(baseE * (0.4 + 0.6 * this.currentFlow.density), 0, 1);
+      const character = labelToCharacter(this.currentFlow.label);
+      this.director.advancePhrase(
+        this.nextTime, phraseEnergy, character, this.currentWorld, this._bpm,
+      );
+    }
     this.scheduleNextTick();
   }
 
@@ -1113,6 +1292,26 @@ export class Psy4EngineV2 {
     // state — these are engine-instance-specific and would be stale after
     // a restart (the new engine instance has a different audio context).
     this.phaseSync.reset();
+    // ── Task D1 (upgrade): reset the DJController's own-state too ──
+    // Same rationale: the engine-instance-specific state (own key shift,
+    // swing adjust, push/pull offset, energy history, phrase realign
+    // pending) would be stale after a restart. The reference features +
+    // masterSync toggle are preserved (the user's choices persist).
+    this.djController.reset();
+    this.swingAdjust = 0;
+    // NOTE: we do NOT reverse appliedKeyShift here. The key was changed in
+    // this engine instance's musicalKey; on restart the new engine starts
+    // fresh from the world's default root, so there's nothing to reverse.
+    // We just zero the tracking counter so a subsequent master-sync disable
+    // doesn't try to reverse a shift that wasn't applied.
+    this.appliedKeyShift = 0;
+    // ── Task M1: reset the Musical Director's phrase state ──
+    // The director's currentPhrase / nextPhrase / phraseStartTime are all
+    // engine-instance-specific (they reference audio-context times from this
+    // session). On restart, the new engine instance gets a fresh audio
+    // context, so any cached phrase state would be stale. We reset so the
+    // next start() composes a fresh first phrase.
+    this.director?.reset();
   }
 
   private get bpm(): number {
@@ -1783,8 +1982,14 @@ export class Psy4EngineV2 {
         // Rapid lead retrigger — fire 4-6 short lead notes at the current
         // chord root. Uses triggerSynth directly so the notes go through
         // the full voice + rack chain (with the flow's current lead timbre).
-        if (this.currentChord && this.melody) {
-          const root = this.currentChord.notes[0] + 12; // one octave up
+        //
+        // Task M1: query the director's getCurrentChord() (which tracks the
+        // actual playback position) rather than this.currentChord (which is
+        // no longer updated by the director-driven scheduler). Falls back to
+        // this.currentChord if the director isn't available.
+        const chord = this.director?.getCurrentChord() ?? this.currentChord;
+        if (chord && this.melody) {
+          const root = chord.notes[0] + 12; // one octave up
           const stutters = 4 + Math.round(intensity * 2);
           const s16 = 60 / this.bpm / 4;
           for (let i = 0; i < stutters; i++) {
@@ -1895,6 +2100,18 @@ export class Psy4EngineV2 {
     this.currentProgression = this.harmony.generateProgression(4, 0.5);
     this.chordIdx = 0;
     this.currentChord = null;
+    // ── Task M1: (re)create the Musical Director ──
+    // The director shares the same HarmonyEngine + MelodyEngine + SeededRng
+    // instances. On key change, all three are rebuilt — we either create a
+    // fresh director or call setEngines() to re-link the existing one. We
+    // reset phrase state so the next start() / section change composes a
+    // fresh phrase with the new key.
+    if (this.director) {
+      this.director.setEngines(this.harmony, this.melody, this.musicRng);
+      this.director.reset();
+    } else {
+      this.director = new MusicalDirector(this.harmony, this.melody, this.musicRng);
+    }
   }
 
   private applyStyle(style: string): void {
@@ -1960,6 +2177,11 @@ export class Psy4EngineV2 {
     // present, the engine forwards it to phaseSync.setReferencePhase() so
     // the beat grid can phase-lock to the radio.
     phaseInfo?: PhaseInfo;
+    // ── Task D1 (upgrade): groove / feel info from the V2 listener ──
+    // Optional — populated by referenceListenerV2.computeGrooveInfo(). When
+    // present, the engine forwards it to the DJController so it can match
+    // the radio's swing amount + push/pull feel.
+    grooveInfo?: GrooveInfo;
   }): void {
     if (isFinite(refMetrics.lufs)) this.targetLufs = refMetrics.lufs;
     if (refMetrics.energy !== undefined && isFinite(refMetrics.energy)) {
@@ -2119,6 +2341,28 @@ export class Psy4EngineV2 {
     if (refMetrics.phaseInfo) {
       this.phaseSync.setReferencePhase(refMetrics.phaseInfo);
     }
+
+    // ── Task D1 (upgrade): forward key / energy / groove to DJController ──
+    // The DJController combines phase sync with key (Camelot), groove
+    // (swing + push/pull), and energy (smoothed + transition detection).
+    // When master sync is on, it engages all dimensions; when off, it
+    // still computes + exposes the state for UI display. The phaseInfo
+    // is forwarded here too (so the DJController has the full picture),
+    // but PhaseSync.setReferencePhase() above is the authoritative call
+    // for the beat-scheduling path.
+    // GrooveInfo is an optional new field from the V2 listener; if absent,
+    // the DJController gracefully no-ops on the groove dimension.
+    const refKey = refMetrics.detectedKey;
+    this.djController.setReferenceFeatures({
+      phaseInfo: refMetrics.phaseInfo,
+      key: refKey ? {
+        root: refKey.root,
+        scale: refKey.scale,
+        confidence: refKey.confidence,
+      } : undefined,
+      energy: refMetrics.energy,
+      groove: refMetrics.grooveInfo as GrooveInfo | undefined,
+    });
   }
 
   // ─── Task T1: synthesis character pursuit ──────────────────────────────────
@@ -2719,13 +2963,20 @@ export class Psy4EngineV2 {
   getAnalyser(): AnalyserNode | null { return this.analyser; }
 
   /**
-   * Task V2a: kick off the scheduler using the Worker-based tick.
+   * Task V2a / L1: kick off the scheduler using the Worker-based tick.
    *
    * The SchedulerWorker posts `{type:'tick'}` messages from a separate
    * thread, which the main thread's `onTick` callback turns into a call to
-   * `this.tick()`. Because the worker thread has no other work, its 15ms
+   * `this.tick()`. Because the worker thread has no other work, its 25ms
    * interval fires far more reliably than main-thread `setTimeout(15ms)`,
    * which is subject to React renders, GC, layout, and the HTML5 4ms clamp.
+   *
+   * Task L1: the worker now ticks at 25ms (40 Hz, was 15ms/66 Hz). Combined
+   * with the adaptive 30-100ms lookahead, the main thread sees ~half the
+   * wakeups AND each wakeup schedules up to 200ms of notes via Web Audio's
+   * internal scheduler (sample-accurate — runs on the audio thread, not the
+   * main thread). The actual musical timing is no longer tied to the worker
+   * interval at all.
    *
    * If `Worker` isn't available (SSR, old browser, CSP), the SchedulerWorker
    * transparently falls back to a main-thread `setInterval` — the engine
@@ -2743,9 +2994,9 @@ export class Psy4EngineV2 {
     // assignment) so it's safe to set every call; if it's already set to
     // the same closure, this is a no-op in practice.
     this.scheduler.onTick = () => { this.tick(); };
-    // Start the worker at 15ms. If the worker is already running, this is
-    // a no-op (it just confirms the interval).
-    this.scheduler.start(15);
+    // Task L1: start the worker at 25ms (40 Hz). If the worker is already
+    // running, this is a no-op (it just confirms the interval).
+    this.scheduler.start(Psy4EngineV2.SCHEDULER_INTERVAL_MS);
   }
 
   private tick(): void {
@@ -2755,9 +3006,50 @@ export class Psy4EngineV2 {
     // the entire scheduling pass — including scheduleStep, applySectionAutomation,
     // triggerDrum/triggerSynth, and the bar/section bookkeeping below.
     const __p1TickStart = (typeof performance !== 'undefined') ? performance.now() : 0;
-    const lookahead = 0.06;
+    const now = this.ctx.currentTime;
 
-    while (this.nextTime < this.ctx.currentTime + lookahead) {
+    // ── Task L1: early-exit when nothing needs scheduling ──
+    // The worker posts ticks at 25ms intervals; if the next step is outside
+    // the lookahead window, skip the loop entirely. This is the "only post
+    // when there's work" optimization — the worker still ticks, but the main
+    // thread does ~zero work for empty ticks (just one comparison + return).
+    // At 145 BPM with a 60ms lookahead, ~60% of ticks are empty.
+    if (this.nextTime >= now + this.lookahead) {
+      // Still update adaptive lookahead + CPU monitor (cheap, 1Hz).
+      this.updateAdaptiveLookahead();
+      if (__p1TickStart > 0 && typeof performance !== 'undefined') {
+        this.perfMonitor.reportTickDuration(performance.now() - __p1TickStart);
+      }
+      return;
+    }
+
+    // ── Task L1: drop detection ──
+    // If nextTime is in the past, the main thread was blocked longer than
+    // the lookahead window (e.g., a heavy React render or GC pause). Web
+    // Audio would play the note immediately (audible glitch), so instead
+    // we snap nextTime forward to the next 16th-step boundary past `now`
+    // and count the drop. This skips the missed steps cleanly (one beat
+    // of silence) rather than flooding the audio thread with catch-up.
+    if (this.nextTime < now) {
+      this.droppedNotes++;
+      this.lastDropAt = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+      this.lastStabilityCheckAt = 0;  // reset stability window
+      const s16 = 60 / this.bpm / 4;
+      const behind = now - this.nextTime;
+      const stepsBehind = Math.ceil(behind / s16);
+      this.nextTime += stepsBehind * s16;
+      if (typeof console !== 'undefined' && this.droppedNotes <= 5) {
+        // Log the first few drops so the developer can see them. After 5
+        // we go quiet to avoid console spam during sustained overload.
+        console.warn(`[PSY4] Scheduler drop #${this.droppedNotes} — main thread blocked ${(behind * 1000).toFixed(0)}ms behind. Lookahead will adapt.`);
+      }
+    }
+
+    // Capture the lookahead once for this pass — the adaptive controller
+    // only updates it between ticks, so the loop sees a stable value.
+    const lookahead = this.lookahead;
+
+    while (this.nextTime < now + lookahead) {
       // Recompute s16 each step so the BPM ramp changes tempo smoothly
       // without invalidating the scheduler's lookahead window.
       const s16 = 60 / this.bpm / 4;
@@ -2772,18 +3064,29 @@ export class Psy4EngineV2 {
       // would accumulate across steps. The offset is applied to the time
       // passed to scheduleStep, leaving the scheduler's internal clock
       // unchanged so the lookahead window stays valid.
+      //
+      // ── Task D1 (upgrade): also add the groove push/pull offset ──
+      // The DJController's getGrooveOffsetSec() returns the push/pull
+      // timing nudge (seconds) that makes our beats sit slightly ahead or
+      // behind the grid to match the radio's feel. When master sync is off,
+      // it returns 0. Capped at MAX_PUSH_PULL_OFFSET_MS (30ms) — always
+      // small enough to be glitch-free.
       const phaseOffset = this.phaseSync.getPhaseOffset();
-      this.scheduleStep(this.step, this.bar, this.nextTime + phaseOffset);
+      const grooveOffset = this.djController.getGrooveOffsetSec();
+      this.scheduleStep(this.step, this.bar, this.nextTime + phaseOffset + grooveOffset);
       this.step++;
       this.nextTime += s16;
       if (this.step >= 16) {
         this.step = 0;
         this.bar++;
-        // ── Per-bar melodic evolution (Task M1) ──
-        // MelodyEngine.tickEvolution() refreshes the B section (contrasting motif)
-        // every N bars based on the world's evolutionRate. Interval shrinks as
-        // evolutionRate grows (faster evolution for goa / acid-psy).
-        this.melody?.tickEvolution(this.bar, this.currentWorld.evolutionRate, 8);
+        // ── Task M1: per-bar melodic evolution is now handled by the director ──
+        // The old MelodyEngine.tickEvolution() refreshed the B section every N
+        // bars. With the MusicalDirector, the melody engine's full phrase table
+        // is rebuilt at each composePhrase() call (every 8 bars or on section
+        // changes), so tickEvolution is redundant. The director calls
+        // melody.newPhrase() internally during composition, which gives a
+        // fresher, more thorough refresh than tickEvolution's incremental
+        // B-section swap.
         // ── BPM ramp smoothing (one step per bar, over 4 bars total) ──
         if (this.bpmRampBarsLeft > 0 && this.bpmRampPerBar !== 0) {
           const stepped = this._bpm + this.bpmRampPerBar;
@@ -2832,6 +3135,56 @@ export class Psy4EngineV2 {
           // and schedule at the corrected time (still in the future).
           this.nextTime += syncAction.beatDropOffsetSec;
         }
+        // ── Task D1 (upgrade): full DJ controller per-bar tick ──
+        // The DJController returns three actions for the engine to apply:
+        //   - keyShiftSemitones: if non-zero, transpose musicalKey.root by
+        //     this many semitones (smooth harmonic-mixing convergence
+        //     toward the nearest Camelot-compatible key). The shift is
+        //     capped at ±1 semitone per bar so it's a gradual modulation.
+        //   - swingAdjust: signed delta to ADD to world.swing (smooth
+        //     convergence toward the radio's swing amount). We accumulate
+        //     into this.swingAdjust, which scheduleStep reads when applying
+        //     the offbeat step delay.
+        //   - phraseRealign: if true, treat the current bar as bar 0 of a
+        //     new phrase (used when the radio just dropped and we're mid-
+        //     phrase — snap our phrase boundary to the radio's).
+        //
+        // We push our own state to the DJController FIRST (so it has the
+        // latest BPM / key / swing / energy / bar / section) before asking
+        // it for the per-bar actions. This keeps the snapshot fresh.
+        const ownEnergy = this.currentFlow?.density ?? 0.5;
+        this.djController.setOwnState({
+          bpm: this._bpm,
+          key: { root: this.musicalKey.root, scale: this.musicalKey.scale },
+          swing: this.currentWorld.swing + this.swingAdjust,
+          energy: ownEnergy,
+          bar: this.bar,
+          totalBars: this.totalBars,
+          section: this.currentSection,
+        });
+        const djAction = this.djController.tickBar(this._bpm, this.bar, this.totalBars);
+        if (djAction.keyShiftSemitones !== 0) {
+          // Apply the key shift via the helper (handles octave wrapping +
+          // refreshMusicalGenerators + tracking appliedKeyShift for clean
+          // reversal when master sync is disabled).
+          this.applyKeyShift(djAction.keyShiftSemitones);
+        }
+        if (djAction.swingAdjust !== 0) {
+          // Accumulate the swing adjustment (capped to keep swing in
+          // [0, 0.5] — scheduleStep clamps the effective swing anyway, but
+          // we cap here too so the displayed value stays sane).
+          this.swingAdjust = clamp(this.swingAdjust + djAction.swingAdjust, -0.25, 0.25);
+        }
+        if (djAction.phraseRealign && this.bar !== 0) {
+          // The radio just hit a phrase boundary (drop / break) but we're
+          // mid-phrase. Snap our bar counter to 0 so our next phrase
+          // boundary aligns with the radio's. We DON'T reset totalBars
+          // (the flow engine uses it for absolute time tracking) — only
+          // bar-in-section, which scheduleStep uses for energy-curve
+          // indexing + riser triggers. This is the "cut short and drop
+          // now" DJ move.
+          this.bar = 0;
+        }
         // ── Task F1: dynamic flow engine drives section transitions ──
         // The flow engine decides WHEN to transition (based on radio energy,
         // time since last transition, musical logic, and the world's flow
@@ -2856,21 +3209,45 @@ export class Psy4EngineV2 {
             this.bar = 0;
             this.currentSection = flow.label;
             this.onSectionChange?.(this.currentSection);
-            // ── Section boundary: force a new developmental phrase (Task M1) ──
-            // MelodyEngine.newPhrase() builds a fresh A A' B A'' phrase using the
-            // new section's energy + tension curve. This is what makes the lead
-            // play evolving, developing melodies instead of static motifs.
-            const baseE = this.currentWorld.energyCurve[0] ?? 0.5;
-            const phraseEnergy = clamp(baseE * (0.4 + 0.6 * flow.density), 0, 1);
-            this.melody?.newPhrase(phraseEnergy);
-            // ── Task H1: regenerate the harmonic progression at section boundary ──
-            // Each new section gets a fresh chord progression whose length matches
-            // the section's bar count and whose extension level (triad/7th/9th)
-            // matches the section's energy. Drops get lush 9ths; breaks get triads.
-            if (this.harmony) {
-              this.currentProgression = this.harmony.generateProgression(flow.sectionBars, phraseEnergy);
-              this.chordIdx = 0;
-              this.currentChord = null;
+            // ── Task M1: compose a fresh phrase for the new section ──
+            // The MusicalDirector composes a full 4-8 bar phrase ahead of
+            // time with musical phrasing appropriate to the new section's
+            // character (build/drop/break/groove/etc.), rhythmic complexity
+            // (syncopation, polyrhythm, ghost notes), and cohesive interplay
+            // between instruments. This replaces the old step-by-step note
+            // decision in scheduleStep — notes are now COMPOSED before they
+            // play, with full phrase context.
+            //
+            // The director internally calls melody.newPhrase() (for a fresh
+            // motif) and harmony.generateProgression() (for a fresh chord
+            // progression matching the section's energy). We don't call those
+            // directly anymore — the director owns the composition pipeline.
+            if (this.director) {
+              const baseE = this.currentWorld.energyCurve[0] ?? 0.5;
+              const phraseEnergy = clamp(baseE * (0.4 + 0.6 * flow.density), 0, 1);
+              const character = labelToCharacter(flow.label);
+              // prepareNextPhrase composes the phrase and stores it in
+              // nextPhrase; advancePhrase swaps it to currentPhrase at the
+              // given time. We use nextTime (the upcoming bar's start) as
+              // the phrase start time so the director's note times align
+              // with the scheduler's clock.
+              this.director.prepareNextPhrase(
+                phraseEnergy, character, this.currentWorld, this._bpm, this.nextTime,
+              );
+              this.director.advancePhrase(
+                this.nextTime, phraseEnergy, character, this.currentWorld, this._bpm,
+              );
+            } else {
+              // Fallback (director not yet created) — call the old generators
+              // directly so the lead + pad still have material to play.
+              const baseE = this.currentWorld.energyCurve[0] ?? 0.5;
+              const phraseEnergy = clamp(baseE * (0.4 + 0.6 * flow.density), 0, 1);
+              this.melody?.newPhrase(phraseEnergy);
+              if (this.harmony) {
+                this.currentProgression = this.harmony.generateProgression(flow.sectionBars, phraseEnergy);
+                this.chordIdx = 0;
+                this.currentChord = null;
+              }
             }
           }
           // ── Task F1: pop surprise events from the flow engine ──
@@ -2919,6 +3296,11 @@ export class Psy4EngineV2 {
     if (__p1TickStart > 0 && typeof performance !== 'undefined') {
       this.perfMonitor.reportTickDuration(performance.now() - __p1TickStart);
     }
+
+    // Task L1: evaluate adaptive lookahead after each non-empty tick. The
+    // controller is internally throttled to 1Hz so this is cheap (one
+    // performance.now() comparison + early return most of the time).
+    this.updateAdaptiveLookahead();
   }
 
   /**
@@ -2987,9 +3369,6 @@ export class Psy4EngineV2 {
       label: 'GROOVE', filterCutoff: 1800, reverbAmount: 0.4, delayAmount: 0.2,
       tension: 0.4, surprise: 0.05, sectionBars: 8, barInSection: bar,
     };
-    const key = this.musicalKey;
-    const root = key.root;
-    const sc = key.scale;
     const sd = 60 / this.bpm / 4;
 
     // ── Task F1: continuous flow automation ──
@@ -3021,9 +3400,14 @@ export class Psy4EngineV2 {
     const energy = clamp(baseEnergy * (0.4 + 0.6 * flow.density), 0, 1);
 
     // ── Swing: delay offbeat steps by swing * halfStep ──
+    // Task D1 (upgrade): the effective swing = world.swing + the DJController's
+    // accumulated swingAdjust (when master sync is on, this nudges our swing
+    // toward the radio's swing amount — smooth convergence at ≤0.02/bar).
+    // Clamped to [0, 0.5] so we never go negative or fully triplet.
     let stepTime = time;
-    if (step % 2 === 1 && w.swing > 0) {
-      stepTime += w.swing * sd * 0.5;
+    const effectiveSwing = clamp(w.swing + this.swingAdjust, 0, 0.5);
+    if (step % 2 === 1 && effectiveSwing > 0) {
+      stepTime += effectiveSwing * sd * 0.5;
     }
 
     // ── Task F1: surprise event per-step gating ──
@@ -3049,192 +3433,149 @@ export class Psy4EngineV2 {
       this.triggerImpact(time);
     }
 
-    // Reference pursuit — scale hat/perc probability by refTransientDensity.
+    // Reference pursuit — hat/perc velocity boost to match the radio's
+    // transient density. Applied to drum notes (hats + perc) in the
+    // director-driven loop below. tVelBoost is 0 when no reference data.
     const tScale = this.refTransientDensity > 0
       ? clamp(0.5 + this.refTransientDensity / 24, 0.3, 1.8)
       : 1.0;
     const tVelBoost = tScale > 1 ? (tScale - 1) * 0.5 : 0;
 
-    // ── Pre-compute world timbre overrides (cutoff/resonance modulated by character) ──
-    const leadTimbre = {
-      cutoff: w.leadTimbre.cutoff * (0.7 + 0.6 * w.brightness),
-      res: 2 + w.leadTimbre.resonance * 12,
-      drive: w.leadTimbre.drive,
-    };
-    const bassTimbre = {
-      cutoff: w.bassTimbre.cutoff * (0.7 + 0.6 * (1 - w.darkness)),
-      res: 2 + w.bassTimbre.resonance * 12,
-      drive: w.bassTimbre.drive,
-    };
-    const padTimbre = {
-      cutoff: w.padTimbre.cutoff * (0.6 + 0.8 * w.brightness),
-      res: 2 + w.padTimbre.resonance * 12,
-      drive: w.padTimbre.drive,
-    };
-    const arpTimbre = {
-      cutoff: w.textureTimbre.cutoff * (0.7 + 0.6 * w.psychedelia),
-      res: 2 + w.textureTimbre.resonance * 12,
-      drive: w.textureTimbre.drive,
-    };
+    // ── Task M1: Director-driven note scheduling ──
+    // The MusicalDirector composes full 4-8 bar phrases ahead of time with
+    // musical phrasing (build/drop/break characters), rhythmic complexity
+    // (syncopation, polyrhythm, ghost notes, triplet fills), melodic
+    // development (motif → variation → contrast → climax → resolution), and
+    // cohesive interplay between instruments.
+    //
+    // Instead of deciding per-instrument notes step-by-step (the old "child
+    // pressing keys" approach), we ask the director for the pre-composed
+    // notes that should fire in this step's window. The director returns
+    // notes with absolute audio-context times; we fire each via
+    // triggerDrum / triggerSynth with the appropriate timbre + swing offset.
+    //
+    // The director handles:
+    //   - Which instruments play at this step (character-driven gating).
+    //   - What notes they play (motif/harmony/bass-line/arp-pattern).
+    //   - Velocity + duration (shaped by the phrase's energy curve).
+    //   - Rhythmic complexity (ghost notes, syncopation, polyrhythm).
+    //
+    // The engine handles:
+    //   - FX automation (applyFlowAutomation, called above).
+    //   - Swing offset (applied to offbeat notes below).
+    //   - Surprise gating (suppressAll / suppressNonKick).
+    //   - Riser / impact FX triggers (above).
+    //   - Reference pursuit (tVelBoost applied to drum velocities).
+    //   - Phase sync (setOwnBeat when kick fires).
+    //   - Timbre (computed per-track from the world).
+    if (this.director) {
+      const character = labelToCharacter(flow.label);
+      const windowNotes: PhraseNote[] = this.director.getNotesForWindow(
+        stepTime, stepTime + sd, energy, character, w, this.bpm,
+      );
+      for (const note of windowNotes) {
+        // Surprise gating: silence suppresses all; dropOut suppresses non-kick.
+        if (suppressAll) continue;
+        if (suppressNonKick && note.track !== 0) continue;
 
-    // ── KICK (track 0) — world-driven kickPattern (16-char gate string) ──
-    // Kick is the ONLY track that fires during a dropOut surprise (DJ brake).
-    // During silence, even the kick is suppressed.
-    if (!suppressAll && w.kickPattern.length === 16 && w.kickPattern.charAt(step) === 'x') {
-      const isDownbeat = step % 4 === 0;
-      const aggressionBoost = 0.7 + 0.6 * w.aggression;
-      // Velocity scales with both flow.density and energyCurve so drops hit
-      // harder than builds even at the same density (Task 15: verify energy
-      // actually affects velocity/density).
-      const vel = isDownbeat
-        ? 0.4 + flow.density * 0.3 * aggressionBoost + energy * 0.15
-        : 0.3 * aggressionBoost + energy * 0.1;
-      this.triggerDrum(0, stepTime, vel);
-      // ── Task D1: report our own beat to the PhaseSync ──
-      // The PhaseSync uses this to compute our predicted phase and align it
-      // with the radio's phase. `isDownbeat` flags bar-start kicks (step % 16
-      // === 0) so the downbeat phase can be tracked separately.
-      //
-      // We pass both the audio-context time (when the kick fires) and the
-      // current wall-clock + ctx.currentTime so PhaseSync can convert audio-
-      // context time → wall-clock time (its unified time base shared with
-      // the listener).
-      if (this.ctx) {
-        const wallNow = (typeof performance !== 'undefined' && performance.now)
-          ? performance.now() / 1000
-          : Date.now() / 1000;
-        this.phaseSync.setOwnBeat(
-          stepTime,
-          this.ctx.currentTime,
-          wallNow,
-          step % 16 === 0,
-        );
-      }
-    }
-
-    // ── CLAP (track 1) — world-driven clapPattern gate ('x' = hit) ──
-    if (!suppressAll && !suppressNonKick && w.clapPattern && w.clapPattern.length === 16 && w.clapPattern.charAt(step) === 'x' && flow.density > 0.4) {
-      this.triggerDrum(1, stepTime, 0.3 + energy * 0.1);
-    }
-
-    // ── HATS (track 2) — probability from world.hatDensity per eligible offbeat ──
-    const hatProb = clamp(w.hatDensity * flow.hatDensity * (0.5 + 0.5 * energy) * tScale, 0, 1);
-    if (!suppressAll && !suppressNonKick && step % 2 === 1 && this.musicRng?.chance(hatProb)) {
-      const vel = 0.15 + (step % 4 === 3 ? 0.1 : 0) + energy * 0.1 + tVelBoost;
-      this.triggerDrum(2, stepTime, vel);
-    }
-
-    // ── PERC (track 3) — world-driven percPattern gate + density-based probability ──
-    const percProb = clamp(w.percDensity * flow.percDensity * energy * tScale, 0, 1);
-    if (!suppressAll && !suppressNonKick && w.percPattern && w.percPattern.length === 16 && w.percPattern.charAt(step) === 'x' && flow.density > 0.5 && this.musicRng?.chance(percProb)) {
-      this.triggerDrum(3, stepTime, 0.2 + tVelBoost);
-    }
-
-    // ── BASS (track 4) — world-driven bassPattern + BASS_PATTERNS by derived style ──
-    // Task H1: when in a lead section (drop/variation) with an active chord,
-    // the bass follows the chord root — bassDeg becomes an offset ABOVE the
-    // current chord's scale degree. This makes the bass walk with the harmony
-    // (e.g. during a VI chord, the bass plays the VI root + pattern offsets
-    // instead of staying on the tonic). In non-lead sections (groove/build/
-    // outro), the bass stays on the tonic for that classic psytrance pump.
-    if (!suppressAll && !suppressNonKick && flow.bassOn && w.bassPattern.length === 16 && w.bassPattern.charAt(step) === 'x') {
-      const bassStyle = this.deriveBassStyle();
-      const bps = BASS_PATTERNS[bassStyle] || BASS_PATTERNS.off;
-      const bp = bps[this.bassPatternIdx % bps.length];
-      const bassStep = Math.floor((step - 1) / 2) % bp.steps.length;
-      const bassDeg = bp.steps[bassStep];
-      if (bassDeg >= 0) {
-        // Shift the bass note by the current chord's scale degree during lead
-        // sections so the bass walks with the harmony. Otherwise (non-lead
-        // sections, or before the first chord plays) keep the bass on the
-        // tonic degree — psytrance sub-bass pumping on the tonic is genre-
-        // defining and we don't want to lose that feel.
-        const chordDegOffset = (flow.leadOn && this.currentChord)
-          ? this.currentChord.scaleDegree
+        // Apply swing offset to offbeat notes (step % 2 === 1).
+        // The director composes notes at step boundaries; we add the swing
+        // nudge at fire time so offbeat notes sit slightly behind the grid.
+        const noteSwingOffset = (step % 2 === 1 && effectiveSwing > 0)
+          ? effectiveSwing * sd * 0.5
           : 0;
-        const note = scaleNote(root, sc, chordDegOffset + bassDeg);
-        const accent = bp.accents[bassStep] ?? 1;
-        // Bass velocity scales with energy so drops push the bass harder
-        this.triggerSynth(4, stepTime, note, (0.4 + energy * 0.2) * accent, sd, undefined, bassTimbre);
-      }
-    }
+        const fireTime = note.time + noteSwingOffset;
 
-    // ── LEAD (track 5) — MelodyEngine with developmental A A' B A'' structure ──
-    // Replaces the old LeadMotif (Task M1). The engine handles motif generation,
-    // transformation (transpose/invert/fragment/sequence), tension curves, and
-    // call-response automatically. nextNote() returns null on rests / steps
-    // without a scheduled event (so notes can sustain across multiple steps).
-    if (!suppressAll && flow.leadOn && this.melody && energy > 0.35) {
-      const noteInfo = this.melody.nextNote(step, bar, energy);
-      if (noteInfo) {
-        // Use the engine's per-note duration (1-4 16th steps) for proper
-        // melodic phrasing — longer notes for emphasis, short notes for runs.
-        this.triggerSynth(5, stepTime, noteInfo.note, noteInfo.velocity, sd, sd * noteInfo.duration, leadTimbre);
-      }
-    }
-
-    // ── PAD (track 6) — rich 4-5 note voicings via HarmonyEngine (Task H1) ──
-    // Replaces the old "chordRoot + fifth" two-note pad with voice-led chord
-    // voicings that include bass note (root or inversion), 3rd, 5th, 7th, 9th.
-    // The progression is regenerated at section boundaries with energy-driven
-    // extension levels (triads in breaks → 9ths in drops). Voice leading keeps
-    // common tones and minimizes movement for smooth symphonic flow.
-    if (!suppressAll && !suppressNonKick && flow.leadOn && step === 0 && this.harmony && this.currentProgression.length > 0) {
-      const chord = this.currentProgression[this.chordIdx % this.currentProgression.length];
-      this.chordIdx++;
-      if (chord) {
-        const voicing: ChordVoicing = this.harmony.voiceLead(chord);
-        // Track the current chord so the bass + lead can harmonize with it.
-        this.currentChord = chord;
-        // Trigger one pad voice per note in the voicing.
-        // Bass voice (lowest) gets slightly higher velocity; upper voices get
-        // a small staggered timing offset (5ms per voice) to avoid phase
-        // cancellation between detuned supersaw oscillators.
-        const noteCount = voicing.notes.length;
-        for (let i = 0; i < noteCount; i++) {
-          const note = voicing.notes[i];
-          // Bass voice (i === 0) carries more weight; upper voices are softer
-          // to leave headroom for the lead. Velocity scales with energy so
-          // drops push the harmony harder than builds.
-          const isBass = i === 0;
-          const vel = isBass
-            ? 0.20 + energy * 0.14
-            : 0.10 + energy * 0.08 - (i - 1) * 0.01;  // taper upper voices
-          const t = isBass ? stepTime : stepTime + 0.005 * i;
-          this.triggerSynth(6, t, note, Math.max(0.05, vel), sd * 4, undefined, padTimbre);
+        if (note.track < 4) {
+          // ── Drum note ──
+          // Apply the reference-pursuit velocity boost to hats (2) and perc (3)
+          // so our transient density tracks the radio's. Kick (0) and clap (1)
+          // keep the director's velocity (they're tonal, not transient-shaped).
+          const drumVel = (note.track === 2 || note.track === 3)
+            ? clamp(note.velocity + tVelBoost, 0, 1)
+            : note.velocity;
+          this.triggerDrum(note.track, fireTime, drumVel);
+          // ── Task D1: report our own beat to the PhaseSync when kick fires ──
+          // The PhaseSync uses this to compute our predicted phase and align
+          // it with the radio's phase. `isDownbeat` flags bar-start kicks
+          // (step % 16 === 0) so the downbeat phase can be tracked separately.
+          if (note.track === 0 && this.ctx) {
+            const wallNow = (typeof performance !== 'undefined' && performance.now)
+              ? performance.now() / 1000
+              : Date.now() / 1000;
+            this.phaseSync.setOwnBeat(
+              fireTime,
+              this.ctx.currentTime,
+              wallNow,
+              step % 16 === 0,
+            );
+          }
+        } else {
+          // ── Synth note ──
+          // Apply the per-track world timbre (cutoff/resonance/drive modulated
+          // by the world's brightness/darkness/psychedelia character).
+          const timbre = this.getTimbreForTrack(note.track, w);
+          this.triggerSynth(
+            note.track, fireTime, note.midi, note.velocity,
+            sd, note.duration, timbre,
+          );
         }
       }
-    }
-
-    // ── ARP (track 7) — world-driven arpPattern OR call-response (Task M1) ──
-    // In VARIATION sections, the arp plays a "response" counter-melody to the
-    // lead's "call" — descending, ending on a stable tone, an octave above
-    // the lead. In all other sections, the arp plays its world-driven pattern.
-    const arpProb = clamp(0.7 * energy, 0, 1);
-    const isVariation = flow.label === 'VARIATION';
-    if (!suppressAll && !suppressNonKick && flow.leadOn && step % 2 === 0 && this.musicRng?.chance(arpProb)) {
-      if (isVariation && this.melody) {
-        // Call-response: arp plays the response to the lead's call.
-        // If no response event is scheduled for this step, the arp is silent —
-        // this creates natural breathing space between call and response.
-        const resp = this.melody.nextResponseNote(step, bar, energy);
-        if (resp) {
-          this.triggerSynth(7, stepTime, resp.note, resp.velocity, sd, sd * resp.duration, arpTimbre);
-        }
-      } else {
-        // Default: world-driven arp pattern.
-        const arp = w.arpPattern || [0,2,4,7,4,2,0,7];
-        const arpStep = Math.floor(step / 2) % arp.length;
-        const deg = arp[arpStep];
-        const note = scaleNote(root + 24, sc, deg);
-        this.triggerSynth(7, stepTime, note, 0.25 * energy, sd, undefined, arpTimbre);
+    } else {
+      // ── Fallback: director not yet created (defensive — shouldn't happen
+      // after init()). Play a minimal kick on downbeats so the engine doesn't
+      // go completely silent. ──
+      if (!suppressAll && w.kickPattern.length === 16 && w.kickPattern.charAt(step) === 'x') {
+        const isDownbeat = step % 4 === 0;
+        const vel = isDownbeat ? 0.5 : 0.3;
+        this.triggerDrum(0, stepTime, vel);
       }
     }
+  }
 
-    // ── SHAKER (track 3 alt) — continuous offbeat in drops ──
-    const shakerProb = clamp(0.4 * energy * tScale, 0, 1);
-    if (!suppressAll && !suppressNonKick && flow.bassOn && flow.leadOn && step % 2 === 1 && this.musicRng?.chance(shakerProb)) {
-      this.triggerDrum(3, stepTime, 0.15 + tVelBoost);
+  /**
+   * Task M1: compute the per-track world timbre override for a synth note.
+   *
+   * The director composes notes with pitch/velocity/duration but NOT timbre —
+   * timbre is a performance parameter owned by the engine (it depends on the
+   * world's brightness/darkness/psychedelia character + the current reference
+   * pursuit state). This helper returns the timbre object for the given track,
+   * which triggerSynth applies on top of the preset.
+   *
+   * Tracks: 4=BASS 5=LEAD 6=PAD 7=ARP. Returns undefined for drum tracks
+   * (0-3) — drums don't use timbre overrides.
+   */
+  private getTimbreForTrack(
+    track: number,
+    w: World,
+  ): { cutoff?: number; res?: number; drive?: number } | undefined {
+    switch (track) {
+      case 4: // BASS
+        return {
+          cutoff: w.bassTimbre.cutoff * (0.7 + 0.6 * (1 - w.darkness)),
+          res: 2 + w.bassTimbre.resonance * 12,
+          drive: w.bassTimbre.drive,
+        };
+      case 5: // LEAD
+        return {
+          cutoff: w.leadTimbre.cutoff * (0.7 + 0.6 * w.brightness),
+          res: 2 + w.leadTimbre.resonance * 12,
+          drive: w.leadTimbre.drive,
+        };
+      case 6: // PAD
+        return {
+          cutoff: w.padTimbre.cutoff * (0.6 + 0.8 * w.brightness),
+          res: 2 + w.padTimbre.resonance * 12,
+          drive: w.padTimbre.drive,
+        };
+      case 7: // ARP
+        return {
+          cutoff: w.textureTimbre.cutoff * (0.7 + 0.6 * w.psychedelia),
+          res: 2 + w.textureTimbre.resonance * 12,
+          drive: w.textureTimbre.drive,
+        };
+      default:
+        return undefined;
     }
   }
 
@@ -3753,8 +4094,16 @@ export class Psy4EngineV2 {
    * Return the current chord playing on the pad (Task H1). Useful for UI
    * display (chord name) and for the lead/arp to shape their note choices.
    * Returns null outside lead sections or before the first chord plays.
+   *
+   * Task M1: with the MusicalDirector, the harmony engine's currentChord is
+   * advanced during COMPOSITION (ahead of playback), so it's stale at
+   * playback time. We prefer the director's getCurrentChord() which tracks
+   * the actual playback position. Falls back to this.currentChord (legacy)
+   * if the director isn't available.
    */
-  getCurrentChord(): Chord | null { return this.currentChord; }
+  getCurrentChord(): Chord | null {
+    return this.director?.getCurrentChord() ?? this.currentChord;
+  }
 
   // ─── Task D1: DJ-style phase sync public API ──────────────────────────────
   //
@@ -3772,23 +4121,252 @@ export class Psy4EngineV2 {
    *
    * Safe to call before start() — PhaseSync is constructed eagerly so the
    * toggle state persists across stop/start cycles.
+   *
+   * Task D1 (upgrade): this is now an alias for setMasterSync() — the
+   * DJController delegates the BPM/phase part to PhaseSync and engages the
+   * additional dimensions (key, groove, energy, phrase) when on. The legacy
+   * method name is preserved so existing callers (UI, tests) keep working.
+   *
+   * Task L1: when DJ sync engages, force 'interactive' latency mode for
+   * tightest beat-matching. Phase-locked sync needs the lowest possible
+   * scheduling latency so our kicks land exactly on the radio's kicks —
+   * any extra buffer would blur the phase correction. The user can
+   * override afterwards via setLatencyMode() if they want to trade
+   * tightness for stability on a struggling device.
    */
   setSyncEnabled(enabled: boolean): void {
-    this.phaseSync.setSyncEnabled(enabled);
-  }
-
-  /** Returns true if DJ-style phase sync is currently enabled. */
-  isSyncEnabled(): boolean {
-    return this.phaseSync.isSyncEnabled();
+    this.setMasterSync(enabled);
+    if (enabled && this.latencyMode !== 'interactive') {
+      this.setLatencyMode('interactive');
+    }
   }
 
   /**
-   * Returns the current sync status for UI display. The shape mirrors
-   * PhaseSync.getSyncStatus() — see phaseSync.ts for field docs. All fields
-   * are guarded against missing data (zero/false when no ref phase yet).
+   * Enable / disable MASTER SYNC (the full DJ controller). When on, ALL
+   * dimensions are engaged: BPM + phase (via PhaseSync), key (Camelot
+   * harmonic mixing), groove (swing + push/pull), energy (smoothed +
+   * transition detection), beat-grid / phrase alignment. When off, the
+   * engine runs free — but the sync state is still computed and exposed
+   * via getSyncStatus() so the UI can show how far off we are.
    */
-  getSyncStatus(): SyncStatus {
-    return this.phaseSync.getSyncStatus();
+  setMasterSync(enabled: boolean): void {
+    const wasEnabled = this.djController.isMasterSyncEnabled();
+    this.djController.setMasterSync(enabled);
+    // When DISABLING master sync, reverse any key shift we applied so the
+    // engine returns to the key it would have been in without DJ sync.
+    if (wasEnabled && !enabled && this.appliedKeyShift !== 0) {
+      this.applyKeyShift(-this.appliedKeyShift);
+      this.appliedKeyShift = 0;
+    }
+    // Reset the swing adjustment accumulator (clean hand-off back to the
+    // world's default swing).
+    this.swingAdjust = 0;
+  }
+
+  /** Returns true if DJ-style master sync is currently enabled. */
+  isSyncEnabled(): boolean {
+    return this.djController.isMasterSyncEnabled();
+  }
+
+  /** Returns true if master sync is enabled (alias for isSyncEnabled). */
+  isMasterSyncEnabled(): boolean {
+    return this.djController.isMasterSyncEnabled();
+  }
+
+  /**
+   * Returns the current sync status for UI display. Task D1 (upgrade):
+   * the return shape is now DJSyncState (extends SyncStatus with the key /
+   * groove / energy / phrase fields). Existing callers that only read the
+   * SyncStatus fields (synced, offsetMs, refBpm, ownBpm, etc.) still work
+   * — the new fields are additive.
+   *
+   * All fields are guarded against missing data (zero/false when no ref
+   * phase yet).
+   */
+  getSyncStatus(): DJSyncState {
+    return this.djController.getSyncState();
+  }
+
+  // ─── Task L1: low-latency scheduler public API ────────────────────────────
+  //
+  // These methods expose the adaptive scheduler to the UI. The latency mode
+  // toggle lets the user trade latency for stability; the status returns the
+  // live measurements (output latency, scheduling lookahead, drops, CPU load,
+  // stable flag) for display. All methods are safe to call before start().
+
+  /**
+   * Set the latency mode. Affects AudioContext `latencyHint` (on next ctx
+   * construction — `latencyHint` is immutable post-creation) AND the
+   * adaptive lookahead's starting point immediately.
+   *
+   *   'interactive' : 15ms output, 30ms lookahead. Lowest latency. Live
+   *                   performance / DJ beat-matching.
+   *   'balanced'    : 30ms output, 60ms lookahead. Default on mobile.
+   *   'playback'    : 50ms output, 100ms lookahead. Power saving.
+   *
+   * If the engine is already running, the lookahead target updates
+   * immediately and the adaptive controller smooths toward it within ~1s.
+   * The AudioContext latencyHint only takes effect on the next `init()`
+   * (after a stop+dispose+init cycle) — this is a one-time cost.
+   */
+  setLatencyMode(mode: LatencyMode): void {
+    this.latencyMode = mode;
+    this.targetLookahead = LATENCY_MODE_LOOKAHEAD[mode];
+    // If the engine is not running, jump directly to the target. Otherwise
+    // let the adaptive controller smooth toward it (avoids sudden scheduling
+    // gaps when shrinking or sudden note floods when growing).
+    if (!this.playing) {
+      this.lookahead = this.targetLookahead;
+    }
+    if (typeof console !== 'undefined') {
+      console.log(`[PSY4] Latency mode -> ${mode} (lookahead ${(this.targetLookahead * 1000).toFixed(0)}ms)`);
+    }
+  }
+
+  /** Returns the current latency mode. */
+  getLatencyMode(): LatencyMode {
+    return this.latencyMode;
+  }
+
+  /**
+   * Snapshot of the scheduler's latency + jitter status for UI display.
+   *
+   * Fields:
+   *   - outputLatencyMs     : AudioContext baseLatency + processing (hardware).
+   *   - schedulingLatencyMs : Current adaptive lookahead (30-100ms).
+   *   - totalLatencyMs      : Sum — target <30ms when adaptive is tight.
+   *   - droppedNotes        : Cumulative count of missed-step events.
+   *   - cpuLoad             : 0..1 from PerformanceMonitor (frame time proxy).
+   *   - stable              : True if no drops in the last 5 seconds.
+   *   - latencyMode         : interactive / balanced / playback.
+   *   - lookaheadMs         : Live (smoothed) lookahead.
+   *   - targetLookaheadMs   : Adaptive controller's setpoint.
+   *   - workerIntervalMs    : 25ms (the Worker's tick rate).
+   *   - usesWorker          : True if the scheduler is using a Web Worker.
+   */
+  getLatencyStatus(): LatencyStatus {
+    const ctx = this.ctx;
+    const baseLatency = ctx?.baseLatency ?? 0;
+    // `outputLatency` is the total output latency (baseLatency + processing).
+    // Not all browsers expose it — fall back to baseLatency.
+    const outputLatency = (ctx && typeof (ctx as unknown as { outputLatency?: number }).outputLatency === 'number')
+      ? (ctx as unknown as { outputLatency: number }).outputLatency : baseLatency;
+    const schedulingLatencyMs = this.lookahead * 1000;
+    const totalLatencyMs = outputLatency * 1000 + schedulingLatencyMs;
+    const now = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+    const stable = this.droppedNotes === 0 || (now - this.lastDropAt) > 5000;
+    return {
+      outputLatencyMs: outputLatency * 1000,
+      schedulingLatencyMs,
+      totalLatencyMs,
+      droppedNotes: this.droppedNotes,
+      cpuLoad: this.cpuLoad,
+      stable,
+      latencyMode: this.latencyMode,
+      lookaheadMs: schedulingLatencyMs,
+      targetLookaheadMs: this.targetLookahead * 1000,
+      workerIntervalMs: Psy4EngineV2.SCHEDULER_INTERVAL_MS,
+      usesWorker: this.scheduler.usesWorker,
+    };
+  }
+
+  /**
+   * Task L1: adaptive lookahead controller.
+   *
+   * Goals:
+   *   - Start at the latencyMode's default (30/60/100ms).
+   *   - If stable for 10s (no drops, CPU < 70%): reduce toward 30ms.
+   *   - If drops detected OR CPU > 85%: increase toward 100ms.
+   *
+   * The lookahead is smoothed toward the target (50% per 1Hz eval = 50% per
+   * second) so changes don't cause sudden scheduling gaps.
+   *
+   * Called from `tick()` after each non-empty pass + on early-exit. The
+   * internal throttle limits the actual evaluation to once per second.
+   */
+  private updateAdaptiveLookahead(): void {
+    const now = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+    if (now - this.lastAdaptiveCheckAt < 1000) return;  // eval at most 1Hz
+    this.lastAdaptiveCheckAt = now;
+
+    // Pull CPU load from PerformanceMonitor (avgFrameMs / 16.67).
+    const perf = this.perfMonitor.getStatus();
+    this.cpuLoad = perf.cpuLoad;
+
+    // Reset the stability window if we've dropped in the last 5 seconds.
+    if (this.lastDropAt > 0 && (now - this.lastDropAt) < 5000) {
+      this.lastStabilityCheckAt = 0;
+    } else if (this.lastStabilityCheckAt === 0) {
+      this.lastStabilityCheckAt = now;
+    }
+
+    const stableFor = this.lastStabilityCheckAt > 0
+      ? (now - this.lastStabilityCheckAt) / 1000 : 0;
+    const isOverloaded = perf.cpuLoad > 0.85
+      || (this.lastDropAt > 0 && (now - this.lastDropAt) < 5000);
+    const isStable = stableFor >= 10
+      && perf.cpuLoad < 0.7
+      && this.droppedNotes === 0;
+
+    if (isOverloaded) {
+      // Grow the buffer — stability over latency.
+      if (this.targetLookahead < 0.08) this.targetLookahead = 0.08;
+      else if (this.targetLookahead < 0.1) this.targetLookahead = 0.1;
+    } else if (isStable) {
+      // Shrink the buffer — latency over stability (when we can afford it).
+      // Never go below the latencyMode's floor (30ms for 'interactive').
+      const floor = LATENCY_MODE_LOOKAHEAD[this.latencyMode];
+      if (this.targetLookahead > 0.04 && this.targetLookahead > floor) {
+        this.targetLookahead = Math.max(0.04, floor);
+      } else if (this.targetLookahead > 0.03 && this.targetLookahead > floor) {
+        this.targetLookahead = Math.max(0.03, floor);
+      }
+    }
+
+    // Smooth toward target (50% per eval = 50% per second → reaches target
+    // in ~2s). This avoids sudden scheduling gaps when shrinking or sudden
+    // note floods when growing.
+    this.lookahead += (this.targetLookahead - this.lookahead) * 0.5;
+  }
+
+  /**
+   * Task L1: mobile device detection. Used by init() to bump 'interactive'
+   * → 'balanced' on phones/tablets (where thermal throttling makes the
+   * lowest latency mode unstable). SSR-safe (returns false on server).
+   */
+  private isMobileDevice(): boolean {
+    if (typeof navigator === 'undefined') return false;
+    const ua = navigator.userAgent || '';
+    return /Mobi|Android|iPhone|iPad|iPod/i.test(ua);
+  }
+
+  /**
+   * Apply a semitone shift to the engine's musicalKey.root. Used by the
+   * DJController's key sync (Camelot harmonic mixing) — when the radio
+   * plays in an incompatible key, we transpose our generators to the
+   * nearest compatible key. The shift is applied incrementally (1
+   * semitone per bar) so the change is a gradual modulation, not a glitch.
+   *
+   * The new root is kept inside the world's rootRange by octave-shifting,
+   * so a +2 shift on a root at the top of the range wraps to the bottom
+   * of the next octave (same pitch class, different octave — still the
+   * same key for harmonic-mixing purposes).
+   */
+  private applyKeyShift(semitones: number): void {
+    if (!Number.isFinite(semitones) || semitones === 0) return;
+    const worldRange = this.currentWorld.rootRange;
+    const rangeSize = worldRange[1] - worldRange[0];
+    if (rangeSize <= 0) return;
+    // Compute the new root, wrapping within the world's rootRange so we
+    // stay in the preferred octave (preserves the world's "home" register
+    // while changing the pitch class).
+    let newRoot = this.musicalKey.root + semitones;
+    while (newRoot < worldRange[0]) newRoot += 12;
+    while (newRoot > worldRange[1]) newRoot -= 12;
+    if (newRoot === this.musicalKey.root) return;
+    this.musicalKey = { root: newRoot, scale: this.musicalKey.scale };
+    this.appliedKeyShift += semitones;
+    this.refreshMusicalGenerators();
   }
 
   // ─── P1 stubs: adaptive quality + voice stealing ──────────────────────────

@@ -1,0 +1,620 @@
+     1→/**
+     2→ * HarmonyEngine — professional-grade chord progression + voice leading engine.
+     3→ *
+     4→ * Replaces PSY4's previous "chordRoot + fifth" pad voicing with:
+     5→ *   - 11 chord types (triad, maj7, min7, dom7, min9, maj9, sus2, sus4, dim, aug, min7b5)
+     6→ *   - Voice leading: common-tone preservation + smallest-interval motion + parallel-fifth avoidance
+     7→ *   - Scale-appropriate progressions per scale (minor, phrygian, dorian, phrygianDominant, harmonicMinor, doubleHarmonic, minorPentatonic)
+     8→ *   - Modal interchange: borrow chords from parallel scales (parallel minor ↔ major, etc.)
+     9→ *   - Bass inversions for smooth bass motion
+    10→ *   - Energy-driven extension selection (triads in breaks → 7ths/9ths in drops)
+    11→ *   - Counterpoint support: getAvoidNotes() so the lead can shape itself around the current chord
+    12→ *
+    13→ * The chord ROOT is found via scaleNote() (scale-correct). The chord INTERVALS are
+    14→ * fixed semitone patterns per ChordType (per the task spec). For 'triad' specifically,
+    15→ * the quality (maj/min/dim/aug) is derived from the diatonic scale, so triads are
+    16→ * always diatonic. For 7th/9th types, the diatonic quality is matched to the closest
+    17→ * standard type (e.g. min degree → min7, maj degree → maj7, dim degree → min7b5).
+    18→ *
+    19→ * This module is pure (no Web Audio). It produces Chord / ChordVoicing objects that
+    20→ * psy4EngineV2 schedules via triggerSynth() — one triggerSynth per voicing note.
+    21→ */
+    22→
+    23→import { SCALES, scaleNote, SeededRng } from './musicalGrammar';
+    24→
+    25→// ─── Chord Types ────────────────────────────────────────────────────────────
+    26→
+    27→export type ChordType =
+    28→  | 'triad' | 'maj7' | 'min7' | 'dom7' | 'min9' | 'maj9'
+    29→  | 'sus2' | 'sus4' | 'dim' | 'aug' | 'min7b5';
+    30→
+    31→export interface Chord {
+    32→  root: number;        // MIDI note (root in bass register, ~36-48)
+    33→  type: ChordType;
+    34→  scaleDegree: number; // 0-6 (or 0-7 for extended, wraps modulo scale length)
+    35→  inversion: number;   // 0=root, 1=first, 2=second, 3=third (for 7ths)
+    36→  notes: number[];     // MIDI notes in root position (4-5 notes for 7th/9th)
+    37→}
+    38→
+    39→export interface ChordVoicing {
+    40→  notes: number[];     // final MIDI notes to play (voice-led, bass note first/lowest)
+    41→  bassNote: number;    // bass note (lowest voice — root or inversion)
+    42→}
+    43→
+    44→// ─── Chord Interval Templates (semitones from root) ─────────────────────────
+    45→// Per the task spec — these are FIXED interval patterns per ChordType.
+    46→
+    47→const CHORD_INTERVALS: Record<ChordType, number[]> = {
+    48→  triad:  [0, 4, 7],            // major triad (overridden for min/dim/aug diatonically)
+    49→  maj7:   [0, 4, 7, 11],
+    50→  min7:   [0, 3, 7, 10],
+    51→  dom7:   [0, 4, 7, 10],
+    52→  min9:   [0, 3, 7, 10, 14],
+    53→  maj9:   [0, 4, 7, 11, 14],
+    54→  sus2:   [0, 2, 7],
+    55→  sus4:   [0, 5, 7],
+    56→  dim:    [0, 3, 6],
+    57→  aug:    [0, 4, 8],
+    58→  min7b5: [0, 3, 6, 10],
+    59→};
+    60→
+    61→// Diatonic quality categories — used to match extended types to diatonic chords.
+    62→type DiatonicQuality = 'maj' | 'min' | 'dim' | 'aug';
+    63→
+    64→// ─── Scale-Specific Progressions ────────────────────────────────────────────
+    65→// Each entry is an array of scale-degree templates (degrees 0-6, can repeat).
+    66→// These are the "classic" progressions for each scale type used in psytrance.
+    67→// Selected from music theory + psytrance convention (e.g. i-VI-III-VII for minor).
+    68→
+    69→const SCALE_PROGRESSIONS: Record<string, number[][]> = {
+    70→  minor: [
+    71→    [0, 5, 2, 6],          // i - VI - III - VII (classic)
+    72→    [0, 3, 6, 2],          // i - iv - VII - III (modal)
+    73→    [0, 6, 5, 6],          // i - VII - VI - VII (descending)
+    74→    [0, 5, 3, 4],          // i - VI - iv - v
+    75→    [0, 3, 4, 0],          // i - iv - v - i (tense resolution)
+    76→    [0, 5, 6, 5],          // i - VI - VII - VI
+    77→  ],
+    78→  phrygian: [
+    79→    [0, 1, 0, 6],          // i - bII - i - bVII (dark, goa-classic)
+    80→    [0, 5, 2, 6],          // i - bVI - bIII - bVII
+    81→    [0, 1, 6, 5],          // i - bII - bVII - bVI
+    82→    [0, 6, 5, 1],          // i - bVII - bVI - bII
+    83→    [0, 1, 0, 5],          // i - bII - i - bVI
+    84→  ],
+    85→  harmonicMinor: [
+    86→    [0, 3, 4, 0],          // i - iv - V - i (tense, V major = harmonic minor signature)
+    87→    [0, 5, 2, 4],          // i - VI - iii - V
+    88→    [0, 4, 3, 0],          // i - V - iv - i
+    89→    [0, 5, 4, 0],          // i - VI - V - i
+    90→    [0, 4, 5, 4],          // i - V - VI - V (dramatic)
+    91→  ],
+    92→  dorian: [
+    93→    [0, 3, 0, 6],          // i - IV - i - VII (uplifting, dorian signature)
+    94→    [0, 6, 3, 0],          // i - VII - IV - i
+    95→    [0, 3, 6, 3],          // i - IV - VII - IV
+    96→    [0, 6, 5, 3],          // i - VII - VI - IV
+    97→    [0, 3, 4, 6],          // i - IV - v - VII
+    98→  ],
+    99→  phrygianDominant: [
+   100→    [0, 1, 0, 6],          // i - bII - i - bVII (goa signature)
+   101→    [0, 3, 6, 2],          // i - IV - bVII - III
+   102→    [0, 1, 6, 5],          // i - bII - bVII - bVI
+   103→    [0, 5, 4, 0],          // i - bVI - V - i
+   104→    [0, 1, 4, 1],          // i - bII - V - bII (arabic-feel)
+   105→  ],
+   106→  doubleHarmonic: [
+   107→    [0, 1, 0, 4],          // i - bII - i - V
+   108→    [0, 5, 4, 0],          // i - bVI - V - i
+   109→    [0, 1, 4, 1],          // i - bII - V - bII
+   110→    [0, 4, 1, 0],          // i - V - bII - i
+   111→    [0, 5, 1, 4],          // i - bVI - bII - V
+   112→  ],
+   113→  minorPentatonic: [
+   114→    [0, 2, 3, 4],          // i - III - IV - V (pentatonic-friendly)
+   115→    [0, 4, 3, 0],          // i - V - IV - i
+   116→    [0, 3, 4, 2],          // i - IV - V - III
+   117→    [0, 2, 4, 3],          // i - III - V - IV
+   118→  ],
+   119→};
+   120→
+   121→// Default fallback progression when scale isn't recognized
+   122→const DEFAULT_PROGRESSION = SCALE_PROGRESSIONS.minor[0];
+   123→
+   124→// ─── Bass / Pad Register Constants ──────────────────────────────────────────
+   125→// Bass note of the pad voicing lives here (above the sub-bass track 4 at MIDI 31-43).
+   126→const PAD_BASS_LOW = 48;   // C3
+   127→const PAD_BASS_HIGH = 59;  // B3
+   128→// Upper voices of the pad chord live here.
+   129→const PAD_UPPER_CENTER = 64;  // E4 — comfortable mid register
+   130→const PAD_UPPER_LOW = 55;   // G3
+   131→const PAD_UPPER_HIGH = 79;  // G5
+   132→
+   133→// ─── HarmonyEngine ──────────────────────────────────────────────────────────
+   134→
+   135→export class HarmonyEngine {
+   136→  private currentChord: Chord | null = null;
+   137→  private previousVoicing: number[] = [];   // upper voices only (no bass)
+   138→  private rng: SeededRng;
+   139→  private progressionPool: number[][];
+   140→
+   141→  constructor(private root: number, private scale: string) {
+   142→    // Deterministic seed per key — same key produces same progression pool ordering.
+   143→    const seed = (root * 31 + scale.length * 7 + 13) >>> 0;
+   144→    this.rng = new SeededRng(seed);
+   145→    this.progressionPool = SCALE_PROGRESSIONS[scale] || SCALE_PROGRESSIONS.minor;
+   146→  }
+   147→
+   148→  // ── Diatonic Quality ────────────────────────────────────────────────────
+   149→  // Determine the diatonic triad quality for a scale degree (maj/min/dim/aug).
+   150→  // Computed by stacking thirds from the scale.
+   151→
+   152→  private diatonicQuality(degree: number): DiatonicQuality {
+   153→    const sc = SCALES[this.scale] || SCALES.minor;
+   154→    const n = sc.length;
+   155→    const idx = ((degree % n) + n) % n;
+   156→    const rootInt = sc[idx];
+   157→    const thirdIdx = (idx + 2) % n;
+   158→    const fifthIdx = (idx + 4) % n;
+   159→    const thirdInt = sc[thirdIdx] + (idx + 2 >= n ? 12 : 0) - rootInt;
+   160→    const fifthInt = sc[fifthIdx] + (idx + 4 >= n ? 12 : 0) - rootInt;
+   161→    if (fifthInt === 6) return 'dim';
+   162→    if (fifthInt === 8) return 'aug';
+   163→    return thirdInt === 3 ? 'min' : 'maj';
+   164→  }
+   165→
+   166→  // ── Build Intervals ─────────────────────────────────────────────────────
+   167→  // For 'triad': use diatonic quality (maj/min/dim/aug).
+   168→  // For 7th/9th types: use fixed CHORD_INTERVALS.
+   169→  // For 'triad'-derived extensions, the diatonic quality is honored by adapting
+   170→  // the requested type to the closest standard chord type.
+   171→
+   172→  private buildIntervals(degree: number, type: ChordType): number[] {
+   173→    if (type === 'triad') {
+   174→      const q = this.diatonicQuality(degree);
+   175→      switch (q) {
+   176→        case 'maj': return [0, 4, 7];
+   177→        case 'min': return [0, 3, 7];
+   178→        case 'dim': return [0, 3, 6];
+   179→        case 'aug': return [0, 4, 8];
+   180→      }
+   181→    }
+   182→    return CHORD_INTERVALS[type];
+   183→  }
+   184→
+   185→  // Adapt a requested chord type to the diatonic quality of the degree.
+   186→  // This ensures 7ths/9ths match the scale (e.g. a 'maj7' on a minor degree
+   187→  // becomes 'min7'; a 'maj7' on a dim degree becomes 'min7b5').
+   188→  private adaptTypeToDiatonic(degree: number, type: ChordType): ChordType {
+   189→    if (type === 'triad' || type === 'sus2' || type === 'sus4' ||
+   190→        type === 'dim' || type === 'aug' || type === 'dom7' || type === 'min7b5') {
+   191→      return type;  // explicit types — use as-is
+   192→    }
+   193→    const q = this.diatonicQuality(degree);
+   194→    // Map (maj/min/dim/aug) × (maj7/min7/maj9/min9) → standard type
+   195→    if (type === 'maj7' || type === 'min7') {
+   196→      switch (q) {
+   197→        case 'maj': return 'maj7';
+   198→        case 'min': return 'min7';
+   199→        case 'dim': return 'min7b5';
+   200→        case 'aug': return 'maj7';  // augmaj7 — use maj7 (close enough; aug is rare)
+   201→      }
+   202→    }
+   203→    if (type === 'maj9' || type === 'min9') {
+   204→      switch (q) {
+   205→        case 'maj': return 'maj9';
+   206→        case 'min': return 'min9';
+   207→        case 'dim': return 'min7b5';  // dim9 doesn't standardly exist; fall back to min7b5
+   208→        case 'aug': return 'maj9';
+   209→      }
+   210→    }
+   211→    return type;
+   212→  }
+   213→
+   214→  // ── getChord ────────────────────────────────────────────────────────────
+   215→  // Build a Chord object for a scale degree with the specified type.
+   216→  // The root is placed in the bass register (MIDI 36-47) via scaleNote().
+   217→
+   218→  getChord(degree: number, type?: ChordType): Chord {
+   219→    const requestedType = type || 'triad';
+   220→    const adaptedType = this.adaptTypeToDiatonic(degree, requestedType);
+   221→    // Find the scale-degree root MIDI note in bass register.
+   222→    let rootMidi = scaleNote(this.root, this.scale, degree);
+   223→    while (rootMidi >= PAD_BASS_HIGH) rootMidi -= 12;
+   224→    while (rootMidi < PAD_BASS_LOW - 12) rootMidi += 12;
+   225→    // Build chord tones (root position)
+   226→    const intervals = this.buildIntervals(degree, adaptedType);
+   227→    const notes = intervals.map(iv => rootMidi + iv);
+   228→    return {
+   229→      root: rootMidi,
+   230→      type: adaptedType,
+   231→      scaleDegree: ((degree % 7) + 7) % 7,
+   232→      inversion: 0,
+   233→      notes,
+   234→    };
+   235→  }
+   236→
+   237→  // ── generateProgression ─────────────────────────────────────────────────
+   238→  // Generate 4-8 chords appropriate for the current scale.
+   239→  // `bars` is the section length in bars; the progression is padded/clamped to 4-8.
+   240→  // `energy` drives the extension level (triads in breaks, 7ths/9ths in drops).
+   241→
+   242→  generateProgression(bars: number, energy: number): Chord[] {
+   243→    const template = this.rng.pick(this.progressionPool) || DEFAULT_PROGRESSION;
+   244→    const ext = this.getExtension(energy);
+   245→
+   246→    // Section length: clamp to 4-8 chords (per task spec).
+   247→    const count = clamp(Math.max(4, Math.min(8, bars)), 4, 8);
+   248→
+   249→    const result: Chord[] = [];
+   250→    let prevBass = 0;
+   251→    for (let i = 0; i < count; i++) {
+   252→      const deg = template[i % template.length];
+   253→
+   254→      // 1-in-7 chance of borrowing a chord (modal interchange) for color,
+   255→      // but never on the first chord (keep the tonic anchor).
+   256→      if (i > 0 && this.rng.chance(0.14)) {
+   257→        const borrowed = this.borrowChord();
+   258→        borrowed.inversion = this.chooseInversion(prevBass, borrowed.root);
+   259→        result.push(borrowed);
+   260→        prevBass = this.bassNoteFor(borrowed);
+   261→        continue;
+   262→      }
+   263→
+   264→      // Most chords use the section's extension; some are triads for contrast.
+   265→      const useTriad = this.rng.chance(0.22);
+   266→      const chordType = useTriad ? 'triad' : ext;
+   267→      const chord = this.getChord(deg, chordType);
+   268→      // Choose inversion for smooth bass motion.
+   269→      chord.inversion = this.chooseInversion(prevBass, chord.root);
+   270→      result.push(chord);
+   271→      prevBass = this.bassNoteFor(chord);
+   272→    }
+   273→
+   274→    // Reset voice-leading state for a fresh section start.
+   275→    this.previousVoicing = [];
+   276→    this.currentChord = null;
+   277→    return result;
+   278→  }
+   279→
+   280→  // ── voiceLead ───────────────────────────────────────────────────────────
+   281→  // The KEY method: produce a ChordVoicing for the next chord that minimizes
+   282→  // voice movement from the previous voicing.
+   283→  //
+   284→  // Algorithm:
+   285→  //   1. Compute the bass note from the chord's inversion (in bass register).
+   286→  //   2. Collect the chord's pitch classes EXCLUDING the bass PC.
+   287→  //   3. For each target PC, find the closest previous voice (within an octave).
+   288→  //      Common tones stay in the same voice.
+   289→  //   4. If we have no previous voicing, place voices in a default mid register.
+   290→  //   5. Pad the upper voices to at least 3 (doubling root or 5th if needed).
+   291→  //   6. Check for parallel 5ths/octaves with the previous voicing; if found,
+   292→  //      shift one voice by an octave.
+   293→  //   7. Sort and store as the new previous voicing.
+   294→
+   295→  voiceLead(next: Chord): ChordVoicing {
+   296→    const intervals = this.buildIntervals(next.scaleDegree, next.type);
+   297→
+   298→    // 1. Bass note = chord root + inversion interval, in bass register.
+   299→    const inv = Math.min(next.inversion, intervals.length - 1);
+   300→    const bassInterval = intervals[inv];
+   301→    let bassNote = next.root + bassInterval;
+   302→    while (bassNote >= PAD_BASS_HIGH) bassNote -= 12;
+   303→    while (bassNote < PAD_BASS_LOW) bassNote += 12;
+   304→    const bassPC = bassNote % 12;
+   305→
+   306→    // 2. Collect upper-voice pitch classes (excluding the bass PC once).
+   307→    const chordPCs = intervals.map(iv => (next.root + iv) % 12);
+   308→    const upperPCs: number[] = [];
+   309→    let bassHandled = false;
+   310→    for (const pc of chordPCs) {
+   311→      if (pc === bassPC && !bassHandled) {
+   312→        bassHandled = true;
+   313→        continue;
+   314→      }
+   315→      upperPCs.push(pc);
+   316→    }
+   317→
+   318→    // 3. Voice-lead the upper voices (or use default placement if first chord).
+   319→    let upperNotes: number[];
+   320→    if (this.previousVoicing.length >= 3) {
+   321→      upperNotes = this.assignVoices(upperPCs, this.previousVoicing);
+   322→    } else {
+   323→      upperNotes = this.defaultVoicing(upperPCs);
+   324→    }
+   325→
+   326→    // 4. Ensure at least 3 upper voices (so total = 4 with bass).
+   327→    // Double the topmost note an octave above; if that goes out of range or
+   328→    // collides with an existing voice, drop an octave instead. If we can't
+   329→    // find a non-colliding slot, leave the voicing at 2 upper voices (a
+   330→    // 3-voice chord is still musical — root, 3rd, 5th).
+   331→    while (upperNotes.length < 3) {
+   332→      const top = upperNotes[upperNotes.length - 1] || PAD_UPPER_CENTER;
+   333→      let doubled = top + 12;
+   334→      while (doubled > PAD_UPPER_HIGH) doubled -= 12;
+   335→      while (doubled < PAD_UPPER_LOW) doubled += 12;
+   336→      if (upperNotes.includes(doubled)) {
+   337→        // Top+12 collided — try top-12 instead.
+   338→        doubled = top - 12;
+   339→        while (doubled < PAD_UPPER_LOW) doubled += 12;
+   340→        while (doubled > PAD_UPPER_HIGH) doubled -= 12;
+   341→      }
+   342→      if (upperNotes.includes(doubled)) break;  // give up — 2 upper voices is fine
+   343→      upperNotes.push(doubled);
+   344→    }
+   345→
+   346→    // 5. Clamp upper voices into a comfortable range (avoid muddy lows / shrill highs).
+   347→    upperNotes = upperNotes.map(n => {
+   348→      while (n < PAD_UPPER_LOW) n += 12;
+   349→      while (n > PAD_UPPER_HIGH) n -= 12;
+   350→      return n;
+   351→    });
+   352→
+   353→    // 6. Avoid parallel 5ths/octaves with the previous voicing.
+   354→    if (this.previousVoicing.length >= 3) {
+   355→      upperNotes = this.avoidParallels(this.previousVoicing, upperNotes);
+   356→    }
+   357→
+   358→    upperNotes.sort((a, b) => a - b);
+   359→
+   360→    const voicingNotes = [bassNote, ...upperNotes];
+   361→
+   362→    // 7. Update state.
+   363→    this.previousVoicing = [...upperNotes];
+   364→    this.currentChord = next;
+   365→
+   366→    return { notes: voicingNotes, bassNote };
+   367→  }
+   368→
+   369→  // ── assignVoices ────────────────────────────────────────────────────────
+   370→  // Greedy nearest-voice matching: for each target pitch class, find the closest
+   371→  // unassigned previous voice (within an octave) and place the new note at the
+   372→  // nearest octave to that previous voice. Common tones (exact PC match) are
+   373→  // matched first and kept in the same voice.
+   374→
+   375→  private assignVoices(targetPCs: number[], prevVoicing: number[]): number[] {
+   376→    const prevSorted = [...prevVoicing].sort((a, b) => a - b);
+   377→    const assigned: boolean[] = new Array(prevSorted.length).fill(false);
+   378→    const result: number[] = [];
+   379→
+   380→    // First pass: exact PC matches (common tones) — pin them in the same voice.
+   381→    for (const pc of targetPCs) {
+   382→      let bestIdx = -1;
+   383→      let bestDist = Infinity;
+   384→      for (let i = 0; i < prevSorted.length; i++) {
+   385→        if (assigned[i]) continue;
+   386→        const prevPC = prevSorted[i] % 12;
+   387→        const dist = pc === prevPC ? 0 : Math.min(Math.abs(prevPC - pc), 12 - Math.abs(prevPC - pc));
+   388→        if (dist < bestDist) {
+   389→          bestDist = dist;
+   390→          bestIdx = i;
+   391→        }
+   392→      }
+   393→      if (bestIdx >= 0) {
+   394→        assigned[bestIdx] = true;
+   395→        const prevNote = prevSorted[bestIdx];
+   396→        // Place the new note at the octave closest to the prev voice.
+   397→        let n = prevNote - (prevNote % 12) + pc;
+   398→        while (n - prevNote > 6) n -= 12;
+   399→        while (prevNote - n > 6) n += 12;
+   400→        result.push(n);
+   401→      }
+   402→    }
+   403→
+   404→    // If we still have unassigned targets (target count > prev count),
+   405→    // place them at default positions in the mid register.
+   406→    if (result.length < targetPCs.length) {
+   407→      const placedPCs = new Set(result.map(n => n % 12));
+   408→      for (const pc of targetPCs) {
+   409→        if (placedPCs.has(pc) && result.some(n => n % 12 === pc)) continue;
+   410→        const defaultN = PAD_UPPER_CENTER - (PAD_UPPER_CENTER % 12) + pc;
+   411→        result.push(defaultN);
+   412→        placedPCs.add(pc);
+   413→      }
+   414→    }
+   415→
+   416→    return result;
+   417→  }
+   418→
+   419→  // ── defaultVoicing ──────────────────────────────────────────────────────
+   420→  // Place pitch classes in a comfortable mid register (around MIDI 64).
+   421→  // Used for the first chord of a section when there's no previous voicing.
+   422→
+   423→  private defaultVoicing(pcs: number[]): number[] {
+   424→    const result: number[] = [];
+   425→    for (const pc of pcs) {
+   426→      let n = PAD_UPPER_CENTER - (PAD_UPPER_CENTER % 12) + pc;
+   427→      while (n < PAD_UPPER_LOW) n += 12;
+   428→      while (n > PAD_UPPER_HIGH) n -= 12;
+   429→      result.push(n);
+   430→    }
+   431→    return result;
+   432→  }
+   433→
+   434→  // ── avoidParallels ──────────────────────────────────────────────────────
+   435→  // Check each pair of adjacent voices for parallel 5ths (7 semitones) or
+   436→  // octaves (0 semitones modulo 12). If found, shift the upper voice by an
+   437→  // octave in the direction that minimizes movement from the previous voicing.
+   438→  //
+   439→  // This is a simplified version of the classical counterpoint rule — strict
+   440→  // avoidance is impossible in this 4-voice context, but we catch the worst cases.
+   441→
+   442→  private avoidParallels(prevVoicing: number[], nextVoicing: number[]): number[] {
+   443→    const adjusted = [...nextVoicing];
+   444→    const nPairs = Math.min(prevVoicing.length - 1, adjusted.length - 1);
+   445→    for (let i = 0; i < nPairs; i++) {
+   446→      const prevInt = ((prevVoicing[i + 1] - prevVoicing[i]) % 12 + 12) % 12;
+   447→      const nextInt = ((adjusted[i + 1] - adjusted[i]) % 12 + 12) % 12;
+   448→      // Parallel 5th (7 semitones) or octave (0 semitones) — both voices moving
+   449→      // in the same direction would be the strict violation; we soften this and
+   450→      // just shift the upper voice any time we see a 5th/octave between the same
+   451→      // pair of voices in both chords.
+   452→      if ((prevInt === 7 && nextInt === 7) || (prevInt === 0 && nextInt === 0)) {
+   453→        const upper = adjusted[i + 1];
+   454→        const prevUpper = prevVoicing[i + 1] || upper;
+   455→        const upOctave = upper + 12;
+   456→        const downOctave = upper - 12;
+   457→        const distUp = Math.abs(upOctave - prevUpper);
+   458→        const distDown = Math.abs(downOctave - prevUpper);
+   459→        const candidate = distUp < distDown ? upOctave : downOctave;
+   460→        // Only apply if the shifted note stays in range.
+   461→        if (candidate >= PAD_UPPER_LOW && candidate <= PAD_UPPER_HIGH) {
+   462→          adjusted[i + 1] = candidate;
+   463→        }
+   464→      }
+   465→    }
+   466→    return adjusted;
+   467→  }
+   468→
+   469→  // ── getExtension ────────────────────────────────────────────────────────
+   470→  // Map section energy (0..1) to a chord extension category.
+   471→  //   < 0.3  → triad (clean, sparse breaks)
+   472→  //   < 0.5  → sus4 / min7 (gentle color)
+   473→  //   < 0.7  → maj7 / min7 (rich 7ths)
+   474→  //   >= 0.7 → maj9 / min9 (lush 9ths — drop density)
+   475→  // The actual type is adapted to the diatonic quality in getChord().
+   476→
+   477→  getExtension(energy: number): ChordType {
+   478→    if (energy < 0.3) return 'triad';
+   479→    if (energy < 0.5) return this.rng.chance(0.5) ? 'min7' : 'sus4';
+   480→    if (energy < 0.7) return this.rng.chance(0.5) ? 'min7' : 'maj7';
+   481→    return this.rng.chance(0.5) ? 'min9' : 'maj9';
+   482→  }
+   483→
+   484→  // ── borrowChord ─────────────────────────────────────────────────────────
+   485→  // Modal interchange: borrow a chord from a parallel scale (same tonic,
+   486→  // different quality). The most common psytrance borrow is "IV major instead
+   487→  // of iv minor" (parallel major) or "bVI major from aeolian" (already diatonic
+   488→  // in minor, but in dorian it's borrowed).
+   489→  //
+   490→  // Implementation: pick a diatonic degree and flip its quality (maj ↔ min).
+   491→  // This produces a chromatic chord that adds color without leaving the tonic.
+   492→
+   493→  borrowChord(): Chord {
+   494→    // Pick a degree that's commonly borrowed (IV, V, VI, VII — not the tonic).
+   495→    const borrowDegrees = [3, 4, 5, 6];
+   496→    const deg = this.rng.pick(borrowDegrees);
+   497→    const diatonicQ = this.diatonicQuality(deg);
+   498→
+   499→    // Flip the quality (parallel minor ↔ major).
+   500→    let intervals: number[];
+   501→    let type: ChordType;
+   502→    switch (diatonicQ) {
+   503→      case 'maj':  intervals = [0, 3, 7];   type = 'triad'; break;  // borrowed minor
+   504→      case 'min':  intervals = [0, 4, 7];   type = 'triad'; break;  // borrowed major
+   505→      case 'dim':  intervals = [0, 3, 6, 10]; type = 'min7b5'; break;  // dim7 from harmonic minor
+   506→      case 'aug':  intervals = [0, 4, 8];   type = 'aug'; break;  // keep aug
+   507→    }
+   508→
+   509→    let rootMidi = scaleNote(this.root, this.scale, deg);
+   510→    while (rootMidi >= PAD_BASS_HIGH) rootMidi -= 12;
+   511→    while (rootMidi < PAD_BASS_LOW - 12) rootMidi += 12;
+   512→    const notes = intervals.map(iv => rootMidi + iv);
+   513→    return {
+   514→      root: rootMidi,
+   515→      type,
+   516→      scaleDegree: ((deg % 7) + 7) % 7,
+   517→      inversion: 0,
+   518→      notes,
+   519→    };
+   520→  }
+   521→
+   522→  // ── chooseInversion ─────────────────────────────────────────────────────
+   523→  // Pick the inversion (0=root, 1=first, 2=second) that minimizes the bass
+   524→  // motion from the previous bass note to the next chord's bass note.
+   525→  //
+   526→  // Most chords stay in root position (inversion 0); inversions are used when
+   527→  // they bring the bass within a 5th of the previous bass.
+   528→
+   529→  chooseInversion(prevBass: number, nextRoot: number): number {
+   530→    // Candidate bass notes for inversions 0, 1, 2.
+   531→    // (Approximate intervals: 0=root, 4=3rd, 7=5th. For 7th chords, 3rd
+   532→    // inversion would be 10, but we limit to 2 to keep things musical.)
+   533→    const invIntervals = [0, 4, 7];
+   534→    let bestInv = 0;
+   535→    let bestDist = Infinity;
+   536→    for (let inv = 0; inv < invIntervals.length; inv++) {
+   537→      let bass = nextRoot + invIntervals[inv];
+   538→      while (bass >= PAD_BASS_HIGH) bass -= 12;
+   539→      while (bass < PAD_BASS_LOW) bass += 12;
+   540→      // Distance modulo octave (shortest path on the circle of fifths-ish).
+   541→      let dist = Math.abs(bass - prevBass);
+   542→      if (dist > 6) dist = 12 - dist;
+   543→      if (dist < bestDist) {
+   544→        bestDist = dist;
+   545→        bestInv = inv;
+   546→      }
+   547→    }
+   548→    // Prefer root position when distance is small (avoid gratuitous inversions).
+   549→    if (bestInv !== 0 && bestDist > 3 && this.rng.chance(0.6)) {
+   550→      // keep bestInv (use the inversion)
+   551→    } else if (bestInv !== 0) {
+   552→      bestInv = 0;
+   553→    }
+   554→    return bestInv;
+   555→  }
+   556→
+   557→  // ── bassNoteFor ─────────────────────────────────────────────────────────
+   558→  // Compute the actual bass note (in bass register) for a chord with inversion.
+   559→
+   560→  private bassNoteFor(chord: Chord): number {
+   561→    const intervals = this.buildIntervals(chord.scaleDegree, chord.type);
+   562→    const inv = Math.min(chord.inversion, intervals.length - 1);
+   563→    let bass = chord.root + intervals[inv];
+   564→    while (bass >= PAD_BASS_HIGH) bass -= 12;
+   565→    while (bass < PAD_BASS_LOW) bass += 12;
+   566→    return bass;
+   567→  }
+   568→
+   569→  // ── getAvoidNotes (counterpoint support) ────────────────────────────────
+   570→  // Returns pitch classes that the lead should avoid on strong beats (downbeats)
+   571→  // to prevent clashing with the current chord. These are notes a half-step
+   572→  // above/below a chord tone (avoid notes / passing tones).
+   573→  //
+   574→  // The lead can call this and reroute its note choices to chord tones or
+   575→  // available tensions instead.
+   576→
+   577→  getAvoidNotes(): number[] {
+   578→    if (!this.currentChord) return [];
+   579→    const avoidPCs: number[] = [];
+   580→    const chordPCs = this.currentChord.notes.map(n => n % 12);
+   581→    for (const pc of chordPCs) {
+   582→      avoidPCs.push((pc + 1) % 12);  // half-step above
+   583→      avoidPCs.push((pc - 1 + 12) % 12);  // half-step below
+   584→    }
+   585→    // Filter out PCs that ARE chord tones (avoid over-restriction).
+   586→    return Array.from(new Set(avoidPCs)).filter(pc => !chordPCs.includes(pc));
+   587→  }
+   588→
+   589→  // ── getCurrentChord ─────────────────────────────────────────────────────
+   590→  // Expose the current chord for counterpoint reference (lead/arp can query).
+   591→
+   592→  getCurrentChord(): Chord | null {
+   593→    return this.currentChord;
+   594→  }
+   595→
+   596→  // ── isChordTone ─────────────────────────────────────────────────────────
+   597→  // Quick check: is the given MIDI note a chord tone of the current chord?
+   598→  // Used by the lead to favor chord tones on strong beats.
+   599→
+   600→  isChordTone(midi: number): boolean {
+   601→    if (!this.currentChord) return false;
+   602→    const pc = midi % 12;
+   603→    return this.currentChord.notes.some(n => n % 12 === pc);
+   604→  }
+   605→
+   606→  // ── reset ───────────────────────────────────────────────────────────────
+   607→  // Reset voice-leading state (e.g. on key change or section reset).
+   608→
+   609→  reset(): void {
+   610→    this.previousVoicing = [];
+   611→    this.currentChord = null;
+   612→  }
+   613→}
+   614→
+   615→// ─── Helpers ────────────────────────────────────────────────────────────────
+   616→
+   617→function clamp(v: number, a: number, b: number): number {
+   618→  return v < a ? a : (v > b ? b : v);
+   619→}
+   620→

@@ -4,16 +4,17 @@
  * Problem (Task V2a, gap #1 in ROAST-3 follow-up):
  *   The engine's musical clock used `setTimeout(15ms)` on the main thread.
  *   setTimeout is subject to React renders, GC pauses, layout thrash and the
- *   4ms HTML5 clamping minimum, so the 15ms tick drifted ±5-15ms in practice.
- *   The audio thread (Web Audio) schedules sample-accurate notes, but the
- *   *scheduler loop* that decides "which step / which bar / which section we
- *   are in" still ran on the main thread — so timing jitter showed up as
- *   audible swing, double-triggers on rolls, and missed downbeats under load.
+ *   4ms HTML5 clamping minimum, so the 15ms tick drifted +/- 5-15ms in
+ *   practice. The audio thread (Web Audio) schedules sample-accurate notes,
+ *   but the *scheduler loop* that decides "which step / which bar / which
+ *   section we are in" still ran on the main thread — so timing jitter
+ *   showed up as audible swing, double-triggers on rolls, and missed
+ *   downbeats under load.
  *
  * Solution:
  *   Move the *tick* to a Web Worker. Workers run on their own thread — they
  *   are not blocked by main-thread rendering, GC, or React commits. A worker
- *   `setInterval(15ms)` fires much more reliably than main-thread
+ *   `setInterval(25ms)` fires much more reliably than main-thread
  *   `setTimeout(15ms)` because there's nothing else running on the worker
  *   thread to delay it.
  *
@@ -22,6 +23,13 @@
  *   actual step scheduling against the AudioContext clock. This preserves
  *   sample-accurate audio (notes are still scheduled via Web Audio's
  *   `setValueAtTime` etc.) while eliminating scheduler jitter.
+ *
+ * Task L1 update:
+ *   Tick interval reduced from 15ms (66 Hz) to 25ms (40 Hz) — half the
+ *   main-thread message rate, with no perceptible timing difference because
+ *   the engine now schedules up to 200ms of notes per tick (lookahead is
+ *   adaptive, see psy4EngineV2.ts). The main thread's `tick()` early-exits
+ *   when there's nothing to schedule, so empty ticks cost ~0.01ms.
  *
  * SSR / old-browser fallback:
  *   The Worker is created lazily on first `start()`. If `Worker` is not
@@ -35,31 +43,31 @@
  *   the scheduler co-located with its TypeScript wrapper. The Blob URL is
  *   revoked on `stop()` to avoid leaks across start/stop cycles.
  *
- * Task ID: V2a (scheduler → Worker).
+ * Task ID: V2a (scheduler -> Worker). Updated Task L1 (interval 25ms).
  */
 
 // ─── Worker source (string) ──────────────────────────────────────────────────
 //
 // Kept deliberately tiny so it's easy to audit. Three message types:
-//   - 'start'        : begin ticking at the given interval (default 15ms).
+//   - 'start'        : begin ticking at the given interval (default 25ms).
 //   - 'stop'         : clear the timer (no-op if not running).
 //   - 'setInterval'  : change the interval on the fly (restarts the timer).
 //
 // We use `setInterval` (not chained `setTimeout`) inside the worker because:
 //   1. Worker threads have no other work, so the HTML5 4ms clamp doesn't
 //      apply the same way it does on the main thread — workers can hit
-//      sub-millisecond jitter at 15ms intervals.
+//      sub-millisecond jitter at 25ms intervals.
 //   2. setInterval is simpler than chained setTimeout and the worker's
 //      event loop is empty between ticks, so there's no risk of drift
 //      accumulating from long-running handlers.
 const workerCode = `
   let timer = null;
-  let interval = 15;
+  let interval = 25;
   self.onmessage = function(e) {
     var d = e.data || {};
     if (d.type === 'start') {
       if (timer) clearInterval(timer);
-      interval = (typeof d.interval === 'number' && d.interval > 0) ? d.interval : 15;
+      interval = (typeof d.interval === 'number' && d.interval > 0) ? d.interval : 25;
       timer = setInterval(function () { self.postMessage({ type: 'tick' }); }, interval);
     } else if (d.type === 'stop') {
       if (timer) { clearInterval(timer); timer = null; }
@@ -105,7 +113,7 @@ function getBlobUrl(): string | null {
  * Usage:
  *   const s = new SchedulerWorker();
  *   s.onTick = () => engine.tick();
- *   s.start(15);           // 15ms tick (≈ 66 Hz)
+ *   s.start(25);           // 25ms tick (~ 40 Hz) — Task L1 default
  *   ...
  *   s.stop();              // halt
  *
@@ -121,7 +129,7 @@ function getBlobUrl(): string | null {
 export class SchedulerWorker {
   private worker: Worker | null = null;
   private fallbackTimer: ReturnType<typeof setInterval> | null = null;
-  private currentInterval = 15;
+  private currentInterval = 25;
   private _usesWorker = false;
 
   /** Called on every tick (worker message or fallback interval). */
@@ -139,10 +147,10 @@ export class SchedulerWorker {
    * ticking at the existing interval). To change the interval, use
    * `setInterval(ms)`.
    */
-  start(intervalMs = 15): void {
+  start(intervalMs = 25): void {
     const interval = (typeof intervalMs === 'number' && intervalMs > 0 && isFinite(intervalMs))
       ? intervalMs
-      : 15;
+      : 25;
     this.currentInterval = interval;
 
     // Already running? Just update the interval and bail.
@@ -205,7 +213,7 @@ export class SchedulerWorker {
    * timer with the new interval. No-op if not running.
    */
   setInterval(ms: number): void {
-    const interval = (typeof ms === 'number' && ms > 0 && isFinite(ms)) ? ms : 15;
+    const interval = (typeof ms === 'number' && ms > 0 && isFinite(ms)) ? ms : 25;
     if (interval === this.currentInterval && (this.worker || this.fallbackTimer)) return;
     this.currentInterval = interval;
     if (this.worker) {
