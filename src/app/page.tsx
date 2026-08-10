@@ -314,8 +314,12 @@ export default function ReferenceTrainingPage() {
         const { SelfAnalyzer } = await import('@/lib/studio/engine/reference/selfAnalyzer');
         const analyzer = new SelfAnalyzer();
         analyzer.attach(analyser, engine.ctx!);
+        // Feed engine BPM to self-analyzer so it reports correct BPM in A/B
+        analyzer.setEngineBpm((engine as any)._bpm || 145);
         analyzer.onMetrics(m => {
           setSelfMetrics(m);
+          // Update engine BPM in self-analyzer (in case it changed)
+          analyzer.setEngineBpm((engineRef.current as any)?._bpm || 145);
           if (engineRef.current && (engineRef.current as any).selfTrack) {
             (engineRef.current as any).selfTrack(m);
           }

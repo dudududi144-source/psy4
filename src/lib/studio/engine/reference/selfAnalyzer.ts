@@ -40,6 +40,13 @@ export class SelfAnalyzer {
    * Attach to the engine's output node.
    * Creates an AnalyserNode that taps the audio WITHOUT affecting it.
    */
+  private engineBpm: number = 0;
+
+  /** Set the engine's known BPM (for reporting in A/B comparison). */
+  setEngineBpm(bpm: number): void {
+    this.engineBpm = bpm;
+  }
+
   attach(outputNode: AudioNode, ctx: AudioContext): void {
     this.audioCtx = ctx;
     this.analyser = ctx.createAnalyser();
@@ -48,12 +55,12 @@ export class SelfAnalyzer {
     this.analyser.minDecibels = -90;
     this.analyser.maxDecibels = -10;
 
-    // Tap: outputNode → analyser (analyser NOT connected to destination — pure observer)
-    // Actually, AnalyserNode needs to be in the graph to process.
-    // We connect outputNode → analyser, but analyser → nowhere (dead end).
-    // This works because AnalyserNode processes audio that passes through it.
+    // Tap: outputNode → analyser (dead end — pure observer)
     outputNode.connect(this.analyser);
     this.sourceNode = outputNode;
+
+    // Store known BPM from engine (for reporting, not detection)
+    this.engineBpm = 0;
 
     // Pre-allocate reusable buffers
     this.freqData = new Uint8Array(this.analyser.frequencyBinCount);
@@ -255,12 +262,13 @@ export class SelfAnalyzer {
 
     // BPM (use the known engine BPM — we can't reliably estimate from a 93ms window)
     // In a real system, we'd accumulate longer. For now, mark as unknown.
-    const bpm = 0;
-    const bpmConfidence = 0;
+    // BPM: use the engine's known BPM (we know it, no need to detect from 93ms window)
+    const bpm = this.engineBpm || 0;
+    const bpmConfidence = bpm > 0 ? 0.9 : 0;
 
-    // Decay (from transient)
-    const kickDecayMs = this.estimateDecay(allTimeSamples, sr) * 1000;
-    const bassDecayMs = kickDecayMs;
+    // Decay (from transient) — measure kick and bass separately
+    const kickDecayMs = this.estimateDecay(allTimeSamples, sr, 'kick') * 1000;
+    const bassDecayMs = this.estimateDecay(allTimeSamples, sr, 'bass') * 1000;
 
     // Stereo width (placeholder — would need channel splitter)
     const stereoWidth = 0.3;
@@ -290,23 +298,26 @@ export class SelfAnalyzer {
     };
   }
 
-  private estimateDecay(samples: number[], sr: number): number {
-    const threshold = 0.2;
+  private estimateDecay(samples: number[], sr: number, band: 'kick' | 'bass' = 'kick'): number {
+    // For kick: find the LOUDEST peak, measure decay to 10%
+    // For bass: find first transient after 0.15s, measure decay to 10%
+    const threshold = band === 'kick' ? 0.2 : 0.1;
+    const searchStart = band === 'kick' ? Math.floor(sr * 0.05) : Math.floor(sr * 0.15);
+    const searchEnd = Math.min(samples.length, sr * (band === 'kick' ? 5 : 3));
     let peakIdx = -1;
-    for (let i = 1; i < samples.length - 1; i++) {
-      if (Math.abs(samples[i]) > threshold &&
-          Math.abs(samples[i]) > Math.abs(samples[i - 1]) &&
-          Math.abs(samples[i]) > Math.abs(samples[i + 1])) {
+    let peakVal = 0;
+    for (let i = searchStart; i < searchEnd - 1; i++) {
+      const abs = Math.abs(samples[i]);
+      if (abs > threshold && abs > Math.abs(samples[i - 1]) && abs > Math.abs(samples[i + 1]) && abs > peakVal) {
+        peakVal = abs;
         peakIdx = i;
-        break;
       }
     }
-    if (peakIdx < 0) return 0.1;
-    const peakVal = Math.abs(samples[peakIdx]);
+    if (peakIdx < 0 || peakVal < 0.05) return 0.1;
     const targetVal = peakVal * 0.1;
     for (let i = peakIdx; i < samples.length; i++) {
       if (Math.abs(samples[i]) <= targetVal) {
-        return (i - peakIdx) / sr;
+        return Math.max(0.01, (i - peakIdx) / sr);
       }
     }
     return 0.2;

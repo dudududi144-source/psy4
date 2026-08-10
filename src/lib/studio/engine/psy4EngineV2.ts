@@ -353,6 +353,7 @@ export class Psy4EngineV2 {
   private reverbReturn!: GainNode;
   private chains: GainNode[] = [];
   private trackGains: GainNode[] = [];
+  private duckGain!: GainNode;  // sidechain duck for bass track
 
   // Voice pools
   private synthPool: PooledSynthVoice[] = [];
@@ -450,13 +451,35 @@ export class Psy4EngineV2 {
     this.reverb.connect(this.reverbReturn);
     this.reverbReturn.connect(this.master);
 
-    // Track buses (8 tracks)
+    // Track buses (8 tracks) with HPF, pan, and duck
+    this.duckGain = c.createGain();
+    this.duckGain.gain.value = 1.0;
+    this.duckGain.connect(this.master);
+
     for (let i = 0; i < 8; i++) {
       const bus = c.createGain();
+      // HPF on each track to clean mud (except kick/bass)
+      const hpf = c.createBiquadFilter();
+      hpf.type = 'highpass';
+      hpf.frequency.value = i < 2 ? 20 : (i < 4 ? 80 : 120);
+      // Stereo panner
+      const panner = c.createStereoPanner();
+      const panValues = [0, -0.15, 0.2, -0.2, 0, 0.1, -0.1, 0.15];
+      panner.pan.value = panValues[i];
+      // Track gain
       const gain = c.createGain();
       gain.gain.value = 0.8;
-      bus.connect(gain);
-      gain.connect(this.master);
+
+      bus.connect(hpf);
+      hpf.connect(panner);
+      // Bass track (4) goes through duck gain for sidechain
+      if (i === 4) {
+        panner.connect(this.duckGain);
+      } else {
+        panner.connect(gain);
+        gain.connect(this.master);
+      }
+
       // Send to delay/reverb
       const dSend = c.createGain();
       dSend.gain.value = i >= 4 ? 0.15 : 0.02;
@@ -466,9 +489,11 @@ export class Psy4EngineV2 {
       rSend.gain.value = i >= 5 ? 0.2 : 0.03;
       bus.connect(rSend);
       rSend.connect(this.reverbSend);
+
       this.chains.push(bus);
       this.trackGains.push(gain);
     }
+    this.duckGain.connect(this.master);
 
     // Allocate voice pools (20 synth + 24 drum — from PSY6)
     for (let i = 0; i < 20; i++) this.synthPool.push(new PooledSynthVoice(c));
@@ -710,6 +735,13 @@ export class Psy4EngineV2 {
     const voice = this.drumPool[this.drumIdx];
     this.drumIdx = (this.drumIdx + 1) % this.drumPool.length;
     voice.hit(preset, time, vel * track.mix.vol, this.chains[trackIdx]);
+
+    // Sidechain: when kick fires, duck the bass
+    if (trackIdx === 0 && this.duckGain && this.ctx) {
+      this.duckGain.gain.cancelScheduledValues(time);
+      this.duckGain.gain.setValueAtTime(1 - 0.4, time); // 40% duck
+      this.duckGain.gain.linearRampToValueAtTime(1.0, time + 0.25); // 250ms recovery
+    }
   }
 
   private triggerSynth(trackIdx: number, time: number, midi: number, vel: number, stepDur: number, dur?: number): void {
