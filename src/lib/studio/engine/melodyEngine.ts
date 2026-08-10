@@ -785,6 +785,37 @@ export class MelodyEngine {
     };
   }
 
+  /**
+   * Install a transformed motif as the current motif and rebuild the
+   * phrase table from it.
+   *
+   * This is called by MusicalDirector.composeLead() to apply development
+   * techniques (transpose / invert / fragment / shorten / elongate /
+   * sequence) based on the current DevelopmentPhase. The transformed motif
+   * REPLACES the A-section's source material — buildPhrase() then derives
+   * A', B, and A'' from it as usual, so the WHOLE 8-bar phrase inherits the
+   * transformation.
+   *
+   * Task ID: P3-DEVELOPMENT (wire development techniques into composeLead).
+   *
+   * The phrase's energy/tension are re-used from the last build so the
+   * derived sections (A', B, A'') match the phrase's character — setMotif
+   * does NOT change the tension curve, only the source motif.
+   */
+  setMotif(m: Motif): void {
+    this.currentMotif = {
+      notes: [...m.notes],
+      durations: [...m.durations],
+      velocities: [...m.velocities],
+      rests: [...m.rests],
+    };
+    // Rebuild the A A' B A'' phrase table from the new source motif.
+    // buildPhrase reads this.currentMotif as section A and derives A', B,
+    // A'' from it. This is the same path newPhrase() takes after generating
+    // a fresh motif — setMotif just skips the generate step.
+    this.buildPhrase(this.lastEnergy, this.lastTension);
+  }
+
   /** Get the previous call motif (if any). */
   getPreviousMotif(): Motif | null {
     if (!this.previousMotif) return null;

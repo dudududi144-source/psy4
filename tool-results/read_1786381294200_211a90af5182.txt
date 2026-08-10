@@ -1,0 +1,804 @@
+     1→/**
+     2→ * MelodyEngine — professional melodic development engine.
+     3→ *
+     4→ * Replaces the simple EvolvingSequence-based LeadMotif with a real
+     5→ * developmental melodic engine. Implements the classical techniques used
+     6→ * by Beethoven, Bach, and modern film/game composers:
+     7→ *
+     8→ *   - Motif generation with SINGABLE contour (steps over leaps, chord-tone
+     9→ *     start/end, resolution-after-leap, octave+3rd range).
+    10→ *   - Development techniques: transpose, invert, retrograde, fragment,
+    11→ *     elongate (augmentation), shorten (diminution), sequence.
+    12→ *   - Phrase structure: A A' B A'' (8-bar developmental phrases, not AABA).
+    13→ *   - Tension curves (low/medium/high/peak) drive register, density,
+    14→ *     duration, leap probability.
+    15→ *   - Call-response: lead plays a "call", arp plays a "response" (descending,
+    16→ *     ending on a stable tone) during variation sections.
+    17→ *
+    18→ * Design notes:
+    19→ *   - Motifs store scale degrees (integers, can be negative/>7) so they
+    20→ *     transpose cleanly across any scale.
+    21→ *   - Strong beats (downbeats, beat 3) snap to chord tones from
+    22→ *     PROGRESSIONS[scale] — this keeps the lead compatible with Track H1's
+    23→ *     harmony engine (no chord clashes on strong beats).
+    24→ *   - Weak beats allow passing tones / neighbor tones.
+    25→ *   - All randomness is driven by the supplied SeededRng (deterministic).
+    26→ *
+    27→ * Task ID: M1 (Melody track).
+    28→ */
+    29→
+    30→import { SeededRng, scaleNote, PROGRESSIONS } from './musicalGrammar';
+    31→import type { HarmonyEngine } from './harmonyEngine';
+    32→
+    33→// ─── Types ────────────────────────────────────────────────────────────────
+    34→
+    35→export interface Motif {
+    36→  /** Scale degrees (integers; negative or >7 wrap octaves via scaleNote). */
+    37→  notes: number[];
+    38→  /** Note durations in 16th-note steps (1 = 16th, 2 = 8th, 4 = quarter...). */
+    39→  durations: number[];
+    40→  /** Velocities 0..1. */
+    41→  velocities: number[];
+    42→  /** Per-position rest flag (true = this slot is a rest). */
+    43→  rests: boolean[];
+    44→}
+    45→
+    46→export type ContourShape = 'arch' | 'descending' | 'ascending' | 'wave';
+    47→
+    48→interface MotifEvent {
+    49→  /** Absolute step within the 8-bar phrase (0..127). */
+    50→  stepInPhrase: number;
+    51→  /** Scale degree at this event. */
+    52→  scaleDeg: number;
+    53→  /** Velocity 0..1 (already section/energy weighted). */
+    54→  velocity: number;
+    55→  /** Duration in 16th steps (capped at 4 for synth gate safety). */
+    56→  duration: number;
+    57→  /** True = this slot is explicitly a rest. */
+    58→  isRest: boolean;
+    59→}
+    60→
+    61→// ─── Constants ────────────────────────────────────────────────────────────
+    62→
+    63→/** Stable scale degrees: 1st (root), 3rd, 5th. Used for phrase endings. */
+    64→const STABLE_DEGREES = [0, 2, 4];
+    65→
+    66→/** Chord-tone offsets from a chord root (root, 3rd, 5th). */
+    67→const CHORD_TONE_OFFSETS = [0, 2, 4];
+    68→
+    69→const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
+    70→
+    71→// ─── MelodyEngine ─────────────────────────────────────────────────────────
+    72→
+    73→export class MelodyEngine {
+    74→  /** The current "call" motif — drives phrase A and the response. */
+    75→  private currentMotif: Motif;
+    76→  /** Previously generated motif — kept for variation source. */
+    77→  private previousMotif: Motif | null = null;
+    78→  /** Monotonic counter — used to vary tension across phrases. */
+    79→  private phraseCount = 0;
+    80→
+    81→  /** Phrase geometry: 8 bars of 16 steps each = 128 16th-note steps. */
+    82→  private readonly phraseBars = 8;
+    83→  private readonly stepsPerBar = 16;
+    84→  private readonly phraseSteps = 128;
+    85→
+    86→  /** Pre-built event table for the lead's current phrase. */
+    87→  private phraseEvents: (MotifEvent | null)[] = new Array(128).fill(null);
+    88→  /** Pre-built event table for the arp's response (counter-melody). */
+    89→  private responseEvents: (MotifEvent | null)[] = new Array(128).fill(null);
+    90→
+    91→  /** Last call motif — used as source for generateResponse(). */
+    92→  private lastCallMotif: Motif | null = null;
+    93→  /** Cached energy/tension for incremental rebuilds. */
+    94→  private lastEnergy = 0.5;
+    95→  private lastTension = 0.5;
+    96→
+    97→  /** Track last bar at which we did an incremental evolution. */
+    98→  private lastEvolveBar = -1;
+    99→
+   100→  /**
+   101→   * Task V2c: linked HarmonyEngine for chord-tone snapping on strong beats.
+   102→   *
+   103→   * The MelodyEngine generates phrases using the static PROGRESSIONS[scale]
+   104→   * table for chord-tone snapping — but the live HarmonyEngine (Task H1)
+   105→   * generates a DIFFERENT progression (with voice leading, modal interchange,
+   106→   * energy-driven extensions, etc.). So the lead's chord-tone snapping could
+   107→   * target a chord that the pad isn't actually playing, causing dissonance.
+   108→   *
+   109→   * When `harmony` is set, `nextNote()` re-checks the live chord on strong
+   110→   * beats (step % 4 === 0) and snaps the note to the nearest chord tone of
+   111→   * the LIVE chord. This eliminates the dissonance: the lead always plays a
+   112→   * chord tone on strong beats, regardless of which chord the pad is on.
+   113→   *
+   114→   * `null` (or never called) → no live snapping; the engine uses the static
+   115→   * PROGRESSIONS[scale] snapping done at phrase-build time only. This keeps
+   116→   * backwards compatibility with pre-V2c callers.
+   117→   */
+   118→  private harmony: HarmonyEngine | null = null;
+   119→
+   120→  constructor(
+   121→    private root: number,
+   122→    private scale: string,
+   123→    private rng: SeededRng,
+   124→  ) {
+   125→    this.currentMotif = this.generateMotif(this.lastEnergy, this.lastTension);
+   126→    this.buildPhrase(this.lastEnergy, this.lastTension);
+   127→  }
+   128→
+   129→  // ─── Key / configuration ────────────────────────────────────────────────
+   130→
+   131→  /**
+   132→   * Task V2c: link the live HarmonyEngine so the melody can snap strong-beat
+   133→   * notes to the chord tones of the chord the pad is ACTUALLY playing.
+   134→   *
+   135→   * This should be called after the HarmonyEngine is constructed (which
+   136→   * happens in psy4EngineV2.refreshMusicalGenerators()). The link is
+   137→   * re-established on every key change because both engines are rebuilt.
+   138→   *
+   139→   * Pass `null` to disable live chord-tone snapping (revert to the static
+   140→   * PROGRESSIONS[scale] snapping done at phrase-build time).
+   141→   */
+   142→  setHarmonyEngine(harmony: HarmonyEngine | null): void {
+   143→    this.harmony = harmony;
+   144→  }
+   145→
+   146→  /**
+   147→   * Update root + scale (called on key change). Rebuilds the phrase so the
+   148→   * lead immediately follows the new tonal center.
+   149→   */
+   150→  setKey(root: number, scale: string): void {
+   151→    this.root = root;
+   152→    this.scale = scale;
+   153→    this.previousMotif = null;
+   154→    this.lastCallMotif = null;
+   155→    this.phraseCount = 0;
+   156→    this.currentMotif = this.generateMotif(this.lastEnergy, this.lastTension);
+   157→    this.buildPhrase(this.lastEnergy, this.lastTension);
+   158→  }
+   159→
+   160→  // ─── Motif generation ──────────────────────────────────────────────────
+   161→
+   162→  /**
+   163→   * Generate a fresh motif with SINGABLE contour (4-8 notes).
+   164→   *
+   165→   * Rules:
+   166→   *   - Start on a chord tone (1st/3rd/5th).
+   167→   *   - Prefer steps (2nds) over leaps (3rds+).
+   168→   *   - After a leap, resolve by step in the opposite direction.
+   169→   *   - End on a stable tone (1st/3rd/5th).
+   170→   *   - Range: within an octave + a 3rd.
+   171→   *   - Duration: mix of 8ths/16ths with occasional longer notes.
+   172→   *
+   173→   * The contour shape is chosen based on `tension`:
+   174→   *   - High tension → ascending / wave (build energy)
+   175→   *   - Low tension → descending / wave (release)
+   176→   *   - Mid → arch (rise then fall)
+   177→   */
+   178→  generateMotif(energy: number, tension: number): Motif {
+   179→    const numNotes = this.rng.int(4, 8);
+   180→    const contour = this.pickContour(tension);
+   181→
+   182→    // Octave shift: high tension lifts the whole motif up; low tension drops it.
+   183→    const octShift = tension > 0.65 ? 7 : tension < 0.3 ? -7 : 0;
+   184→    // Singable range (scale degrees). -3 (low 3rd) to 9 (octave + 3rd).
+   185→    const minDeg = -3 + (octShift < 0 ? 0 : 0);
+   186→    const maxDeg = 9 + (octShift > 0 ? 7 : 0);
+   187→
+   188→    const notes: number[] = [];
+   189→    const durations: number[] = [];
+   190→    const velocities: number[] = [];
+   191→    const rests: number[] = [];
+   192→
+   193→    // First note: chord tone.
+   194→    const startDeg = this.rng.pick(STABLE_DEGREES) + octShift;
+   195→    notes.push(startDeg);
+   196→    durations.push(this.pickDuration(tension, true));
+   197→    velocities.push(this.pickVelocity(energy, tension, true));
+   198→    rests.push(0);
+   199→
+   200→    let prevDelta = 0;
+   201→
+   202→    for (let i = 1; i < numNotes; i++) {
+   203→      const progress = i / numNotes; // 0..1 through motif
+   204→      let delta: number;
+   205→
+   206→      // After a leap (3rd or larger), 75% chance to resolve by step in opposite direction.
+   207→      if (Math.abs(prevDelta) >= 2 && this.rng.chance(0.75)) {
+   208→        delta = prevDelta > 0 ? -1 : 1;
+   209→      } else {
+   210→        // Otherwise: prefer steps. Leap probability rises with tension.
+   211→        const leapProb = 0.15 + tension * 0.35;
+   212→        if (this.rng.chance(leapProb)) {
+   213→          // Leap: 3rd, 4th, 5th (up or down).
+   214→          delta = this.rng.pick([2, 2, 3, 4, -2, -2, -3, -4]);
+   215→        } else {
+   216→          // Step: mostly 2nds, occasionally a repeat or skip.
+   217→          delta = this.rng.pick([1, 1, 1, -1, -1, -1, 0, 2, -2]);
+   218→        }
+   219→        // Bias direction by contour shape.
+   220→        delta = this.applyContourBias(delta, contour, progress);
+   221→      }
+   222→
+   223→      let nextDeg = notes[i - 1] + delta;
+   224→      // Clamp to singable range — bounce back if exceeded.
+   225→      if (nextDeg < minDeg) nextDeg = notes[i - 1] + 1;
+   226→      if (nextDeg > maxDeg) nextDeg = notes[i - 1] - 1;
+   227→
+   228→      notes.push(nextDeg);
+   229→      durations.push(this.pickDuration(tension, false));
+   230→      velocities.push(this.pickVelocity(energy, tension, false));
+   231→      rests.push(0);
+   232→      prevDelta = delta;
+   233→    }
+   234→
+   235→    // End on a stable tone (1st, 3rd, 5th) — pick nearest stable degree.
+   236→    const lastIdx = notes.length - 1;
+   237→    notes[lastIdx] = this.nearestStableDegree(notes[lastIdx]);
+   238→
+   239→    // Insert occasional rests (low tension → more rests).
+   240→    const restProb = 0.05 + (1 - tension) * 0.2;
+   241→    for (let i = 1; i < notes.length; i++) {
+   242→      if (this.rng.chance(restProb)) {
+   243→        rests[i] = 1; // mark as rest
+   244→      }
+   245→    }
+   246→
+   247→    return {
+   248→      notes,
+   249→      durations,
+   250→      velocities,
+   251→      rests: rests.map((r) => r === 1),
+   252→    };
+   253→  }
+   254→
+   255→  /** Choose a contour shape based on tension. */
+   256→  private pickContour(tension: number): ContourShape {
+   257→    if (tension > 0.8) return this.rng.pick<ContourShape>(['ascending', 'wave']);
+   258→    if (tension > 0.6) return this.rng.pick<ContourShape>(['ascending', 'arch']);
+   259→    if (tension < 0.3) return this.rng.pick<ContourShape>(['descending', 'wave']);
+   260→    return this.rng.pick<ContourShape>(['arch', 'wave', 'descending']);
+   261→  }
+   262→
+   263→  /**
+   264→   * Bias a step direction by the chosen contour.
+   265→   * - ascending: prefer up-steps
+   266→   * - descending: prefer down-steps
+   267→   * - arch: up in first half, down in second half
+   268→   * - wave: alternate direction every 2 notes
+   269→   */
+   270→  private applyContourBias(delta: number, contour: ContourShape, progress: number): number {
+   271→    switch (contour) {
+   272→      case 'ascending':
+   273→        if (delta < 0 && this.rng.chance(0.6)) return Math.abs(delta);
+   274→        return delta;
+   275→      case 'descending':
+   276→        if (delta > 0 && this.rng.chance(0.6)) return -Math.abs(delta);
+   277→        return delta;
+   278→      case 'arch':
+   279→        if (progress < 0.5 && delta < 0 && this.rng.chance(0.6)) return Math.abs(delta);
+   280→        if (progress >= 0.5 && delta > 0 && this.rng.chance(0.6)) return -Math.abs(delta);
+   281→        return delta;
+   282→      case 'wave': {
+   283→        const phase = Math.floor(progress * 4) % 2;
+   284→        if (phase === 0 && delta < 0 && this.rng.chance(0.5)) return Math.abs(delta);
+   285→        if (phase === 1 && delta > 0 && this.rng.chance(0.5)) return -Math.abs(delta);
+   286→        return delta;
+   287→      }
+   288→    }
+   289→    return delta;
+   290→  }
+   291→
+   292→  /** Pick a duration (in 16th steps) based on tension. */
+   293→  private pickDuration(tension: number, isFirst: boolean): number {
+   294→    // Low tension → slow notes (4-8). Peak → 16ths only.
+   295→    if (tension < 0.3) return this.rng.pick([4, 6, 8]);
+   296→    if (tension < 0.6) return this.rng.pick([2, 4, 4]);
+   297→    if (tension < 0.8) return this.rng.pick([1, 2, 2]);
+   298→    // Peak: mostly 16ths, occasional 8th.
+   299→    return this.rng.pick([1, 1, 2]);
+   300→  }
+   301→
+   302→  /** Pick a velocity based on energy + whether this is a strong beat. */
+   303→  private pickVelocity(energy: number, _tension: number, isStrong: boolean): number {
+   304→    const base = isStrong ? 0.7 : 0.5;
+   305→    return clamp(base * (0.6 + energy * 0.4), 0.1, 1.0);
+   306→  }
+   307→
+   308→  /** Find the nearest stable degree (1st/3rd/5th) to a given scale degree. */
+   309→  private nearestStableDegree(deg: number): number {
+   310→    let nearest = STABLE_DEGREES[0];
+   311→    let nearestDist = Infinity;
+   312→    for (const s of STABLE_DEGREES) {
+   313→      // Search across octaves (steps of 7 scale degrees).
+   314→      for (let oct = -7; oct <= 7; oct += 7) {
+   315→        const candidate = s + oct;
+   316→        const dist = Math.abs(candidate - deg);
+   317→        if (dist < nearestDist) {
+   318→          nearestDist = dist;
+   319→          nearest = candidate;
+   320→        }
+   321→      }
+   322→    }
+   323→    return nearest;
+   324→  }
+   325→
+   326→  /** Find the nearest chord tone (root/3rd/5th of `chordDeg`) to `deg`. */
+   327→  private nearestChordTone(deg: number, chordDeg: number): number {
+   328→    let nearest = chordDeg;
+   329→    let nearestDist = Infinity;
+   330→    for (const off of CHORD_TONE_OFFSETS) {
+   331→      for (let oct = -7; oct <= 7; oct += 7) {
+   332→        const candidate = chordDeg + off + oct;
+   333→        const dist = Math.abs(candidate - deg);
+   334→        if (dist < nearestDist) {
+   335→          nearestDist = dist;
+   336→          nearest = candidate;
+   337→        }
+   338→      }
+   339→    }
+   340→    return nearest;
+   341→  }
+   342→
+   343→  // ─── Development techniques ─────────────────────────────────────────────
+   344→
+   345→  /** Transpose a motif by N scale degrees (clean — stays in scale). */
+   346→  transpose(motif: Motif, scaleSteps: number): Motif {
+   347→    return {
+   348→      notes: motif.notes.map((n) => n + scaleSteps),
+   349→      durations: [...motif.durations],
+   350→      velocities: [...motif.velocities],
+   351→      rests: [...motif.rests],
+   352→    };
+   353→  }
+   354→
+   355→  /**
+   356→   * Melodic inversion — flip the contour upside-down.
+   357→   * First note stays; subsequent deltas are negated.
+   358→   */
+   359→  invert(motif: Motif): Motif {
+   360→    if (motif.notes.length === 0) {
+   361→      return { notes: [], durations: [], velocities: [], rests: [] };
+   362→    }
+   363→    const first = motif.notes[0];
+   364→    const invertedNotes = [first];
+   365→    for (let i = 1; i < motif.notes.length; i++) {
+   366→      const delta = motif.notes[i] - motif.notes[i - 1];
+   367→      invertedNotes.push(invertedNotes[i - 1] - delta);
+   368→    }
+   369→    return {
+   370→      notes: invertedNotes,
+   371→      durations: [...motif.durations],
+   372→      velocities: [...motif.velocities],
+   373→      rests: [...motif.rests],
+   374→    };
+   375→  }
+   376→
+   377→  /** Retrograde — play the motif backwards. */
+   378→  retrograde(motif: Motif): Motif {
+   379→    return {
+   380→      notes: [...motif.notes].reverse(),
+   381→      durations: [...motif.durations].reverse(),
+   382→      velocities: [...motif.velocities].reverse(),
+   383→      rests: [...motif.rests].reverse(),
+   384→    };
+   385→  }
+   386→
+   387→  /** Fragment — take a sub-range of the motif (a 2-3 note cell). */
+   388→  fragment(motif: Motif, startIdx: number, length: number): Motif {
+   389→    const end = Math.min(startIdx + length, motif.notes.length);
+   390→    const actualStart = Math.max(0, Math.min(startIdx, motif.notes.length - 1));
+   391→    return {
+   392→      notes: motif.notes.slice(actualStart, end),
+   393→      durations: motif.durations.slice(actualStart, end),
+   394→      velocities: motif.velocities.slice(actualStart, end),
+   395→      rests: motif.rests.slice(actualStart, end),
+   396→    };
+   397→  }
+   398→
+   399→  /** Elongate (rhythmic augmentation) — multiply durations by `factor`. */
+   400→  elongate(motif: Motif, factor: number): Motif {
+   401→    return {
+   402→      notes: [...motif.notes],
+   403→      durations: motif.durations.map((d) => Math.max(1, Math.round(d * factor))),
+   404→      velocities: [...motif.velocities],
+   405→      rests: [...motif.rests],
+   406→    };
+   407→  }
+   408→
+   409→  /** Shorten (rhythmic diminution) — divide durations by `factor`. */
+   410→  shorten(motif: Motif, factor: number): Motif {
+   411→    return this.elongate(motif, 1 / factor);
+   412→  }
+   413→
+   414→  /**
+   415→   * Sequence — repeat the motif at successively higher/lower scale degrees.
+   416→   * The classic melodic development technique (Beethoven, Bach, film composers).
+   417→   * Default shift = 2 scale degrees per repeat (up/down a 3rd).
+   418→   */
+   419→  sequence(motif: Motif, steps: number, direction: 'up' | 'down'): Motif[] {
+   420→    const out: Motif[] = [motif];
+   421→    const dir = direction === 'up' ? 1 : -1;
+   422→    const shiftPerStep = 2;
+   423→    for (let i = 1; i < Math.max(1, steps); i++) {
+   424→      out.push(this.transpose(motif, dir * shiftPerStep * i));
+   425→    }
+   426→    return out;
+   427→  }
+   428→
+   429→  // ─── Call / Response ────────────────────────────────────────────────────
+   430→
+   431→  /**
+   432→   * Generate a "response" motif that answers a "call" motif.
+   433→   * The response:
+   434→   *   - Inverts the call's contour (call ascending → response descending).
+   435→   *   - Ends on the root (most stable tone).
+   436→   *   - Shortens durations for a lighter, "answering" feel.
+   437→   */
+   438→  generateResponse(prevPhrase: Motif): Motif {
+   439→    const inverted = this.invert(prevPhrase);
+   440→    // Force the response to end on the root (degree 0) — definitive "answer".
+   441→    if (inverted.notes.length > 0) {
+   442→      inverted.notes[inverted.notes.length - 1] = 0;
+   443→    }
+   444→    // Lighter rhythm (twice as fast).
+   445→    const response = this.shorten(inverted, 2);
+   446→    // Slightly lower velocity for the response (counter-melody feel).
+   447→    response.velocities = response.velocities.map((v) => clamp(v * 0.8, 0.1, 1.0));
+   448→    return response;
+   449→  }
+   450→
+   451→  // ─── Phrase structure: A A' B A'' ───────────────────────────────────────
+   452→
+   453→  /**
+   454→   * Force a new phrase at section boundaries.
+   455→   * Computes internal tension from energy + phraseCount, generates a fresh
+   456→   * call motif, and rebuilds the 8-bar developmental phrase.
+   457→   */
+   458→  newPhrase(energy: number): void {
+   459→    this.phraseCount++;
+   460→    this.lastEnergy = energy;
+   461→    const tension = this.computeTension(energy, this.phraseCount);
+   462→    this.lastTension = tension;
+   463→    this.previousMotif = this.currentMotif;
+   464→    this.currentMotif = this.generateMotif(energy, tension);
+   465→    this.buildPhrase(energy, tension);
+   466→  }
+   467→
+   468→  /**
+   469→   * Tension curves — maps energy (0..1) to melodic behavior.
+   470→   *   - Low (0..0.3): slow, low register, consonant, rests.
+   471→   *   - Medium (0.3..0.6): mid register, mostly steps.
+   472→   *   - High (0.6..0.8): faster, ascending sequences, leaps.
+   473→   *   - Peak (0.8..1.0): fastest, highest register, climbing sequences.
+   474→   *
+   475→   * We add a small periodic variation so consecutive phrases don't all hit
+   476→   * the same tension peak even at the same energy level.
+   477→   */
+   478→  private computeTension(energy: number, phraseCount: number): number {
+   479→    const phase = (phraseCount % 4) / 4;
+   480→    const variation = 0.12 * Math.sin(2 * Math.PI * phase);
+   481→    return clamp(energy + variation, 0, 1);
+   482→  }
+   483→
+   484→  /**
+   485→   * Build the 8-bar phrase events from the current motif.
+   486→   *   - A (bars 0-1): state the motif.
+   487→   *   - A' (bars 2-3): variation — transpose up a 3rd OR fragment & repeat.
+   488→   *   - B (bars 4-5): contrasting motif (fresh, different contour).
+   489→   *   - A'' (bars 6-7): return + development — augment + sequence up.
+   490→   */
+   491→  private buildPhrase(energy: number, tension: number): void {
+   492→    // Clear event tables.
+   493→    this.phraseEvents = new Array(this.phraseSteps).fill(null);
+   494→    this.responseEvents = new Array(this.phraseSteps).fill(null);
+   495→
+   496→    // A — original motif.
+   497→    const sectionA = this.currentMotif;
+   498→
+   499→    // A' — variation: transpose up a 3rd (2 scale degrees) OR fragment+repeat.
+   500→    const aPrime = this.rng.chance(0.5)
+   501→      ? this.transpose(sectionA, 2)
+   502→      : this.repeatFragment(sectionA);
+   503→
+   504→    // B — contrasting motif (fresh, with higher tension for contrast).
+   505→    const sectionB = this.generateMotif(energy, clamp(tension + 0.2, 0, 1));
+   506→
+   507→    // A'' — augmented + sequenced up (slower, then sequenced).
+   508→    const augmented = this.elongate(sectionA, 2);
+   509→    const sequenceChain = this.sequence(augmented, 2, 'up');
+   510→    const aDoublePrime = sequenceChain[1] ?? augmented;
+   511→
+   512→    // Place each section at its bar range.
+   513→    this.placeMotifInPhrase(sectionA, 0, this.phraseEvents, true);
+   514→    this.placeMotifInPhrase(aPrime, 2, this.phraseEvents, true);
+   515→    this.placeMotifInPhrase(sectionB, 4, this.phraseEvents, true);
+   516→    this.placeMotifInPhrase(aDoublePrime, 6, this.phraseEvents, true);
+   517→
+   518→    // Cache the call motif and build the arp's response.
+   519→    this.lastCallMotif = sectionA;
+   520→    this.buildResponseEvents(energy, tension);
+   521→  }
+   522→
+   523→  /** Repeat a 2-3 note fragment to fill A' — classic motivic development. */
+   524→  private repeatFragment(motif: Motif): Motif {
+   525→    const fragLen = Math.min(3, motif.notes.length);
+   526→    const frag = this.fragment(motif, 0, fragLen);
+   527→    // Repeat the fragment 2-3 times to fill the section.
+   528→    const repeats = Math.max(2, Math.floor(8 / Math.max(1, frag.notes.length)));
+   529→    const notes: number[] = [];
+   530→    const durations: number[] = [];
+   531→    const velocities: number[] = [];
+   532→    const rests: boolean[] = [];
+   533→    for (let r = 0; r < repeats; r++) {
+   534→      // Optional transpose on each repeat for sequence feel.
+   535→      const transpose = r * 1;
+   536→      for (let i = 0; i < frag.notes.length; i++) {
+   537→        notes.push(frag.notes[i] + transpose);
+   538→        durations.push(frag.durations[i]);
+   539→        velocities.push(frag.velocities[i]);
+   540→        rests.push(frag.rests[i]);
+   541→      }
+   542→    }
+   543→    return { notes, durations, velocities, rests };
+   544→  }
+   545→
+   546→  /**
+   547→   * Place a motif's events into the phrase event table starting at `startBar`.
+   548→   * Snaps strong beats to chord tones (from PROGRESSIONS[scale]) so the lead
+   549→   * never clashes with the harmony engine's chord changes.
+   550→   */
+   551→  private placeMotifInPhrase(
+   552→    motif: Motif,
+   553→    startBar: number,
+   554→    events: (MotifEvent | null)[],
+   555→    snapChordTones: boolean,
+   556→  ): void {
+   557→    const sectionBars = 2;
+   558→    const startStep = startBar * this.stepsPerBar;
+   559→    const endStep = startStep + sectionBars * this.stepsPerBar;
+   560→    const prog = PROGRESSIONS[this.scale] || PROGRESSIONS.minor;
+   561→    let curStep = startStep;
+   562→
+   563→    for (let i = 0; i < motif.notes.length; i++) {
+   564→      if (curStep >= endStep) break;
+   565→      if (curStep >= this.phraseSteps) break;
+   566→
+   567→      const dur = Math.max(1, motif.durations[i]);
+   568→      const isRest = motif.rests[i];
+   569→
+   570→      if (!isRest) {
+   571→        let deg = motif.notes[i];
+   572→
+   573→        if (snapChordTones) {
+   574→          // Determine which bar (in absolute phrase terms) we're in.
+   575→          const barWithinPhrase = Math.floor(curStep / this.stepsPerBar);
+   576→          const stepWithinBar = curStep % this.stepsPerBar;
+   577→          const chordDeg = prog[barWithinPhrase % prog.length];
+   578→
+   579→          if (stepWithinBar === 0) {
+   580→            // Downbeat → snap to nearest chord tone.
+   581→            deg = this.nearestChordTone(deg, chordDeg);
+   582→          } else if (stepWithinBar === 8 && this.rng.chance(0.5)) {
+   583→            // Beat 3 → snap to a chord tone (3rd or 5th).
+   584→            deg = this.rng.pick([chordDeg + 2, chordDeg + 4]);
+   585→          }
+   586→          // Otherwise: keep the motif's scale degree (passing/neighbor tone).
+   587→        }
+   588→
+   589→        events[curStep] = {
+   590→          stepInPhrase: curStep,
+   591→          scaleDeg: deg,
+   592→          velocity: motif.velocities[i],
+   593→          // Cap duration at 4 (quarter note) to avoid synth-gate overflow.
+   594→          duration: Math.min(dur, 4),
+   595→          isRest: false,
+   596→        };
+   597→      }
+   598→
+   599→      curStep += dur;
+   600→    }
+   601→  }
+   602→
+   603→  /**
+   604→   * Build the arp's response events from the last call motif.
+   605→   * The response plays in bars 4-7 of the phrase (the "answer" portion),
+   606→   * typically during VARIATION sections.
+   607→   */
+   608→  private buildResponseEvents(energy: number, tension: number): void {
+   609→    this.responseEvents = new Array(this.phraseSteps).fill(null);
+   610→    if (!this.lastCallMotif) return;
+   611→
+   612→    const response = this.generateResponse(this.lastCallMotif);
+   613→    // Place the response starting at bar 4 (the B / A'' region).
+   614→    // No chord-tone snapping — the response is a counter-melody and can
+   615→    // use passing tones freely.
+   616→    this.placeMotifInPhrase(response, 4, this.responseEvents, false);
+   617→  }
+   618→
+   619→  // ─── Per-step note lookup ───────────────────────────────────────────────
+   620→
+   621→  /**
+   622→   * Get the next lead note for the given step/bar/energy.
+   623→   * Returns null for rests or steps with no scheduled event.
+   624→   *
+   625→   * The lead plays at root+12 (one octave above the bass root).
+   626→   *
+   627→   * Task V2c: if a HarmonyEngine is linked, the note is re-checked on strong
+   628→   * beats (step % 4 === 0) against the LIVE chord the pad is playing. If the
+   629→   * note's pitch class is NOT a chord tone, it's snapped to the nearest chord
+   630→   * tone (preserving the original octave as closely as possible). This
+   631→   * eliminates dissonance between the lead and the pad — the lead always
+   632→   * plays a chord tone on strong beats, regardless of which chord the pad's
+   633→   * progression has reached.
+   634→   *
+   635→   * On weak beats (step % 4 !== 0), the original note is preserved —
+   636→   * passing tones / neighbor tones on weak beats are musically valid (they
+   637→   * create tension that resolves on the next strong beat).
+   638→   */
+   639→  nextNote(
+   640→    step: number,
+   641→    bar: number,
+   642→    energy: number,
+   643→  ): { note: number; velocity: number; duration: number } | null {
+   644→    const phraseBar = ((bar % this.phraseBars) + this.phraseBars) % this.phraseBars;
+   645→    const phraseStep = phraseBar * this.stepsPerBar + (step % this.stepsPerBar);
+   646→
+   647→    const event = this.phraseEvents[phraseStep];
+   648→    if (!event || event.isRest) return null;
+   649→
+   650→    let midi = scaleNote(this.root + 12, this.scale, event.scaleDeg);
+   651→
+   652→    // ── Task V2c: melody-harmony synchronization ──
+   653→    // On strong beats (every quarter note = step % 4 === 0), snap the note
+   654→    // to the nearest chord tone of the LIVE chord (the one the pad is
+   655→    // playing right now). This makes the lead harmonize with the pad on
+   656→    // every downbeat — no clashing non-chord tones on strong beats.
+   657→    if (this.harmony) {
+   658→      const isStrongBeat = step % 4 === 0;
+   659→      if (isStrongBeat) {
+   660→        midi = this.snapToLiveChordTone(midi);
+   661→      }
+   662→    }
+   663→
+   664→    const vel = clamp(event.velocity * (0.6 + energy * 0.4), 0.1, 1.0);
+   665→    return { note: midi, velocity: vel, duration: event.duration };
+   666→  }
+   667→
+   668→  /**
+   669→   * Task V2c: snap a MIDI note to the nearest chord tone of the live chord.
+   670→   *
+   671→   * If the note is already a chord tone (any octave), it's returned unchanged.
+   672→   * Otherwise, the nearest chord-tone pitch class is found, and the note is
+   673→   * shifted to the octave that minimizes movement from the original note
+   674→   * (so the melodic contour is preserved as much as possible).
+   675→   *
+   676→   * If the harmony engine has no current chord (e.g. before the first chord
+   677→   * plays, or outside a lead section), the note is returned unchanged — the
+   678→   * static PROGRESSIONS[scale] snapping from placeMotifInPhrase still applies.
+   679→   */
+   680→  private snapToLiveChordTone(midi: number): number {
+   681→    if (!this.harmony) return midi;
+   682→    const chord = this.harmony.getCurrentChord();
+   683→    if (!chord || chord.notes.length === 0) return midi;
+   684→
+   685→    // Pitch classes of the live chord.
+   686→    const chordPCs = chord.notes.map(n => ((n % 12) + 12) % 12);
+   687→    const midiPC = ((midi % 12) + 12) % 12;
+   688→
+   689→    // Already a chord tone? Leave it alone — preserves melodic identity.
+   690→    if (chordPCs.includes(midiPC)) return midi;
+   691→
+   692→    // Find the nearest chord-tone pitch class (chromatic distance, wraparound).
+   693→    let nearestPC = chordPCs[0];
+   694→    let nearestDist = Infinity;
+   695→    for (const pc of chordPCs) {
+   696→      const d = Math.min(
+   697→        Math.abs(pc - midiPC),
+   698→        12 - Math.abs(pc - midiPC),
+   699→      );
+   700→      if (d < nearestDist) {
+   701→        nearestDist = d;
+   702→        nearestPC = pc;
+   703→      }
+   704→    }
+   705→
+   706→    // Place the snapped pitch class at the octave closest to the original
+   707→    // note. We pick the octave so the result is within a half-octave of the
+   708→    // original — this keeps the melodic contour smooth (no jumps).
+   709→    const octaveBase = midi - midiPC; // midi with PC zeroed out
+   710→    let snapped = octaveBase + nearestPC;
+   711→    // If we wrapped past 0/11, snap may be off by an octave — correct it.
+   712→    while (snapped - midi > 6) snapped -= 12;
+   713→    while (midi - snapped > 6) snapped += 12;
+   714→
+   715→    // Clamp to a sane lead range (don't snap above MIDI 96 or below 36).
+   716→    while (snapped > 96) snapped -= 12;
+   717→    while (snapped < 36) snapped += 12;
+   718→
+   719→    return snapped;
+   720→  }
+   721→
+   722→  /**
+   723→   * Get the next response note for the arp (counter-melody to the lead).
+   724→   * Returns null when no response event is scheduled.
+   725→   *
+   726→   * The arp plays at root+24 (two octaves above the bass root) — brighter
+   727→   * register so it sits above the lead as a true counter-melody.
+   728→   */
+   729→  nextResponseNote(
+   730→    step: number,
+   731→    bar: number,
+   732→    energy: number,
+   733→  ): { note: number; velocity: number; duration: number } | null {
+   734→    const phraseBar = ((bar % this.phraseBars) + this.phraseBars) % this.phraseBars;
+   735→    const phraseStep = phraseBar * this.stepsPerBar + (step % this.stepsPerBar);
+   736→
+   737→    const event = this.responseEvents[phraseStep];
+   738→    if (!event || event.isRest) return null;
+   739→
+   740→    const midi = scaleNote(this.root + 24, this.scale, event.scaleDeg);
+   741→    const vel = clamp(event.velocity * (0.55 + energy * 0.35), 0.1, 1.0);
+   742→    return { note: midi, velocity: vel, duration: event.duration };
+   743→  }
+   744→
+   745→  // ─── Incremental evolution ──────────────────────────────────────────────
+   746→
+   747→  /**
+   748→   * Per-bar evolution tick. Called from the engine's scheduler every bar.
+   749→   * Unlike LeadMotif (which mutated one note at a time), MelodyEngine
+   750→   * refreshes the B section (contrasting motif) at intervals — this gives
+   751→   * fresh variation without losing the A-section identity.
+   752→   *
+   753→   * Effective interval shrinks as `evolutionRate` grows (faster evolution
+   754→   * for more dynamic worlds like Goa / acid-psy).
+   755→   */
+   756→  tickEvolution(bar: number, evolutionRate = 0.4, intervalBars = 8): void {
+   757→    if (bar <= 0) return;
+   758→    if (bar <= this.lastEvolveBar) return;
+   759→    const effectiveInterval = Math.max(4, Math.round(intervalBars * (1.2 - evolutionRate)));
+   760→    if (bar % effectiveInterval !== 0) return;
+   761→    this.lastEvolveBar = bar;
+   762→    this.regenerateBSection();
+   763→  }
+   764→
+   765→  /** Refresh only the B section (bars 4-5) with a new contrasting motif. */
+   766→  private regenerateBSection(): void {
+   767→    // Clear B section events.
+   768→    for (let s = 4 * this.stepsPerBar; s < 6 * this.stepsPerBar; s++) {
+   769→      this.phraseEvents[s] = null;
+   770→    }
+   771→    const tension = clamp(this.lastTension + 0.15, 0, 1);
+   772→    const newB = this.generateMotif(this.lastEnergy, tension);
+   773→    this.placeMotifInPhrase(newB, 4, this.phraseEvents, true);
+   774→  }
+   775→
+   776→  // ─── Inspection (for debugging / UI) ────────────────────────────────────
+   777→
+   778→  /** Get the current call motif (read-only). */
+   779→  getCurrentMotif(): Motif {
+   780→    return {
+   781→      notes: [...this.currentMotif.notes],
+   782→      durations: [...this.currentMotif.durations],
+   783→      velocities: [...this.currentMotif.velocities],
+   784→      rests: [...this.currentMotif.rests],
+   785→    };
+   786→  }
+   787→
+   788→  /** Get the previous call motif (if any). */
+   789→  getPreviousMotif(): Motif | null {
+   790→    if (!this.previousMotif) return null;
+   791→    return {
+   792→      notes: [...this.previousMotif.notes],
+   793→      durations: [...this.previousMotif.durations],
+   794→      velocities: [...this.previousMotif.velocities],
+   795→      rests: [...this.previousMotif.rests],
+   796→    };
+   797→  }
+   798→
+   799→  /** Phrase counter — how many phrases have been generated. */
+   800→  getPhraseCount(): number {
+   801→    return this.phraseCount;
+   802→  }
+   803→}
+   804→

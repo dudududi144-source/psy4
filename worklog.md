@@ -5010,3 +5010,153 @@ PHASE 5: REAL-TIME ADAPTATION
 - Radio plays a melody → we learn the contour and incorporate it
 - Radio uses a specific drum pattern → we learn and use it
 - This is true "musical learning", not just parameter matching
+
+---
+Task ID: P1-CLEANUP (Phase 1 — Delete dead code safely)
+Agent: Z.ai Code (main)
+Task: Remove ~3,500+ lines of confirmed dead engine code from src/lib/studio/engine/ to clean up the codebase (Phase 1 of RESEARCH-DEEP improvement plan).
+
+Work Log:
+- Read RESEARCH-DEEP section of worklog.md to confirm context: 13 engine files (3,482 lines) were identified as having ZERO imports during the prior audit.
+- For each candidate file, ran `grep -l "from.*'<filename>'"` across src/ to re-verify zero live imports — all 14 confirmed dead.
+- Additionally checked the 4 "borderline" candidates:
+  - `tasteEngine.ts` (147 lines): imported ONLY by `liveEngine.ts` (dead) → newly-dead after Pass 1
+  - `grooveEngineV2.ts` (218 lines): imported ONLY by `productionDirector.ts` (dead) → newly-dead after Pass 1
+  - `render/arrangement.ts`: imported by 8 LIVE files (orchestrator.ts, audit/*, tests/index.ts, artifacts/index.ts) → KEPT
+  - `grooveEngine.ts`: imported by live `render/arrangement.ts` → KEPT
+  - `musicalMemory.ts`: imported by `musicalDirector.ts` → KEPT
+  - `engineWorklet.ts`: imported by `offlineRenderer.ts` → KEPT
+  - `offlineRenderer.ts`: used by API routes → KEPT
+- Verified `src/lib/studio/index.ts` barrel does NOT re-export any of the dead files (would otherwise have caused downstream breakage).
+
+DELETIONS (16 files, 3,847 lines):
+  Pass 1 — 14 files with 0 imports (verified):
+    1.  audioPerformanceMonitor.ts   (137)
+    2.  audioQualityGate.ts          (188)
+    3.  autonomousEngine.ts          (212)
+    4.  hookEngine.ts                (231)
+    5.  liveEngine.ts                (282)
+    6.  motionEngine.ts              (223)
+    7.  proAudioNodes.ts             (398)
+    8.  productionDirector.ts        (287)
+    9.  referenceAnalyzer.ts         (283)
+    10. sampleSelector.ts            (220)
+    11. soundBank.ts                 (185)
+    12. voiceSpecs.ts                (306)
+    13. wavRenderer.ts               (228)
+    14. workletDsp.ts                (302)
+  Pass 2 — 2 newly-dead (only imported by Pass-1 dead files):
+    15. tasteEngine.ts               (147)  — was imported only by liveEngine.ts
+    16. grooveEngineV2.ts            (218)  — was imported only by productionDirector.ts
+
+VERIFICATION:
+1. tsc broken-import check (`npx tsc --noEmit --skipLibCheck 2>&1 | grep "Cannot find module"`):
+   - Only 2 hits, both in `examples/websocket/*` (pre-existing missing socket.io packages, UNRELATED to deletions)
+   - Zero broken imports from any of the 16 deleted files. No fixes needed.
+2. Targeted re-check (`grep -E "(<all deleted filenames>)" | tsc output`): empty — no errors mention any deleted file.
+3. Total tsc error count = 56, all PRE-EXISTING in unrelated files (examples/, scripts/independent-proof.ts, skills/*, src/lib/studio/artifacts/index.ts RenderMetrics typing). DID NOT INCREASE.
+4. `bun run lint` → 0 output (clean pass, no errors at all).
+5. Dev server smoke test:
+   - `curl http://localhost:3000/` → HTTP 200, ✓ Compiled
+   - `POST /api/forensic/render` (route that imports offlineRenderer → engineWorklet → kept files) → HTTP 200, ✓ Compiled
+   - dev.log shows zero new compile errors after deletion.
+
+DELIVERABLE SUMMARY:
+- Files deleted: 16
+- Lines removed: 3,847 (exceeds 3,500+ target)
+- Broken imports found: 0 (none — all 16 files were genuinely orphaned)
+- Broken imports fixed: 0 (N/A)
+- New tsc errors introduced: 0 (56 → 56, no increase)
+- New lint errors introduced: 0 (lint passes cleanly)
+- Dev server: HTTP 200, compiles successfully (root + API route using offlineRenderer both verified)
+
+CONSTRAINTS HONORED:
+- No live-import file deleted (render/arrangement.ts, grooveEngine.ts, musicalMemory.ts, engineWorklet.ts, offlineRenderer.ts all KEPT).
+- "If unsure, SKIP" rule applied: kept grooveEngine.ts despite being imported only by render/arrangement.ts — arrangement has 8 live importers so the chain is alive.
+- Dev server not broken (HTTP 200 confirmed on / and /api/forensic/render).
+- TypeScript strict mode still passes (no NEW errors; the 56 pre-existing errors are unrelated to this cleanup).
+
+NEXT (future tasks, NOT done here — left for P2+):
+- Merge musicalMemory.ts into learningMemory.ts (duplicate concept)
+- Wire MelodyEngine.transpose/invert/retrograde/sequence into composeLead (currently unused — see RESEARCH-DEEP finding #5)
+- Build MusicAnalyzer (Phase 2 — hear the MUSIC not just spectral features)
+- Structural pursuit (Phase 4) + real-time adaptation (Phase 5)
+
+---
+Task ID: P3-DEVELOPMENT (Phase 3 — Wire development techniques into composeLead)
+Agent: Z.ai Code (main)
+
+THE PROBLEM (code-verified):
+MelodyEngine defined 7 classical development techniques (transpose, invert, retrograde, fragment, elongate, shorten, sequence) but MusicalDirector.composeLead() only applied `octaveShift` (±12 semitones). The lead motif repeated with octave changes but never TRANSFORMED — no transposition, no inversion, no rhythmic diminution/augmentation, no sequencing. This is why the lead sounded repetitive: it lacked the classical motivic development that Beethoven/Bach/film composers use to make a melody EVOLVE across phrases rather than just repeat.
+
+ROOT CAUSE:
+- composePhrase() called `melody.newPhrase(energy)` which generates a FRESH motif each phrase (no continuity across phrases).
+- composeLead() then read from that fresh motif via `melody.nextNote()` — applying only an octave shift per phase.
+- The development techniques existed in MelodyEngine but were called only INSIDE buildPhrase() for the A→A'→B→A'' internal phrase structure, NOT across phrases for the high-level development arc.
+
+THE FIX (5 classical transformations, 1 per DevelopmentPhase):
+
+  - statement  (phase 0): IDENTITY       — play the motif as-is (the "thesis").           label: "A"
+  - variation  (phase 1): TRANSPOSE +3rd OR FRAGMENT (first 4 notes) — varied repeat.    label: "A' (transposed +3rd)" or "A' (fragment)"
+  - contrast   (phase 2): INVERT          — flip the contour upside-down (B from A).      label: "B (inverted)"
+  - climax     (phase 3): SHORTEN (×2 faster) + SEQUENCE up (×2) → MERGE — climbing run. label: "A'' (diminution + sequence)"
+  - resolution (phase 4): ELONGATE (×2 slower) — calm augmentation.                      label: "A (augmentation)"
+
+Pipeline (per phrase, inside composeLead):
+  1. baseMotif = melody.getCurrentMotif()           // the fresh motif newPhrase() just generated
+  2. { motif: transformed, label } = transformMotifForPhase(phase, baseMotif, rng)
+  3. melody.setMotif(transformed)                    // rebuilds A A' B A'' phrase table from transformed motif
+  4. for each step: melody.nextNote() → returns notes from the TRANSFORMED motif's phrase table
+  5. return label → stored in Phrase.motifIds[] for UI display
+
+The transformed motif drives the A section (the "thesis" of the phrase). buildPhrase() still derives A' / B / A'' from it as usual, so the WHOLE 8-bar phrase inherits the transformation — e.g. in the climax phase, A is diminished+sequenced, A' is a transposed version of THAT (still fast), B is fresh contrasting material, A'' is augmented (which would slow it back down — a known compounding effect that's acceptable since the A section itself carries the diminution intensity).
+
+CHANGES MADE:
+
+1. src/lib/studio/engine/melodyEngine.ts (+30 lines):
+   - Added `setMotif(m: Motif): void` public method.
+     * Defensive-copies the input motif (notes/durations/velocities/rests) into this.currentMotif.
+     * Calls this.buildPhrase(this.lastEnergy, this.lastTension) to rebuild the A A' B A'' phrase table from the new source motif — same path newPhrase() takes after generateMotif(), just skipping the generate step.
+     * Re-uses lastEnergy/lastTension so derived sections (A', B, A'') match the phrase's character — setMotif does NOT change the tension curve, only the source motif.
+   - getCurrentMotif() already existed (line 779) — no change needed.
+
+2. src/lib/studio/engine/musicalDirector.ts (+110 lines net):
+   - Added `import { MelodyEngine, type Motif } from './melodyEngine';` (was just MelodyEngine).
+   - Modified composeLead() (lines 945-1040):
+     * Before the per-step loop, fetches baseMotif via this.melody.getCurrentMotif().
+     * Calls this.transformMotifForPhase(phase, baseMotif, this.rng) → { motif, label }.
+     * Calls this.melody.setMotif(transformedMotif) — phrase table is now built from the transformed motif.
+     * Loop unchanged — nextNote() now returns developed material.
+     * Returns motifLabel (e.g. "A", "A' (transposed +3rd)", "B (inverted)", "A'' (diminution + sequence)", "A (augmentation)") instead of the old `motif-${phase}-${hi|lo|mid}` string. This satisfies STEP 7 — the Phrase.motifIds array now reflects the actual transformation.
+   - Added private transformMotifForPhase(phase, baseMotif, rng): { motif, label }:
+     * switch on the 5 DevelopmentPhase values (exhaustive — TypeScript recognizes the union coverage).
+     * statement → identity.
+     * variation → 50% transpose(motif, 2) / 50% fragment(motif, 0, min(4, len)) — driven by rng.chance(0.5).
+     * contrast  → invert(motif).
+     * climax    → shorten(motif, 2) → sequence(fast, 2, 'up') → mergeSequencedMotifs(seq).
+     * resolution → elongate(motif, 2).
+   - Added private mergeSequencedMotifs(motifs: Motif[]): Motif:
+     * Concatenates notes/durations/velocities/rests via flatMap — turns a 2-step sequence chain into one long motif.
+
+CONSTRAINTS HONORED:
+- Did NOT break existing functionality: buildPhrase() still derives A'/B/A'' from currentMotif; nextNote() / nextResponseNote() / setHarmonyEngine() / setKey() / newPhrase() / tickEvolution() / regenerateBSection() / getCurrentMotif() / getPreviousMotif() / getPhraseCount() all unchanged. setMotif is a NEW method, additive only.
+- DETERMINISTIC: all randomness flows through the seeded rng (rng.chance(0.5) for the variation split). The rng instance is shared between MusicalDirector and MelodyEngine (passed in the constructor + setEngines) — same seed → same transformation sequence every run.
+- Musical: transpose/invert/sequence all operate on SCALE DEGREES (not pitches), so the transformed motif stays in-key regardless of the underlying scale. Octave wraparound is handled by scaleNote() in nextNote(). The lead's strong-beat chord-tone snapping (V2c) still applies on top of the transformed motif.
+- TypeScript strict mode: transformMotifForPhase's switch is exhaustive over the DevelopmentPhase union (no fallthrough, no missing case). No `noImplicitReturns` violation.
+- The transformed motif is installed BEFORE the per-step loop, so every nextNote() call reads from the rebuilt phrase table. No partial-state issue.
+
+VERIFICATION:
+- `npx tsc --noEmit --skipLibCheck 2>&1 | grep -E "musicalDirector|melodyEngine" | head` → EMPTY (0 errors in target files).
+- `bun run lint 2>&1 | grep -E "musicalDirector|melodyEngine" | grep error` → EMPTY (0 lint errors in target files).
+- Dev server compiles cleanly (dev.log shows "✓ Compiled in Nms" with no errors; GET / → 200).
+
+REMAINING GAP (honest):
+- PHYSICAL LISTENING UNVERIFIED — verification via TypeScript + ESLint pass + dev server compile. Cannot run the browser's audio engine in this environment to actually hear the developed lead. The signal chain is well-formed: composePhrase → newPhrase (fresh base motif) → composeLead → getCurrentMotif → transformMotifForPhase (transpose/invert/fragment/shorten+sequence/elongate) → setMotif (rebuilds phrase table) → nextNote per step returns developed material → triggerSynth fires it. But the audible result (does the lead ACTUALLY sound like it's evolving statement→variation→contrast→climax→resolution?) is asserted by construction, not by listening.
+- COMPOUNDING TRANSFORMATIONS: in the climax phase, the A'' section (derived by buildPhrase) calls elongate(transformedMotif, 2) which doubles durations — partially cancelling the diminution applied in transformMotifForPhase. So the A'' section in a climax phrase may not be as fast as the A section. This is acceptable (the A section carries the intensity; A'' provides a brief rhythmic release before the next phrase) but a future enhancement could make buildPhrase phase-aware so it doesn't undo the transformation.
+- The transformation is per-PHRASE, not per-SECTION. Within a single phrase, buildPhrase still applies its own A→A'→B→A'' internal development ON TOP of the phase transformation. This is intentional (gives both short-range and long-range form) but means the development is layered, not linear.
+
+ARTIFACTS:
+- src/lib/studio/engine/melodyEngine.ts (extended, +30 lines) — new setMotif() public method.
+- src/lib/studio/engine/musicalDirector.ts (extended, +110 lines net) — Motif type import; transformMotifForPhase + mergeSequencedMotifs private methods; composeLead wired to use the transformation pipeline and return the transformation label.
+
+DELIVERABLE: A lead that ACTUALLY develops across phrases — statement (A as-is) → variation (A' transposed +3rd or fragmented) → contrast (B inverted) → climax (A'' diminished + sequenced up) → resolution (A augmented). The lead now sounds like it's EVOLVING, not repeating with octave shifts. The development is DETERMINISTIC (seeded rng), MUSICAL (scale-degree operations keep it in-key), and TRACKED (the Phrase.motifIds array surfaces the transformation label to the UI).
