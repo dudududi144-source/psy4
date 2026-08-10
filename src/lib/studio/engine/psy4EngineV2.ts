@@ -354,6 +354,9 @@ export class Psy4EngineV2 {
   private chains: GainNode[] = [];
   private trackGains: GainNode[] = [];
   private duckGain!: GainNode;  // sidechain duck for bass track
+  private saturator!: WaveShaperNode;
+  private toneLow!: BiquadFilterNode;
+  private toneHigh!: BiquadFilterNode;
 
   // Voice pools
   private synthPool: PooledSynthVoice[] = [];
@@ -398,9 +401,30 @@ export class Psy4EngineV2 {
     const nd = this.noiseBuffer.getChannelData(0);
     for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
 
-    // Master chain — boosted for commercial loudness
+    // Master chain — boosted + saturation + tone shelves (from PSY6/psy)
     this.master = c.createGain();
-    this.master.gain.value = 1.1; // was 0.85 — boost to close LUFS gap
+    this.master.gain.value = 1.1;
+
+    // Saturation (WaveShaper — adds warmth and loudness)
+    this.saturator = c.createWaveShaper();
+    this.saturator.oversample = '4x';
+    const satCurve = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) {
+      const x = (i / 512) - 1;
+      satCurve[i] = Math.tanh(x * 1.3) * 0.7 + x * 0.3;
+    }
+    this.saturator.curve = satCurve;
+
+    // Tone shelves (final EQ)
+    this.toneLow = c.createBiquadFilter();
+    this.toneLow.type = 'lowshelf';
+    this.toneLow.frequency.value = 110;
+    this.toneLow.gain.value = 1.5;
+    this.toneHigh = c.createBiquadFilter();
+    this.toneHigh.type = 'highshelf';
+    this.toneHigh.frequency.value = 8500;
+    this.toneHigh.gain.value = -2;
+
     this.comp = c.createDynamicsCompressor();
     this.comp.threshold.value = -8;
     this.comp.knee.value = 12;
@@ -409,7 +433,12 @@ export class Psy4EngineV2 {
     this.comp.release.value = 0.2;
     this.analyser = c.createAnalyser();
     this.analyser.fftSize = 2048;
-    this.master.connect(this.comp);
+
+    // Connect: master → saturator → toneLow → toneHigh → comp → analyser → destination
+    this.master.connect(this.saturator);
+    this.saturator.connect(this.toneLow);
+    this.toneLow.connect(this.toneHigh);
+    this.toneHigh.connect(this.comp);
     this.comp.connect(this.analyser);
     this.analyser.connect(c.destination);
 
@@ -656,6 +685,18 @@ export class Psy4EngineV2 {
     const root = key.root;
     const sc = key.scale;
     const sd = 60 / this.bpm / 4;
+    const isPreDrop = (section.label === 'BUILD' || section.label === 'BUILD 2') && bar >= section.bars - 2;
+    const isDropStart = section.label.includes('DROP') && bar === 0 && step === 0;
+
+    // ── RISER FX (last 2 bars of build) ──
+    if (isPreDrop && step === 0 && bar === section.bars - 2) {
+      this.triggerRiser(time, sd * 32);
+    }
+
+    // ── IMPACT FX (drop start) ──
+    if (isDropStart) {
+      this.triggerImpact(time);
+    }
 
     // ── KICK (track 0) — 4 on the floor ──
     if (step % 4 === 0) {
@@ -764,6 +805,60 @@ export class Psy4EngineV2 {
       this.duckGain.gain.setValueAtTime(1 - 0.4, time); // 40% duck
       this.duckGain.gain.linearRampToValueAtTime(1.0, time + 0.25); // 250ms recovery
     }
+  }
+
+  private triggerRiser(time: number, dur: number): void {
+    if (!this.ctx) return;
+    const c = this.ctx;
+    // Noise through filter that opens up
+    const noise = c.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    noise.loop = true;
+    const filter = c.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(200, time);
+    filter.frequency.exponentialRampToValueAtTime(8000, time + dur);
+    filter.Q.value = 2;
+    const gain = c.createGain();
+    gain.gain.setValueAtTime(0.001, time);
+    gain.gain.exponentialRampToValueAtTime(0.3, time + dur);
+    gain.gain.exponentialRampToValueAtTime(0.001, time + dur + 0.1);
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.master);
+    noise.start(time);
+    noise.stop(time + dur + 0.2);
+  }
+
+  private triggerImpact(time: number): void {
+    if (!this.ctx) return;
+    const c = this.ctx;
+    // Sub boom + noise crack
+    const osc = c.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(120, time);
+    osc.frequency.exponentialRampToValueAtTime(35, time + 0.5);
+    const og = c.createGain();
+    og.gain.setValueAtTime(0.8, time);
+    og.gain.exponentialRampToValueAtTime(0.001, time + 0.6);
+    osc.connect(og);
+    og.connect(this.master);
+    osc.start(time);
+    osc.stop(time + 0.7);
+
+    const noise = c.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const hp = c.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 3000;
+    const ng = c.createGain();
+    ng.gain.setValueAtTime(0.4, time);
+    ng.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
+    noise.connect(hp);
+    hp.connect(ng);
+    ng.connect(this.master);
+    noise.start(time);
+    noise.stop(time + 0.1);
   }
 
   private triggerSynth(trackIdx: number, time: number, midi: number, vel: number, stepDur: number, dur?: number): void {
