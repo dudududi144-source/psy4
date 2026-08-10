@@ -270,8 +270,10 @@ export class SelfAnalyzer {
     const kickDecayMs = this.estimateDecay(allTimeSamples, sr, 'kick') * 1000;
     const bassDecayMs = this.estimateDecay(allTimeSamples, sr, 'bass') * 1000;
 
-    // Stereo width (placeholder — would need channel splitter)
-    const stereoWidth = 0.3;
+    // Stereo width — estimate from spectral balance (L/R correlation not available
+    // without ChannelSplitterNode, but we can estimate from frequency distribution)
+    // Higher high-frequency content = wider perceived stereo
+    const stereoWidth = Math.min(1, highEnergy * 2 + airEnergy * 3);
 
     // Rhythmic regularity
     const rhythmicRegularity = this.computeRegularity(allTimeSamples, sr);

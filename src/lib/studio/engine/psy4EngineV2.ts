@@ -47,7 +47,7 @@ interface SynthPreset {
 const DRUM_PRESETS: Record<string, DrumPreset> = {
   'PS-KICK-TIGHT': { type: 'kick', tune: 0.9, decay: 0.8, tone: 1, punch: 0.85 },
   'PS-KICK-DEEP': { type: 'kick', tune: 0.7, decay: 1.4, tone: 1, punch: 0.4 },
-  'PS-HAT': { type: 'hatC', tune: 1, decay: 0.32, tone: 1.5, punch: 0 },
+  'PS-HAT': { type: 'hatC', tune: 1, decay: 0.32, tone: 1.2, punch: 0 },
   'PS-PERC': { type: 'tom', tune: 1.2, decay: 0.5, tone: 1, punch: 0 },
   'PS-GLITCH': { type: 'glitch', tune: 1, decay: 1.2, tone: 0.8, punch: 0 },
   'TR-CLAP': { type: 'clap', tune: 1, decay: 1.6, tone: 0.9, punch: 0 },
@@ -57,37 +57,37 @@ const DRUM_PRESETS: Record<string, DrumPreset> = {
 const SYNTH_PRESETS: Record<string, SynthPreset> = {
   'PS-BASS-ROLL': {
     wave1: 'sawtooth', wave2: 'square', oct2: -1, detune: 4,
-    cutoff: 700, res: 9, fType: 'lowpass',
+    cutoff: 500, res: 9, fType: 'lowpass',
     atk: 0.005, dec: 0.1, sus: 0.2, rel: 0.05, gate: 0.3,
     lfoRate: 0, lfoDepth: 0, lfoDest: 'off', poly: 2,
   },
   'PS-BASS-DEEP': {
     wave1: 'sawtooth', wave2: 'sawtooth', oct2: -1, detune: 12,
-    cutoff: 450, res: 7, fType: 'lowpass',
+    cutoff: 350, res: 7, fType: 'lowpass',
     atk: 0.005, dec: 0.15, sus: 0.3, rel: 0.08, gate: 0.5,
     lfoRate: 0, lfoDepth: 0, lfoDest: 'off', poly: 2,
   },
   'PS-LEAD-SQUELCH': {
     wave1: 'square', wave2: 'sawtooth', oct2: 0, detune: 8,
-    cutoff: 2400, res: 12, fType: 'lowpass',
+    cutoff: 1800, res: 10, fType: 'lowpass',
     atk: 0.005, dec: 0.18, sus: 0.4, rel: 0.15, gate: 0.45,
     lfoRate: 0, lfoDepth: 0, lfoDest: 'off', poly: 4,
   },
   'PS-LEAD-FMTEX': {
     wave1: 'sine', wave2: 'sine', oct2: 1, detune: 2,
-    cutoff: 2600, res: 3, fType: 'lowpass',
+    cutoff: 2000, res: 3, fType: 'lowpass',
     atk: 0.005, dec: 0.3, sus: 0.6, rel: 0.2, gate: 0.6,
     lfoRate: 8, lfoDepth: 0.3, lfoDest: 'cutoff', poly: 4,
   },
   'PS-PAD-PSYCH': {
     wave1: 'sawtooth', wave2: 'sine', oct2: 1, detune: 14,
-    cutoff: 1400, res: 6, fType: 'lowpass',
+    cutoff: 1000, res: 6, fType: 'lowpass',
     atk: 0.7, dec: 0.5, sus: 0.7, rel: 1.3, gate: 2.6,
     lfoRate: 0.3, lfoDepth: 0.4, lfoDest: 'cutoff', poly: 8,
   },
   'PS-ARP-ACID': {
     wave1: 'square', wave2: 'sawtooth', oct2: 0, detune: 6,
-    cutoff: 1800, res: 11, fType: 'lowpass',
+    cutoff: 1200, res: 9, fType: 'lowpass',
     atk: 0.003, dec: 0.1, sus: 0.2, rel: 0.08, gate: 0.24,
     lfoRate: 0, lfoDepth: 0, lfoDest: 'off', poly: 4,
   },
@@ -454,6 +454,7 @@ export class Psy4EngineV2 {
     // Track buses (8 tracks) with HPF, pan, and duck
     this.duckGain = c.createGain();
     this.duckGain.gain.value = 1.0;
+    // duckGain connects to master ONCE (not twice — was causing feedback)
     this.duckGain.connect(this.master);
 
     for (let i = 0; i < 8; i++) {
@@ -493,7 +494,7 @@ export class Psy4EngineV2 {
       this.chains.push(bus);
       this.trackGains.push(gain);
     }
-    this.duckGain.connect(this.master);
+    // duckGain already connected to master above (line 458)
 
     // Allocate voice pools (20 synth + 24 drum — from PSY6)
     for (let i = 0; i < 20; i++) this.synthPool.push(new PooledSynthVoice(c));
@@ -774,6 +775,22 @@ export class Psy4EngineV2 {
     this.synthIdx = (this.synthIdx + 1) % this.synthPool.length;
     const p = dur ? { ...preset, gate: dur / (stepDur * 2) } : preset;
     voice.noteOn(p, time, midi, vel * track.mix.vol, stepDur, this.chains[trackIdx]);
+
+    // Add sub oscillator for bass track (sine one octave below)
+    if (trackIdx === 4 && this.ctx) {
+      const subFreq = mtof(midi - 12); // one octave below
+      const subOsc = this.ctx.createOscillator();
+      const subGain = this.ctx.createGain();
+      subOsc.type = 'sine';
+      subOsc.frequency.value = subFreq;
+      const subDecay = (dur || stepDur * 0.3) + 0.05;
+      subGain.gain.setValueAtTime(0.5 * track.mix.vol, time);
+      subGain.gain.exponentialRampToValueAtTime(0.001, time + subDecay);
+      subOsc.connect(subGain);
+      subGain.connect(this.chains[4]);
+      subOsc.start(time);
+      subOsc.stop(time + subDecay + 0.02);
+    }
   }
 
   getMusicalKey(): { root: number; scale: string } { return this.musicalKey; }
