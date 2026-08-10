@@ -212,19 +212,28 @@ export default function ReferenceTrainingPage() {
               const styleConf = m.detectedStyle?.confidence ?? 0;
 
               engineRef.current.applyMusicalUnderstanding({
-                key: {
-                  root: keyRoot,
-                  scale: keyScale,
-                  confidence: keyConf,
-                },
+                key: { root: keyRoot, scale: keyScale, confidence: keyConf },
                 bpm: m.bpm,
                 bpmConfidence: m.bpmConfidence,
                 style: styleName,
                 styleConfidence: styleConf,
               });
             }
+
+            // LIVE TRACKING: adjust engine params to match reference metrics
+            if (engineRef.current.liveTrack) {
+              engineRef.current.liveTrack({
+                lufs: m.lufs,
+                spectralCentroid: m.spectralCentroid,
+                subEnergy: m.subEnergy,
+                highEnergy: m.highEnergy,
+                transientDensity: m.transientDensity,
+                kickDecayMs: m.kickDecayMs,
+                energy: m.energy,
+              });
+            }
           } catch (e) {
-            // Musical understanding is optional — engine works without it
+            // Live tracking is optional
           }
         }
       });

@@ -64,6 +64,34 @@ export class Psy4LiteEngine {
   private detectedBpm: number = 0;
   private detectedStyle: string = 'dark-psy';
 
+  // Sound presets — change every 8 bars for sonic variety
+  private currentPreset = 0;
+  private presetChangeBar = 0;
+
+  // Kick presets: different fundamental/decay combinations
+  private kickPresets = [
+    { fundamental: 50, decay: 0.18, subLevel: 0.9, midLevel: 0.4, clickLevel: 0.25 },
+    { fundamental: 45, decay: 0.22, subLevel: 1.0, midLevel: 0.3, clickLevel: 0.35 },
+    { fundamental: 55, decay: 0.15, subLevel: 0.8, midLevel: 0.5, clickLevel: 0.2 },
+    { fundamental: 48, decay: 0.20, subLevel: 0.95, midLevel: 0.35, clickLevel: 0.3 },
+  ];
+
+  // Bass presets: different waveforms and filter settings
+  private bassPresets = [
+    { waveform: 'sawtooth' as OscillatorType, cutoffMult: 4, q: 2, decay: 0.1 },
+    { waveform: 'square' as OscillatorType, cutoffMult: 3, q: 4, decay: 0.08 },
+    { waveform: 'sawtooth' as OscillatorType, cutoffMult: 5, q: 1, decay: 0.12 },
+    { waveform: 'triangle' as OscillatorType, cutoffMult: 3.5, q: 3, decay: 0.09 },
+  ];
+
+  // Lead presets: different waveforms, detune, filter
+  private leadPresets = [
+    { waveform: 'sawtooth' as OscillatorType, detune: 10, numOscs: 2, q: 3 },
+    { waveform: 'square' as OscillatorType, detune: 15, numOscs: 2, q: 5 },
+    { waveform: 'sawtooth' as OscillatorType, detune: 7, numOscs: 3, q: 2 },
+    { waveform: 'triangle' as OscillatorType, detune: 20, numOscs: 2, q: 4 },
+  ];
+
   private sum: GainNode | null = null;
   private duck: GainNode | null = null;
   private master: GainNode | null = null;
@@ -270,6 +298,68 @@ export class Psy4LiteEngine {
     if (params.bassCutoff !== undefined) this.world.bassCutoff = params.bassCutoff;
     if (params.leadCutoff !== undefined) this.world.leadCutoff = params.leadCutoff;
     if (params.duck !== undefined) this.world.duck = params.duck;
+    // FIX: accept level parameters (were missing!)
+    if (params.kickLevel !== undefined) this.world.kickLevel = params.kickLevel;
+    if (params.bassLevel !== undefined) this.world.bassLevel = params.bassLevel;
+    if (params.leadLevel !== undefined) this.world.leadLevel = params.leadLevel;
+    if (params.hatLevel !== undefined) this.world.hatLevel = params.hatLevel;
+    if (params.masterLevel !== undefined) {
+      this.world.masterLevel = params.masterLevel;
+      // Apply immediately to master gain
+      if (this.master) this.master.gain.setTargetAtTime(params.masterLevel, this.ctx!.currentTime, 0.1);
+    }
+  }
+
+  /**
+   * Live tracking — adjusts engine parameters to match reference metrics in real-time.
+   * Called whenever new reference metrics arrive.
+   */
+  liveTrack(refMetrics: {
+    lufs: number;
+    spectralCentroid: number;
+    subEnergy: number;
+    highEnergy: number;
+    transientDensity: number;
+    kickDecayMs: number;
+    energy: number;
+  }): void {
+    if (!this.ctx || !this.world) return;
+    const t = this.ctx.currentTime;
+
+    // ── LUFS matching: adjust masterLevel to match reference LUFS ──
+    // Our engine LUFS is typically -26, reference is -14 to -18
+    // We need to boost our output
+    const targetLufs = refMetrics.lufs;
+    // Get our current LUFS from self-analyzer if available
+    // For now, use a heuristic: if reference is louder, boost master
+    const currentMaster = this.world.masterLevel ?? 0.7;
+    const lufsDiff = targetLufs - (-26); // assume our engine is around -26
+    if (Math.abs(lufsDiff) > 2) {
+      // Adjust master gain toward target
+      const adjustment = lufsDiff > 0 ? 0.02 : -0.02;
+      const newMaster = Math.max(0.3, Math.min(1.2, currentMaster + adjustment));
+      this.world.masterLevel = newMaster;
+      if (this.master) this.master.gain.setTargetAtTime(newMaster, t, 0.5);
+    }
+
+    // ── Kick decay matching ──
+    const refKickDecaySec = refMetrics.kickDecayMs / 1000;
+    if (refKickDecaySec > 0.05 && refKickDecaySec < 0.5) {
+      // Smoothly adjust kick decay toward reference
+      const currentDecay = this.world.kickDecay;
+      const newDecay = currentDecay * 0.9 + refKickDecaySec * 0.1;
+      this.world.kickDecay = Math.max(0.08, Math.min(0.35, newDecay));
+    }
+
+    // ── Spectral balance: adjust lead cutoff to match centroid ──
+    const refCentroid = refMetrics.spectralCentroid;
+    if (refCentroid > 100) {
+      // Map centroid to lead cutoff (rough heuristic)
+      const targetLeadCutoff = Math.max(800, Math.min(6000, refCentroid * 2));
+      const currentCutoff = this.world.leadCutoff;
+      // Smooth adjustment (10% toward target)
+      this.world.leadCutoff = currentCutoff * 0.9 + targetLeadCutoff * 0.1;
+    }
   }
 
   getAnalyser(): AnalyserNode | null {
@@ -303,6 +393,12 @@ export class Psy4LiteEngine {
           const next = this.arrangement[this.sectionIdx % this.arrangement.length];
           this.currentSection = next.label;
           this.onSectionChange?.(this.currentSection);
+        }
+
+        // Change sound presets every 8 bars for sonic variety
+        if (this.bar % 8 === 0 && this.bar > 0) {
+          this.currentPreset = (this.currentPreset + 1) % this.kickPresets.length;
+          console.log(`[Engine] Preset changed to ${this.currentPreset}`);
         }
       }
     }
@@ -367,19 +463,21 @@ export class Psy4LiteEngine {
   private triggerKick(time: number, vel: number): void {
     const c = this.ctx!;
     const w = this.world;
+    const preset = this.kickPresets[this.currentPreset];
+    const kickLevel = w.kickLevel ?? 1.0;
 
-    // Sub: sine with pitch envelope
+    // Sub: sine with pitch envelope (uses preset)
     const o = c.createOscillator();
     const g = c.createGain();
     o.type = 'sine';
-    o.frequency.setValueAtTime(w.kickFundamental * 2.4, time);
-    o.frequency.exponentialRampToValueAtTime(w.kickFundamental, time + 0.035);
-    g.gain.setValueAtTime(0.9 * vel, time);
-    g.gain.exponentialRampToValueAtTime(0.001, time + w.kickDecay);
+    o.frequency.setValueAtTime(preset.fundamental * 2.4, time);
+    o.frequency.exponentialRampToValueAtTime(preset.fundamental, time + 0.035);
+    g.gain.setValueAtTime(preset.subLevel * vel * kickLevel, time);
+    g.gain.exponentialRampToValueAtTime(0.001, time + preset.decay);
     o.connect(g);
     g.connect(this.sum!);
     o.start(time);
-    o.stop(time + w.kickDecay + 0.02);
+    o.stop(time + preset.decay + 0.02);
 
     // Mid: triangle for punch
     const o2 = c.createOscillator();
@@ -418,23 +516,25 @@ export class Psy4LiteEngine {
   private triggerBass(time: number, midi: number, cutoff: number): void {
     const c = this.ctx!;
     const f = mtof(midi);
-    const dur = 0.1;
+    const preset = this.bassPresets[this.currentPreset];
+    const dur = preset.decay;
+    const bassLevel = this.world.bassLevel ?? 1.0;
 
-    // Saw oscillator
+    // Oscillator (uses preset waveform)
     const o = c.createOscillator();
     const g = c.createGain();
-    o.type = 'sawtooth';
+    o.type = preset.waveform;
     o.frequency.value = f;
 
-    // Lowpass filter
+    // Lowpass filter (uses preset cutoff multiplier and Q)
     const fl = c.createBiquadFilter();
     fl.type = 'lowpass';
-    fl.frequency.setValueAtTime(cutoff * 4, time);
+    fl.frequency.setValueAtTime(cutoff * preset.cutoffMult, time);
     fl.frequency.exponentialRampToValueAtTime(cutoff, time + 0.04);
-    fl.Q.value = 2;
+    fl.Q.value = preset.q;
 
     g.gain.setValueAtTime(0, time);
-    g.gain.linearRampToValueAtTime(0.4, time + 0.003);
+    g.gain.linearRampToValueAtTime(0.4 * bassLevel, time + 0.003);
     g.gain.exponentialRampToValueAtTime(0.001, time + dur);
 
     o.connect(fl);
@@ -447,29 +547,43 @@ export class Psy4LiteEngine {
   private triggerLead(time: number, midi: number, cutoff: number): void {
     const c = this.ctx!;
     const f = mtof(midi);
+    const preset = this.leadPresets[this.currentPreset];
     const dur = 0.15;
+    const leadLevel = this.world.leadLevel ?? 1.0;
 
-    // 2 detuned saws
+    // Oscillators (uses preset waveform and detune)
     const o1 = c.createOscillator();
-    const o2 = c.createOscillator();
     const g = c.createGain();
-    o1.type = 'sawtooth';
-    o2.type = 'sawtooth';
+    o1.type = preset.waveform;
     o1.frequency.value = f;
-    o2.frequency.value = f;
-    o2.detune.value = 10;
+
+    let o2: OscillatorNode | null = null;
+    if (preset.numOscs >= 2) {
+      o2 = c.createOscillator();
+      o2.type = preset.waveform;
+      o2.frequency.value = f;
+      o2.detune.value = preset.detune;
+    }
+    let o3: OscillatorNode | null = null;
+    if (preset.numOscs >= 3) {
+      o3 = c.createOscillator();
+      o3.type = preset.waveform;
+      o3.frequency.value = f;
+      o3.detune.value = -preset.detune;
+    }
 
     const fl = c.createBiquadFilter();
     fl.type = 'lowpass';
     fl.frequency.value = cutoff;
-    fl.Q.value = 3;
+    fl.Q.value = preset.q;
 
     g.gain.setValueAtTime(0, time);
-    g.gain.linearRampToValueAtTime(0.3, time + 0.005);
+    g.gain.linearRampToValueAtTime(0.3 * leadLevel, time + 0.005);
     g.gain.exponentialRampToValueAtTime(0.001, time + dur);
 
     o1.connect(fl);
-    o2.connect(fl);
+    if (o2) o2.connect(fl);
+    if (o3) o3.connect(fl);
     fl.connect(g);
     g.connect(this.sum!);
 
@@ -478,9 +592,11 @@ export class Psy4LiteEngine {
     if (this.delaySend) g.connect(this.delaySend);
 
     o1.start(time);
-    o2.start(time);
+    if (o2) o2.start(time);
+    if (o3) o3.start(time);
     o1.stop(time + dur + 0.02);
-    o2.stop(time + dur + 0.02);
+    if (o2) o2.stop(time + dur + 0.02);
+    if (o3) o3.stop(time + dur + 0.02);
   }
 
   private triggerHat(time: number, open: boolean, vel: number): void {
