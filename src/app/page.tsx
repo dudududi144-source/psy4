@@ -14,6 +14,7 @@ import {
   Cpu, SlidersHorizontal, Layers, Piano, ListMusic, AudioWaveform,
   Fingerprint, ScanSearch, Wand2, Disc3, Link2, Link2Off,
   KeyRound, Drum, Flame, LayoutGrid,
+  Database, RotateCcw, Minus,
 } from 'lucide-react';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
@@ -126,6 +127,14 @@ export default function PSY4Page() {
   // the user's last choice even before the engine is started.
   const [syncStatus, setSyncStatus] = useState<any>(null);
   const [syncEnabled, setSyncEnabled] = useState<boolean>(false);
+
+  // ── Task T1 (active learning): cross-session memory dashboard ──
+  // Pulled via engine.getLearningStatus() on every analyzer tick. Shows
+  // total patterns learned, average + current match score, improvement
+  // trend (learning / stable / drifting / idle), top 3 patterns, and the
+  // rolling match-score history (last 20 samples) for the trend graph.
+  // The "Reset learning" button clears the memory + localStorage.
+  const [learningStatus, setLearningStatus] = useState<any>(null);
 
   // Refs
   const listenerRef = useRef<any>(null);
@@ -323,6 +332,11 @@ export default function PSY4Page() {
             if (engineRef.current?.isSyncEnabled) {
               try { setSyncEnabled(engineRef.current.isSyncEnabled()); } catch {}
             }
+            // ── Task T1 (active learning): pull learning status ──
+            // Optional chaining so we degrade gracefully if T1 isn't merged.
+            if (engineRef.current?.getLearningStatus) {
+              try { setLearningStatus(engineRef.current.getLearningStatus()); } catch {}
+            }
           } catch {}
           // Track D: pull style classification + active world on every tick.
           // Optional chaining so we degrade gracefully if Track C isn't merged yet.
@@ -377,6 +391,12 @@ export default function PSY4Page() {
     // restarts. When the engine is restarted, the new engine's PhaseSync
     // will pick up the toggle state on the first toggle click.
     setSyncStatus(null);
+    // ── Task T1 (active learning): keep the learning status visible ──
+    // We DON'T clear learningStatus — the engine saved its memory to
+    // localStorage on stop(), and the next engine instance will reload it.
+    // Clearing here would briefly show "no patterns" before the new engine
+    // loads them, which is misleading. The status refreshes on the next
+    // analyzer tick after restart.
     prevDeltaRef.current = {};
     lastSwitchToastRef.current = '';
   }, []);

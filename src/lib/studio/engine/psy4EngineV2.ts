@@ -63,6 +63,21 @@ import {
   PhraseNote,
   labelToCharacter,
 } from './musicalDirector';
+// ── Task T1 (active learning): cross-session memory of "what worked".
+//    LearningMemory stores successful (refFeatures, engineParams, matchScore)
+//    triples keyed by a deterministic ref signature. When similar radio
+//    content appears, the engine queries the memory for the closest pattern
+//    and applies its params IMMEDIATELY — a head start instead of slow
+//    pursuit convergence. The memory persists across sessions via
+//    localStorage, so yesterday's good params for dark-psy at 145 BPM are
+//    remembered today. ──
+import {
+  LearningMemory,
+  LearnedPattern,
+  LearnedPatternRefFeatures,
+  LearnedPatternEngineParams,
+  LearningStatus,
+} from './learningMemory';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -929,6 +944,38 @@ export class Psy4EngineV2 {
   // to the key it would have been in without DJ sync).
   private appliedKeyShift = 0;
 
+  // ── Task T1 (active learning): cross-session memory ────────────────────
+  //    LearningMemory stores successful (refFeatures, engineParams, matchScore)
+  //    triples. The engine queries it for a "head start" when similar radio
+  //    content appears, and stores new patterns every 30s when a good match
+  //    is detected. Persists across sessions via localStorage.
+  //
+  //    Constructed eagerly so the memory loads once per engine instance
+  //    (load() is called in init()). All operations are O(n) with n <= 100.
+  private learningMemory: LearningMemory = new LearningMemory();
+  // `lastLearningTickTime` is the ms timestamp of the last learning loop
+  // pass. The loop runs at most every 30s (LEARNING_INTERVAL_MS) — it's
+  // invoked from liveTrack() so no separate timer is needed.
+  private lastLearningTickTime = 0;
+  // `lastLearningSaveTime` is the ms timestamp of the last localStorage
+  // save. Saves happen at most every 60s (LEARNING_SAVE_INTERVAL_MS) plus
+  // on page unload (registered in init()).
+  private lastLearningSaveTime = 0;
+  // `lastProactivePatternId` is the id of the last proactively-applied
+  // learned pattern. Used to avoid re-applying the same pattern on every
+  // liveTrack() call — once applied, we only re-apply when the closest
+  // pattern changes (different style/BPM/centroid signature).
+  private lastProactivePatternId: string | null = null;
+  // `learningUnloadHandler` is the beforeunload listener reference, kept
+  // so we can remove it in dispose() (avoids leaking the listener across
+  // engine restarts — though in practice the engine is a singleton).
+  private learningUnloadHandler: (() => void) | null = null;
+  private static readonly LEARNING_INTERVAL_MS = 30_000;
+  private static readonly LEARNING_SAVE_INTERVAL_MS = 60_000;
+  private static readonly LEARNING_STORE_THRESHOLD = 0.6;  // store when match > 0.6
+  private static readonly LEARNING_RECALL_THRESHOLD = 0.4;  // recall when match < 0.4
+  private static readonly LEARNING_PROACTIVE_MIN_REINFORCEMENT = 2;
+
   onSectionChange: ((section: string) => void) | null = null;
 
   /**
@@ -1155,6 +1202,27 @@ export class Psy4EngineV2 {
 
     // Initialize tracks
     this.initTracks();
+
+    // ── Task T1 (active learning): load cross-session memory ──
+    //    Loads any patterns saved in previous sessions from localStorage.
+    //    This is what makes the engine "remember" yesterday's good params
+    //    for dark-psy at 145 BPM. The load is idempotent — calling it
+    //    multiple times is safe (subsequent loads just refresh from
+    //    localStorage, which is what we want if the user cleared it).
+    this.learningMemory.load();
+    // Register a one-time beforeunload handler so the memory is flushed
+    // to localStorage when the user navigates away / closes the tab. We
+    // keep the handler reference so dispose() can remove it (avoids a
+    // leak across engine restarts, though the engine is effectively a
+    // singleton in practice).
+    if (typeof window !== 'undefined' && !this.learningUnloadHandler) {
+      this.learningUnloadHandler = () => {
+        try { this.learningMemory.save(); } catch { /* private browsing */ }
+      };
+      try {
+        window.addEventListener('beforeunload', this.learningUnloadHandler);
+      } catch { /* SSR / old browser — ignore */ }
+    }
   }
 
   private initTracks(): void {
@@ -1270,6 +1338,13 @@ export class Psy4EngineV2 {
         this.nextTime, phraseEnergy, character, this.currentWorld, this._bpm,
       );
     }
+    // ── Task T1 (active learning): reset the learning-loop tick timestamp ──
+    //    We start the 30s learning loop fresh on every start(). The first
+    //    sample is collected 30s after start (gives the engine + reference
+    //    time to stabilize before we measure the match score).
+    this.lastLearningTickTime = Date.now();
+    this.lastLearningSaveTime = Date.now();
+    this.lastProactivePatternId = null;
     this.scheduleNextTick();
   }
 
@@ -1312,6 +1387,11 @@ export class Psy4EngineV2 {
     // context, so any cached phrase state would be stale. We reset so the
     // next start() composes a fresh first phrase.
     this.director?.reset();
+    // ── Task T1 (active learning): flush the memory to localStorage ──
+    //    We save on stop() so any patterns learned in this session persist
+    //    for the next one (in addition to the periodic 60s saves and the
+    //    beforeunload handler). Safe to call repeatedly.
+    try { this.learningMemory.save(); } catch { /* private browsing */ }
   }
 
   private get bpm(): number {
@@ -2363,6 +2443,25 @@ export class Psy4EngineV2 {
       energy: refMetrics.energy,
       groove: refMetrics.grooveInfo as GrooveInfo | undefined,
     });
+
+    // ── Task T1 (active learning): proactive head-start + 30s learning loop ──
+    //    This is the core of the active-learning system. On every liveTrack
+    //    call (every ~10s from the V2 listener), we:
+    //      1. Apply a learned pattern PROACTIVELY if the radio's features
+    //         match a proven stored pattern (reinforcementCount >= 2). This
+    //         gives the engine a "head start" — it starts from a known-good
+    //         configuration instead of defaults, so it sounds right
+    //         immediately instead of converging over 30-60s of pursuit.
+    //      2. Run the 30s learning loop (interval-throttled): compute the
+    //         current match score, push it to the history, store a pattern
+    //         if the match is good (>0.6), recall a pattern if the match is
+    //         poor (<0.4), and persist the memory to localStorage every 60s.
+    //
+    //    Both paths are guarded against missing data (no radio connected →
+    //    graceful no-op). They run on the main thread and never touch the
+    //    audio thread — the audio path is unchanged.
+    this.applyLearnedPatternProactively();
+    this.runLearningTick();
   }
 
   // ─── Task T1: synthesis character pursuit ──────────────────────────────────
@@ -2824,6 +2923,399 @@ export class Psy4EngineV2 {
       // Global delay time — set on the delay node (we don't have a public
       // setter for this yet; the existing delay tap is fixed at 375 ms).
       // For now we skip — a future enhancement could expose setDelayTime().
+    }
+  }
+
+  // ─── Task T1 (active learning): the learning loop ─────────────────────────
+  //
+  // The active-learning system. The engine PURSUES the radio (adjusts
+  // parameters to match), but it didn't LEARN — each session started from
+  // scratch. These methods add the missing feedback loop:
+  //
+  //   engine tries params → measures match → stores if good → recalls if
+  //   struggling → applies proactively on next similar content
+  //
+  // Over time, the engine builds a LIBRARY of "what works" for different
+  // radio styles (dark-psy at 145 BPM, morning-psy at 140, etc.). The
+  // memory persists across sessions via localStorage.
+  //
+  // All methods here are safe to call from liveTrack() (main thread). They
+  // never touch the audio thread — the audio path is unchanged.
+
+  /**
+   * Build a LearnedPatternRefFeatures snapshot from the current stored
+   * reference metrics. Returns null if we don't have enough data (no BPM,
+   * no centroid, no energy — i.e., no radio connected).
+   *
+   * The `style` field uses the engine's current world id as the closest
+   * proxy for "what the radio sounds like" (the style classifier maps
+   * detected styles to world ids, so this is consistent with the rest of
+   * the engine's style handling).
+   */
+  private buildLearningRefFeatures(): LearnedPatternRefFeatures | null {
+    if (this.refBpm <= 0 && this.refSpectralCentroid <= 0 && this.refEnergy <= 0) {
+      return null;
+    }
+    return {
+      bpm: this.refBpm > 0 ? this.refBpm : this._bpm,
+      key: {
+        root: this.musicalKey.root,
+        scale: this.musicalKey.scale || (this.refKeyScale ?? 'minor'),
+      },
+      spectralCentroid: this.refSpectralCentroid > 0 ? this.refSpectralCentroid : 1500,
+      energy: this.refEnergy > 0 ? this.refEnergy : 0.5,
+      style: this.currentWorld?.id ?? 'dark-psy',
+    };
+  }
+
+  /**
+   * Snapshot the engine's current effective parameters — the values that
+   * are ACTUALLY in use right now (target pursuit values + overrides +
+   * per-track send levels + synth-mode overrides). This is what gets
+   * stored in a LearnedPattern so we can recall it later.
+   *
+   * The snapshot reads from the same sources the audio path uses:
+   *   - kickDecay    : this.refKickDecay (the target the engine is pursuing)
+   *                    OR this.learned.kickDecay (if the offline trainer set one)
+   *   - bassCutoff   : this.learned.bassCutoff (or 0 if not set)
+   *   - leadCutoff   : this.leadCutoffOverride (or 0 if no override active)
+   *   - leadDetune   : this.learned.leadDetune (or 0)
+   *   - padCutoff    : this.learned.padCutoff (or 0)
+   *   - duck         : this.learned.duck (or 0.5 — typical sidechain depth)
+   *   - synthMode    : synthModeOverrides[5|6|7] (or 'classic' fallback)
+   *   - sendLevels   : averaged across melodic tracks 5/6/7 (or 0 if no racks)
+   */
+  private buildCurrentEngineParams(): LearnedPatternEngineParams {
+    // Average send levels across the melodic tracks (5=LEAD, 6=PAD, 7=ARP).
+    // These are the tracks that shape the "character" of the mix — kick /
+    // bass / drums are mostly fixed by the world preset.
+    let reverb = 0, delay = 0, chorus = 0, phaser = 0;
+    let count = 0;
+    for (const ti of [5, 6, 7]) {
+      const rack = this.racks[ti];
+      if (rack) {
+        reverb += rack.sendReverb?.gain?.value ?? 0;
+        delay  += rack.sendDelay?.gain?.value  ?? 0;
+        chorus += rack.sendChorus?.gain?.value ?? 0;
+        phaser += rack.sendPhaser?.gain?.value ?? 0;
+        count++;
+      }
+    }
+    if (count > 0) {
+      reverb /= count; delay /= count; chorus /= count; phaser /= count;
+    }
+
+    const leadMode = this.synthModeOverrides[5] ?? 'classic';
+    const padMode  = this.synthModeOverrides[6] ?? 'classic';
+    const arpMode  = this.synthModeOverrides[7] ?? 'classic';
+
+    return {
+      kickDecay:  this.learned.kickDecay  ?? (this.refKickDecay > 0 ? this.refKickDecay : 0.25),
+      bassCutoff: this.learned.bassCutoff ?? 0,
+      leadCutoff: this.leadCutoffOverride >= 0 ? this.leadCutoffOverride : 0,
+      leadDetune: this.learned.leadDetune ?? 0,
+      padCutoff:  this.learned.padCutoff  ?? 0,
+      duck:       this.learned.duck       ?? 0.5,
+      synthMode: {
+        lead: typeof leadMode === 'string' ? leadMode : 'classic',
+        pad:  typeof padMode  === 'string' ? padMode  : 'classic',
+        arp:  typeof arpMode  === 'string' ? arpMode  : 'classic',
+      },
+      sendLevels: { reverb, delay, chorus, phaser },
+    };
+  }
+
+  /**
+   * Compute the current match score (0..1) — how well the engine's output
+   * matches the reference radio right now.
+   *
+   * Uses the timbre fingerprint comparison's `similarity` field (0..1) when
+   * available (the deep A/B analysis computes it on every liveTrack call).
+   * Falls back to a pursuit-delta-based score when the timbre comparison
+   * hasn't run yet (e.g., before the first deep-pursuit cooldown).
+   *
+   * The pursuit-delta fallback averages:
+   *   - centroid closeness (1 - |refCentroid - ownCentroid| / 2000, clamped)
+   *   - transient density closeness (1 - |delta| / 5, clamped)
+   *   - subEnergy closeness (1 - |delta|, clamped)
+   *   - highEnergy closeness (1 - |delta|, clamped)
+   *   - BPM closeness (1 - |delta| / 10, clamped)
+   * Each axis contributes equally (20%) — this is a rough proxy; the
+   * timbre comparison is the authoritative measure when available.
+   */
+  private computeMatchScore(): number {
+    // Preferred: use the timbre fingerprint comparison similarity (0..1).
+    if (this.timbreComparison && typeof this.timbreComparison.similarity === 'number' &&
+        isFinite(this.timbreComparison.similarity)) {
+      return clamp(this.timbreComparison.similarity, 0, 1);
+    }
+
+    // Fallback: compute from pursuit deltas (kick decay / centroid /
+    // transient / sub / high / BPM). Each axis contributes a 0..1 closeness
+    // score; the average is the match score.
+    let sum = 0;
+    let count = 0;
+
+    if (this.refSpectralCentroid > 0 && this.ownSpectralCentroid > 0) {
+      const d = Math.abs(this.refSpectralCentroid - this.ownSpectralCentroid);
+      sum += clamp(1 - d / 2000, 0, 1);
+      count++;
+    }
+    if (this.refTransientDensity > 0 && this.ownTransientDensity > 0) {
+      const d = Math.abs(this.refTransientDensity - this.ownTransientDensity);
+      sum += clamp(1 - d / 5, 0, 1);
+      count++;
+    }
+    if (this.refSubEnergy > 0 && this.ownSubEnergy > 0) {
+      sum += clamp(1 - Math.abs(this.refSubEnergy - this.ownSubEnergy), 0, 1);
+      count++;
+    }
+    if (this.refHighEnergy > 0 && this.ownHighEnergy > 0) {
+      sum += clamp(1 - Math.abs(this.refHighEnergy - this.ownHighEnergy), 0, 1);
+      count++;
+    }
+    if (this.refBpm > 0) {
+      const d = Math.abs(this.refBpm - this._bpm);
+      sum += clamp(1 - d / 10, 0, 1);
+      count++;
+    }
+
+    if (count === 0) return 0;
+    return clamp(sum / count, 0, 1);
+  }
+
+  /**
+   * Apply a learned pattern's engine params to the engine — used by both
+   * the proactive-apply path (head start when radio connects) and the
+   * recall path (when the engine is struggling).
+   *
+   * Routes each field through the engine's existing public API so the
+   * changes are applied the same way the reference pursuit applies them
+   * (smooth ramps via setTargetAtTime where applicable). Safe to call
+   * repeatedly — re-applying the same params is a smooth no-op.
+   */
+  private applyLearnedPatternParams(params: LearnedPatternEngineParams): void {
+    // ── Per-voice synthesis params (via setWorld — these are stored in
+    //    `this.learned` and applied per-note in triggerDrum / triggerSynth).
+    this.setWorld({
+      kickDecay:  params.kickDecay,
+      bassCutoff: params.bassCutoff,
+      leadCutoff: params.leadCutoff,
+      leadDetune: params.leadDetune,
+      padCutoff:  params.padCutoff,
+      duck:       params.duck,
+    });
+
+    // ── Lead filter cutoff override (via setTrackEffect) ──
+    // Only apply if the learned value is positive (>0 means it was set).
+    if (params.leadCutoff > 0) {
+      this.setTrackEffect(5, 'cutoff', params.leadCutoff);
+    }
+
+    // ── Synth-mode overrides (via setSynthMode) ──
+    // 'classic' is the no-op sentinel (clears the override) — only apply
+    // when the learned mode is a real synthesis mode.
+    const validModes = new Set(['fm', 'supersaw', 'wavetable', 'classic']);
+    if (validModes.has(params.synthMode.lead)) {
+      this.setSynthMode(5, params.synthMode.lead === 'classic' ? null : params.synthMode.lead as SynthMode);
+    }
+    if (validModes.has(params.synthMode.pad)) {
+      this.setSynthMode(6, params.synthMode.pad === 'classic' ? null : params.synthMode.pad as SynthMode);
+    }
+    if (validModes.has(params.synthMode.arp)) {
+      this.setSynthMode(7, params.synthMode.arp === 'classic' ? null : params.synthMode.arp as SynthMode);
+    }
+
+    // ── Per-track send levels (via setSendLevel) ──
+    // Apply the learned send levels to the melodic tracks (5=LEAD, 6=PAD,
+    // 7=ARP). The drum tracks keep their world-default sends (kick/bass
+    // should stay dry — see PSY3 sound design rules).
+    for (const ti of [5, 6, 7]) {
+      this.setSendLevel(ti, 'reverb',  params.sendLevels.reverb);
+      this.setSendLevel(ti, 'delay',   params.sendLevels.delay);
+      this.setSendLevel(ti, 'chorus',  params.sendLevels.chorus);
+      this.setSendLevel(ti, 'phaser',  params.sendLevels.phaser);
+    }
+  }
+
+  /**
+   * Proactive head-start: when fresh reference features arrive, query the
+   * memory for the closest stored pattern. If found with
+   * reinforcementCount >= 2 (proven pattern) AND its id differs from the
+   * last applied one, apply its engine params IMMEDIATELY.
+   *
+   * This gives the engine a head start — instead of converging over 30-60s
+   * of pursuit, it starts from a known-good configuration for the current
+   * radio style. The first liveTrack call after the radio connects is the
+   * most impactful (jumps directly to good params); subsequent calls only
+   * re-apply when the closest pattern changes (e.g., the radio switched to
+   * a different style).
+   *
+   * No-op when no radio data, no stored patterns, or the closest pattern
+   * isn't proven yet (reinforcementCount < 2).
+   */
+  private applyLearnedPatternProactively(): void {
+    const refFeatures = this.buildLearningRefFeatures();
+    if (!refFeatures) return;
+
+    const match = this.learningMemory.findClosestPattern(refFeatures);
+    if (!match) {
+      // No close match — clear the last-applied tracking so a future close
+      // match will apply cleanly.
+      this.lastProactivePatternId = null;
+      return;
+    }
+
+    // Only apply PROVEN patterns (reinforcementCount >= 2). A pattern with
+    // reinforcementCount = 1 might be a fluke — we wait for it to be
+    // reinforced before trusting it as a head start.
+    if (match.pattern.reinforcementCount < Psy4EngineV2.LEARNING_PROACTIVE_MIN_REINFORCEMENT) {
+      return;
+    }
+
+    // Skip if we already applied this exact pattern (same id) — avoids
+    // re-applying on every liveTrack call. We re-apply only when the
+    // closest pattern changes.
+    if (match.pattern.id === this.lastProactivePatternId) return;
+    this.lastProactivePatternId = match.pattern.id;
+
+    if (typeof console !== 'undefined') {
+      console.log(
+        `[PSY4] Learning: proactive apply — pattern ${match.pattern.id} ` +
+        `(score ${(match.score * 100).toFixed(0)}%, reinforced ${match.pattern.reinforcementCount}×, ` +
+        `match score ${(match.pattern.matchScore * 100).toFixed(0)}%)`,
+      );
+    }
+
+    this.applyLearnedPatternParams(match.pattern.engineParams);
+  }
+
+  /**
+   * The 30s learning loop. Called from liveTrack() on every reference
+   * update — interval-throttled internally so it only runs an actual pass
+   * every LEARNING_INTERVAL_MS (30s).
+   *
+   * Each pass:
+   *   1. Compute the current match score (0..1).
+   *   2. Push it to the rolling history (last 20 samples).
+   *   3. If matchScore > 0.6 (good match): store a pattern (ref features +
+   *      current engine params + score). The memory reinforces existing
+   *      patterns with the same ref signature instead of duplicating.
+   *   4. If matchScore < 0.4 (poor match): look up the closest stored
+   *      pattern and apply its engine params (recall).
+   *   5. Save the memory to localStorage every LEARNING_SAVE_INTERVAL_MS
+   *      (60s).
+   *
+   * No-op when no reference data is available (no radio connected).
+   */
+  private runLearningTick(): void {
+    const nowMs = Date.now();
+    // Interval-throttle: only run an actual pass every 30s. The first
+    // pass runs 30s after start() (lastLearningTickTime is set in start()).
+    if (nowMs - this.lastLearningTickTime < Psy4EngineV2.LEARNING_INTERVAL_MS) {
+      // Still check the periodic save (60s) even on skipped passes — we
+      // want the save to fire on its own schedule, independent of the
+      // learning pass.
+      if (nowMs - this.lastLearningSaveTime >= Psy4EngineV2.LEARNING_SAVE_INTERVAL_MS) {
+        try { this.learningMemory.save(); } catch { /* private browsing */ }
+        this.lastLearningSaveTime = nowMs;
+      }
+      return;
+    }
+    this.lastLearningTickTime = nowMs;
+
+    const refFeatures = this.buildLearningRefFeatures();
+    if (!refFeatures) return;  // no radio data — nothing to learn
+
+    // 1. Compute the match score.
+    const matchScore = this.computeMatchScore();
+
+    // 2. Push to the rolling history (always — even poor matches are
+    //    useful signal for the improvement trend).
+    this.learningMemory.recordMatchScore(matchScore);
+
+    // 3. Store on good match, recall on poor match.
+    if (matchScore >= Psy4EngineV2.LEARNING_STORE_THRESHOLD) {
+      // Good match — store the (ref, params, score) triple. The memory's
+      // storePattern() reinforces existing entries with the same ref
+      // signature (so a 145 BPM dark-psy stream reinforces the same entry
+      // across multiple 30s windows instead of accumulating duplicates).
+      const engineParams = this.buildCurrentEngineParams();
+      const pattern: LearnedPattern = {
+        id: '',  // the memory rebuilds the id from refFeatures (deterministic)
+        refFeatures,
+        engineParams,
+        matchScore,
+        timestamp: nowMs,
+        reinforcementCount: 0,  // storePattern sets this to 1 (new) or increments (reinforce)
+      };
+      this.learningMemory.storePattern(pattern);
+
+      if (typeof console !== 'undefined') {
+        console.log(
+          `[PSY4] Learning: stored pattern — ${refFeatures.style} ${refFeatures.bpm.toFixed(0)} BPM ` +
+          `centroid ${refFeatures.spectralCentroid.toFixed(0)} Hz — match ${(matchScore * 100).toFixed(0)}%`,
+        );
+      }
+    } else if (matchScore < Psy4EngineV2.LEARNING_RECALL_THRESHOLD) {
+      // Poor match — look up the closest stored pattern and apply its
+      // params. This is the "engine is struggling, recall what worked
+      // before" path. If no close pattern exists, no-op.
+      const match = this.learningMemory.findClosestPattern(refFeatures);
+      if (match && match.pattern.reinforcementCount >= 1) {
+        if (typeof console !== 'undefined') {
+          console.log(
+            `[PSY4] Learning: recall — match score ${(matchScore * 100).toFixed(0)}% < 40%, ` +
+            `applying closest pattern ${match.pattern.id} (similarity ${(match.score * 100).toFixed(0)}%)`,
+          );
+        }
+        this.applyLearnedPatternParams(match.pattern.engineParams);
+        // Mark this as the last proactively-applied pattern so the
+        // proactive path doesn't immediately re-apply it.
+        this.lastProactivePatternId = match.pattern.id;
+      }
+    }
+
+    // 4. Periodic save (every 60s).
+    if (nowMs - this.lastLearningSaveTime >= Psy4EngineV2.LEARNING_SAVE_INTERVAL_MS) {
+      try { this.learningMemory.save(); } catch { /* private browsing */ }
+      this.lastLearningSaveTime = nowMs;
+    }
+  }
+
+  /**
+   * Task T1 (active learning): public API for the UI dashboard.
+   *
+   * Returns the full learning-memory status: total patterns learned,
+   * average match score across all patterns, the latest match score, the
+   * improvement trend (learning / stable / drifting / idle), the top 3
+   * patterns (by reinforcementCount × matchScore), and the rolling match-
+   * score history (last 20 samples) for the trend graph.
+   *
+   * The UI polls this on every analyzer tick (10s hop). All fields are
+   * guarded — safe to call before any learning has happened (returns zeros
+   * and empty arrays).
+   */
+  getLearningStatus(): LearningStatus {
+    return this.learningMemory.getStatus();
+  }
+
+  /**
+   * Task T1 (active learning): clear all stored patterns + history.
+   *
+   * Used by the "Reset learning" button in the UI. Also clears localStorage
+   * so the reset persists across sessions. After reset, the engine starts
+   * fresh — no head-start applies until new patterns are learned.
+   *
+   * Safe to call before start() or with no learning history.
+   */
+  resetLearning(): void {
+    this.learningMemory.clear();
+    this.lastProactivePatternId = null;
+    // Don't reset lastLearningTickTime — we want the next 30s window to
+    // start fresh, not skip the next pass.
+    if (typeof console !== 'undefined') {
+      console.log('[PSY4] Learning: memory cleared (patterns + history + localStorage)');
     }
   }
 
