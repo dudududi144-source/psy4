@@ -873,7 +873,7 @@ export class PsyLive {
         this.radioGain = this.ctx.createGain();
         this.radioGain.gain.value = 0.5;
         this.radioAnalyser = this.ctx.createAnalyser();
-        this.radioAnalyser.fftSize = 1024; // was 4096 — 4x less CPU, still detects kicks
+        this.radioAnalyser.fftSize = 512; // was 1024 — lighter, still detects kicks/bass
         this.radioAnalyser.smoothingTimeConstant = 0.2;
       }
       // Radio → radioGain → radioAnalyser → shared limiter
@@ -912,7 +912,7 @@ export class PsyLive {
   // ── Kick detection + spectral analysis (20ms tick) ──
   private startDetection(): void {
     if (this.detectTimer) clearInterval(this.detectTimer);
-    this.detectTimer = setInterval(() => this.detect(), 500); // 500ms — 2fps, absolute minimum
+    this.detectTimer = setInterval(() => this.detect(), 750); // 750ms — 1.3fps, absolute minimum
   }
 
   private detect(): void {
