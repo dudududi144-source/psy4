@@ -297,37 +297,40 @@ export class PsyLive {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
     this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
 
-    // Shared master limiter — SOFT glue, not brickwall (was too aggressive)
+    // Shared master limiter — TRUE brickwall only at ceiling, no compression below
+    // Was ratio 4:1 threshold -0.5 = was compressing EVERYTHING (narrow spectrum)
     this.masterLimiter = this.ctx.createDynamicsCompressor();
-    this.masterLimiter.threshold.value = -0.5;  // was -3 (caught too much)
-    this.masterLimiter.knee.value = 3;            // softer knee
-    this.masterLimiter.ratio.value = 4;           // was 12 (brickwall), now gentle glue
-    this.masterLimiter.attack.value = 0.005;
-    this.masterLimiter.release.value = 0.18;
+    this.masterLimiter.threshold.value = -1;   // only catch peaks above -1dB
+    this.masterLimiter.knee.value = 0;          // hard knee = only limit at threshold
+    this.masterLimiter.ratio.value = 20;        // high ratio ONLY at threshold (brickwall)
+    this.masterLimiter.attack.value = 0.002;    // fast catch
+    this.masterLimiter.release.value = 0.25;    // slow release = transparent
+    // This is a TRUE limiter, not a compressor — leaves dynamics intact below -1dB
 
-    // User-facing master volume — was 0.7 (chopped 30%), now 0.9
+    // User-facing master volume
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = 0.9;
+    this.masterGain.gain.value = 0.95;
 
     this.masterLimiter.connect(this.masterGain);
     this.masterGain.connect(this.ctx.destination);
 
-    // Engine analyser (post-sidechain, pre-limiter)
+    // Engine analyser — higher resolution for fuller spectrum visualization
     this.analyser = this.ctx.createAnalyser();
-    this.analyser.fftSize = 512;
-    this.analyser.smoothingTimeConstant = 0.5; // less smoothing = more responsive level
+    this.analyser.fftSize = 2048;               // was 512 — 4x more spectrum detail
+    this.analyser.smoothingTimeConstant = 0.7;  // was 0.5 — smoother visual but still responsive
 
     // Engine bus: voices → sidechain → EQ → engineMaster → analyser → limiter
     this.sidechain = this.ctx.createGain();
     this.sidechain.gain.value = 1.0;
 
+    // REMOVED engineEQ — was cutting bass when radio dense (narrowed spectrum)
+    // Now: no EQ, full frequency range passes through
     this.engineEQ = this.ctx.createBiquadFilter();
-    this.engineEQ.type = 'lowshelf';
-    this.engineEQ.frequency.value = 200;
-    this.engineEQ.gain.value = 0; // adaptive
+    this.engineEQ.type = 'allpass';             // transparent — no frequency cuts
+    this.engineEQ.frequency.value = 1000;
 
     this.engineMaster = this.ctx.createGain();
-    this.engineMaster.gain.value = 0.92; // sits loud in mix
+    this.engineMaster.gain.value = 0.95;        // loud, full range
 
     this.sidechain.connect(this.engineEQ);
     this.engineEQ.connect(this.engineMaster);
@@ -688,10 +691,10 @@ export class PsyLive {
     const g = this.sidechain.gain;
     g.cancelScheduledValues(now);
     g.setValueAtTime(Math.max(0.0001, g.value), now);
-    // Very gentle dip to ~85% (was 60% — was choking bass/lead in REINFORCE)
-    // Just enough to create pocket for radio kick, not kill our bass
-    g.linearRampToValueAtTime(0.85, now + 0.01);
-    g.exponentialRampToValueAtTime(1.0, now + 0.12);
+    // Minimal dip — was 0.85 (choking), now 0.95 (barely audible pump)
+    // Full spectrum stays intact, just creates tiny pocket for radio kick
+    g.linearRampToValueAtTime(0.95, now + 0.01);
+    g.exponentialRampToValueAtTime(1.0, now + 0.08);
     this.duckAmount = 1.0;
   }
 
@@ -704,27 +707,19 @@ export class PsyLive {
     this.harmonicLocked = true;
   }
 
-  // ── Smart mixing: auto-level (engine sits LOUD, constant — not following radio) ──
+  // ── Smart mixing: auto-level (engine at FULL volume, not ducked) ──
   private autoLevel(): void {
     if (!this.engineMaster || !this.ctx) return;
-    // FIXED loud level — engine should be CONSTANT, not following radio RMS
-    // (was pulling engine down when radio was quiet — bad for psytrance)
-    if (this.radioOn) {
-      // With radio: sit at fixed 0.85 (loud, cuts through)
-      this.engineMaster.gain.setTargetAtTime(0.85, this.ctx.currentTime, 0.8);
-    } else {
-      // No radio: full loud
-      this.engineMaster.gain.setTargetAtTime(0.92, this.ctx.currentTime, 0.4);
-    }
+    // FIXED loud level — no more ducking under radio
+    // Was pulling engine down when radio quiet, narrowing dynamics
+    this.engineMaster.gain.setTargetAtTime(0.95, this.ctx.currentTime, 0.8);
   }
 
-  // ── Smart mixing: spectral-aware EQ ──
+  // ── Smart mixing: spectral-aware EQ (DISABLED — was narrowing spectrum) ──
   private adaptEQ(): void {
-    if (!this.engineEQ || !this.ctx || !this.radioOn) return;
-    // If radio is bass-heavy, cut our low shelf slightly to make room
-    const lowDensity = this.radioBands.low;
-    const cut = lowDensity > 0.5 ? -(lowDensity - 0.5) * 8 : 0; // up to -4dB
-    this.engineEQ.gain.setTargetAtTime(cut, this.ctx.currentTime, 0.5);
+    // No longer cuts frequencies — full spectrum passes through
+    // Was cutting low shelf when radio bass-heavy, which collapsed the mix
+    return;
   }
 
   // ── Synth voices (use pre-rendered buffers = zero allocation latency) ──

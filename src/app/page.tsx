@@ -118,15 +118,15 @@ export default function Page() {
       // pulse decay
       pulseRef.current *= 0.9;
 
-      // Radio ring (outer, amber)
+      // Radio ring (outer, amber) — full spectrum, no /1.8 compression
       if (rAn && rd) {
         rAn.getByteFrequencyData(rd);
         for (let i = 0; i < bars; i++) {
-          const idx = Math.floor(i * rd.length / bars / 1.8);
+          const idx = Math.floor(i * rd.length / bars);
           const v = rd[idx] / 255;
           const angle = (i / bars) * Math.PI * 2 - Math.PI / 2;
           const r1 = baseR + 12 * dpr;
-          const r2 = r1 + v * baseR * 1.1;
+          const r2 = r1 + v * baseR * 1.4;  // was 1.1 — taller bars
           const x1 = cx + Math.cos(angle) * r1;
           const y1 = cy + Math.sin(angle) * r1;
           const x2 = cx + Math.cos(angle) * r2;
@@ -138,11 +138,11 @@ export default function Page() {
         }
       }
 
-      // Engine ring (inner, cyan/magenta)
+      // Engine ring (inner, cyan/magenta) — full spectrum
       if (eAn && ed) {
         eAn.getByteFrequencyData(ed);
         for (let i = 0; i < bars; i++) {
-          const idx = Math.floor(i * ed.length / bars / 1.8);
+          const idx = Math.floor(i * ed.length / bars);
           const v = ed[idx] / 255;
           const angle = (i / bars) * Math.PI * 2 - Math.PI / 2;
           const r1 = baseR - 6 * dpr;
