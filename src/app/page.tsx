@@ -43,7 +43,18 @@ export default function Page() {
   }, []);
 
   // Initialize engine immediately on mount (to load learning data + show insights)
-  useEffect(() => { init(); }, [init]);
+  useEffect(() => {
+    init().then(() => {
+      // Auto-play saved composition if it exists (memory feature)
+      const engine = engineRef.current;
+      if (engine && engine.hasSavedComposition()) {
+        setTimeout(() => {
+          engine.play();
+          engine.toggleComposition();
+        }, 500);
+      }
+    });
+  }, [init]);
 
   const play = useCallback(async () => { await init(); engineRef.current?.play(); }, [init]);
   const stop = useCallback(() => engineRef.current?.stop(), []);

@@ -228,6 +228,11 @@ export class PsyLive {
   private deviceId = '';
   private lastSyncTime = 0;
 
+  // Pre-allocated buffers (avoid GC pressure from 50 allocations/sec)
+  private radioFreqBuf: Uint8Array | null = null;
+  private engineFreqBuf: Uint8Array | null = null;
+  private lastEmitTime = 0;
+
   onState: ((s: LiveState) => void) | null = null;
   get analyserNode() { return this.analyser; }
   get radioAnalyserNode() { return this.radioAnalyser; }
@@ -252,6 +257,10 @@ export class PsyLive {
   }
 
   private emit(): void {
+    // Throttle to max 8fps (125ms) — prevents React re-render storm from detect() at 50fps
+    const now = Date.now();
+    if (now - this.lastEmitTime < 125) return;
+    this.lastEmitTime = now;
     this.onState?.({
       playing: this.playing, radioOn: this.radioOn,
       radioBpm: this.radioBpm, engineBpm: this.engineBpm,
@@ -379,12 +388,19 @@ export class PsyLive {
   toggleComposition(): boolean {
     if (!this.learningData) return false;
     if (!this.compositionMode) {
-      // Generate from learned data
-      this.composition = generateComposition(this.learningData);
+      // Try to load saved best composition first, else generate new
+      const saved = this.loadBestComposition();
+      if (saved) {
+        this.composition = saved;
+      } else {
+        this.composition = generateComposition(this.learningData);
+      }
       if (!this.composition) return false;
       this.compositionMode = true;
       this.engineBpm = this.composition.bpm;
       this.syncDelay();
+      // Save as best composition
+      this.saveBestComposition(this.composition);
     } else {
       this.compositionMode = false;
       this.composition = null;
@@ -395,6 +411,26 @@ export class PsyLive {
     this.updateMixMode();
     this.emit();
     return this.compositionMode;
+  }
+
+  // ── Memory: save/load best composition ──
+  private saveBestComposition(comp: Composition): void {
+    try {
+      localStorage.setItem('psy-best-composition', JSON.stringify(comp));
+    } catch {}
+  }
+
+  private loadBestComposition(): Composition | null {
+    try {
+      const raw = localStorage.getItem('psy-best-composition');
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch { return null; }
+  }
+
+  // Auto-play saved composition on entry (called from UI)
+  hasSavedComposition(): boolean {
+    try { return !!localStorage.getItem('psy-best-composition'); } catch { return false; }
   }
 
   // ── Play / Stop ──
@@ -820,7 +856,11 @@ export class PsyLive {
 
   private detect(): void {
     if (!this.radioAnalyser || !this.ctx) return;
-    const fd = new Uint8Array(this.radioAnalyser.frequencyBinCount);
+    // Reuse pre-allocated buffer (avoids 50 allocations/sec of GC pressure)
+    if (!this.radioFreqBuf || this.radioFreqBuf.length !== this.radioAnalyser.frequencyBinCount) {
+      this.radioFreqBuf = new Uint8Array(this.radioAnalyser.frequencyBinCount);
+    }
+    const fd = this.radioFreqBuf;
     this.radioAnalyser.getByteFrequencyData(fd);
 
     // Sub-bass (0-100Hz) for kick detection
@@ -860,7 +900,10 @@ export class PsyLive {
 
     // Read engine level here (in detect, runs every 20ms — more reliable than scheduler)
     if (this.analyser) {
-      const d = new Uint8Array(this.analyser.frequencyBinCount);
+      if (!this.engineFreqBuf || this.engineFreqBuf.length !== this.analyser.frequencyBinCount) {
+        this.engineFreqBuf = new Uint8Array(this.analyser.frequencyBinCount);
+      }
+      const d = this.engineFreqBuf;
       this.analyser.getByteFrequencyData(d);
       const activeBins = Math.floor(d.length / 4);
       let peak = 0; let sum = 0;
@@ -882,11 +925,18 @@ export class PsyLive {
     this.subBassHistory.push(sub);
     if (this.subBassHistory.length > 50) this.subBassHistory.shift();
 
-    // Kick detection: threshold = avg + 40% of (max - avg)
+    // Kick detection: threshold = avg + 55% of (max - avg)
     if (this.subBassHistory.length >= 10) {
-      const recent = this.subBassHistory.slice(-20);
-      const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
-      const max = Math.max(...recent);
+      // Manual loop instead of slice+reduce+spread (avoids 3 allocations per call)
+      const startIdx = Math.max(0, this.subBassHistory.length - 20);
+      let sum = 0, max = 0, count = 0;
+      for (let i = startIdx; i < this.subBassHistory.length; i++) {
+        const v = this.subBassHistory[i];
+        sum += v;
+        if (v > max) max = v;
+        count++;
+      }
+      const avg = sum / count;
       const threshold = avg + (max - avg) * 0.55;
       const prev = this.subBassHistory[this.subBassHistory.length - 2] || 0;
 
