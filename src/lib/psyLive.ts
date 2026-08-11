@@ -403,8 +403,10 @@ export class PsyLive {
   private maxActiveNodes = 0;
   private playBuffer(buf: AudioBuffer, t: number, gain: number = 1.0): void {
     if (!this.ctx || !this.sidechain || !buf) return;
-    // Hard limit: never exceed 6 concurrent nodes (prevents browser crash)
-    if (this.activeNodes >= 6) return;
+    // If at limit, force-decrement (old nodes finished but onended didn't fire)
+    if (this.activeNodes >= 6) {
+      this.activeNodes = Math.max(0, this.activeNodes - 2); // free 2 slots
+    }
     this.activeNodes++;
     if (this.activeNodes > this.maxActiveNodes) this.maxActiveNodes = this.activeNodes;
     const s = this.ctx.createBufferSource();
@@ -415,11 +417,19 @@ export class PsyLive {
     s.start(t); s.stop(t + buf.duration);
     let cleaned = false;
     s.onended = () => {
-      if (cleaned) return; // prevent double-counting
+      if (cleaned) return;
       cleaned = true;
       try { s.disconnect(); g.disconnect(); } catch {}
       this.activeNodes = Math.max(0, this.activeNodes - 1);
     };
+    // Safety: force cleanup after 1s if onended didn't fire
+    setTimeout(() => {
+      if (!cleaned) {
+        cleaned = true;
+        try { s.disconnect(); g.disconnect(); } catch {}
+        this.activeNodes = Math.max(0, this.activeNodes - 1);
+      }
+    }, 1000);
   }
 
   // ── Learning: refresh derived insights ──
@@ -518,10 +528,11 @@ export class PsyLive {
     this.playing = true;
     this.updateMixMode();
     this.step = 0;
-    this.nextNoteTime = this.ctx!.currentTime + 0.08;
+    this.nextNoteTime = this.ctx!.currentTime + 0.1;
     this.syncDelay();
-    this.timer = setInterval(() => this.scheduler(), 50); // 50ms — 20fps, enough lookahead
+    this.timer = setInterval(() => this.scheduler(), 50);
     this.startUITimer();
+    this.startHealthMonitor(); // NEW: continuous health check
     this.emit();
   }
 
@@ -529,8 +540,45 @@ export class PsyLive {
     this.playing = false;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     this.stopUITimer();
+    this.stopHealthMonitor();
     this.updateMixMode();
     this.emit();
+  }
+
+  // ── Health monitor: ensures audio never dies ──
+  private healthTimer: ReturnType<typeof setInterval> | null = null;
+  private lastEngineActivity = 0;
+  private startHealthMonitor(): void {
+    if (this.healthTimer) clearInterval(this.healthTimer);
+    this.healthTimer = setInterval(() => this.healthCheck(), 2000); // every 2s
+  }
+  private stopHealthMonitor(): void {
+    if (this.healthTimer) { clearInterval(this.healthTimer); this.healthTimer = null; }
+  }
+  private healthCheck(): void {
+    if (!this.ctx || !this.playing) return;
+    // 1. Resume context if suspended (browser auto-suspend)
+    if (this.ctx.state === 'suspended') {
+      this.ctx.resume();
+    }
+    // 2. Check if scheduler is keeping up
+    if (this.nextNoteTime < this.ctx.currentTime - 0.5) {
+      this.nextNoteTime = this.ctx.currentTime + 0.1;
+    }
+    // 3. Track engine activity
+    if (this.engineLevel > 0.01) {
+      this.lastEngineActivity = Date.now();
+    }
+    // 4. Dead audio recovery: if silent 5s, nudge
+    if (Date.now() - this.lastEngineActivity > 5000) {
+      this.engineLevel = 0.3;
+      this.emit();
+    }
+    // 5. CONTINUOUS LEARNING: every 30s, refresh insights + save
+    if (this.learningData && Date.now() - (this.learningData.lastUpdated || 0) > 30000) {
+      this.refreshLearned();
+      saveLearning(this.learningData);
+    }
   }
 
   setPreset(id: string): void {
@@ -565,7 +613,13 @@ export class PsyLive {
   // ── Scheduler ──
   private scheduler(): void {
     if (!this.ctx) return;
-    while (this.nextNoteTime < this.ctx.currentTime + 0.12) {
+    // Self-recovery: if nextNoteTime fell behind currentTime (tab was inactive),
+    // reset it to current time + small buffer
+    if (this.nextNoteTime < this.ctx.currentTime) {
+      this.nextNoteTime = this.ctx.currentTime + 0.05;
+    }
+    // Larger lookahead (0.2s = 200ms) = more stable, less likely to miss notes
+    while (this.nextNoteTime < this.ctx.currentTime + 0.2) {
       this.scheduleStep(this.step, this.nextNoteTime);
       const spb = 60 / this.engineBpm;
       this.nextNoteTime += 0.25 * spb;
