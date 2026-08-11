@@ -917,7 +917,7 @@ export class PsyLive {
   // ── Kick detection + spectral analysis (20ms tick) ──
   private startDetection(): void {
     if (this.detectTimer) clearInterval(this.detectTimer);
-    this.detectTimer = setInterval(() => this.detect(), 250); // 250ms — 4fps, minimal
+    this.detectTimer = setInterval(() => this.detect(), 500); // 500ms — 2fps, absolute minimum
   }
 
   private detect(): void {
