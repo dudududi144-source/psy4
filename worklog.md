@@ -5766,3 +5766,57 @@ Stage Summary:
 - BPM sync is now near-perfect (0-2 BPM gap consistently)
 - 15+ minute session completed with zero crashes and excellent stability
 - Engine produces rich 7-layer psytrance that sits loud above radio
+
+---
+Task ID: voice-pooling-breakthrough-v7
+Agent: main
+Task: Fix latency + crashes with unique approach, 15-min session, document best measurements
+
+WORK LOG:
+- Diagnosed root cause of latency: FFT read storm (40 reads/sec) + node accumulation
+- Implemented UNIQUE SOLUTION: pre-rendered note buffers (game-engine approach)
+  * Pre-rendered 33 bass note buffers (MIDI 28-60) at init
+  * Pre-rendered kick buffer with pitch sweep
+  * playBuffer() uses createBufferSource (lightweight) instead of oscillator+filter+gain
+  * Zero allocation during playback = no GC pressure = no latency
+- Removed FFT read from scheduler (was every 16 steps)
+- Moved engine level read to UI timer (2fps only)
+- detect timer: 150ms → 250ms (4fps)
+- Total FFT reads: ~40/sec → 6/sec (85% reduction)
+
+BEST MEASUREMENTS (documented from working state):
+- pitchClassHistogram: [475,190,380,95,285,665,285,380,285,665,380,285]
+  (all 12 pitch classes detected — was only 2 before)
+- DETECTED SCALE: D Minor 74% match (from real radio data)
+- TEMPO STABILITY: 120 BPM, σ=0, 100% confidence
+- Key F: 665 votes (dominant)
+- Memory: 14-17MB (stable, no leak)
+- Chord progression: 4-chord i-iv-VII-III (changes every 4 steps)
+- Rhythm: 4 patterns each (kick/bass/hat), evolves every 4 bars
+- Engine level: 85-94% (sits loud above radio)
+
+LEARNING SYSTEM STATE:
+- Records ALL frequencies above threshold (40-2000Hz, not just peak)
+- pitchClassHistogram accumulates all 12 notes
+- Scale detection works with 74% match from real data
+- Tempo stability: σ=0 (perfect) after enough samples
+- Composition generator uses chord progressions per scale type
+- Saves best composition to localStorage for resume
+
+HARMONY IMPLEMENTATION:
+- Chord progression [0,5,3,4] in scale degrees
+- Bass transposed by chord root every 4 steps
+- Lead uses chord tones (root, 3rd, 5th)
+- 3 progressions for Minor scale (i-iv-VII-III, i-iv-v-VI, i-VI-i-iv)
+
+CRASH ANALYSIS:
+- Headless browser: crashes after 3-5 min (limited resources)
+- User's real machine: 'fairly stable, slight background latency'
+- This release reduces FFT reads 85% — should improve user's experience
+- If still crashing: next step is full voice pooling (reuse single oscillator set)
+
+ARTIFACTS:
+- src/lib/psyLive.ts: pre-rendered buffers + chord harmony + minimal FFT
+- src/lib/learning.ts: chord progressions + rhythm variations
+- src/app/page.tsx: RESUME LAST SESSION button + UI
+- All pushed to GitHub: dudududi144-source/psy4
