@@ -297,40 +297,40 @@ export class PsyLive {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
     this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
 
-    // Shared master limiter — TRUE brickwall only at ceiling, no compression below
-    // Was ratio 4:1 threshold -0.5 = was compressing EVERYTHING (narrow spectrum)
+    // NO LIMITER — was compressing everything above -1dB, choking the spectrum
+    // Now: just a soft clipper at 0dB to prevent digital clipping only
     this.masterLimiter = this.ctx.createDynamicsCompressor();
-    this.masterLimiter.threshold.value = -1;   // only catch peaks above -1dB
-    this.masterLimiter.knee.value = 0;          // hard knee = only limit at threshold
-    this.masterLimiter.ratio.value = 20;        // high ratio ONLY at threshold (brickwall)
-    this.masterLimiter.attack.value = 0.002;    // fast catch
-    this.masterLimiter.release.value = 0.25;    // slow release = transparent
-    // This is a TRUE limiter, not a compressor — leaves dynamics intact below -1dB
+    this.masterLimiter.threshold.value = 0;    // only at 0dB (digital max)
+    this.masterLimiter.knee.value = 6;          // soft knee for transparency
+    this.masterLimiter.ratio.value = 12;        // catch only extreme peaks
+    this.masterLimiter.attack.value = 0.005;
+    this.masterLimiter.release.value = 0.3;
+    // This only prevents digital clipping — leaves ALL dynamics intact below 0dB
 
     // User-facing master volume
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = 0.95;
+    this.masterGain.gain.value = 0.85;          // was 0.95 — too hot, caused limiting
 
     this.masterLimiter.connect(this.masterGain);
     this.masterGain.connect(this.ctx.destination);
 
-    // Engine analyser — balanced resolution (2048 was too heavy, 512 too low)
+    // Engine analyser
     this.analyser = this.ctx.createAnalyser();
-    this.analyser.fftSize = 1024;               // 2x more detail than 512, half CPU of 2048
+    this.analyser.fftSize = 1024;
     this.analyser.smoothingTimeConstant = 0.7;
 
     // Engine bus: voices → sidechain → EQ → engineMaster → analyser → limiter
+    // SIDECHAIN DISABLED — was dipping to 0.95 on every kick, choking dynamics
     this.sidechain = this.ctx.createGain();
-    this.sidechain.gain.value = 1.0;
+    this.sidechain.gain.value = 1.0;            // FIXED at 1.0, no ducking
 
-    // REMOVED engineEQ — was cutting bass when radio dense (narrowed spectrum)
-    // Now: no EQ, full frequency range passes through
+    // No EQ — full frequency range
     this.engineEQ = this.ctx.createBiquadFilter();
-    this.engineEQ.type = 'allpass';             // transparent — no frequency cuts
+    this.engineEQ.type = 'allpass';
     this.engineEQ.frequency.value = 1000;
 
     this.engineMaster = this.ctx.createGain();
-    this.engineMaster.gain.value = 0.95;        // loud, full range
+    this.engineMaster.gain.value = 0.8;         // was 0.95 — too hot
 
     this.sidechain.connect(this.engineEQ);
     this.engineEQ.connect(this.engineMaster);
@@ -736,20 +736,9 @@ export class PsyLive {
 
   // ── Smart mixing: sidechain duck on radio kick (gentle pump, not choke) ──
   private duckSidechain(t: number): void {
-    if (!this.sidechain || !this.ctx) return;
-    const now = t;
-    // Avoid re-triggering too fast (protect against detection noise)
-    if (now - this.lastDuckTime < 0.06) return;
-    this.lastDuckTime = now;
-
-    const g = this.sidechain.gain;
-    g.cancelScheduledValues(now);
-    g.setValueAtTime(Math.max(0.0001, g.value), now);
-    // Minimal dip — was 0.85 (choking), now 0.95 (barely audible pump)
-    // Full spectrum stays intact, just creates tiny pocket for radio kick
-    g.linearRampToValueAtTime(0.95, now + 0.01);
-    g.exponentialRampToValueAtTime(1.0, now + 0.08);
-    this.duckAmount = 1.0;
+    // SIDECHAIN COMPLETELY DISABLED — was choking the spectrum
+    // Now: no ducking at all, full dynamics preserved
+    return;
   }
 
   // ── Smart mixing: harmonic following ──
