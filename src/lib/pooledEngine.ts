@@ -75,35 +75,41 @@ export class SynthVoice {
     const rel = Math.max(p.rel ?? 0.15, 0.02);
     const end = when + dur;
 
-    // Oscillators
+    // Oscillators — detuned dual osc (psy approach: 9 cents default if not specified)
     this.osc1.type = p.wave1 ?? 'sawtooth';
     this.osc2.type = p.wave2 ?? 'sawtooth';
     this.osc1.frequency.setValueAtTime(freq, when);
     this.osc2.frequency.setValueAtTime(freq * Math.pow(2, p.oct2 ?? 0), when);
-    this.osc2.detune.setValueAtTime(p.detune ?? 0, when);
+    // Default detune: 9 cents if not specified (creates rich supersaw like psy)
+    const detune = p.detune ?? 9;
+    this.osc2.detune.setValueAtTime(detune, when);
 
     // FM (if FM engine)
     if (p.engine === 'FM' && p.fmAmount && p.fmRatio) {
-      // Use osc2 as modulator — connect to osc1 frequency
       this.osc2.frequency.setValueAtTime(freq * (p.fmRatio ?? 2), when);
       this.g2.gain.setValueAtTime(p.fmAmount * 200, when);
     } else {
       this.g2.gain.setValueAtTime(0.4, when);
     }
 
-    // Filter
+    // Filter — with envelope sweep (psy approach: sweep from peak to cutoff)
     const cut = Math.max(60, Math.min(16000, p.cutoff ?? 1500));
     const res = Math.max(0.2, Math.min(24, p.res ?? 1));
     this.filter.type = p.fType ?? 'lowpass';
     this.filter.Q.setValueAtTime(res, when);
     this.filter.frequency.cancelScheduledValues(when);
-    // Filter envelope (if fEnvAmt specified)
+    // Filter envelope: start high, sweep to cutoff (creates movement)
     if (p.fEnvAmt && p.fEnvAmt > 0) {
-      const peak = Math.min(cut * 3, 16000);
+      // Custom envelope amount
+      const peak = Math.min(cut * (1 + p.fEnvAmt * 2), 16000);
+      const fDecay = Math.max(p.fDecay ?? 0.16, 0.01);
       this.filter.frequency.setValueAtTime(peak, when);
-      this.filter.frequency.exponentialRampToValueAtTime(cut, when + Math.max((p.fDecay ?? 0.2), 0.01));
+      this.filter.frequency.exponentialRampToValueAtTime(cut, when + fDecay);
     } else {
+      // Default psy-style sweep: start at cutoff, sweep down to 35% (bass) or up then down (lead)
+      const fEnd = Math.max(80, cut * 0.35);
       this.filter.frequency.setValueAtTime(cut, when);
+      this.filter.frequency.exponentialRampToValueAtTime(fEnd, when + 0.16);
     }
 
     // LFO
@@ -114,7 +120,7 @@ export class SynthVoice {
       this.lfoGain.gain.setValueAtTime(0, when);
     }
 
-    // Amp envelope (ADSR)
+    // Amp envelope (ADSR) — psy approach: fast attack, exponential decay
     const atk = Math.max(p.atk ?? 0.005, 0.003);
     const dec = Math.max(p.dec ?? 0.3, 0.01);
     const sus = Math.max(p.sus ?? 0.6, 0.0);
@@ -123,17 +129,16 @@ export class SynthVoice {
 
     const vca = this.vca.gain;
     vca.cancelScheduledValues(when);
-    vca.setValueAtTime(0, when);
-    vca.linearRampToValueAtTime(amp, when + atk);
-    vca.setTargetAtTime(amp * sus, when + atk, Math.max(dec / 3, 0.01));
-    vca.setTargetAtTime(0.0001, end, Math.max(rel / 3, 0.008));
+    vca.setValueAtTime(0.0001, when);
+    vca.exponentialRampToValueAtTime(amp, when + atk);
+    vca.exponentialRampToValueAtTime(amp * sus, when + atk + dec);
+    vca.exponentialRampToValueAtTime(0.0001, end + rel);
 
     // Effects sends
     this.delaySend.gain.setValueAtTime(p.sendDelay ?? 0, when);
     this.reverbSend.gain.setValueAtTime(p.sendReverb ?? 0, when);
 
     this.active = true;
-    // Mark inactive after note ends
     setTimeout(() => { this.active = false; }, (end - when + rel) * 1000 + 100);
   }
 }
