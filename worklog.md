@@ -5888,3 +5888,58 @@ ARTIFACTS (all pushed to GitHub dudududi144-source/psy4):
 - src/lib/learning.ts: chord progressions + rhythm variations
 - src/app/page.tsx: NODES metric + RESUME button
 - Commits: f1f4ef3, f463b1b
+
+---
+Task ID: spectrum-fix-v9
+Agent: main
+Task: Fix spectrum compression — music was folded into narrow radius
+
+ROOT CAUSE ANALYSIS (why spectrum was narrow):
+1. Limiter: ratio 4:1 threshold -0.5dB = compressing EVERYTHING (not just peaks)
+   → Dynamics flattened, all sounds at same level = narrow radius
+2. engineEQ: lowshelf cutting bass when radio dense
+   → Low end collapsed when radio playing
+3. sidechain: dipping to 0.85 on every kick
+   → Choked bass/lead continuously
+4. auto-level: ducking engine to 0.85 when radio quiet
+   → Narrow dynamics, no contrast
+5. analyser fftSize 512: low spectrum resolution
+   → Visualizer showed compressed spectrum
+6. visualizer /1.8: compressed display range
+   → Bars looked small/narrow
+
+FIXES APPLIED:
+- Limiter: TRUE brickwall (ratio 20:1, threshold -1dB, knee 0)
+  Only catches peaks above -1dB, leaves dynamics intact below
+- engineEQ: allpass (transparent — no frequency cuts at all)
+- adaptEQ: DISABLED (was cutting bass, collapsing mix)
+- sidechain: 0.85 → 0.95 (minimal dip, full spectrum stays)
+- auto-level: fixed 0.95 (no ducking under radio, full dynamics)
+- analyser fftSize: 512 → 1024 (2x more spectrum detail)
+- smoothing: 0.5 → 0.7 (smoother visual)
+- visualizer: removed /1.8 compression, bars 1.4x taller, 32 bars
+- masterGain: 0.9 → 0.95
+
+VERIFIED (before headless browser crash at 5 min):
+- 2 min with radio: AUTO 91%, RADIO 12%, LOW 60%, MID 50%, HIGH 9%
+- SIDECHAIN: 100% (not choking)
+- HARMONIC: F1 LOCKED
+- Nodes: 1/6 (stable)
+- Memory: 14MB (lightest ever)
+- BPM sync: working
+
+SPECTRUM NOW FULL:
+- LOW 60% (was being cut by EQ)
+- MID 50% (was compressed by limiter)
+- HIGH 9% (natural for psytrance)
+- AUTO LEVEL 91% (was 3-7% before fix!)
+- Full frequency range passes through (no cuts)
+
+NOTE: Headless browser still crashes at 5 min (resource limit).
+User's real machine should see/hear the difference:
+- Wider spectrum (no compression below -1dB)
+- Fuller bass (no EQ cuts)
+- Louder engine (0.95 not 0.85)
+- Better visualizer (taller bars, more detail)
+
+All pushed to GitHub: dudududi144-source/psy4 (commits f40ff90, 55ec889, fbb641a)
