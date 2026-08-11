@@ -449,7 +449,7 @@ export class PsyLive {
     this.step = 0;
     this.nextNoteTime = this.ctx!.currentTime + 0.08;
     this.syncDelay();
-    this.timer = setInterval(() => this.scheduler(), 40);
+    this.timer = setInterval(() => this.scheduler(), 50); // 50ms — 20fps, enough lookahead
     this.startUITimer();
     this.emit();
   }
@@ -560,7 +560,7 @@ export class PsyLive {
     const chordRoots = [0, 5, 3, 4];
     const currentChordRoot = chordRoots[chordIdx];
 
-    // COMPOSITION MODE: use generated pattern with harmony
+    // COMPOSITION MODE: use generated pattern
     if (this.compositionMode && this.composition) {
       const cp = this.composition.pattern;
       const root = this.composition.rootMidi;
@@ -571,36 +571,25 @@ export class PsyLive {
       const l = cp.lead[step];
       if (l !== null && l !== undefined) this.playLead(t, mtof(root + 24 + l), v, step % 4 === 0, true);
     } else if (reinforcing) {
-      // REINFORCE: evolving hat + harmonic bass + lead
+      // REINFORCE: ONLY bass + hat (minimal — 2 layers)
       if (this.currentHat[step]) this.playHat(t, v.hatLvl);
-      // Bass follows chord progression (not fixed preset)
       const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
       const b = bassPattern[step];
       if (b !== null && b !== undefined) {
-        // Transpose by chord root
         this.playBass(t, mtof(harmonicRoot + currentChordRoot + b), v);
-      }
-      // Lead from chord tones
-      const leadPattern: (number|null)[] = [null, null, null, null, 12, null, null, null, null, null, 15, null, null, null, 19, null];
-      const l = leadPattern[step];
-      if (l !== null && l !== undefined) {
-        this.playLead(t, mtof(harmonicRoot + currentChordRoot + l), v, step % 4 === 0, true);
       }
     } else {
-      // GLUE/SOLO: evolving kick + harmonic bass + hat + lead
+      // GLUE/SOLO: kick + bass + hat (3 layers — removed lead to prevent crash)
       if (this.currentKick[step]) this.playKick(t);
       if (this.currentHat[step]) this.playHat(t, v.hatLvl);
-      // Bass follows chord progression
       const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
       const b = bassPattern[step];
       if (b !== null && b !== undefined) {
         this.playBass(t, mtof(harmonicRoot + currentChordRoot + b), v);
       }
-      // Lead from chord tones
-      const leadPattern: (number|null)[] = [null, null, null, null, 12, null, null, null, null, null, 15, null, null, null, 19, null];
-      const l = leadPattern[step];
-      if (l !== null && l !== undefined) {
-        this.playLead(t, mtof(harmonicRoot + currentChordRoot + l), v, step % 4 === 0, true);
+      // Lead ONLY on beat 1 of each bar (1 note per bar = minimal)
+      if (barPos === 0) {
+        this.playLead(t, mtof(harmonicRoot + currentChordRoot + 12), v, true, true);
       }
     }
 
@@ -861,7 +850,7 @@ export class PsyLive {
   // ── Kick detection + spectral analysis (20ms tick) ──
   private startDetection(): void {
     if (this.detectTimer) clearInterval(this.detectTimer);
-    this.detectTimer = setInterval(() => this.detect(), 100); // 100ms — 10fps, enough for kick detection
+    this.detectTimer = setInterval(() => this.detect(), 150); // 150ms — 6.7fps, minimal CPU
   }
 
   private detect(): void {
