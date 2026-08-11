@@ -92,7 +92,7 @@ export class SynthVoice {
       this.g2.gain.setValueAtTime(0.4, when);
     }
 
-    // Filter — with envelope sweep (psy approach: sweep from peak to cutoff)
+    // Filter — with envelope sweep (gentler, keeps more harmonics)
     const cut = Math.max(60, Math.min(16000, p.cutoff ?? 1500));
     const res = Math.max(0.2, Math.min(24, p.res ?? 1));
     this.filter.type = p.fType ?? 'lowpass';
@@ -100,16 +100,15 @@ export class SynthVoice {
     this.filter.frequency.cancelScheduledValues(when);
     // Filter envelope: start high, sweep to cutoff (creates movement)
     if (p.fEnvAmt && p.fEnvAmt > 0) {
-      // Custom envelope amount
       const peak = Math.min(cut * (1 + p.fEnvAmt * 2), 16000);
       const fDecay = Math.max(p.fDecay ?? 0.16, 0.01);
       this.filter.frequency.setValueAtTime(peak, when);
       this.filter.frequency.exponentialRampToValueAtTime(cut, when + fDecay);
     } else {
-      // Default psy-style sweep: start at cutoff, sweep down to 35% (bass) or up then down (lead)
-      const fEnd = Math.max(80, cut * 0.35);
+      // Gentler sweep: cutoff → 70% (was 35% — was killing harmonics)
+      const fEnd = Math.max(120, cut * 0.7);
       this.filter.frequency.setValueAtTime(cut, when);
-      this.filter.frequency.exponentialRampToValueAtTime(fEnd, when + 0.16);
+      this.filter.frequency.exponentialRampToValueAtTime(fEnd, when + 0.2);
     }
 
     // LFO
@@ -125,7 +124,7 @@ export class SynthVoice {
     const dec = Math.max(p.dec ?? 0.3, 0.01);
     const sus = Math.max(p.sus ?? 0.6, 0.0);
     const velSens = p.velSens ?? 0.8;
-    const amp = vel * (0.3 + velSens * 0.5);
+    const amp = vel * (0.5 + velSens * 0.5); // was 0.3 — too quiet
 
     const vca = this.vca.gain;
     vca.cancelScheduledValues(when);
@@ -327,7 +326,7 @@ export class PooledEngine {
 
     // Master chain
     this.master = ctx.createGain();
-    this.master.gain.value = 0.85;
+    this.master.gain.value = 1.0; // was 0.85 — too quiet
     this.analyser = ctx.createAnalyser();
     this.analyser.fftSize = 1024;
     this.analyser.smoothingTimeConstant = 0.7;

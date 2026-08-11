@@ -454,26 +454,23 @@ export class PsyLive {
 
   // ── Select presets from sound bank (by detected scale or default) ──
   private selectBankPresets(): void {
-    // Default: pick psytrance presets
-    // If learning detected a scale, auto-select by scale degrees
     const scaleDegs = this.learned?.scale?.intervals || [0, 3, 5, 7, 8, 10];
     const genre = 'PSYTRANCE';
 
-    // Auto-select bass
     const basses = autoSelect(scaleDegs, genre as any, 0.8, 'bass');
-    this.bankBass = basses[0] || getById('PSY-BASS-ROLL');
+    this.bankBass = basses[0] || getById('PSY-BASS-ROLL') || null;
 
-    // Auto-select lead
     const leads = autoSelect(scaleDegs, genre as any, 0.75, 'lead');
-    this.bankLead = leads[0] || getById('PSY-LEAD-SQUELCH');
+    this.bankLead = leads[0] || getById('PSY-LEAD-SQUELCH') || null;
 
-    // Auto-select pad
     const pads = autoSelect(scaleDegs, genre as any, 0.5, 'pad');
-    this.bankPad = pads[0] || getById('PSY-PAD-PSYCH');
+    this.bankPad = pads[0] || getById('PSY-PAD-PSYCH') || null;
 
-    // Fixed drum presets (always psytrance)
-    this.bankKick = getById('PSY-KICK-DEEP') || getById('PSY-KICK-TIGHT');
-    this.bankHat = getById('PSY-HAT-BRIGHT');
+    this.bankKick = getById('PSY-KICK-DEEP') || getById('PSY-KICK-TIGHT') || null;
+    this.bankHat = getById('PSY-HAT-BRIGHT') || null;
+
+    // Debug log
+    console.log('[BANK] kick:', this.bankKick?.id, 'bass:', this.bankBass?.id, 'lead:', this.bankLead?.id, 'hat:', this.bankHat?.id);
   }
 
   // ── Learning: refresh derived insights ──
@@ -576,7 +573,8 @@ export class PsyLive {
     this.syncDelay();
     this.timer = setInterval(() => this.scheduler(), 50);
     this.startUITimer();
-    this.startHealthMonitor(); // NEW: continuous health check
+    this.startHealthMonitor();
+    console.log('[PLAY] pooled:', !!this.pooled, 'kick:', this.bankKick?.id, 'bass:', this.bankBass?.id, 'ctx:', this.ctx?.state);
     this.emit();
   }
 
@@ -772,7 +770,10 @@ export class PsyLive {
     } else {
       // GLUE/SOLO: kick + bass + lead (using bank presets)
       const stepDur = 60 / this.engineBpm / 4;
-      if (this.currentKick[step] && this.bankKick && this.pooled) this.pooled.triggerDrum(this.bankKick, t, 0.9);
+      if (this.currentKick[step] && this.bankKick && this.pooled) {
+        this.pooled.triggerDrum(this.bankKick, t, 0.9);
+        if (step % 4 === 0) console.log('[STEP] kick triggered at', t.toFixed(3), 'step', step);
+      }
       if (this.currentHat[step] && this.bankHat && this.pooled) this.pooled.triggerDrum(this.bankHat, t, v.hatLvl);
       const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
       const b = bassPattern[step];
