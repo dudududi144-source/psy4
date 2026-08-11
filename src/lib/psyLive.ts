@@ -225,6 +225,10 @@ export class PsyLive {
   private harmonicRoot = 0; // detected radio root midi
   private harmonicLocked = false;
 
+  // Radio follower state
+  private radioFollowActive = false;
+  private radioEnergyHistory: number[] = [];
+
   // Intelligent rhythm (evolves every 4 bars)
   private barCount = 0;
   private rhythmIdx = 0;
@@ -1090,7 +1094,7 @@ export class PsyLive {
   // ── Kick detection + spectral analysis (20ms tick) ──
   private startDetection(): void {
     if (this.detectTimer) clearInterval(this.detectTimer);
-    this.detectTimer = setInterval(() => this.detect(), 750); // 750ms — 1.3fps, absolute minimum
+    this.detectTimer = setInterval(() => this.detect(), 200); // 200ms — 5fps, follows radio
   }
 
   private detect(): void {
@@ -1164,6 +1168,10 @@ export class PsyLive {
       }
     }
 
+    // Record energy history for radio follower
+    this.radioEnergyHistory.push(total);
+    if (this.radioEnergyHistory.length > 64) this.radioEnergyHistory.shift();
+
     // Bass freq detection (every 8 kicks — was 12, more frequent)
     if (this.kickCount > 0 && this.kickCount % 8 === 0) {
       // Collect ALL significant frequencies (not just peak) — for chord detection
@@ -1212,26 +1220,19 @@ export class PsyLive {
 
   private onKick(): void {
     const now = this.ctx!.currentTime;
-    // Refractory period: minimum 250ms between detections (prevents runaway)
-    // At 170 BPM, kicks are 0.35s apart — 250ms is safe
     if (this.lastKickTime > 0 && now - this.lastKickTime < 0.25) return;
     this.kickCount++;
 
     if (this.lastKickTime > 0) {
       const interval = now - this.lastKickTime;
-      // Tighter interval window: psytrance is 138-150 BPM = 0.40-0.43s between kicks
-      // Accept 0.32-0.55 (allows 109-187 BPM range, rejects noise)
       if (interval >= 0.32 && interval <= 0.55) {
-        // Outlier rejection: if we have a stable median, reject intervals >15% off
         if (this.kickIntervals.length >= 4) {
           const sorted = [...this.kickIntervals].sort((a, b) => a - b);
           const med = sorted[Math.floor(sorted.length / 2)];
           if (Math.abs(interval - med) / med > 0.15) {
-            // Outlier — skip recording but update lastKickTime
             this.lastKickTime = now;
-            if (this.playing && this.mixMode === 'reinforce') {
-              this.playKick(now);
-              this.duckSidechain(now);
+            if (this.playing && this.bankKick && this.pooled) {
+              this.pooled.triggerDrum(this.bankKick, now, 0.85);
             }
             this.emit();
             return;
@@ -1244,32 +1245,22 @@ export class PsyLive {
           const sorted = [...this.kickIntervals].sort((a, b) => a - b);
           const median = sorted[Math.floor(sorted.length / 2)];
           let bpm = 60 / median;
-          // Normalize to psytrance range (110-170) — single pass
           if (bpm < 110) bpm *= 2;
           if (bpm > 170) bpm /= 2;
-          // If still out of range, skip (noise)
-          if (bpm < 110 || bpm > 170) {
-            this.lastKickTime = now;
-            if (this.playing && this.mixMode === 'reinforce') {
-              this.playKick(now);
-              this.duckSidechain(now);
-            }
-            this.emit();
-            return;
-          }
-          bpm = Math.round(bpm);
-          // Accept if within 8 BPM of current (wider window for faster sync)
-          if (this.radioBpm === 0 || Math.abs(bpm - this.radioBpm) <= 8) {
-            this.radioBpm = bpm;
-            // Faster sync: 0.7 factor (was 0.4 — too slow to catch up)
-            this.engineBpm = Math.round(this.engineBpm + (bpm - this.engineBpm) * 0.7);
-            this.syncDelay();
-            this.syncStatus = 'following';
-            this.updateMixMode();
-            if (this.learningData) {
-              this.learningData = recordKick(this.learningData, bpm);
-              this.refreshLearned();
-              saveLearning(this.learningData);
+          if (bpm >= 110 && bpm <= 170) {
+            bpm = Math.round(bpm);
+            if (this.radioBpm === 0 || Math.abs(bpm - this.radioBpm) <= 8) {
+              this.radioBpm = bpm;
+              this.engineBpm = Math.round(this.engineBpm + (bpm - this.engineBpm) * 0.7);
+              this.syncDelay();
+              this.syncStatus = 'following';
+              this.radioFollowActive = true;
+              this.updateMixMode();
+              if (this.learningData) {
+                this.learningData = recordKick(this.learningData, bpm);
+                this.refreshLearned();
+                saveLearning(this.learningData);
+              }
             }
           }
         }
@@ -1277,10 +1268,9 @@ export class PsyLive {
     }
     this.lastKickTime = now;
 
-    // SMART MIXING: fire reinforcement kick + duck our bus to make room
-    if (this.playing && this.mixMode === 'reinforce') {
-      this.playKick(now);            // reinforce radio kick
-      this.duckSidechain(now);       // duck our bass/lead so radio kicks through
+    // REAL-TIME FOLLOW: reinforce radio kick with our kick
+    if (this.playing && this.radioFollowActive && this.bankKick && this.pooled) {
+      this.pooled.triggerDrum(this.bankKick, now, 0.85);
     }
 
     this.emit();
