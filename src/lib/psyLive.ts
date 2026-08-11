@@ -442,7 +442,7 @@ export class PsyLive {
     this.step = 0;
     this.nextNoteTime = this.ctx!.currentTime + 0.08;
     this.syncDelay();
-    this.timer = setInterval(() => this.scheduler(), 25);
+    this.timer = setInterval(() => this.scheduler(), 40); // was 25ms — 40ms is fine for lookahead
     this.emit();
   }
 
@@ -496,9 +496,12 @@ export class PsyLive {
       this.autoLevel();
     }
     // Periodic state emit so UI shows live levels
-    if (this.step % 2 === 0) {  // every 2 steps (faster updates)
+    if (this.step % 8 === 0) {
       if (this.analyser) {
-        const d = new Uint8Array(this.analyser.frequencyBinCount);
+        if (!this.engineFreqBuf || this.engineFreqBuf.length !== this.analyser.frequencyBinCount) {
+          this.engineFreqBuf = new Uint8Array(this.analyser.frequencyBinCount);
+        }
+        const d = this.engineFreqBuf;
         this.analyser.getByteFrequencyData(d);
         const activeBins = Math.floor(d.length / 4);
         let peak = 0; let sum = 0;
@@ -811,7 +814,7 @@ export class PsyLive {
         this.radioGain = this.ctx.createGain();
         this.radioGain.gain.value = 0.5;
         this.radioAnalyser = this.ctx.createAnalyser();
-        this.radioAnalyser.fftSize = 4096;
+        this.radioAnalyser.fftSize = 1024; // was 4096 — 4x less CPU, still detects kicks
         this.radioAnalyser.smoothingTimeConstant = 0.2;
       }
       // Radio → radioGain → radioAnalyser → shared limiter
@@ -850,7 +853,7 @@ export class PsyLive {
   // ── Kick detection + spectral analysis (20ms tick) ──
   private startDetection(): void {
     if (this.detectTimer) clearInterval(this.detectTimer);
-    this.detectTimer = setInterval(() => this.detect(), 50); // was 20ms — 50ms is enough for kick detection
+    this.detectTimer = setInterval(() => this.detect(), 100); // 100ms — 10fps, enough for kick detection
   }
 
   private detect(): void {
