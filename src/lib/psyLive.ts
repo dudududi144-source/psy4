@@ -161,6 +161,8 @@ export interface LiveState {
   deviceId: string;
   activeNodes: number;
   maxNodes: number;
+  songSection: string;
+  songBar: number;
 }
 
 // ─── Engine ────────────────────────────────────────────────────────────────
@@ -301,6 +303,8 @@ export class PsyLive {
       deviceId: this.deviceId,
       activeNodes: this.activeNodes,
       maxNodes: this.maxActiveNodes,
+      songSection: this.songSection,
+      songBar: this.songBar,
     });
   }
 
@@ -724,15 +728,66 @@ export class PsyLive {
     if (this.uiTimer) { clearInterval(this.uiTimer); this.uiTimer = null; }
   }
 
+  // Song structure (like psy — plays full track, not fixed loop)
+  // Sections: intro (8 bars) → build (8) → peak (16) → break (8) → peak2 (16) → outro (8)
+  private songSection: 'intro' | 'build' | 'peak' | 'break' | 'peak2' | 'outro' = 'intro';
+  private songBar = 0;
+  private readonly SECTION_LENGTHS: Record<string, number> = {
+    intro: 8, build: 8, peak: 16, break: 8, peak2: 16, outro: 8
+  };
+  private readonly SECTION_ORDER = ['intro', 'build', 'peak', 'break', 'peak2', 'outro'];
+
+  private updateSongSection(): void {
+    const len = this.SECTION_LENGTHS[this.songSection];
+    if (this.songBar >= len) {
+      this.songBar = 0;
+      const idx = this.SECTION_ORDER.indexOf(this.songSection);
+      const nextIdx = (idx + 1) % this.SECTION_ORDER.length;
+      this.songSection = this.SECTION_ORDER[nextIdx] as any;
+      console.log('[SONG] section:', this.songSection);
+      // Re-select presets based on section energy
+      this.selectPresetsForSection();
+    }
+  }
+
+  private selectPresetsForSection(): void {
+    const scaleDegs = this.learned?.scale?.intervals || [0, 3, 5, 7, 8, 10];
+    const genre = 'PSYTRANCE';
+    // Energy by section
+    const energyMap: Record<string, number> = {
+      intro: 0.4, build: 0.6, peak: 0.9, break: 0.3, peak2: 0.95, outro: 0.5
+    };
+    const energy = energyMap[this.songSection] || 0.7;
+    const basses = autoSelect(scaleDegs, genre as any, energy, 'bass');
+    this.bankBass = basses[0] || getById('PSY-BASS-ROLL') || null;
+    const leads = autoSelect(scaleDegs, genre as any, energy, 'lead');
+    this.bankLead = leads[0] || getById('PSY-LEAD-SQUELCH') || null;
+    console.log('[SONG] selected bass:', this.bankBass?.id, 'lead:', this.bankLead?.id, 'energy:', energy);
+  }
+
+  // Get what should play in this section
+  private getSectionIntensity(): { kick: boolean; bass: boolean; lead: boolean; hat: boolean; pad: boolean } {
+    switch (this.songSection) {
+      case 'intro':  return { kick: true,  bass: true,  lead: false, hat: false, pad: true  };
+      case 'build':  return { kick: true,  bass: true,  lead: true,  hat: true,  pad: true  };
+      case 'peak':   return { kick: true,  bass: true,  lead: true,  hat: true,  pad: false };
+      case 'break':  return { kick: false, bass: false, lead: true,  hat: false, pad: true  };
+      case 'peak2':  return { kick: true,  bass: true,  lead: true,  hat: true,  pad: false };
+      case 'outro':  return { kick: true,  bass: true,  lead: false, hat: true,  pad: true  };
+    }
+  }
+
   private scheduleStep(step: number, t: number): void {
     const p = this.getPreset();
     const v = this.getVariant();
     const reinforcing = this.mixMode === 'reinforce';
     const barPos = step % 16;
 
-    // Evolve rhythm every 4 bars
+    // Track bars + update song section
     if (barPos === 0) {
       this.barCount++;
+      this.songBar++;
+      this.updateSongSection();
       if (this.barCount % 4 === 0) {
         this.rhythmIdx = getNextRhythmVariation(this.rhythmIdx);
         this.currentKick = getRhythmPattern('kick', this.rhythmIdx);
@@ -740,49 +795,74 @@ export class PsyLive {
       }
     }
 
-    // Get harmonic context: use detected scale if locked, else preset root
+    // Get section intensity (what plays now)
+    const intensity = this.getSectionIntensity();
+
+    // Get harmonic context
     const harmonicRoot = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
-    // Chord changes every 4 steps (4 chords per bar)
     const chordIdx = Math.floor(step / 4) % 4;
-    // Use a simple chord progression: [0, 5, 3, 4] (i - iv - VII - III in scale degrees)
     const chordRoots = [0, 5, 3, 4];
     const currentChordRoot = chordRoots[chordIdx];
 
-    // COMPOSITION MODE: use generated pattern with BANK PRESETS
+    const stepDur = 60 / this.engineBpm / 4;
+
+    // COMPOSITION MODE: full song structure
     if (this.compositionMode && this.composition) {
       const cp = this.composition.pattern;
       const root = this.composition.rootMidi;
-      const stepDur = 60 / this.engineBpm / 4;
-      if (cp.kick[step] && this.bankKick && this.pooled) this.pooled.triggerDrum(this.bankKick, t, 0.9);
-      if (cp.hat[step] && this.bankHat && this.pooled) this.pooled.triggerDrum(this.bankHat, t, v.hatLvl);
-      const b = cp.bass[step];
-      if (b !== null && b !== undefined && this.bankBass && this.pooled) {
-        this.pooled.triggerSynth(this.bankBass, mtof(root + b), t, 0.8, stepDur);
+      if (intensity.kick && cp.kick[step] && this.bankKick && this.pooled) this.pooled.triggerDrum(this.bankKick, t, 0.9);
+      if (intensity.hat && cp.hat[step] && this.bankHat && this.pooled) this.pooled.triggerDrum(this.bankHat, t, v.hatLvl);
+      if (intensity.bass) {
+        const b = cp.bass[step];
+        if (b !== null && b !== undefined && this.bankBass && this.pooled) {
+          this.pooled.triggerSynth(this.bankBass, mtof(root + b), t, 0.8, stepDur);
+        }
+      }
+      if (intensity.lead) {
+        const l = cp.lead[step];
+        if (l !== null && l !== undefined && this.bankLead && this.pooled) {
+          this.pooled.triggerSynth(this.bankLead, mtof(root + 24 + l), t, 0.7, stepDur);
+        }
       }
     } else if (reinforcing) {
-      // REINFORCE: bass only (using bank preset)
-      const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
-      const b = bassPattern[step];
-      const stepDur = 60 / this.engineBpm / 4;
-      if (b !== null && b !== undefined && this.bankBass && this.pooled) {
-        this.pooled.triggerSynth(this.bankBass, mtof(harmonicRoot + currentChordRoot + b), t, 0.8, stepDur);
+      // REINFORCE: follow radio with bass + occasional lead
+      if (intensity.bass && this.bankBass && this.pooled) {
+        const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
+        const b = bassPattern[step];
+        if (b !== null && b !== undefined) {
+          this.pooled.triggerSynth(this.bankBass, mtof(harmonicRoot + currentChordRoot + b), t, 0.8, stepDur);
+        }
+      }
+      if (intensity.lead && barPos === 0 && this.bankLead && this.pooled) {
+        this.pooled.triggerSynth(this.bankLead, mtof(harmonicRoot + currentChordRoot + 12), t, 0.6, stepDur);
       }
     } else {
-      // GLUE/SOLO: kick + bass + lead (using bank presets)
-      const stepDur = 60 / this.engineBpm / 4;
-      if (this.currentKick[step] && this.bankKick && this.pooled) {
+      // GLUE/SOLO: full song structure with all elements
+      if (intensity.kick && this.currentKick[step] && this.bankKick && this.pooled) {
         this.pooled.triggerDrum(this.bankKick, t, 0.9);
-        if (step % 4 === 0) console.log('[STEP] kick triggered at', t.toFixed(3), 'step', step);
       }
-      if (this.currentHat[step] && this.bankHat && this.pooled) this.pooled.triggerDrum(this.bankHat, t, v.hatLvl);
-      const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
-      const b = bassPattern[step];
-      if (b !== null && b !== undefined && this.bankBass && this.pooled) {
-        this.pooled.triggerSynth(this.bankBass, mtof(harmonicRoot + currentChordRoot + b), t, 0.8, stepDur);
+      if (intensity.hat && this.currentHat[step] && this.bankHat && this.pooled) {
+        this.pooled.triggerDrum(this.bankHat, t, v.hatLvl);
       }
-      // Lead on beat 1 of each bar
-      if (barPos === 0 && this.bankLead && this.pooled) {
-        this.pooled.triggerSynth(this.bankLead, mtof(harmonicRoot + currentChordRoot + 12), t, 0.7, stepDur);
+      if (intensity.bass && this.bankBass && this.pooled) {
+        const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
+        const b = bassPattern[step];
+        if (b !== null && b !== undefined) {
+          this.pooled.triggerSynth(this.bankBass, mtof(harmonicRoot + currentChordRoot + b), t, 0.8, stepDur);
+        }
+      }
+      // Lead: melodic pattern (like psy — moves through notes)
+      if (intensity.lead && this.bankLead && this.pooled) {
+        // Melodic lead pattern (0, null, 3, null, 7, null, 10, null, 7, null, 3, null, 12, null, 15, null)
+        const leadPattern: (number|null)[] = [0, null, 3, null, 7, null, 10, null, 7, null, 3, null, 12, null, 15, null];
+        const l = leadPattern[barPos];
+        if (l !== null && l !== undefined) {
+          this.pooled.triggerSynth(this.bankLead, mtof(harmonicRoot + currentChordRoot + 12 + l), t, 0.65, stepDur);
+        }
+      }
+      // Pad: sustained chord on bar 1
+      if (intensity.pad && barPos === 0 && this.bankPad && this.pooled) {
+        this.pooled.triggerSynth(this.bankPad, mtof(harmonicRoot + currentChordRoot), t, 0.4, stepDur * 16);
       }
     }
 

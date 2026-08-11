@@ -26,6 +26,7 @@ export default function Page() {
     duckAmount: 0, radioRms: 0, radioBands: { low: 0, mid: 0, high: 0 },
     compositionMode: false, composition: null, deviceId: '',
     activeNodes: 0, maxNodes: 0,
+    songSection: 'intro', songBar: 0,
   });
   const [streamId, setStreamId] = useState('psyndora');
   const [radioVol, setRadioVol] = useState(0.5);
@@ -218,6 +219,13 @@ export default function Page() {
             <Metric label="KICKS" value={s.kickCount} color="#ff2e88" />
             <Metric label="KEY" value={s.bassNote} color="#b967ff" />
             <Metric label="NODES" value={`${s.activeNodes}/${s.maxNodes}`} color="#3dffa8" />
+            <div style={{
+              padding: '6px 14px', borderRadius: 10, fontSize: 11, fontWeight: 'bold',
+              fontFamily: 'monospace', letterSpacing: '0.1em',
+              background: '#3dffa818', color: '#3dffa8',
+              border: '1px solid #3dffa850',
+              minWidth: 80, textAlign: 'center', textTransform: 'uppercase',
+            }}>{s.songSection} {s.songBar}</div>
             <div style={{
               padding: '6px 14px', borderRadius: 10, fontSize: 11, fontWeight: 'bold',
               fontFamily: 'monospace', letterSpacing: '0.1em',
