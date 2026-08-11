@@ -887,7 +887,7 @@ export class PsyLive {
       const recent = this.subBassHistory.slice(-20);
       const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
       const max = Math.max(...recent);
-      const threshold = avg + (max - avg) * 0.4;
+      const threshold = avg + (max - avg) * 0.55;
       const prev = this.subBassHistory[this.subBassHistory.length - 2] || 0;
 
       if (sub > threshold && prev <= threshold) {
@@ -932,6 +932,9 @@ export class PsyLive {
 
   private onKick(): void {
     const now = this.ctx!.currentTime;
+    // Refractory period: minimum 250ms between detections (prevents runaway)
+    // At 170 BPM, kicks are 0.35s apart — 250ms is safe
+    if (this.lastKickTime > 0 && now - this.lastKickTime < 0.25) return;
     this.kickCount++;
 
     if (this.lastKickTime > 0) {

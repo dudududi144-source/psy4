@@ -5707,3 +5707,62 @@ Stage Summary:
 - Engine sits loud (93%) above radio (23%) consistently
 - All tuning done live, verified incrementally each minute
 - 10-minute session completed with zero crashes and perfect sync at the end
+
+---
+Task ID: live-15min-tune-v6
+Agent: main
+Task: 15-minute live session, examine every 2-3 min, tune for precision, verify stability
+
+Work Log:
+- Continued from previous 10-min session (engine already running)
+- Minute 11: Discovered RUNAWAY kick detection — 24576 kicks (was 2277 at min 10)
+  * Root cause: no refractory period in onKick() + threshold too low (0.4)
+  * Rate: ~6 kicks/sec (should be ~2.5 at 150 BPM)
+- FIX 1: Added 250ms refractory period at start of onKick()
+  * At 170 BPM kicks are 0.35s apart — 250ms is safe, rejects noise
+- FIX 2: Increased threshold factor 0.4 → 0.55 (more selective)
+- Minute 12 (after fix): 65 kicks in 30s = 2.2/sec (was 6/sec) — FIXED!
+  * ENGINE 125 = RADIO 125 — perfect sync
+- Minute 13.5: ENGINE 150 = RADIO 150 — perfect sync, 312 kicks
+  * TEMPO: σ=2.8, 64% confidence (best ever at that point)
+- Tested composition mode: Minor · 148 BPM · root D, confidence 64%
+  * AUTO 85%, RADIO 27% — stable with all 7 layers
+- Tested 3 preset switches (Acid → Dark → Full On): no crash, stable
+- Minute 16.5: ENGINE 146 vs RADIO 144 (2 BPM gap), 758 kicks
+  * TEMPO: σ=2.1, 74% confidence (NEW RECORD)
+- Minute 18 (final): ENGINE 145 vs RADIO 144, 992 kicks
+  * TEMPO: σ=2.2, 72% confidence (stable)
+  * 0 errors, 0 crashes throughout
+
+TUNING SUMMARY (this session):
+- Refractory period: 0ms → 250ms (fixed runaway detection)
+- Threshold: 0.4 → 0.55 (more selective kick detection)
+- Kick rate: 6/sec → 2.2/sec (correct for 125-150 BPM)
+- Tempo confidence: 8% → 74% (9x improvement!)
+
+FINAL STATE (minute 18):
+- AUTO LEVEL: 88%
+- RADIO RMS: 26%
+- ENGINE 145 vs RADIO 144 (2 BPM gap)
+- 992 kicks collected (clean, no runaway)
+- D Minor 97% match (stable across all sessions)
+- TEMPO: 146 BPM, σ=2.2, 72% confidence
+- BPM 147 dominant (516 votes)
+- Key A (7906 votes)
+- Composition works: Minor · 148 BPM · root D
+- 0 errors, 0 crashes in 15+ minutes
+- All 7 musical layers playing (kick+bass+sub+lead+arp+pad+snare+hats)
+
+PROGRESS ACROSS ALL SESSIONS:
+- Tempo σ: 26.6 → 7.3 → 2.8 → 2.2 (12x improvement total)
+- Tempo confidence: 0% → 8% → 64% → 74% (from nothing to reliable)
+- BPM sync gap: 7 BPM → 3 BPM → 0 BPM → 0-2 BPM (near-perfect)
+- Engine level: 3% → 85% → 93% → 88% (consistently loud)
+- Kick detection: runaway → controlled (2.2/sec accurate)
+
+Stage Summary:
+- Runaway kick detection was the critical bug — fixed with refractory period + tighter threshold
+- Tempo stability confidence reached 74% (was 0% at session start)
+- BPM sync is now near-perfect (0-2 BPM gap consistently)
+- 15+ minute session completed with zero crashes and excellent stability
+- Engine produces rich 7-layer psytrance that sits loud above radio
