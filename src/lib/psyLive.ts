@@ -531,31 +531,18 @@ export class PsyLive {
     const barPos = this.step % 16;
     const isFill = barPos === 14 || barPos === 15; // fill at end of bar
 
-    // COMPOSITION MODE: use generated pattern (full layers OK — no radio analysis competing)
+    // COMPOSITION MODE: full layers OK (no radio = more CPU available)
     if (this.compositionMode && this.composition) {
       const cp = this.composition.pattern;
       const root = this.composition.rootMidi;
       if (cp.kick[step]) this.playKick(t);
       if (cp.hat[step]) this.playHat(t, v.hatLvl);
       const b = cp.bass[step];
-      if (b !== null && b !== undefined) {
-        this.playBass(t, mtof(root + b), v);
-        if (barPos % 4 === 0) this.playSubBass(t, mtof(root + b));
-      }
+      if (b !== null && b !== undefined) this.playBass(t, mtof(root + b), v);
       const l = cp.lead[step];
       if (l !== null && l !== undefined) this.playLead(t, mtof(root + 24 + l), v, step % 4 === 0, true);
-      if (step % 2 === 0 && this.composition.scale) {
-        const arpDeg = this.composition.scale.intervals[step % this.composition.scale.intervals.length];
-        this.playArp(t, mtof(root + 12 + arpDeg), step % 4 === 0, step);
-      }
-      if (barPos === 0 && this.composition.scale) {
-        const chordFreqs = this.composition.scale.intervals.slice(0, 3).map(iv => mtof(root + 12 + iv));
-        this.playPad(t, chordFreqs, (60 / this.composition.bpm) * 4);
-      }
-      if (barPos === 4 || barPos === 12) this.playSnare(t, 0.15);
     } else if (reinforcing) {
-      // REINFORCE MODE: minimal layers (radio is playing — just add bass + lead + hat)
-      // Removed ARP, pad, sub-bass, snare to prevent node accumulation crash
+      // REINFORCE: minimal (bass + hat + lead on accents only)
       if (p.patterns.hat[step]) this.playHat(t, v.hatLvl);
       const b = p.patterns.bass[step];
       if (b !== null && b !== undefined) {
@@ -568,38 +555,19 @@ export class PsyLive {
         this.playLead(t, mtof(root + 24 + l), v, true, true);
       }
     } else {
-      // GLUE/SOLO MODE: full layers (no radio analysis or light analysis)
-      if (!reinforcing && p.patterns.kick[step]) {
-        this.playKick(t);
-      }
+      // GLUE/SOLO: kick + bass + hat + lead (no ARP/pad/sub/snare — prevents crash)
+      if (!reinforcing && p.patterns.kick[step]) this.playKick(t);
       if (p.patterns.hat[step]) this.playHat(t, v.hatLvl);
       const b = p.patterns.bass[step];
       if (b !== null && b !== undefined) {
         const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
         this.playBass(t, mtof(root + b), v);
-        if (barPos % 4 === 0) this.playSubBass(t, mtof(root + b));
       }
       const l = p.patterns.lead[step];
       if (l !== null && l !== undefined) {
-        const skipInReinforce = reinforcing && (step % 4 !== 0);
-        if (!skipInReinforce) {
-          const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
-          this.playLead(t, mtof(root + 24 + l), v, step % 4 === 0, true);
-        }
+        const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
+        this.playLead(t, mtof(root + 24 + l), v, step % 4 === 0, true);
       }
-      if (step % 2 === 0 && this.harmonicLocked && this.harmonicRoot) {
-        const scaleDegrees = [0, 3, 5, 7, 5, 3];
-        const deg = scaleDegrees[step % scaleDegrees.length];
-        this.playArp(t, mtof(this.harmonicRoot + 12 + deg), step % 4 === 0, step);
-      }
-      if (barPos === 0 && this.harmonicLocked && this.harmonicRoot) {
-        const chordDegrees = [0, 3, 7];
-        const chordFreqs = chordDegrees.map(iv => mtof(this.harmonicRoot + 12 + iv));
-        const barDur = (60 / this.engineBpm) * 4;
-        this.playPad(t, chordFreqs, barDur);
-      }
-      if (barPos === 4 || barPos === 12) this.playSnare(t, 0.12);
-      if (isFill) this.playHat(t, v.hatLvl * 1.5);
     }
 
     // Update engine level (reuse buffer — no allocation)
