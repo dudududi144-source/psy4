@@ -542,7 +542,7 @@ export class PsyLive {
     const reinforcing = this.mixMode === 'reinforce';
     const barPos = step % 16;
 
-    // Evolve rhythm every 4 bars (intelligent, not fixed loop)
+    // Evolve rhythm every 4 bars
     if (barPos === 0) {
       this.barCount++;
       if (this.barCount % 4 === 0) {
@@ -551,6 +551,14 @@ export class PsyLive {
         this.currentHat = getRhythmPattern('hat', this.rhythmIdx);
       }
     }
+
+    // Get harmonic context: use detected scale if locked, else preset root
+    const harmonicRoot = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
+    // Chord changes every 4 steps (4 chords per bar)
+    const chordIdx = Math.floor(step / 4) % 4;
+    // Use a simple chord progression: [0, 5, 3, 4] (i - iv - VII - III in scale degrees)
+    const chordRoots = [0, 5, 3, 4];
+    const currentChordRoot = chordRoots[chordIdx];
 
     // COMPOSITION MODE: use generated pattern with harmony
     if (this.compositionMode && this.composition) {
@@ -563,31 +571,36 @@ export class PsyLive {
       const l = cp.lead[step];
       if (l !== null && l !== undefined) this.playLead(t, mtof(root + 24 + l), v, step % 4 === 0, true);
     } else if (reinforcing) {
-      // REINFORCE: bass + hat + lead (using evolving rhythm)
+      // REINFORCE: evolving hat + harmonic bass + lead
       if (this.currentHat[step]) this.playHat(t, v.hatLvl);
-      const b = p.patterns.bass[step];
+      // Bass follows chord progression (not fixed preset)
+      const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
+      const b = bassPattern[step];
       if (b !== null && b !== undefined) {
-        const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
-        this.playBass(t, mtof(root + b), v);
+        // Transpose by chord root
+        this.playBass(t, mtof(harmonicRoot + currentChordRoot + b), v);
       }
-      const l = p.patterns.lead[step];
-      if (l !== null && l !== undefined && step % 4 === 0) {
-        const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
-        this.playLead(t, mtof(root + 24 + l), v, true, true);
+      // Lead from chord tones
+      const leadPattern: (number|null)[] = [null, null, null, null, 12, null, null, null, null, null, 15, null, null, null, 19, null];
+      const l = leadPattern[step];
+      if (l !== null && l !== undefined) {
+        this.playLead(t, mtof(harmonicRoot + currentChordRoot + l), v, step % 4 === 0, true);
       }
     } else {
-      // GLUE/SOLO: evolving kick + bass + hat + lead
+      // GLUE/SOLO: evolving kick + harmonic bass + hat + lead
       if (this.currentKick[step]) this.playKick(t);
       if (this.currentHat[step]) this.playHat(t, v.hatLvl);
-      const b = p.patterns.bass[step];
+      // Bass follows chord progression
+      const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
+      const b = bassPattern[step];
       if (b !== null && b !== undefined) {
-        const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
-        this.playBass(t, mtof(root + b), v);
+        this.playBass(t, mtof(harmonicRoot + currentChordRoot + b), v);
       }
-      const l = p.patterns.lead[step];
+      // Lead from chord tones
+      const leadPattern: (number|null)[] = [null, null, null, null, 12, null, null, null, null, null, 15, null, null, null, 19, null];
+      const l = leadPattern[step];
       if (l !== null && l !== undefined) {
-        const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
-        this.playLead(t, mtof(root + 24 + l), v, step % 4 === 0, true);
+        this.playLead(t, mtof(harmonicRoot + currentChordRoot + l), v, step % 4 === 0, true);
       }
     }
 
@@ -653,7 +666,7 @@ export class PsyLive {
     this.engineEQ.gain.setTargetAtTime(cut, this.ctx.currentTime, 0.5);
   }
 
-  // ── Synth voices ──
+  // ── Synth voices (with auto-cleanup to prevent node accumulation) ──
   private playKick(t: number): void {
     if (!this.ctx || !this.sidechain) return;
     const o = this.ctx.createOscillator(), g = this.ctx.createGain();
@@ -664,6 +677,8 @@ export class PsyLive {
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
     o.connect(g); g.connect(this.sidechain);
     o.start(t); o.stop(t + 0.3);
+    // Auto-cleanup: disconnect after note ends
+    o.onended = () => { try { o.disconnect(); g.disconnect(); } catch {} };
   }
 
   private playHat(t: number, lvl: number): void {
@@ -675,6 +690,7 @@ export class PsyLive {
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
     s.connect(f); f.connect(g); g.connect(this.sidechain);
     s.start(t); s.stop(t + 0.06);
+    s.onended = () => { try { s.disconnect(); f.disconnect(); g.disconnect(); } catch {} };
   }
 
   private playBass(t: number, freq: number, v: Variant): void {
@@ -688,6 +704,7 @@ export class PsyLive {
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.19);
     o.connect(f); f.connect(g); g.connect(this.sidechain);
     o.start(t); o.stop(t + 0.2);
+    o.onended = () => { try { o.disconnect(); f.disconnect(); g.disconnect(); } catch {} };
   }
 
   private playLead(t: number, freq: number, v: Variant, accent: boolean, echo: boolean): void {
@@ -709,6 +726,8 @@ export class PsyLive {
     if (pan) { g.connect(pan); pan.connect(this.sidechain); } else { g.connect(this.sidechain); }
     if (echo && this.delaySend) g.connect(this.delaySend);
     o.start(t); o2.start(t); o.stop(t + 0.26); o2.stop(t + 0.26);
+    // Cleanup both oscillators + filter + gain + panner
+    o.onended = () => { try { o.disconnect(); o2.disconnect(); f.disconnect(); g.disconnect(); if (pan) pan.disconnect(); } catch {} };
   }
 
   // ── PAD: sustained chord from scale (fills midrange, atmospheric) ──
@@ -936,18 +955,29 @@ export class PsyLive {
       }
     }
 
-    // Bass freq detection (every 12 kicks)
-    if (this.kickCount > 0 && this.kickCount % 12 === 0) {
+    // Bass freq detection (every 8 kicks — was 12, more frequent)
+    if (this.kickCount > 0 && this.kickCount % 8 === 0) {
+      // Collect ALL significant frequencies (not just peak) — for chord detection
       const minBin = Math.floor(40 / binHz);
-      const maxBin = Math.floor(200 / binHz);
-      let pk = 0, pv = 0;
+      const maxBin = Math.floor(2000 / binHz); // was 200 — now catches harmonics
+      const threshold = 80; // amplitude threshold
+      const detectedFreqs: number[] = [];
+      let peakPk = 0, peakPv = 0;
       for (let i = minBin; i <= maxBin && i < fd.length; i++) {
-        if (fd[i] > pv) { pv = fd[i]; pk = i; }
+        if (fd[i] > threshold) {
+          const freq = i * binHz;
+          detectedFreqs.push(freq);
+          if (fd[i] > peakPv) { peakPv = fd[i]; peakPk = i; }
+        }
       }
-      if (pv > 50) {
-        this.bassFreq = pk * binHz;
-        if (this.learningData) {
-          this.learningData = recordBassNote(this.learningData, this.bassFreq);
+      // Record peak for bass display
+      if (peakPv > 50) {
+        this.bassFreq = peakPk * binHz;
+        // Record ALL detected notes (not just peak) — richer histogram
+        if (this.learningData && detectedFreqs.length > 0) {
+          for (const freq of detectedFreqs) {
+            this.learningData = recordBassNote(this.learningData, freq);
+          }
           this.refreshLearned();
           saveLearning(this.learningData);
         }
