@@ -24,6 +24,8 @@ import {
   recordEnergy, deriveInsights, getInsights, generateComposition,
   getNextRhythmVariation, getRhythmPattern,
 } from './learning';
+import { SOUND_BANK, getById, autoSelect, type SoundPreset } from './soundBank';
+import { PooledEngine } from './pooledEngine';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 interface Pattern { kick: number[]; bass: (number | null)[]; lead: (number | null)[]; hat: number[]; }
@@ -167,6 +169,16 @@ export class PsyLive {
   private ctx: AudioContext | null = null;
   private masterLimiter: DynamicsCompressorNode | null = null;
   private masterGain: GainNode | null = null; // shared master volume (user)
+
+  // PooledEngine (plays sound bank presets)
+  private pooled: PooledEngine | null = null;
+
+  // Current sound bank presets (auto-selected by learning)
+  private bankKick: SoundPreset | null = null;
+  private bankBass: SoundPreset | null = null;
+  private bankLead: SoundPreset | null = null;
+  private bankHat: SoundPreset | null = null;
+  private bankPad: SoundPreset | null = null;
 
   constructor() {
     // Load learning data immediately (no audio needed for read)
@@ -337,6 +349,14 @@ export class PsyLive {
     this.engineMaster.connect(this.analyser);
     this.analyser.connect(this.masterLimiter);
 
+    // Initialize PooledEngine (plays sound bank presets)
+    this.pooled = new PooledEngine(this.ctx);
+    // Connect pooled engine output to analyser (so we see its levels)
+    this.pooled.master.connect(this.analyser);
+    this.pooled.master.connect(this.masterLimiter);
+    // Auto-select presets from bank
+    this.selectBankPresets();
+
     // Delay (tempo-synced)
     this.delayNode = this.ctx.createDelay(1.5);
     const fb = this.ctx.createGain(); fb.gain.value = 0.34;
@@ -430,6 +450,30 @@ export class PsyLive {
         this.activeNodes = Math.max(0, this.activeNodes - 1);
       }
     }, 1000);
+  }
+
+  // ── Select presets from sound bank (by detected scale or default) ──
+  private selectBankPresets(): void {
+    // Default: pick psytrance presets
+    // If learning detected a scale, auto-select by scale degrees
+    const scaleDegs = this.learned?.scale?.intervals || [0, 3, 5, 7, 8, 10];
+    const genre = 'PSYTRANCE';
+
+    // Auto-select bass
+    const basses = autoSelect(scaleDegs, genre as any, 0.8, 'bass');
+    this.bankBass = basses[0] || getById('PSY-BASS-ROLL');
+
+    // Auto-select lead
+    const leads = autoSelect(scaleDegs, genre as any, 0.75, 'lead');
+    this.bankLead = leads[0] || getById('PSY-LEAD-SQUELCH');
+
+    // Auto-select pad
+    const pads = autoSelect(scaleDegs, genre as any, 0.5, 'pad');
+    this.bankPad = pads[0] || getById('PSY-PAD-PSYCH');
+
+    // Fixed drum presets (always psytrance)
+    this.bankKick = getById('PSY-KICK-DEEP') || getById('PSY-KICK-TIGHT');
+    this.bankHat = getById('PSY-HAT-BRIGHT');
   }
 
   // ── Learning: refresh derived insights ──
@@ -706,28 +750,38 @@ export class PsyLive {
     const chordRoots = [0, 5, 3, 4];
     const currentChordRoot = chordRoots[chordIdx];
 
-    // COMPOSITION MODE: use generated pattern
+    // COMPOSITION MODE: use generated pattern with BANK PRESETS
     if (this.compositionMode && this.composition) {
       const cp = this.composition.pattern;
       const root = this.composition.rootMidi;
-      if (cp.kick[step]) this.playKick(t);
-      if (cp.hat[step]) this.playHat(t, v.hatLvl);
+      const stepDur = 60 / this.engineBpm / 4;
+      if (cp.kick[step] && this.bankKick && this.pooled) this.pooled.triggerDrum(this.bankKick, t, 0.9);
+      if (cp.hat[step] && this.bankHat && this.pooled) this.pooled.triggerDrum(this.bankHat, t, v.hatLvl);
       const b = cp.bass[step];
-      if (b !== null && b !== undefined) this.playBass(t, mtof(root + b), v);
+      if (b !== null && b !== undefined && this.bankBass && this.pooled) {
+        this.pooled.triggerSynth(this.bankBass, mtof(root + b), t, 0.8, stepDur);
+      }
     } else if (reinforcing) {
-      // REINFORCE: ONLY bass (1 layer — absolute minimum)
+      // REINFORCE: bass only (using bank preset)
       const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
       const b = bassPattern[step];
-      if (b !== null && b !== undefined) {
-        this.playBass(t, mtof(harmonicRoot + currentChordRoot + b), v);
+      const stepDur = 60 / this.engineBpm / 4;
+      if (b !== null && b !== undefined && this.bankBass && this.pooled) {
+        this.pooled.triggerSynth(this.bankBass, mtof(harmonicRoot + currentChordRoot + b), t, 0.8, stepDur);
       }
     } else {
-      // GLUE/SOLO: kick + bass only (2 layers — absolute minimum)
-      if (this.currentKick[step]) this.playKick(t);
+      // GLUE/SOLO: kick + bass + lead (using bank presets)
+      const stepDur = 60 / this.engineBpm / 4;
+      if (this.currentKick[step] && this.bankKick && this.pooled) this.pooled.triggerDrum(this.bankKick, t, 0.9);
+      if (this.currentHat[step] && this.bankHat && this.pooled) this.pooled.triggerDrum(this.bankHat, t, v.hatLvl);
       const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
       const b = bassPattern[step];
-      if (b !== null && b !== undefined) {
-        this.playBass(t, mtof(harmonicRoot + currentChordRoot + b), v);
+      if (b !== null && b !== undefined && this.bankBass && this.pooled) {
+        this.pooled.triggerSynth(this.bankBass, mtof(harmonicRoot + currentChordRoot + b), t, 0.8, stepDur);
+      }
+      // Lead on beat 1 of each bar
+      if (barPos === 0 && this.bankLead && this.pooled) {
+        this.pooled.triggerSynth(this.bankLead, mtof(harmonicRoot + currentChordRoot + 12), t, 0.7, stepDur);
       }
     }
 
