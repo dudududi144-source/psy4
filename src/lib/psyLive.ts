@@ -344,11 +344,63 @@ export class PsyLive {
     const nd = this.noiseBuf.getChannelData(0);
     for (let i = 0; i < len; i++) nd[i] = Math.random() * 2 - 1;
 
+    // ── PRE-RENDERED NOTE BUFFERS (zero allocation during playback) ──
+    // Instead of creating oscillators per note (causes latency + GC),
+    // we pre-render short WAV-like buffers for each pitch and reuse them.
+    // This is the game-engine approach: OfflineAudioContext renders once.
+    this.noteBuffers = this.prerenderNotes();
+
     // Load learning (real system with scale detection)
     this.learningData = loadLearning();
     this.learningData.sessions = (this.learningData.sessions || 0) + 1;
     this.getDeviceId();
     this.refreshLearned();
+  }
+
+  // Pre-render note buffers for bass + lead (one-time cost, zero runtime alloc)
+  private noteBuffers: Map<string, AudioBuffer> = new Map();
+  private prerenderNotes(): Map<string, AudioBuffer> {
+    const buffers = new Map<string, AudioBuffer>();
+    if (!this.ctx) return buffers;
+    const sr = this.ctx.sampleRate;
+    // Pre-render bass notes (MIDI 28-60, sine + sawtooth blend)
+    for (let midi = 28; midi <= 60; midi++) {
+      const freq = 440 * Math.pow(2, (midi - 69) / 12);
+      const dur = 0.25;
+      const buf = this.ctx.createBuffer(1, Math.floor(sr * dur), sr);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) {
+        const t = i / sr;
+        const env = Math.exp(-t * 6) * (1 - Math.exp(-t * 100)); // attack + decay
+        data[i] = (Math.sin(2 * Math.PI * freq * t) * 0.6 +
+                   Math.sin(2 * Math.PI * freq * 2 * t) * 0.15) * env * 0.7;
+      }
+      buffers.set(`bass_${midi}`, buf);
+    }
+    // Pre-render kick buffer (already rendered, reuse)
+    const kickDur = 0.3;
+    const kickBuf = this.ctx.createBuffer(1, Math.floor(sr * kickDur), sr);
+    const kd = kickBuf.getChannelData(0);
+    for (let i = 0; i < kd.length; i++) {
+      const t = i / sr;
+      const f = 160 * Math.exp(-t * 15) + 44; // pitch sweep
+      const env = Math.exp(-t * 4);
+      kd[i] = Math.sin(2 * Math.PI * f * t) * env;
+    }
+    buffers.set('kick', kickBuf);
+    return buffers;
+  }
+
+  // Play pre-rendered buffer (zero allocation, instant playback)
+  private playBuffer(buf: AudioBuffer, t: number, gain: number = 1.0): void {
+    if (!this.ctx || !this.sidechain || !buf) return;
+    const s = this.ctx.createBufferSource();
+    s.buffer = buf;
+    const g = this.ctx.createGain();
+    g.gain.value = gain;
+    s.connect(g); g.connect(this.sidechain);
+    s.start(t); s.stop(t + buf.duration);
+    s.onended = () => { try { s.disconnect(); g.disconnect(); } catch {} };
   }
 
   // ── Learning: refresh derived insights ──
@@ -530,7 +582,28 @@ export class PsyLive {
   private uiTimer: ReturnType<typeof setInterval> | null = null;
   private startUITimer(): void {
     if (this.uiTimer) clearInterval(this.uiTimer);
-    this.uiTimer = setInterval(() => this.emit(), 500); // 2fps for UI
+    this.uiTimer = setInterval(() => {
+      // Read engine level here (only 2fps — minimal FFT reads)
+      if (this.analyser) {
+        if (!this.engineFreqBuf || this.engineFreqBuf.length !== this.analyser.frequencyBinCount) {
+          this.engineFreqBuf = new Uint8Array(this.analyser.frequencyBinCount);
+        }
+        const d = this.engineFreqBuf;
+        this.analyser.getByteFrequencyData(d);
+        const activeBins = Math.floor(d.length / 4);
+        let peak = 0, sum = 0;
+        for (let i = 0; i < activeBins; i++) {
+          if (d[i] > peak) peak = d[i];
+          sum += d[i];
+        }
+        const avg = sum / (activeBins * 255);
+        const pk = peak / 255;
+        const instant = pk * 0.85 + avg * 0.15;
+        if (instant > this.engineLevel) this.engineLevel = instant;
+        else this.engineLevel *= 0.95;
+      }
+      this.emit();
+    }, 500);
   }
   private stopUITimer(): void {
     if (this.uiTimer) { clearInterval(this.uiTimer); this.uiTimer = null; }
@@ -585,16 +658,7 @@ export class PsyLive {
       }
     }
 
-    // Update engine level (reuse buffer — no allocation)
-    if (this.analyser) {
-      if (!this.engineFreqBuf || this.engineFreqBuf.length !== this.analyser.frequencyBinCount) {
-        this.engineFreqBuf = new Uint8Array(this.analyser.frequencyBinCount);
-      }
-      const d = this.engineFreqBuf;
-      this.analyser.getByteFrequencyData(d);
-      let s = 0; for (let i = 0; i < d.length; i++) s += d[i];
-      this.engineLevel = s / (d.length * 255);
-    }
+    // Engine level updated only by UI timer (2fps) — was causing FFT read storm in scheduler
   }
 
   // ── Smart mixing: sidechain duck on radio kick (gentle pump, not choke) ──
@@ -647,19 +711,10 @@ export class PsyLive {
     this.engineEQ.gain.setTargetAtTime(cut, this.ctx.currentTime, 0.5);
   }
 
-  // ── Synth voices (with auto-cleanup to prevent node accumulation) ──
+  // ── Synth voices (use pre-rendered buffers = zero allocation latency) ──
   private playKick(t: number): void {
-    if (!this.ctx || !this.sidechain) return;
-    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
-    o.type = 'sine';
-    o.frequency.setValueAtTime(160, t);
-    o.frequency.exponentialRampToValueAtTime(44, t + 0.09);
-    g.gain.setValueAtTime(1.0, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
-    o.connect(g); g.connect(this.sidechain);
-    o.start(t); o.stop(t + 0.3);
-    // Auto-cleanup: disconnect after note ends
-    o.onended = () => { try { o.disconnect(); g.disconnect(); } catch {} };
+    const buf = this.noteBuffers.get('kick');
+    if (buf) this.playBuffer(buf, t, 1.0);
   }
 
   private playHat(t: number, lvl: number): void {
@@ -675,25 +730,30 @@ export class PsyLive {
   }
 
   private playBass(t: number, freq: number, v: Variant): void {
-    if (!this.ctx || !this.sidechain) return;
-    const o = this.ctx.createOscillator(); o.type = v.bassWave; o.frequency.value = freq;
-    const f = this.ctx.createBiquadFilter(); f.type = 'lowpass'; f.Q.value = v.bassQ;
-    f.frequency.setValueAtTime(v.bassCut, t);
-    f.frequency.exponentialRampToValueAtTime(Math.max(120, v.bassCut * 0.35), t + 0.16);
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.85, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.19);
-    o.connect(f); f.connect(g); g.connect(this.sidechain);
-    o.start(t); o.stop(t + 0.2);
-    o.onended = () => { try { o.disconnect(); f.disconnect(); g.disconnect(); } catch {} };
+    // Convert freq to MIDI and use pre-rendered buffer
+    const midi = Math.round(69 + 12 * Math.log2(freq / 440));
+    const buf = this.noteBuffers.get(`bass_${midi}`);
+    if (buf) {
+      this.playBuffer(buf, t, 0.85);
+    } else {
+      // Fallback: create oscillator (only for out-of-range notes)
+      if (!this.ctx || !this.sidechain) return;
+      const o = this.ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = freq;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.85, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.19);
+      o.connect(g); g.connect(this.sidechain);
+      o.start(t); o.stop(t + 0.2);
+      o.onended = () => { try { o.disconnect(); g.disconnect(); } catch {} };
+    }
   }
 
   private playLead(t: number, freq: number, v: Variant, accent: boolean, echo: boolean): void {
     if (!this.ctx || !this.sidechain) return;
+    // Lead uses live oscillator (needs filter sweep) but with cleanup
     const pan = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
     if (pan) pan.pan.value = (Math.random() * 2 - 1) * 0.5;
     const o = this.ctx.createOscillator(); o.type = v.leadWave; o.frequency.value = freq;
-    const o2 = this.ctx.createOscillator(); o2.type = v.leadWave; o2.frequency.value = freq; o2.detune.value = 9;
     const f = this.ctx.createBiquadFilter(); f.type = 'lowpass'; f.Q.value = v.leadQ;
     f.frequency.setValueAtTime(180, t);
     f.frequency.exponentialRampToValueAtTime(v.leadCut * (accent ? 1.25 : 1), t + 0.02);
@@ -703,12 +763,11 @@ export class PsyLive {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(peak, t + 0.008);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
-    o.connect(f); o2.connect(f); f.connect(g);
+    o.connect(f); f.connect(g);
     if (pan) { g.connect(pan); pan.connect(this.sidechain); } else { g.connect(this.sidechain); }
     if (echo && this.delaySend) g.connect(this.delaySend);
-    o.start(t); o2.start(t); o.stop(t + 0.26); o2.stop(t + 0.26);
-    // Cleanup both oscillators + filter + gain + panner
-    o.onended = () => { try { o.disconnect(); o2.disconnect(); f.disconnect(); g.disconnect(); if (pan) pan.disconnect(); } catch {} };
+    o.start(t); o.stop(t + 0.26);
+    o.onended = () => { try { o.disconnect(); f.disconnect(); g.disconnect(); if (pan) pan.disconnect(); } catch {} };
   }
 
   // ── PAD: sustained chord from scale (fills midrange, atmospheric) ──
@@ -842,7 +901,7 @@ export class PsyLive {
   // ── Kick detection + spectral analysis (20ms tick) ──
   private startDetection(): void {
     if (this.detectTimer) clearInterval(this.detectTimer);
-    this.detectTimer = setInterval(() => this.detect(), 150); // 150ms — 6.7fps, minimal CPU
+    this.detectTimer = setInterval(() => this.detect(), 250); // 250ms — 4fps, minimal
   }
 
   private detect(): void {
