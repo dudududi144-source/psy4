@@ -157,6 +157,8 @@ export interface LiveState {
   compositionMode: boolean;
   composition: Composition | null;
   deviceId: string;
+  activeNodes: number;
+  maxNodes: number;
 }
 
 // ─── Engine ────────────────────────────────────────────────────────────────
@@ -285,6 +287,8 @@ export class PsyLive {
       compositionMode: this.compositionMode,
       composition: this.composition,
       deviceId: this.deviceId,
+      activeNodes: this.activeNodes,
+      maxNodes: this.maxActiveNodes,
     });
   }
 
@@ -392,15 +396,27 @@ export class PsyLive {
   }
 
   // Play pre-rendered buffer (zero allocation, instant playback)
+  private activeNodes = 0;
+  private maxActiveNodes = 0;
   private playBuffer(buf: AudioBuffer, t: number, gain: number = 1.0): void {
     if (!this.ctx || !this.sidechain || !buf) return;
+    // Hard limit: never exceed 6 concurrent nodes (prevents browser crash)
+    if (this.activeNodes >= 6) return;
+    this.activeNodes++;
+    if (this.activeNodes > this.maxActiveNodes) this.maxActiveNodes = this.activeNodes;
     const s = this.ctx.createBufferSource();
     s.buffer = buf;
     const g = this.ctx.createGain();
     g.gain.value = gain;
     s.connect(g); g.connect(this.sidechain);
     s.start(t); s.stop(t + buf.duration);
-    s.onended = () => { try { s.disconnect(); g.disconnect(); } catch {} };
+    let cleaned = false;
+    s.onended = () => {
+      if (cleaned) return; // prevent double-counting
+      cleaned = true;
+      try { s.disconnect(); g.disconnect(); } catch {}
+      this.activeNodes = Math.max(0, this.activeNodes - 1);
+    };
   }
 
   // ── Learning: refresh derived insights ──
@@ -918,25 +934,26 @@ export class PsyLive {
     for (let i = 0; i < 10; i++) sub += fd[i];
     sub /= (10 * 255);
 
-    // Overall RMS
+    // Overall RMS — sample every 4th bin (4x faster)
     let total = 0;
-    for (let i = 0; i < fd.length; i++) total += fd[i];
-    total /= (fd.length * 255);
+    let cnt = 0;
+    for (let i = 0; i < fd.length; i += 4) { total += fd[i]; cnt++; }
+    total /= (cnt * 255);
     this.radioLevel = total;
-    this.radioRms = this.radioRms * 0.85 + total * 0.15; // smoothed
+    this.radioRms = this.radioRms * 0.85 + total * 0.15;
 
-    // Spectral bands
+    // Spectral bands — sample (not every bin)
     const binHz = this.ctx.sampleRate / this.radioAnalyser.fftSize;
     const lowEnd = Math.floor(250 / binHz);
     const midEnd = Math.floor(2500 / binHz);
-    let lo = 0, mi = 0, hi = 0;
-    for (let i = 0; i < lowEnd; i++) lo += fd[i];
-    for (let i = lowEnd; i < midEnd; i++) mi += fd[i];
-    for (let i = midEnd; i < fd.length; i++) hi += fd[i];
+    let lo = 0, mi = 0, hi = 0, loN = 0, miN = 0, hiN = 0;
+    for (let i = 0; i < lowEnd; i += 2) { lo += fd[i]; loN++; }
+    for (let i = lowEnd; i < midEnd; i += 4) { mi += fd[i]; miN++; }
+    for (let i = midEnd; i < fd.length; i += 8) { hi += fd[i]; hiN++; }
     this.radioBands = {
-      low: lo / (lowEnd * 255),
-      mid: mi / ((midEnd - lowEnd) * 255),
-      high: hi / ((fd.length - midEnd) * 255),
+      low: lo / (Math.max(1, loN) * 255),
+      mid: mi / (Math.max(1, miN) * 255),
+      high: hi / (Math.max(1, hiN) * 255),
     };
 
     // Smart mixing: auto-level + EQ adaptation (every ~10 ticks)
@@ -948,29 +965,8 @@ export class PsyLive {
     // Decay duck amount visualization
     this.duckAmount *= 0.88;
 
-    // Read engine level here (in detect, runs every 20ms — more reliable than scheduler)
-    if (this.analyser) {
-      if (!this.engineFreqBuf || this.engineFreqBuf.length !== this.analyser.frequencyBinCount) {
-        this.engineFreqBuf = new Uint8Array(this.analyser.frequencyBinCount);
-      }
-      const d = this.engineFreqBuf;
-      this.analyser.getByteFrequencyData(d);
-      const activeBins = Math.floor(d.length / 4);
-      let peak = 0; let sum = 0;
-      for (let i = 0; i < activeBins; i++) {
-        if (d[i] > peak) peak = d[i];
-        sum += d[i];
-      }
-      const avg = sum / (activeBins * 255);
-      const pk = peak / 255;
-      const instant = pk * 0.85 + avg * 0.15;
-      // Peak hold with slow decay
-      if (instant > this.engineLevel) {
-        this.engineLevel = instant;
-      } else {
-        this.engineLevel = this.engineLevel * 0.95;
-      }
-    }
+    // REMOVED engine FFT read from detect (was doubling FFT work)
+    // Engine level is now read only by UI timer (2fps)
 
     this.subBassHistory.push(sub);
     if (this.subBassHistory.length > 50) this.subBassHistory.shift();
