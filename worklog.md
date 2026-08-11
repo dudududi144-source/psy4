@@ -5660,3 +5660,50 @@ FILES CHANGED:
     * stop(): void → async stop(): Promise<void>
     * Awaits this.audio.dispose?.() + this.ctx.close()
     * Nulls ctx, analyser, audio, workletEngine, audioReady, initPromise
+
+---
+Task ID: live-10min-tune-v5
+Agent: main
+Task: 10-minute live session with both engine + radio, examine every minute, tune for precision
+
+Work Log:
+- Started engine + Psyndora radio
+- Minute 1: GLUE mode, LISTENING, 134 kicks, AUTO 94% vs RADIO 27% — good
+- Minute 2: REINFORCE, FOLLOWING, 464 kicks, ENGINE 132 vs RADIO 125 — 7 BPM gap (too slow sync)
+- Minute 3: Still 132 vs 125 — gap not closing. Identified issue: smoothing factor 0.4 too slow
+- FIX 1: Increased engineBpm smoothing 0.4 → 0.7, widened accept window 5 → 8 BPM
+- FIX 2: Replaced while-loops (could infinite-loop) with single-pass normalization
+- FIX 3: Added out-of-range skip (if BPM still outside 110-170 after normalization, skip)
+- Minute 4 (after fix): ENGINE 93 vs RADIO 88 — values too low! Normalization rejecting valid BPMs
+- FIX 4: Widened range from 120-165 to 110-170 (was rejecting valid psytrance tempos)
+- FIX 5: Updated learning.ts cleanup to match new 110-170 range
+- Minute 5: GLUE, LISTENING — detection still warming up
+- Minute 6: REINFORCE, FOLLOWING! ENGINE 155 vs RADIO 158 — gap down to 3 BPM (was 7)
+- Minute 7: ENGINE 158 = RADIO 158 — PERFECT SYNC! 575 kicks
+- Minute 8: ENGINE 155 vs RADIO 154 — gap 1 BPM! 1142 kicks
+- Minute 9: ENGINE 158 = RADIO 158 — PERFECT SYNC! 1651 kicks
+- Minute 10: ENGINE 151 = RADIO 151 — PERFECT SYNC! 2277 kicks
+
+TUNING SUMMARY:
+- BPM sync: 7 BPM gap → 0 BPM gap (perfect sync by minute 7)
+- Smoothing: 0.4 → 0.7 (faster catch-up)
+- Accept window: 5 → 8 BPM (wider for faster lock)
+- Normalization: while-loops → single-pass (fixed potential infinite loop)
+- Range: 120-165 → 110-170 (accepts full psytrance spectrum)
+- Out-of-range: skip instead of corrupt (prevents noise from entering)
+
+FINAL STATE (minute 10):
+- AUTO LEVEL: 93%
+- RADIO RMS: 23%
+- ENGINE 151 = RADIO 151 (perfect sync)
+- 2277 kicks collected
+- D Minor 97% match (stable)
+- TEMPO: 155 BPM, σ=7.3, 8% conf (improving)
+- 0 errors, 0 crashes in 10 minutes
+- All 7 musical layers playing (kick+bass+sub+lead+arp+pad+snare+hats)
+
+Stage Summary:
+- BPM sync improved from 7 BPM gap to 0 BPM gap (perfect)
+- Engine sits loud (93%) above radio (23%) consistently
+- All tuning done live, verified incrementally each minute
+- 10-minute session completed with zero crashes and perfect sync at the end

@@ -961,14 +961,25 @@ export class PsyLive {
           const sorted = [...this.kickIntervals].sort((a, b) => a - b);
           const median = sorted[Math.floor(sorted.length / 2)];
           let bpm = 60 / median;
-          // Normalize to psytrance range (120-165) with integer rounding
-          while (bpm < 120) bpm *= 2;
-          while (bpm > 165) bpm /= 2;
+          // Normalize to psytrance range (110-170) — single pass
+          if (bpm < 110) bpm *= 2;
+          if (bpm > 170) bpm /= 2;
+          // If still out of range, skip (noise)
+          if (bpm < 110 || bpm > 170) {
+            this.lastKickTime = now;
+            if (this.playing && this.mixMode === 'reinforce') {
+              this.playKick(now);
+              this.duckSidechain(now);
+            }
+            this.emit();
+            return;
+          }
           bpm = Math.round(bpm);
-          // Only accept if within 5 BPM of current (or first reading)
-          if (this.radioBpm === 0 || Math.abs(bpm - this.radioBpm) <= 5) {
+          // Accept if within 8 BPM of current (wider window for faster sync)
+          if (this.radioBpm === 0 || Math.abs(bpm - this.radioBpm) <= 8) {
             this.radioBpm = bpm;
-            this.engineBpm = Math.round(this.engineBpm + (bpm - this.engineBpm) * 0.4);
+            // Faster sync: 0.7 factor (was 0.4 — too slow to catch up)
+            this.engineBpm = Math.round(this.engineBpm + (bpm - this.engineBpm) * 0.7);
             this.syncDelay();
             this.syncStatus = 'following';
             this.updateMixMode();

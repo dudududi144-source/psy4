@@ -120,12 +120,12 @@ export function loadLearning(): LearningData {
     }
     const parsed = JSON.parse(raw);
     const data = { ...EMPTY, ...parsed };
-    // Clean BPM votes: remove outliers (non-integer or outside 120-165 psytrance range)
+    // Clean BPM votes: remove outliers (non-integer or outside 110-170 psytrance range)
     if (data.bpmVotes) {
       const cleaned: Record<number, number> = {};
       for (const [bpmStr, count] of Object.entries(data.bpmVotes)) {
         const bpm = parseFloat(bpmStr);
-        if (Number.isInteger(bpm) && bpm >= 120 && bpm <= 165 && (count as number) > 0) {
+        if (Number.isInteger(bpm) && bpm >= 110 && bpm <= 170 && (count as number) > 0) {
           cleaned[bpm] = count as number;
         }
       }
@@ -133,7 +133,7 @@ export function loadLearning(): LearningData {
     }
     // Clean tempo history similarly
     if (data.tempoHistory) {
-      data.tempoHistory = data.tempoHistory.filter(b => Number.isInteger(b) && b >= 120 && b <= 165);
+      data.tempoHistory = data.tempoHistory.filter(b => Number.isInteger(b) && b >= 110 && b <= 170);
     }
     return data;
   } catch {
