@@ -314,10 +314,10 @@ export class PsyLive {
     this.masterLimiter.connect(this.masterGain);
     this.masterGain.connect(this.ctx.destination);
 
-    // Engine analyser — higher resolution for fuller spectrum visualization
+    // Engine analyser — balanced resolution (2048 was too heavy, 512 too low)
     this.analyser = this.ctx.createAnalyser();
-    this.analyser.fftSize = 2048;               // was 512 — 4x more spectrum detail
-    this.analyser.smoothingTimeConstant = 0.7;  // was 0.5 — smoother visual but still responsive
+    this.analyser.fftSize = 1024;               // 2x more detail than 512, half CPU of 2048
+    this.analyser.smoothingTimeConstant = 0.7;
 
     // Engine bus: voices → sidechain → EQ → engineMaster → analyser → limiter
     this.sidechain = this.ctx.createGain();

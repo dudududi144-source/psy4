@@ -113,7 +113,7 @@ export default function Page() {
 
       const cx = w / 2, cy = h / 2;
       const baseR = Math.min(w, h) * 0.22;
-      const bars = 48; // was 96 — halved for performance
+      const bars = 32; // was 48 — less canvas work, still full spectrum
 
       // pulse decay
       pulseRef.current *= 0.9;
