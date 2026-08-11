@@ -42,18 +42,26 @@ export default function Page() {
     engineRef.current = e;
   }, []);
 
+  const [hasSaved, setHasSaved] = useState(false);
+
   // Initialize engine immediately on mount (to load learning data + show insights)
   useEffect(() => {
     init().then(() => {
-      // Auto-play saved composition if it exists (memory feature)
+      // Check for saved composition (memory feature) — don't auto-play (browser blocks)
       const engine = engineRef.current;
       if (engine && engine.hasSavedComposition()) {
-        setTimeout(() => {
-          engine.play();
-          engine.toggleComposition();
-        }, 500);
+        setHasSaved(true);
       }
     });
+  }, [init]);
+
+  const resumeSaved = useCallback(async () => {
+    await init();
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.play();
+    engine.toggleComposition();
+    setHasSaved(false);
   }, [init]);
 
   const play = useCallback(async () => { await init(); engineRef.current?.play(); }, [init]);
@@ -175,7 +183,7 @@ export default function Page() {
     };
     draw();
     return () => cancelAnimationFrame(rafRef.current);
-  }, [s.playing, s.radioOn, s.syncStatus, s.mixMode, s.duckAmount]);
+  }, [s.playing, s.radioOn, s.syncStatus, s.mixMode]);
 
   // Pulse on kick count change
   useEffect(() => { pulseRef.current = 1; }, [s.kickCount]);
@@ -227,6 +235,11 @@ export default function Page() {
             {/* Transport panel */}
             <div style={glassPanelStyle}>
               <div style={{ fontSize: 9, color: '#9d8fc0', fontFamily: 'monospace', letterSpacing: '0.15em', marginBottom: 12 }}>TRANSPORT</div>
+              {hasSaved && !s.playing && (
+                <button onClick={resumeSaved} style={{ ...primaryBtn('#3dffa8'), width: '100%', marginBottom: 10, padding: '12px 16px', fontSize: 13, boxShadow: '0 0 24px -4px #3dffa8' }}>
+                  ↻ RESUME LAST SESSION
+                </button>
+              )}
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14 }}>
                 {!s.playing ? (
                   <button onClick={play} style={primaryBtn('#00ffc8')}>▶ START</button>

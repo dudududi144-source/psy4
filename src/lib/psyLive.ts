@@ -528,7 +528,7 @@ export class PsyLive {
     const barPos = this.step % 16;
     const isFill = barPos === 14 || barPos === 15; // fill at end of bar
 
-    // COMPOSITION MODE: use generated pattern + extra layers
+    // COMPOSITION MODE: use generated pattern + extra layers (reduced for performance)
     if (this.compositionMode && this.composition) {
       const cp = this.composition.pattern;
       const root = this.composition.rootMidi;
@@ -537,19 +537,20 @@ export class PsyLive {
       const b = cp.bass[step];
       if (b !== null && b !== undefined) {
         this.playBass(t, mtof(root + b), v);
-        this.playSubBass(t, mtof(root + b)); // sub-bass layer
+        // Sub-bass only on downbeats (was every bass note — too many nodes)
+        if (barPos % 4 === 0) this.playSubBass(t, mtof(root + b));
       }
       const l = cp.lead[step];
       if (l !== null && l !== undefined) this.playLead(t, mtof(root + 24 + l), v, step % 4 === 0, true);
-      // ARP: play on every step (fast melodic motion)
-      if (this.composition.scale) {
+      // ARP: every OTHER step (was every step — halved node count)
+      if (step % 2 === 0 && this.composition.scale) {
         const arpDeg = this.composition.scale.intervals[step % this.composition.scale.intervals.length];
         this.playArp(t, mtof(root + 12 + arpDeg), step % 4 === 0, step);
       }
       // PAD: play at start of each bar (sustained chord)
       if (barPos === 0 && this.composition.scale) {
         const chordFreqs = this.composition.scale.intervals.slice(0, 3).map(iv => mtof(root + 12 + iv));
-        this.playPad(t, chordFreqs, (60 / this.composition.bpm) * 4); // 1 bar duration
+        this.playPad(t, chordFreqs, (60 / this.composition.bpm) * 4);
       }
       // Snare on offbeat (step 4, 12)
       if (barPos === 4 || barPos === 12) this.playSnare(t, 0.15);
@@ -562,12 +563,12 @@ export class PsyLive {
       // HAT — always play
       if (p.patterns.hat[step]) this.playHat(t, v.hatLvl);
 
-      // BASS — tune to radio's detected key + add sub-bass layer
+      // BASS — tune to radio's detected key + sub-bass only on downbeats
       const b = p.patterns.bass[step];
       if (b !== null && b !== undefined) {
         const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
         this.playBass(t, mtof(root + b), v);
-        this.playSubBass(t, mtof(root + b)); // sub-bass layer for weight
+        if (barPos % 4 === 0) this.playSubBass(t, mtof(root + b)); // only downbeats
       }
 
       // LEAD — in reinforce mode, sparse (only accented steps)
@@ -580,10 +581,9 @@ export class PsyLive {
         }
       }
 
-      // ARP: add arpeggiator when harmonic locked (follows scale)
-      if (this.harmonicLocked && this.harmonicRoot) {
-        // Simple scale-degree cycling
-        const scaleDegrees = [0, 3, 5, 7, 5, 3]; // arpeggio pattern
+      // ARP: every OTHER step when harmonic locked (halved for performance)
+      if (step % 2 === 0 && this.harmonicLocked && this.harmonicRoot) {
+        const scaleDegrees = [0, 3, 5, 7, 5, 3];
         const deg = scaleDegrees[step % scaleDegrees.length];
         this.playArp(t, mtof(this.harmonicRoot + 12 + deg), step % 4 === 0, step);
       }
@@ -851,7 +851,7 @@ export class PsyLive {
   // ── Kick detection + spectral analysis (20ms tick) ──
   private startDetection(): void {
     if (this.detectTimer) clearInterval(this.detectTimer);
-    this.detectTimer = setInterval(() => this.detect(), 20);
+    this.detectTimer = setInterval(() => this.detect(), 50); // was 20ms — 50ms is enough for kick detection
   }
 
   private detect(): void {
