@@ -829,16 +829,43 @@ export class PsyLive {
         }
       }
     } else if (reinforcing) {
-      // REINFORCE: follow radio with bass + occasional lead
+      // REINFORCE: COMPLEMENT the radio, don't fight it
+      // When radio is playing, we add ONLY what's missing:
+      // - No kick (radio has its own)
+      // - Bass: sparse, offbeat (fills gaps radio leaves)
+      // - Lead: occasional accents (adds color)
+      // - Pad: sustained (fills space radio doesn't)
+      const stepDur = 60 / this.engineBpm / 4;
+
+      // Bass: offbeat only (between radio kicks) — complements, doesn't clash
       if (intensity.bass && this.bankBass && this.pooled) {
-        const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
-        const b = bassPattern[step];
+        // Play bass on offbeats (steps 2, 6, 10, 14) — between radio kicks
+        const offbeatPattern = [null, null, 0, null, null, null, 0, null, null, null, 0, null, null, null, 3, null];
+        const b = offbeatPattern[barPos];
         if (b !== null && b !== undefined) {
-          this.pooled.triggerSynth(this.bankBass, mtof(harmonicRoot + currentChordRoot + b), t, 0.8, stepDur);
+          this.pooled.triggerSynth(this.bankBass, mtof(harmonicRoot + currentChordRoot + b), t, 0.6, stepDur);
         }
       }
-      if (intensity.lead && barPos === 0 && this.bankLead && this.pooled) {
-        this.pooled.triggerSynth(this.bankLead, mtof(harmonicRoot + currentChordRoot + 12), t, 0.6, stepDur);
+
+      // Lead: very sparse — only on section changes (bar 0 of each section)
+      if (intensity.lead && this.songBar === 0 && barPos === 0 && this.bankLead && this.pooled) {
+        this.pooled.triggerSynth(this.bankLead, mtof(harmonicRoot + currentChordRoot + 12), t, 0.5, stepDur);
+      }
+
+      // Pad: sustained when radio is in break/low energy
+      if (intensity.pad && barPos === 0 && this.bankPad && this.pooled) {
+        const radioEnergy = this.getRadioEnergy();
+        if (radioEnergy < 0.4) { // only when radio is quiet
+          this.pooled.triggerSynth(this.bankPad, mtof(harmonicRoot + currentChordRoot), t, 0.3, stepDur * 16);
+        }
+      }
+
+      // Hat: subtle, low volume — adds texture without competing
+      if (intensity.hat && this.bankHat && this.pooled) {
+        const hatPattern = [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0];
+        if (hatPattern[barPos]) {
+          this.pooled.triggerDrum(this.bankHat, t, v.hatLvl * 0.5); // half volume
+        }
       }
     } else {
       // GLUE/SOLO: full song structure with all elements
@@ -1268,10 +1295,9 @@ export class PsyLive {
     }
     this.lastKickTime = now;
 
-    // REAL-TIME FOLLOW: reinforce radio kick with our kick
-    if (this.playing && this.radioFollowActive && this.bankKick && this.pooled) {
-      this.pooled.triggerDrum(this.bankKick, now, 0.85);
-    }
+    // REAL-TIME FOLLOW: we DON'T fire kick — radio already has it
+    // We just sync our BPM and let our bass/lead complement
+    // (Previous version fired kick = clashed with radio)
 
     this.emit();
   }
