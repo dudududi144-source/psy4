@@ -22,6 +22,7 @@ import {
   type LearningData, type Composition, type ScaleInfo, type TempoStats, type RadioProfile,
   loadLearning, saveLearning, recordKick, recordBassNote, recordRadioBands,
   recordEnergy, deriveInsights, getInsights, generateComposition,
+  getNextRhythmVariation, getRhythmPattern,
 } from './learning';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -207,6 +208,12 @@ export class PsyLive {
   private variant: 'A' | 'B' = 'A';
   private harmonicRoot = 0; // detected radio root midi
   private harmonicLocked = false;
+
+  // Intelligent rhythm (evolves every 4 bars)
+  private barCount = 0;
+  private rhythmIdx = 0;
+  private currentKick: number[] = [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0];
+  private currentHat: number[] = [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,0,1,0];
 
   // Scheduler
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -442,13 +449,15 @@ export class PsyLive {
     this.step = 0;
     this.nextNoteTime = this.ctx!.currentTime + 0.08;
     this.syncDelay();
-    this.timer = setInterval(() => this.scheduler(), 40); // was 25ms — 40ms is fine for lookahead
+    this.timer = setInterval(() => this.scheduler(), 40);
+    this.startUITimer();
     this.emit();
   }
 
   stop(): void {
     this.playing = false;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    this.stopUITimer();
     this.updateMixMode();
     this.emit();
   }
@@ -495,43 +504,55 @@ export class PsyLive {
     if (!this.radioOn && this.step % 8 === 0) {
       this.autoLevel();
     }
-    // Periodic state emit so UI shows live levels
-    if (this.step % 8 === 0) {
-      if (this.analyser) {
-        if (!this.engineFreqBuf || this.engineFreqBuf.length !== this.analyser.frequencyBinCount) {
-          this.engineFreqBuf = new Uint8Array(this.analyser.frequencyBinCount);
-        }
-        const d = this.engineFreqBuf;
-        this.analyser.getByteFrequencyData(d);
-        const activeBins = Math.floor(d.length / 4);
-        let peak = 0; let sum = 0;
-        for (let i = 0; i < activeBins; i++) {
-          if (d[i] > peak) peak = d[i];
-          sum += d[i];
-        }
-        const avg = sum / (activeBins * 255);
-        const pk = peak / 255;
-        const instant = pk * 0.85 + avg * 0.15;
-        // Peak hold: keep max for 500ms, then decay slowly
-        if (instant > this.engineLevel) {
-          this.engineLevel = instant;
-        } else {
-          // Slow decay (0.95 per read = ~2s to halve)
-          this.engineLevel = this.engineLevel * 0.95;
-        }
+    // Update engine level internally (for smart mixing) — but DON'T emit
+    // Emit was causing React re-render storms = crash. UI polls via separate slow timer.
+    if (this.step % 16 === 0 && this.analyser) {
+      if (!this.engineFreqBuf || this.engineFreqBuf.length !== this.analyser.frequencyBinCount) {
+        this.engineFreqBuf = new Uint8Array(this.analyser.frequencyBinCount);
       }
-      this.emit();
+      const d = this.engineFreqBuf;
+      this.analyser.getByteFrequencyData(d);
+      const activeBins = Math.floor(d.length / 4);
+      let peak = 0, sum = 0;
+      for (let i = 0; i < activeBins; i++) {
+        if (d[i] > peak) peak = d[i];
+        sum += d[i];
+      }
+      const avg = sum / (activeBins * 255);
+      const pk = peak / 255;
+      const instant = pk * 0.85 + avg * 0.15;
+      if (instant > this.engineLevel) this.engineLevel = instant;
+      else this.engineLevel *= 0.95;
     }
+  }
+
+  // Slow UI poll timer (separate from scheduler) — 2fps, no audio work
+  private uiTimer: ReturnType<typeof setInterval> | null = null;
+  private startUITimer(): void {
+    if (this.uiTimer) clearInterval(this.uiTimer);
+    this.uiTimer = setInterval(() => this.emit(), 500); // 2fps for UI
+  }
+  private stopUITimer(): void {
+    if (this.uiTimer) { clearInterval(this.uiTimer); this.uiTimer = null; }
   }
 
   private scheduleStep(step: number, t: number): void {
     const p = this.getPreset();
     const v = this.getVariant();
     const reinforcing = this.mixMode === 'reinforce';
-    const barPos = this.step % 16;
-    const isFill = barPos === 14 || barPos === 15; // fill at end of bar
+    const barPos = step % 16;
 
-    // COMPOSITION MODE: full layers OK (no radio = more CPU available)
+    // Evolve rhythm every 4 bars (intelligent, not fixed loop)
+    if (barPos === 0) {
+      this.barCount++;
+      if (this.barCount % 4 === 0) {
+        this.rhythmIdx = getNextRhythmVariation(this.rhythmIdx);
+        this.currentKick = getRhythmPattern('kick', this.rhythmIdx);
+        this.currentHat = getRhythmPattern('hat', this.rhythmIdx);
+      }
+    }
+
+    // COMPOSITION MODE: use generated pattern with harmony
     if (this.compositionMode && this.composition) {
       const cp = this.composition.pattern;
       const root = this.composition.rootMidi;
@@ -542,8 +563,8 @@ export class PsyLive {
       const l = cp.lead[step];
       if (l !== null && l !== undefined) this.playLead(t, mtof(root + 24 + l), v, step % 4 === 0, true);
     } else if (reinforcing) {
-      // REINFORCE: minimal (bass + hat + lead on accents only)
-      if (p.patterns.hat[step]) this.playHat(t, v.hatLvl);
+      // REINFORCE: bass + hat + lead (using evolving rhythm)
+      if (this.currentHat[step]) this.playHat(t, v.hatLvl);
       const b = p.patterns.bass[step];
       if (b !== null && b !== undefined) {
         const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
@@ -555,9 +576,9 @@ export class PsyLive {
         this.playLead(t, mtof(root + 24 + l), v, true, true);
       }
     } else {
-      // GLUE/SOLO: kick + bass + hat + lead (no ARP/pad/sub/snare — prevents crash)
-      if (!reinforcing && p.patterns.kick[step]) this.playKick(t);
-      if (p.patterns.hat[step]) this.playHat(t, v.hatLvl);
+      // GLUE/SOLO: evolving kick + bass + hat + lead
+      if (this.currentKick[step]) this.playKick(t);
+      if (this.currentHat[step]) this.playHat(t, v.hatLvl);
       const b = p.patterns.bass[step];
       if (b !== null && b !== undefined) {
         const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;

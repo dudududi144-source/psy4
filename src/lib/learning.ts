@@ -367,11 +367,54 @@ export interface Composition {
   reasoning: string[];
 }
 
+// ─── Chord progressions per scale type (for real harmony) ──────────────────
+const CHORD_PROGRESSIONS: Record<string, number[][]> = {
+  // Each progression = array of chords, each chord = [root_degree, third_offset, fifth_offset]
+  // In scale degrees (0=root, 1=2nd, 2=3rd, etc.)
+  'Minor': [
+    [[0, 2, 4], [5, 7, 9], [3, 5, 7], [4, 6, 8]],  // i - iv - VII - III (classic minor)
+    [[0, 2, 4], [3, 5, 7], [4, 6, 8], [5, 7, 9]],   // i - iv - v - VI
+    [[0, 2, 4], [5, 7, 9], [0, 2, 4], [3, 5, 7]],   // i - VI - i - iv (psytrance)
+  ],
+  'Phrygian': [
+    [[0, 2, 4], [1, 3, 5], [0, 2, 4], [1, 3, 5]],   // i - bII - i - bII (dark psy)
+    [[0, 2, 4], [5, 7, 9], [1, 3, 5], [0, 2, 4]],   // i - VI - bII - i
+  ],
+  'Harmonic Minor': [
+    [[0, 2, 4], [4, 6, 8], [5, 7, 9], [3, 5, 7]],   // i - V - VI - iv
+  ],
+  'default': [
+    [[0, 2, 4], [5, 7, 9], [3, 5, 7], [4, 6, 8]],   // i - iv - VII - III
+  ],
+};
+
+// ─── Rhythm variations (intelligent, not fixed loop) ───────────────────────
+const RHYTHM_VARIATIONS = {
+  kickPatterns: [
+    [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0],  // 4-on-floor
+    [1,0,0,1, 1,0,0,0, 1,0,0,1, 1,0,0,0],  // gallop
+    [1,0,0,0, 1,0,1,0, 1,0,0,0, 1,0,0,0],  // variation
+    [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,1,0],  // fill at end
+  ],
+  bassPatterns: [
+    // Each pattern: null=gap, number=scale degree offset
+    [null,0,0,0, null,0,0,0, null,0,0,0, null,0,0,3],  // rolling root
+    [null,0,null,0, null,0,null,0, null,0,null,0, null,0,5,7],  // offbeat
+    [null,0,0,0, null,3,0,0, null,0,0,0, null,5,0,0],  // walking
+    [null,0,0,3, null,0,0,5, null,0,0,3, null,0,0,0],  // melodic
+  ],
+  hatPatterns: [
+    [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,0,1,0],  // offbeat
+    [0,0,1,0, 0,0,1,1, 0,0,1,0, 0,1,1,0],  // with variation
+    [0,1,1,0, 0,0,1,0, 0,1,1,0, 0,0,1,1],  // busier
+    [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,1],  // 16th rolls
+  ],
+};
+
 /**
- * Generate an ORIGINAL composition based on learned data.
- * This is the path to commercial-grade original music:
- * the engine uses what it learned from radio to create new patterns
- * in the detected scale and tempo.
+ * Generate an ORIGINAL composition with REAL harmony + intelligent rhythm.
+ * Chord progressions derived from detected scale.
+ * Rhythm varies every 4 bars (not fixed loop).
  */
 export function generateComposition(data: LearningData): Composition | null {
   const insights = getInsights(data);
@@ -379,40 +422,44 @@ export function generateComposition(data: LearningData): Composition | null {
 
   const scale = insights.scale;
   const tempo = insights.tempo;
-  const rootMidi = 33 + scale.root; // F1=33, around bass register
+  const rootMidi = 33 + scale.root;
 
   const reasoning: string[] = [];
   reasoning.push(`Detected ${scale.name} in ${pitchClassToName(scale.root)} (${Math.round(scale.matchScore * 100)}% match)`);
   reasoning.push(`Stable tempo ${tempo.stable} BPM (σ=${tempo.stddev}, confidence ${Math.round(tempo.confidence * 100)}%)`);
 
-  // Generate kick pattern: 4-on-floor with variation based on tempo
-  const kick = tempo.stable > 145
-    ? [1,0,0,1, 1,0,0,0, 1,0,0,1, 1,0,1,0] // faster = gallop
-    : [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0]; // steady
+  // Pick chord progression based on scale type
+  const progs = CHORD_PROGRESSIONS[scale.name] || CHORD_PROGRESSIONS.default;
+  const progression = progs[Math.floor(Math.random() * progs.length)];
+  reasoning.push(`Harmony: ${progression.length}-chord progression in ${scale.name}`);
 
-  // Generate bass pattern from scale degrees (rolling 16ths for psytrance)
-  const bass: (number | null)[] = [];
-  const bassDegrees = scale.intervals.filter(i => i <= 7); // use root, 3rd, 5th, 7th
-  for (let i = 0; i < 16; i++) {
-    if (i === 0 || i === 4 || i === 8 || i === 12) {
-      bass.push(null); // gap on kick
-    } else if (i % 2 === 1) {
-      bass.push(bassDegrees[Math.floor(Math.random() * bassDegrees.length)] - 12); // octave down
-    } else {
-      bass.push(bassDegrees[0] - 12); // root
-    }
-  }
+  // Pick rhythm variation (different each generation)
+  const kickIdx = Math.floor(Math.random() * RHYTHM_VARIATIONS.kickPatterns.length);
+  const bassIdx = Math.floor(Math.random() * RHYTHM_VARIATIONS.bassPatterns.length);
+  const hatIdx = Math.floor(Math.random() * RHYTHM_VARIATIONS.hatPatterns.length);
+  const kick = [...RHYTHM_VARIATIONS.kickPatterns[kickIdx]];
+  const bassBase = [...RHYTHM_VARIATIONS.bassPatterns[bassIdx]];
+  const hat = [...RHYTHM_VARIATIONS.hatPatterns[hatIdx]];
 
-  // Generate lead pattern from scale (sparse, melodic)
+  // Apply chord progression to bass (transpose bass by chord root each 4 steps)
+  const bass: (number | null)[] = bassBase.map((v, i) => {
+    if (v === null) return null;
+    const chordIdx = Math.floor(i / 4) % progression.length;
+    const chordRoot = progression[chordIdx][0];
+    const scaleDeg = scale.intervals[chordRoot] || scale.intervals[0];
+    return scaleDeg - 12 + (v as number); // octave down + variation
+  });
+
+  // Generate lead from chord tones (melodic, follows harmony)
   const lead: (number | null)[] = new Array(16).fill(null);
-  const leadPositions = [0, 3, 6, 10, 14]; // psytrance syncopation
+  const leadPositions = [0, 3, 6, 10, 14];
   for (const pos of leadPositions) {
-    const deg = scale.intervals[Math.floor(Math.random() * scale.intervals.length)] + 12;
-    lead[pos] = deg;
+    const chordIdx = Math.floor(pos / 4) % progression.length;
+    const chord = progression[chordIdx];
+    const toneIdx = Math.floor(Math.random() * chord.length);
+    const scaleDeg = scale.intervals[chord[toneIdx]] || scale.intervals[0];
+    lead[pos] = scaleDeg + 12;
   }
-
-  // Hats: offbeat 16ths with variation
-  const hat = [0,0,1,0, 0,0,1,1, 0,0,1,0, 0,1,1,0];
 
   return {
     scaleName: scale.name,
@@ -422,4 +469,14 @@ export function generateComposition(data: LearningData): Composition | null {
     pattern: { kick, bass, lead, hat },
     reasoning,
   };
+}
+
+// ─── Get next rhythm variation (for evolving patterns) ─────────────────────
+export function getNextRhythmVariation(currentIdx: number): number {
+  return (currentIdx + 1) % RHYTHM_VARIATIONS.kickPatterns.length;
+}
+
+export function getRhythmPattern(type: 'kick' | 'bass' | 'hat', idx: number): number[] {
+  const patterns = RHYTHM_VARIATIONS[`${type}Patterns` as keyof typeof RHYTHM_VARIATIONS];
+  return [...patterns[idx % patterns.length]];
 }
