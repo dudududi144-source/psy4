@@ -568,28 +568,20 @@ export class PsyLive {
       if (cp.hat[step]) this.playHat(t, v.hatLvl);
       const b = cp.bass[step];
       if (b !== null && b !== undefined) this.playBass(t, mtof(root + b), v);
-      const l = cp.lead[step];
-      if (l !== null && l !== undefined) this.playLead(t, mtof(root + 24 + l), v, step % 4 === 0, true);
     } else if (reinforcing) {
-      // REINFORCE: ONLY bass + hat (minimal — 2 layers)
-      if (this.currentHat[step]) this.playHat(t, v.hatLvl);
+      // REINFORCE: ONLY bass (1 layer — absolute minimum)
       const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
       const b = bassPattern[step];
       if (b !== null && b !== undefined) {
         this.playBass(t, mtof(harmonicRoot + currentChordRoot + b), v);
       }
     } else {
-      // GLUE/SOLO: kick + bass + hat (3 layers — removed lead to prevent crash)
+      // GLUE/SOLO: kick + bass only (2 layers — absolute minimum)
       if (this.currentKick[step]) this.playKick(t);
-      if (this.currentHat[step]) this.playHat(t, v.hatLvl);
       const bassPattern = [null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 0, null, 0, 0, 3];
       const b = bassPattern[step];
       if (b !== null && b !== undefined) {
         this.playBass(t, mtof(harmonicRoot + currentChordRoot + b), v);
-      }
-      // Lead ONLY on beat 1 of each bar (1 note per bar = minimal)
-      if (barPos === 0) {
-        this.playLead(t, mtof(harmonicRoot + currentChordRoot + 12), v, true, true);
       }
     }
 
