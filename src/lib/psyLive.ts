@@ -859,17 +859,18 @@ export class PsyLive {
 
       // Bass: offbeat only (between radio kicks) — complements, doesn't clash
       if (intensity.bass && this.bankBass && this.pooled) {
-        // Play bass on offbeats (steps 2, 6, 10, 14) — between radio kicks
         const offbeatPattern = [null, null, 0, null, null, null, 0, null, null, null, 0, null, null, null, 3, null];
         const b = offbeatPattern[barPos];
         if (b !== null && b !== undefined) {
-          this.pooled.triggerSynth(this.bankBass, mtof(harmonicRoot + currentChordRoot + b), t, 0.6, stepDur);
+          this.pooled.triggerSynth(this.bankBass, mtof(harmonicRoot + currentChordRoot + b), t, 0.75, stepDur);
         }
       }
 
-      // Lead: very sparse — only on section changes (bar 0 of each section)
-      if (intensity.lead && this.songBar === 0 && barPos === 0 && this.bankLead && this.pooled) {
-        this.pooled.triggerSynth(this.bankLead, mtof(harmonicRoot + currentChordRoot + 12), t, 0.5, stepDur);
+      // Lead: sparse but more frequent — every 4 bars, not just section changes
+      if (intensity.lead && barPos % 8 === 0 && this.bankLead && this.pooled) {
+        const leadNotes = [12, 15, 19, 17]; // melodic movement
+        const note = leadNotes[(this.barCount >> 2) % leadNotes.length];
+        this.pooled.triggerSynth(this.bankLead, mtof(harmonicRoot + currentChordRoot + note), t, 0.6, stepDur);
       }
 
       // Pad: sustained when radio is in break/low energy
@@ -884,7 +885,7 @@ export class PsyLive {
       if (intensity.hat && this.bankHat && this.pooled) {
         const hatPattern = [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0];
         if (hatPattern[barPos]) {
-          this.pooled.triggerDrum(this.bankHat, t, v.hatLvl * 0.5); // half volume
+          this.pooled.triggerDrum(this.bankHat, t, v.hatLvl * 0.7); // was 0.5 — raised for more highs
         }
       }
     } else {
