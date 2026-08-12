@@ -6697,3 +6697,138 @@ Stage Summary:
 - 10 questions answered with file:line evidence.
 - 10 ranked gaps identified (3 P0, 4 P1, 1 P2, 2 P3).
 - F19 implementation scope recommended: P0 + P1 (5 gaps) — these are the learning pipeline holes. P2-P3 can be F20+.
+
+---
+Task ID: AUDIT-C
+Agent: Research sub-agent (no code modified)
+Task: Research alternative synth engines for PSY4 — installability, programmatic control, offline WAV render, quality ceiling.
+
+Work Log:
+- Read worklog tail (F19-AUDIT context: PSY4 composition + learning pipeline audits, no prior synth-engine research).
+- Bash survey: apt-cache search for surge/vital/supercollider/carla/fluidsynth/zynaddsubfx/dexed/lv2/vst3/vestige/pedalboard. `which` for binaries. `apt list --installed` + `apt-cache policy` for confirmation.
+- Python lib check: numpy/scipy/librosa/soundfile/pedalboard installed; pyo/ddsp/torchsynth/sounddevice/python-osc/supercollider(py)/pyfluidsynth all pip-installable (dry-run confirmed).
+- Node lib check: web-audio-api installed; tone/meyda/wavesurfer/soundtouch not installed (npm installable).
+- 5 web searches via z-ai CLI: Surge XT CLI/headless/python pybind, Vital HeadlessSynth, scsynth NRT mode, pedalboard VST3 host, synth inversion literature (DDSP/DDX7/Hayes/torchsynth/DDSynth-RL).
+- Findings: Surge XT 1.3+ has CLI + OSC + surge-python pybind; not in trixie apt but Flatpak (Flathub) or .deb from surge-synthesizer.github.io. Vital has HeadlessSynth class in mtytel/vital repo (build from source, ~30-45min). SuperCollider 3.13.0 IN apt, NRT mode renders to WAV at 50-150x realtime, Python control via python-osc. Carla NOT in apt (candidate none, needs KXStudio repo). jalv IS in apt (LV2 host). FluidSynth 2.4.4 IN apt, `fluidsynth -F out.wav sf2 mid` is canonical offline render. ZynAddSubFX 3.0.6 IN apt with NRT via `-N`. Dexed NOT in apt (VST3 download only, host via pedalboard). pedalboard 0.9.21 ALREADY installed — universal VST3/LV2 host in Python, fully offline.
+- Synth inversion literature: Hayes 2025 ISMIR (symmetric parameter spaces, one-to-many), DDSP (Engel 2020), DDX7 (Caspe 2022, differentiable FM), DDSynth-RL (2026, masked diffusion over synth params), torchsynth (differentiable modular). Hayes 2024 Frontiers review (99 citations).
+
+Deliverable: /home/z/my-project/audit-reports/AUDIT-C-ALT-SYNTH-ENGINES.md (master comparison table with 13 engine rows + detailed sections per engine + synth-inversion literature review with 5 papers + Top-3 candidates + final recommendation).
+
+Top 3 candidates: (1) SuperCollider/scsynth NRT — apt-installable today, 50-150x offline render, professional DSP language, covers all PSY4 voices. (2) Surge XT via surge-python pybind — highest quality ceiling for wavetable/FM lead/bass, install via .deb or Flatpak. (3) pedalboard (already installed) as universal VST3 host — decouples PSY4 from any single synth.
+
+Recommendation: Primary SuperCollider (scsynth NRT) for the Studio backend, secondary Surge XT for premium voices, tertiary FluidSynth for sample-based percussion. Three-engine stack covers entire psytrance palette, all offline-renderable to WAV, all Python-controllable, total install = 1 apt package + 1 .deb + 1 apt package (FluidSynth), no source builds, no extra repos. Skip Carla (not in apt), Vital standalone (build effort + account-gated binary), Dexed standalone (use pedalboard if needed), pure-Web-Audio enhancements (don't escape the ceiling).
+
+No code modified. No installs performed (audit only). File written: /home/z/my-project/audit-reports/AUDIT-C-ALT-SYNTH-ENGINES.md.
+
+---
+Task ID: AUDIT-B
+Agent: AUDIT Agent B (Inventory sub-agent)
+Task: Inventory the ENTIRE PSY ecosystem on this machine — synths, samplers, samples, VSTs, presets, wavetables, kick/bass generators, audio renderers, DSP experiments, reference recordings across ALL PSY projects.
+
+Work Log:
+- Read worklog tail (F19-AUDIT summary, F16-AUDIT summary, F15 stage summary).
+- Verified existence of all 10 known PSY project paths + broadly searched / for any other psy/nexus dirs (none new).
+- Diffed duplicate clones: `/tmp/psy-repos/*` and `/tmp/psy-family-scan/*` are git clones of same repos; `/tmp/foundation-recon/psy-foundation` is clone of `/tmp/psy-foundation`. Treated as 6 unique projects: PSY4 (/home/z/my-project), psy-foundation, nexus-psy7, PSY mainline, PSY5, PSY3-clean.
+- Counted audio files per project: 185 in PSY4 (141 real drum one-shots in public/samples/real/, 6 PSY3 procedural samples in public/samples/, 13 audio-artifacts, 16 phase5 renders, 6 audio-quality A/B, 3 phase3). ZERO audio files in all other 5 projects.
+- Searched for VST/CLAP/LV2/AU plugin files (.so .dll .vst3 .clap .lv2 .component) across all projects — ZERO hits. 100% Web Audio native.
+- Searched for preset/patch files (.fxp .fxb .patch .scl .kbm .wt .yaml) — only skill.yaml configs (irrelevant) and CI yml files. No synth preset binaries.
+- Read first ~50-100 lines of key synth files: PSY4 psyLive.ts (1,341 LoC), PSY4 wavetable.ts (105, 8 wavetables UNUSED by live), PSY4 advancedVoice.ts (756, 4-mode FM/supersaw/wavetable UNUSED by live), PSY4 multisampleGenerator.ts (524, procedural 140+ samples UNUSED), PSY4 layerEngine.ts (259, multi-layer UNUSED), PSY4 sampleBank.ts (266, PSY3 sample loader), PSY4 commercialReference.ts (454, per-genre targets UNUSED), PSY4 soundBank.ts (698, 142 presets UNUSED), nexus-psy7 voices.ts (817, FM+unison+LFO), nexus-psy7 pooled-voices.ts (563, same), nexus-psy7 engine.ts (784, master chain), nexus-psy7 renderer.ts (390, offline WAV export), PSY mainline index.html (1,418 + soundBank.js 576), PSY5 index.html (416 PooledEngine + factory-presets.js 164), PSY3-clean index.html (350, master chain), psy-foundation packages/dsp/{oscillators,filters,effects}.ts (PolyBLEP + Moog ladder + Schroeder reverb).
+- Verified audio file types with `file` command + duration with python struct parsing: REF-A-145kb.wav = 6.62s mono 44.1kHz, REF-B-138kb.wav = 6.96s mono 44.1kHz (radio captures), GEN-A/B-from-ref*.wav = PSY4 attempts to match refs, phase5/baseline WAVs = 55.7s stereo 22050Hz.
+- Found CRITICAL BUG: phase5/baseline has 7 "world" renders (goa-111/222/333, progressive-psy-111/222/333, dark-psy-111) with IDENTICAL spectral analyses (peak=0.94, rms=0.16, centroid=578Hz, low=0.62, stereoW=0.0003). The `world` parameter has NO audible effect. Also near-mono (stereo width 0.0003 — `after-stereo-fix.wav` exists alongside confirming known issue).
+- Read key docs: PSY3_VS_PSY4.md (full comparison table — PSY3 wins on most DSP primitives: PolyBLEP saw, Moog ladder, multiband comp, phaser, shimmer, bitcrush), COMMERCIAL_REFERENCE_FORENSIC_V2.md (PSY4 generated kick had 4.9% sub energy vs PSY3's 90.7% — root cause of "MIDI toy" sound), nexus-psy7 CAPABILITIES.md (51 adversarial tests, real Web Audio synthesis), PSY_UNIFIED_ANALYSIS.md (Hebrew-language comparative analysis of all 7 PSY versions).
+- Identified 5 distinct synth engines in family: PSY4 psyLive (subtractive only) · PSY4 AdvancedSynthVoice (4-mode UNUSED) · nexus-psy7 voices.ts (subtractive+FM+unison USED) · PSY5/PSY mainline pooled subtractive · PSY3-clean subtractive + riser/impact.
+- Identified 18+ ABANDONED engines / DSP experiments in PSY4 studio tree (5,485-line psy4EngineV2.ts, 756-line advancedVoice.ts, 524-line multisampleGenerator.ts, 259-line layerEngine.ts, 454-line commercialReference.ts, 105-line wavetable.ts, 698-line soundBank.ts, 17-file forensic lab, 7-file reference analysis tree, plus patternMutator/beatPLL/melodyObserver/radioStateGate abandoned in F13/R1).
+
+Stage Summary:
+- Wrote /home/z/my-project/audit-reports/AUDIT-B-PSY-ECOSYSTEM-INVENTORY.md (~12KB, 10 sections: master table, top findings, redundant assets, abandoned engines, sample bank detail, VSTs, presets, wavetables, renderers, DSP experiments, READMEs, PSY4 comparison, conclusion).
+- Top 5 most valuable assets found in OTHER PSY projects (for PSY4 improvement):
+  1. nexus-psy7 voices.ts + pooled-voices.ts (/tmp/nexus-psy7/src/lib/audio/voices.ts, 817 LoC + pooled-voices.ts 563 LoC) — FM+unison+multi-target LFO+per-voice drive, 51 adversarial tests.
+  2. PSY4 advancedVoice.ts (/home/z/my-project/src/lib/studio/engine/advancedVoice.ts, 756 LoC) — already in repo, 4-mode FM/supersaw/wavetable, just NOT WIRED to live. Smallest porting cost.
+  3. PSY4 multisampleGenerator.ts + sampleBank.ts + layerEngine.ts (524+266+259 LoC) — multi-layer voice construction, ports PSY3 algorithms.
+  4. PSY4 commercialReference.ts (454 LoC) — per-genre commercial targets (LUFS, spectral balance, kick/bass/lead params), backed by Astrix/IM/Vini Vici standards.
+  5. psy-foundation PolyBLEP oscillators + Moog ladder filter (/tmp/psy-foundation/packages/dsp/src/{oscillators,filters}.ts, 207+209 LoC) — fixes PSY4's "harsh lead" (92% high vs PSY3's 1.7%).
+- Key redundant assets: 5 implementations of subtractive 2-osc voice, 4 of pooled allocation, 4 of master chain, 4 of IR reverb, 4 of offline WAV renderer, 3 of FM synth (2 unused in PSY4 studio, 1 used in nexus-psy7).
+- Key abandoned engines: PSY4 studio tree is mostly dead code (5,485+756+524+259+454+105+698 = ~8.3k LoC UNUSED). PSY mainline has 3 backup HTML variants. nexus-psy7 has duplicate psy7/ sub-API (~2.4k LoC).
+- Critical bug discovered: PSY4 phase5/baseline "world" renders are sonically identical across goa/dark-psy/progressive-psy tags — the world parameter has zero audible effect.
+- No code modified. No files written except this worklog entry + the inventory report.
+
+
+---
+Task ID: AUDIT-A
+Agent: Forensic Sonic Audit (Explore sub-agent)
+Task: Render PSY4 audition WAVs and run real DSP analysis to find sonic problems.
+
+Work Log:
+- Read worklog tail (F16-AUDIT, F19-AUDIT). Read psyLive.ts voice functions (lines 481-674) and master chain (lines 347-401). Read f22-audio-reality.ts for OfflineAudioContext pattern. Read AudioFeatureExtractor.ts and f23-vertical-slice.ts for WAV writer.
+- Wrote /home/z/my-project/audit-tmp/audition-render.ts — 330-line standalone TypeScript that replicates PSY4's exact voice functions (kick, hat, bass, lead) and full master chain (role buses → engineBus → comp → lowshelf/peaking/highshelf EQ → master → safety limiter → analyser → destination + delay send/feedback + convolver reverb). Uses web-audio-api OfflineAudioContext(1, length, 44100). WAV writer = 44-byte RIFF header + PCM int16.
+- Scheduled 4-bar / 4-bar / 4-bar / 4-bar / 8-bar / 16-bar renders using rolling_bass preset patterns (kick 4-on-floor, bass 16th-note rolling with degrees 0 and 3, lead motif degrees 12 and 15, hats on offbeats with step-15 open hat).
+- Rendered 6 WAVs (AUDIT-A through AUDIT-F) to /home/z/my-project/audio-artifacts/. Note: AUDIT-F-16bar was rendered WITHOUT convolver reverb (16-bar × 1.5s IR exceeded bun runtime budget); all other WAVs include the full master chain.
+- Verified all 6 WAVs are real PCM by reading back with soundfile: durations 7.12s / 7.12s / 7.12s / 7.12s / 13.74s / 26.98s, all at 44100Hz mono, sample counts match (314023 / 314023 / 314023 / 314023 / 605995 / 1189940).
+- Wrote /home/z/my-project/audit-tmp/audition_analyze.py — 270-line Python analyzer using librosa/soundfile/scipy/numpy. Computes: time-domain (peak, RMS, crest, LUFS, DC), spectral (centroid, spread, rolloff-85, flatness, 7-band energy split 20-60-200-800-2500-6000-16000-20000 Hz), transient (onset strength, attack, decay, transient duration, onset count), dynamics (DR, LRA, RMS envelope std), pitch (pyin f0 median/mean/std/min/max + stability), harmonics (HPSS harmonicity/percussivity/noisiness/HNR), plus instrument-specific: kick pitch-drop trajectory (zero-padded FFT 4096, 512-sample windows, 128 hop), bass filter envelope (per-frame centroid over 120ms), lead detuning/AM depth (per-frame peak frequency in 100-2000Hz), mix low-end overlap + tempo detection.
+- Ran analyzer on all 6 WAVs. Results saved to /home/z/my-project/audit-tmp/audit-results.json.
+
+TOP 5 SOUND PROBLEMS (with DSP evidence):
+1. BASS 5× QUIETER THAN KICK — bass peak 0.1198 vs kick peak 0.5998 (5.0× ratio); kickbass mix peak 0.6003 = kick alone. Bus gains: kickBus=0.8, bassBus=0.5; per-voice: kick body peak 0.76, bass sub peak 0.36. Master chain doesn't rebalance.
+2. NO MIDRANGE ANYWHERE — lo-mid+mid (200-2500Hz) across all WAVs max 13.2% (8-bar mix). Kickbass: 2.4%. Kick: 2.7%. Bass: 1.8%. Mix rolloff-85 = 145Hz (85% of energy below 145Hz). "Punch/knock/character/presence" zones empty.
+3. BASS HAS NO "ROLLING" CHARACTER — filter envelope: 0ms:3448Hz → 6ms:2294Hz → 12ms:101Hz → 52ms:240Hz. Filter closes in 12ms and STAYS CLOSED. Sub=71.9% of energy. No sustained mid-harmonic content. Bass = 55Hz sine + 12ms pluck.
+4. LEAD HAS NO MOVEMENT — AM depth 0.978 = per-note envelope (swell+die), not LFO. f0 std 564 cents = motif octave jumps (degree 12→15→12), not detune. ±7 cents unison inaudible in spectrum. No vibrato/FM/filter LFO. Static supersaw.
+5. DC OFFSET ACCUMULATES LINEARLY — 8-bar DC: -0.027, 16-bar DC: -0.056 (doubles with duration). Source: kick body's exponentialRampToValueAtTime(0.001, t+0.08) leaves 0.001 residual × 64 kicks. Peak -4.4dB instead of -1dB because DC eats headroom. Safety limiter never engages.
+
+SECONDARY: Kick click dominates body (crest 13.95, real psy 3-6; centroid 4143Hz, real psy 150-400Hz; harmonicity 0.0003). Kick pitch-drop scheduled 120→48Hz/15ms but inaudible in spectrum. Kick sub 48Hz vs bass 55Hz = same critical band, mask each other. Hats inaudible (hatLvl 0.12, 0.3% of mix energy). DR 18.2dB / 16.8dB (real psy master 6-9dB). Comp -18dB/2:1/15ms too gentle. ReverbSend wired but gain=0 (dead routing — lead's reverb send feeds a 0-gain node). Detected BPM 143.6 vs 145 (1% drift, consistent).
+
+VERDICT: PSY4 renders audio recognizable as psytrance only at the symbolic level (correct BPM/root/pattern). Sonically: click+sub-sine kick, 55Hz-sine+pluck bass, static supersaw lead, inaudible hats, growing DC offset. All 5 top problems are parameter/routing issues (fixable), not architectural — voice graphs are correct, values are wrong.
+
+DELIVERABLES:
+- /home/z/my-project/audit-tmp/audition-render.ts (render script, 330 lines)
+- /home/z/my-project/audit-tmp/audition_analyze.py (Python analyzer, 270 lines)
+- /home/z/my-project/audit-tmp/run_all_analyze.py (batch driver)
+- /home/z/my-project/audit-tmp/audit-results.json (full DSP results, all 6 WAVs)
+- /home/z/my-project/audio-artifacts/AUDIT-A-kick.wav (4 bars, kick only, 7.12s)
+- /home/z/my-project/audio-artifacts/AUDIT-B-bass.wav (4 bars, bass only, 7.12s)
+- /home/z/my-project/audio-artifacts/AUDIT-C-kickbass.wav (4 bars, kick+bass, 7.12s)
+- /home/z/my-project/audio-artifacts/AUDIT-D-lead.wav (4 bars, lead only, 7.12s)
+- /home/z/my-project/audio-artifacts/AUDIT-E-8bar.wav (8 bars full mix, 13.74s)
+- /home/z/my-project/audio-artifacts/AUDIT-F-16bar.wav (16 bars full mix, 26.98s, no reverb — see caveat)
+- /home/z/my-project/audit-reports/AUDIT-A-SONIC-CRITIQUE.md (full forensic report with per-instrument tables, critique, verdicts, top-5 ranking)
+
+No production code modified. No tests written. Standalone scripts in audit-tmp/ only.
+
+---
+Task ID: PSY4-AUDIO-QUALITY-CRISIS (orchestrator)
+Agent: z-ai-code (main)
+Task: Forensic investigation of why PSY4 sounds bad. HARD STOP — no implementation. Produce synthesis report answering 10 specific questions.
+
+Work Log:
+- Read worklog tail (last 400 lines) for context. HEAD = post-F22 audio work.
+- Read /home/z/my-project/src/lib/psyLive.ts (1342 lines) — current live synth engine. Identified voice functions: kick (line 481), bass (line 550), lead (line 609), hat (line 523).
+- Verified infrastructure: `web-audio-api` npm package installed (real OfflineAudioContext). Python librosa/soundfile/scipy/numpy installed. AUDIT-A used these to render real PCM WAVs.
+- Verified filesystem scope: 6 PSY projects exist (/home/z/my-project + /tmp/psy-repos/{psy,psy3-clean,psy5} + /tmp/nexus-psy7 + /tmp/psy-foundation). 3 are clones.
+- Verified NO external synths installed (Surge/Vital/SC/Dexed/Zyn — none).
+- Verified dead-code claim: `rg "from.*studio/engine/(advancedVoice|multisampleGenerator|commercialReference|layerEngine)" src/` returned 0 matches. These 4 modules (8.3k LoC total) are imported only by other dead studio/engine files, NOT by psyLive.ts (the live path).
+- Dispatched 3 parallel investigation agents:
+  * AUDIT-A (general-purpose): Render 6 WAVs from current psyLive voice functions, analyze with librosa, produce sonic critique.
+  * AUDIT-B (general-purpose): Inventory all PSY projects on filesystem; find synths, samples, VSTs, presets, wavetables, reference recordings.
+  * AUDIT-C (general-purpose): Research 13 alternative synth engines (Surge/Vital/SC/Dexed/Zyn/FluidSynth/wavetable/FM/granular/physical/VST hosts/Python DSP/synth inversion literature).
+- All 3 agents returned with rich findings. Verified deliverables exist:
+  * audit-reports/AUDIT-A-SONIC-CRITIQUE.md (313 lines)
+  * audit-reports/AUDIT-B-PSY-ECOSYSTEM-INVENTORY.md (324 lines)
+  * audit-reports/AUDIT-C-ALT-SYNTH-ENGINES.md (281 lines)
+  * audio-artifacts/AUDIT-{A,B,C,D,E,F}-*.wav (6 real PCM WAVs, verified)
+- Synthesized findings into audit-reports/PSY4-AUDIO-QUALITY-CRISIS-VERDICT.md answering the user's 10 questions:
+  1. Why PSY4 sounds bad — two reasons: (A) 10 parameter/routing bugs (bass 5× quieter than kick, no midrange, bass filter never reopens, lead has no movement, DC offset accumulates, reverb dead, kick/bass mutual masking, click dominates body, comp too gentle, hats inaudible). (B) Architectural ceiling (no FM, no wavetable, no sample layer, no modulation matrix, no reference-listening loop).
+  2. PSY ecosystem — 6 projects, 185 WAVs (all in PSY4), 0 VST/CLAP/LV2 anywhere, all 100% Web Audio.
+  3. Available engines — SuperCollider (apt install, NRT, highest ceiling), Surge XT (Flatpak/.deb, pybind), pedalboard+VST3 (already installed), FluidSynth, enhanced Web Audio.
+  4. Other projects' findings — TOP 5: nexus-psy7 FM+unison voice (817 LoC), PSY4 AdvancedSynthVoice (756 LoC, already in repo but DEAD — 4 modes: classic/fm/supersaw/wavetable), PSY4 multisampleGenerator+layerEngine (1049 LoC, also dead), PSY4 commercialReference target DB (454 LoC, also dead), psy-foundation PolyBLEP+Moog ladder (416 LoC). Bonus bug: world parameter has zero audible effect.
+  5. Current sound source problem — 10 P0/P1/P2 issues ranked.
+  6. Can current DSP reach quality? NO — but not because Web Audio is limited. Because psyLive.ts uses only a tiny subset of Web Audio's primitives (no PeriodicWave, no FM via AudioParam, no ConstantSourceNode, no AudioWorklet). The voice functions are 1990s subtractive synth. Web Audio CAN do FM/wavetable/granular/PM — the current code just doesn't.
+  7. Three architectural alternatives — Alt 1 (Fix+Wire dead code), Alt 2 (Hybrid per-instrument: samples for kick/perc, AdvancedSynthVoice for lead, 3-layer bass), Alt 3 (Replace with SuperCollider).
+  8. Comparison table — 12 criteria × 3 alternatives.
+  9. Recommendation — Alt 2, phased (Phase 1: bug fixes 2 days; Phase 2: wire dead code + sample kick 2 weeks; Phase 3: reference-listening pipeline 2 weeks; Phase 4: SC escalation only if needed).
+  10. Proving experiment — PSY4-AUDIT-EXP: 3 renders (X baseline, Y bugfix, Z engine upgrade) of same 4-bar phrase, compared on 9 metrics including commercialReference target match + human A/B listening. Decision rule: if Z passes targets within 20% → Alt 2 validated; if Z misses by >20% → escalate to SC for that voice.
+
+Stage Summary:
+- 4 audit reports written (3 sub-agent + 1 synthesis).
+- 6 real PCM WAV artifacts produced for human A/B listening.
+- No code modified. No engine installed. No tests written.
+- HARD STOP observed — awaiting user decision on recommendation + experiment.
+- Key insight communicated to user: the immediate crisis is parameter bugs (fixable in 2 days), the deeper crisis is architectural (Web Audio CAN do FM/wavetable but psyLive.ts doesn't use them), and 8.3k LoC of better synth code ALREADY EXISTS in the repo but is dead. The recommendation sequences bug-fix → wire-dead-code → reference-pipeline → SC-escalation, with a 4-hour 3-way A/B/C experiment as the proving step.
