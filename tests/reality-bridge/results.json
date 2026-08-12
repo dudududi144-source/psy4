@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T18:21:24.218Z",
+  "runAt": "2026-08-12T18:44:50.164Z",
   "totalTests": 56,
   "totalPassed": 56,
   "totalFailed": 0,
@@ -213,10 +213,10 @@
       "name": "BeatPLL stable under ±5ms timing jitter",
       "category": "BeatPLL",
       "passed": true,
-      "evidence": "finalBpm=144.99 bpmErr=0.011 locked=true",
+      "evidence": "finalBpm=145.12 bpmErr=0.125 locked=true",
       "metrics": {
-        "finalBpm": 144.98885221246755,
-        "bpmErr": 0.011147787532451048,
+        "finalBpm": 145.12464783139305,
+        "bpmErr": 0.12464783139304814,
         "locked": 1,
         "jitterMs": 5
       }
@@ -358,7 +358,7 @@
       "passed": true,
       "evidence": "flatnessNoise=0.999 flatnessTone=0.133",
       "metrics": {
-        "flatnessNoise": 0.9991140016596399,
+        "flatnessNoise": 0.9985342831816375,
         "flatnessTone": 0.1334657973006324
       }
     },
@@ -367,14 +367,14 @@
       "name": "PatternMutator runs 200 cycles; mutation rate + constraint violations",
       "category": "PatternMutator",
       "passed": true,
-      "evidence": "mutations=186/200 (93.0%); violations=0; duplicates=0; meanDensityDelta=0.019",
+      "evidence": "mutations=184/200 (92.0%); violations=0; duplicates=0; meanDensityDelta=0.019",
       "metrics": {
         "cycles": 200,
-        "mutations": 186,
-        "mutationRate": 0.93,
+        "mutations": 184,
+        "mutationRate": 0.92,
         "constraintViolations": 0,
         "duplicates": 0,
-        "meanDensityDelta": 0.018901209677419355
+        "meanDensityDelta": 0.018936820652173912
       }
     },
     {
@@ -597,10 +597,10 @@
       "name": "Feed silence after signal → state degrades (age grows)",
       "category": "RadioStateGate",
       "passed": true,
-      "evidence": "state=CONNECTED_NO_SIGNAL signalAgeMs=0ms (will reach CONNECTED_NO_SIGNAL after 2000ms)",
+      "evidence": "state=CONNECTED_NO_SIGNAL signalAgeMs=1ms (will reach CONNECTED_NO_SIGNAL after 2000ms)",
       "metrics": {
         "state": "CONNECTED_NO_SIGNAL",
-        "signalAgeMs": 0
+        "signalAgeMs": 1
       }
     },
     {

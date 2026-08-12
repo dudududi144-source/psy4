@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T18:21:24.345Z",
+  "runAt": "2026-08-12T18:44:50.434Z",
   "totalTests": 18,
   "passed": 18,
   "failed": 0,
@@ -62,13 +62,13 @@
       "id": "PR-10",
       "name": "Gain envelopes reach audible level (non-zero gain values)",
       "passed": true,
-      "evidence": "gain nodes with value > 0.01: 23/53"
+      "evidence": "gain nodes with value > 0.01: 28/59"
     },
     {
       "id": "PR-11",
       "name": "Role buses connected to master (engineBus → comp → master)",
       "passed": true,
-      "evidence": "master node found: yes (id=gain_1556)"
+      "evidence": "master node found: yes (id=gain_1601)"
     },
     {
       "id": "PR-12",
@@ -110,7 +110,7 @@
       "id": "PR-18",
       "name": "No runaway allocation (node count bounded)",
       "passed": true,
-      "evidence": "nodes at start=14 after 30s=1299 growth=1285"
+      "evidence": "nodes at start=17 after 30s=1324 growth=1307"
     }
   ]
 }

@@ -177,6 +177,9 @@ export class PsyLive {
   private analyser: AnalyserNode | null = null;
   private delaySend: GainNode | null = null;
   private delay: DelayNode | null = null;
+  private delayFb: GainNode | null = null;
+  private reverbSend: GainNode | null = null;
+  private convolver: ConvolverNode | null = null;
   private noiseBuf: AudioBuffer | null = null;
 
   // Radio
@@ -371,10 +374,19 @@ export class PsyLive {
     this.delay = this.ctx.createDelay(2.0);
     this.delay.delayTime.value = 0.3;
     const wet = this.ctx.createGain(); wet.gain.value = 0.22;
-    const fb = this.ctx.createGain(); fb.gain.value = 0.34;
+    this.delayFb = this.ctx.createGain(); this.delayFb.gain.value = 0.34;
     this.delaySend.connect(this.delay);
     this.delay.connect(wet); wet.connect(this.master);
-    this.delay.connect(fb); fb.connect(this.delay);
+    this.delay.connect(this.delayFb); this.delayFb.connect(this.delay);
+
+    // F11: Reverb bus
+    this.reverbSend = this.ctx.createGain(); this.reverbSend.gain.value = 0;
+    this.convolver = this.ctx.createConvolver();
+    this.convolver.buffer = this.mkIR(this.ctx);
+    const reverbWet = this.ctx.createGain(); reverbWet.gain.value = 0.5;
+    this.reverbSend.connect(this.convolver);
+    this.convolver.connect(reverbWet);
+    reverbWet.connect(this.master);
 
     // Noise buffer for hats
     const len = Math.floor(this.ctx.sampleRate * 0.25);
@@ -510,6 +522,8 @@ export class PsyLive {
     o1.connect(filter); o2.connect(filter); filter.connect(gain); gain.connect(this.leadBus);
     // F10: Reduce delay send from 0.3 to 0.12 — less echo reinforcement
     if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.12; gain.connect(send); send.connect(this.delaySend); }
+    // F11: Add reverb send to lead
+    if (this.reverbSend) { const rs = this.ctx.createGain(); rs.gain.value = 0.15; gain.connect(rs); rs.connect(this.reverbSend); }
     o1.start(t); o2.start(t); o1.stop(t + 0.26); o2.stop(t + 0.26);
   }
 
@@ -554,9 +568,48 @@ export class PsyLive {
   }
 
   setVolume(v: number): void {
-    // CRITICAL: volume controls master gain directly (like psy)
     if (this.master && this.ctx)
       this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+  }
+
+  // F11: Per-channel volume controls
+  setChannelVolume(channel: 'kick' | 'bass' | 'lead' | 'hat', v: number): void {
+    const bus = channel === 'kick' ? this.kickBus : channel === 'bass' ? this.bassBus : channel === 'lead' ? this.leadBus : this.hatBus;
+    if (bus && this.ctx) bus.gain.setTargetAtTime(v, this.ctx.currentTime, 0.03);
+  }
+
+  // F11: FX controls
+  setDelayAmount(v: number): void {
+    if (this.delaySend && this.ctx) this.delaySend.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+  }
+
+  setDelayFeedback(v: number): void {
+    if (this.delayFb && this.ctx) this.delayFb.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+  }
+
+  setReverbSend(v: number): void {
+    if (this.reverbSend && this.ctx) this.reverbSend.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+  }
+
+  // F11: Style control — actually affects MusicalSession
+  setStyle(style: string): void {
+    if (this.session) {
+      (this.session as any).style = style;
+      (this.session as any).styleConfidence = 1.0;
+    }
+  }
+
+  // F11: Musical controls
+  setEnergy(v: number): void {
+    if (this.session) (this.session.getContext() as any).energy = v;
+  }
+
+  setDensity(v: number): void {
+    if (this.session) (this.session.getContext() as any).density = v;
+  }
+
+  setTension(v: number): void {
+    if (this.session) (this.session.getContext() as any).tension = v;
   }
 
   private updateDelayTime(): void {
@@ -936,6 +989,20 @@ export class PsyLive {
 
   getRecentMelody(bars: number): MelodyObservation[] {
     return this.melodyObserver.getRecentObservations(bars);
+  }
+
+  // F11: Generate reverb impulse response
+  private mkIR(ctx: AudioContext): AudioBuffer {
+    const len = Math.floor(ctx.sampleRate * 1.8);
+    const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = buf.getChannelData(ch);
+      for (let i = 0; i < len; i++) {
+        const t = i / len;
+        d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 2.5);
+      }
+    }
+    return buf;
   }
 
   // ── F1.18 RULE 9: Browser proof debug surface ──
