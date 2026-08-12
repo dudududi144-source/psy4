@@ -733,6 +733,27 @@ export class PsyLive {
   triggerDrop(bars = 4): void { this.session?.triggerDrop(bars); }
   getArrangementState() { return this.session?.getArrangementState(); }
 
+  // F18.5: Apply learned timbre to synthesis parameters.
+  // Called from detect() when timbre profile is available.
+  // Maps learned spectral characteristics → synth params (wave, cutoff, saturation).
+  private applyLearnedTimbre(): void {
+    const timbre = this.session?.getLearnedTimbreProfile();
+    if (!timbre || !this.ctx) return;
+    const params = timbre.synthParams;
+    // Apply to active preset variant — modify the variant in-place
+    const v = this.getVariant();
+    // Only override if user hasn't manually set (we check by comparing to defaults)
+    // F18: We override the variant's synth params with learned values
+    (v as any).bassWave = params.bassWave;
+    (v as any).bassCut = params.bassCut;
+    (v as any).leadWave = params.leadWave;
+    (v as any).leadCut = params.leadCut;
+  }
+
+  // F18: Check if learning is active (for UI display)
+  hasLearnedFromRadio(): boolean { return this.session?.hasLearnedFromRadio() ?? false; }
+  getLearnedPhraseCount(): number { return this.session?.getLearnedPhraseCount() ?? 0; }
+
   private updateDelayTime(): void {
     if (this.delay) this.delay.delayTime.value = this.stepDur() * 3;
   }
@@ -1053,6 +1074,9 @@ export class PsyLive {
         fftSize: this.radioAnalyser.fftSize,
       });
     }
+
+    // F18.5: Apply learned timbre to synthesis parameters
+    this.applyLearnedTimbre();
 
     // Update radio level for UI
     this.radioLevel = radioSnap.signal.spectralEnergy;

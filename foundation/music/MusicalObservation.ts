@@ -175,7 +175,7 @@ export class MusicalObservationExtractor {
     const avgFlatness = flatnesses.length > 0 ? flatnesses.reduce((a, b) => a + b, 0) / flatnesses.length : 0.3;
     const rolloffs = ticks.map(t => t.spectralRolloff).filter(r => r > 0);
     const avgRolloff = rolloffs.length > 0 ? rolloffs.reduce((a, b) => a + b, 0) / rolloffs.length : 4000;
-    const brightness = Math.min(1, avgCentroid / 5000);
+    const brightness = Math.min(1, avgCentroid / 10000);
     const noisiness = avgFlatness;
     const lowMidRatio = ticks.reduce((s, t) => s + (t.midEnergy > 0 ? t.lowEnergy / t.midEnergy : 0), 0) / n;
     const midHighRatio = ticks.reduce((s, t) => s + (t.highEnergy > 0 ? t.midEnergy / t.highEnergy : 0), 0) / n;

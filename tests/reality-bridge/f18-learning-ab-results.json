@@ -1,0 +1,30 @@
+{
+  "results": [
+    {
+      "test": "Lead learning changes output",
+      "pass": true,
+      "evidence": "66 vs 24 notes"
+    },
+    {
+      "test": "Rhythm learning changes output",
+      "pass": true,
+      "evidence": "27 vs 3 patterns"
+    },
+    {
+      "test": "Timbre learning produces different synth params",
+      "pass": true,
+      "evidence": "brightness 1.00 vs 0.73"
+    },
+    {
+      "test": "256-bar continuity (no resets)",
+      "pass": true,
+      "evidence": "5056 events, 256/256 bars with notes"
+    },
+    {
+      "test": "Learning accumulation builds all grammars",
+      "pass": true,
+      "evidence": "phrases=3, bass=true, lead=true, rhythm=true, timbre=true"
+    }
+  ],
+  "verdict": "PASS"
+}

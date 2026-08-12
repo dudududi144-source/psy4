@@ -96,6 +96,9 @@ export class MusicalContext {
     key: false,
   };
 
+  // F18: Key change hysteresis — requires consistent observations before changing
+  private keyChangeVotes: number[] = [];
+
   /**
    * F13/R2 — Public musical control API.
    * These are the ONLY way the UI should set musical direction.
@@ -173,15 +176,28 @@ export class MusicalContext {
       this.syncopation = 0.2;
     }
 
-    // Key/scale inference from bass frequency — skip if user locked
+    // F18: Key/scale inference with HYSTERESIS — requires multiple consistent
+    // observations before changing key. This prevents the "key jitter" that
+    // causes the composition to feel unstable.
     if (!this.userLocked.key && data.bassFreq && data.bassFreq > 50) {
       const midi = Math.round(69 + 12 * Math.log2(data.bassFreq / 440));
       const newRootPc = ((midi % 12) + 12) % 12;
-      // Only change root if it's different enough (avoid jitter)
+
+      // F18: Track pitch-class observations for hysteresis
       if (newRootPc !== this.rootPc) {
-        this.rootPc = newRootPc;
-        // Default to phrygian-dominant for psytrance, but could be extended
-        this.scaleName = 'phrygian-dominant';
+        this.keyChangeVotes.push(newRootPc);
+        if (this.keyChangeVotes.length > 8) this.keyChangeVotes.shift();
+
+        // Only change key if 6+ of the last 8 votes agree on the new key
+        const votes = this.keyChangeVotes.filter(v => v === newRootPc).length;
+        if (votes >= 6) {
+          this.rootPc = newRootPc;
+          this.scaleName = 'phrygian-dominant';
+          this.keyChangeVotes = []; // reset after change
+        }
+      } else {
+        // Same key — clear votes
+        this.keyChangeVotes = [];
       }
     }
 
@@ -272,6 +288,7 @@ export class MusicalContext {
     this.confidence = 0.2;
     this.source = 'preset';
     this.energyHistory = [];
+    this.keyChangeVotes = [];
     this.userLocked = { style: false, energy: false, density: false, tension: false, key: false };
   }
 }

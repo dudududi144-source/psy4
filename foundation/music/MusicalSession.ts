@@ -396,9 +396,18 @@ export class MusicalSession {
     const section = ctx.sectionName;
     const cycle = this.cycleCount;
 
-    // F16: Velocity humanization
+    // F16: Velocity humanization (defined early — needed by learned path too)
     const baseVel = radioKickOcc > 0.7 ? 0.6 : 0.9;
     const humanize = (v: number, jitter: number) => Math.max(0.1, Math.min(1, v + (this.rng.next() - 0.5) * jitter));
+
+    // F18.4: LEARNED RHYTHM GRAMMAR — if we have learned rhythm from radio,
+    // generate kick pattern from learned onset probabilities instead of
+    // hardcoded grammars.
+    const learnedRhythm = this.getLearnedRhythmGrammar();
+    if (learnedRhythm && learnedRhythm.confidence > 0.25 && section !== 'INTRO') {
+      this.generateLearnedKick(notes, ctx, learnedRhythm, barInPhrase, humanize);
+      return;
+    }
 
     // F16: Select kick pattern from grammar based on section + cycle + phrase position
     // This makes the groove EVOLVE across 256 bars instead of always [0,4,8,12]
@@ -638,6 +647,54 @@ export class MusicalSession {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // F18.4: LEARNED KICK GENERATION
+  // Generates kick pattern from learned rhythm grammar (onset probabilities).
+  // ═══════════════════════════════════════════════════════════════════════
+  private generateLearnedKick(
+    notes: ScheduledNote[], ctx: MusicalContextSnapshot, grammar: RhythmGrammar,
+    barInPhrase: number, humanize: (v: number, j: number) => number,
+  ): void {
+    const section = ctx.sectionName;
+    const radioKickOcc = (ctx as any).radioRoles?.kick ?? 0;
+    const baseVel = radioKickOcc > 0.7 ? 0.6 : 0.9;
+
+    // F18: Generate kick from learned onset pattern
+    for (let step = 0; step < 16; step++) {
+      const onsetProb = grammar.kickPattern[step] ?? 0.5;
+      // Section density modulation
+      const densityMod = section === 'CLIMAX' ? 1.15 : section === 'RESOLUTION' ? 0.8 : 1.0;
+      const playProb = Math.min(1, onsetProb * densityMod);
+
+      if (this.rng.next() < playProb) {
+        // Accent: downbeat loudest, others softer
+        let vel = baseVel;
+        if (step === 0) vel = baseVel + 0.05;
+        else if (step % 4 === 0) vel = baseVel;
+        else vel = baseVel - 0.3; // ghosts
+        notes.push({ step, voice: 'kick', midi: null, velocity: humanize(vel, 0.06) });
+      }
+    }
+
+    // F18: Ghost notes from learned probability
+    if (grammar.ghostNoteProb > 0.2 && section !== 'RESOLUTION') {
+      for (let step = 1; step < 16; step += 2) {
+        if (this.rng.next() < grammar.ghostNoteProb * 0.5) {
+          notes.push({ step, voice: 'kick', midi: null, velocity: humanize(0.35, 0.08) });
+        }
+      }
+    }
+
+    // F18: Phrase-end fill
+    if (barInPhrase === 7) {
+      const fillSteps = [14, 15];
+      for (let i = 0; i < fillSteps.length; i++) {
+        const fillVel = 0.65 + (i / fillSteps.length) * 0.25;
+        notes.push({ step: fillSteps[i], voice: 'kick', midi: null, velocity: humanize(fillVel, 0.05) });
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // F15 HATS — swing, open/closed, velocity humanization, style groove
   // ═══════════════════════════════════════════════════════════════════════
   private generateHats(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number): void {
@@ -743,6 +800,16 @@ export class MusicalSession {
   }
 
   private generateLead(notes: ScheduledNote[], ctx: MusicalContextSnapshot, motif: StoredMotif, barInPhrase: number, action: string, density: number): void {
+    // F18.3: LEARNED LEAD GENERATION — if we have learned melodic grammar,
+    // generate new melodies from learned interval distributions instead of
+    // using random motifs. This produces material that REFLECTS what the
+    // radio taught, without copying melodies.
+    const learnedMelodic = this.getLearnedMelodicGrammar();
+    if (learnedMelodic && learnedMelodic.confidence > 0.25 && ctx.sectionName !== 'INTRO') {
+      this.generateLearnedLead(notes, ctx, learnedMelodic, barInPhrase, density);
+      return;
+    }
+
     // F9 RULE 10: Register control — octave 3 (MIDI 48-60), NOT octave 4-5 (69-88)
     const leadOctave = 3; // MIDI ~45-57 (low-mid register)
     const registerShift = 0; // no upward shift
@@ -784,6 +851,79 @@ export class MusicalSession {
         const deg = this.rng.pick([-1, 1, 2, -2]);
         const midi = degreeToMidi(ctx.rootPc, ctx.scale, deg, leadOctave);
         notes.push({ step: 0, voice: 'lead', midi, velocity: 0.35 });
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // F18.3: LEARNED LEAD GENERATION
+  // Generates new melodies from learned interval distributions.
+  // This is NOT motif transpose — it's sampling from a learned probability
+  // model of intervals, contour, and register.
+  // ═══════════════════════════════════════════════════════════════════════
+  private generateLearnedLead(
+    notes: ScheduledNote[], ctx: MusicalContextSnapshot, grammar: MelodicGrammar,
+    barInPhrase: number, density: number,
+  ): void {
+    const section = ctx.sectionName;
+    // F18: Start from a scale degree based on learned preference
+    const degreePrefs = grammar.degreePreference;
+    let currentDegree = 0;
+
+    // Sample initial degree from preference distribution
+    let r = this.rng.next();
+    for (let d = 0; d < degreePrefs.length; d++) {
+      r -= degreePrefs[d];
+      if (r <= 0) { currentDegree = d; break; }
+    }
+
+    const leadOctave = 3 + (grammar.registerPreference > 0.6 ? 1 : 0); // higher register if learned
+    let currentMidi = degreeToMidi(ctx.rootPc, ctx.scale, currentDegree, leadOctave);
+
+    // F18: Generate notes using learned interval histogram
+    // The interval histogram has 25 values (indices 0-24, center=12 for 0 semitones)
+    const intervalHist = grammar.intervalHistogram;
+
+    for (let step = 0; step < 16; step++) {
+      // Decide whether to play at this step (density + rest density)
+      const restProb = grammar.restDensity;
+      const playProb = density * (1 - restProb);
+
+      if (this.rng.next() < playProb) {
+        // Sample an interval from the learned histogram
+        let r2 = this.rng.next();
+        let intervalIdx = 12; // default: repeat
+        for (let i = 0; i < intervalHist.length; i++) {
+          r2 -= intervalHist[i];
+          if (r2 <= 0) { intervalIdx = i; break; }
+        }
+        const interval = intervalIdx - 12; // -12 to +12 semitones
+
+        // Apply contour preference (ascending/descending/static)
+        let finalInterval = interval;
+        if (this.rng.next() < grammar.ascendingProb && interval < 0) finalInterval = -interval;
+        if (this.rng.next() < grammar.descendingProb && interval > 0) finalInterval = -interval;
+        if (this.rng.next() < grammar.staticProb) finalInterval = 0;
+
+        // Apply interval to current MIDI, clamping to register
+        currentMidi = Math.max(48, Math.min(72, currentMidi + finalInterval));
+
+        // Velocity: accent on strong beats, learned register influence
+        const isStrongBeat = step % 4 === 0;
+        const baseVel = isStrongBeat ? 0.75 : 0.5;
+        const vel = Math.max(0.2, Math.min(0.95, baseVel + (this.rng.next() - 0.5) * 0.15));
+        notes.push({ step, voice: 'lead', midi: currentMidi, velocity: vel });
+      }
+    }
+
+    // F18: Phrase-end cadence — resolve toward root
+    if (barInPhrase === 7) {
+      const rootMidi = degreeToMidi(ctx.rootPc, ctx.scale, 0, leadOctave);
+      const lastNote = notes[notes.length - 1];
+      if (lastNote && lastNote.voice === 'lead') {
+        // Walk toward root in last 2 steps
+        notes.push({ step: 14, voice: 'lead', midi: Math.max(48, Math.min(72, rootMidi + 2)), velocity: 0.5 });
+        notes.push({ step: 15, voice: 'lead', midi: rootMidi, velocity: 0.6 });
       }
     }
   }
