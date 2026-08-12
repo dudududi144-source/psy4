@@ -6560,3 +6560,140 @@ ROOT-CAUSE ANALYSIS (evolve vs loop):
 VERDICT: EVOLVES (technically) but only in the lead/motif/velocity layers. The groove layer (kick+bass+hat) is a decorated static loop. A listener would perceive the music as "the same groove with varying lead noodles on top" rather than "evolving composition".
 
 No code was modified. No files were written except /tmp/f16-256bar-audit.ts (test script) and this worklog entry.
+
+---
+Task ID: F19-AUDIT
+Agent: Forensic Audit (Explore sub-agent)
+Task: Deep audit of PSY4 learning pipeline — what's missing for F19?
+HEAD: 0ffb543 (F18). RESEARCH ONLY — no code modified.
+
+Work Log:
+- Read worklog tail (F16-AUDIT summary), F18.0_FORENSIC.md (30 Q&A + gap table) for context.
+- Read full source: MusicalSession.ts (1049 lines, all), LearnedGrammar.ts (340, all), MusicalObservation.ts (287, all), MusicalMemory.ts (303, all), psyLive.ts:730-820 + 1020-1120.
+- Read research docs: MUSICAL_GRAMMAR.md (184 lines), PSY3_PRODUCTION_KNOWLEDGE.md (85 lines), ARCHITECTURE_SIGNAL_FLOW.md (1-120).
+- Grep verification: searched for `ContinuousMusicalState|MusicalContinuityState` (only in F18 audit doc, not code), `localStorage|serialize|persist` (0 hits in foundation/music), `candidate|scored` (only in MusicalMemory.pickMotif for existing motifs), `grammar.reward|grammar.usageCount` (reward+usageCount fields exist on all 4 grammar types but NEVER updated — only initialized to 0.5/0 in LearnedGrammar.ts:219/241/293/326).
+- Verified evaluatePhrase at MusicalSession.ts:998-1010 calls only `memory.recordPhrase` (motif reward). It does NOT call any grammarBuilder method. Grammar confidence/reward are dead fields.
+
+Stage Summary — 10 Q&A WITH CODE EVIDENCE:
+
+Q1: Does a ContinuousMusicalState exist?
+NO. Searched all of foundation/music — no `ContinuousMusicalState`, `MusicalContinuityState`, `phraseState`, `carryForward`, `inheritedFrom`, `lastLeadMidi`, `lastBassMidi`. F18 audit (line 142) PROPOSED building one but it was never built. The closest thing is the per-phrase `phraseMotifs: Map<number, StoredMotif>` cache (MusicalSession.ts:101) — but this is CLEARED at every phrase boundary (line 316: `this.phraseMotifs.clear()`). The grammarBuilder persists across phrases (F17.8 fix, line 314 comment), but no continuous melodic/harmonic/rhythmic state is carried forward.
+
+Q2: Are relational features (bass↔kick, lead↔bass) extracted or stored?
+NO. Verified by reading MusicalObservation.ts in full:
+- PhraseMusicalFeatures (lines 34-83) has: avgKickDensity, avgBassDensity, avgHatDensity, kickOnsetPattern (16 steps), melodicActivity, melodicRegister, melodicContour (direction array). All SCALAR per-voice — no cross-voice fields.
+- No `bassKickAlignment`, no `leadBassComplement`, no `bassFollowsKick` flag, no `leadHarmonicRelationToBass`.
+- bassIntervalMovement (line 49) is computed from uniqueBassMidis (line 132) — measures how much BASS pitch changed, but does NOT compare bass timing to kick timing.
+- The only "relational" computation is at LearnedGrammar.ts:194-199: bass rhythmPattern is BUILT FROM kickOnsetPattern. But that's a one-way inheritance (bass copies kick), not a measured relationship.
+- generateLearnedBass (MusicalSession.ts:573-647) does NOT consult kick pattern; it samples from `grammar.rhythmPattern[step]` which was derived from radio's kick onsets. No actual interlock between PSY4's own kick and PSY4's own bass.
+
+Q3: Does phrase N+1 inherit state from phrase N? How exactly?
+PARTIALLY, via motif transform only — NOT via melodic state.
+- MusicalSession.ts:308-320 (handleNewPhrase call): at barInPhrase===0, calls `extractPhraseLearning` (feeds radio ticks to grammarBuilder), clears phraseMotifs + phraseNotes, then calls handleNewPhrase.
+- handleNewPhrase (line 932-971): if motifGroups[groupIdx] is empty, calls `generateMotif()` with a NEW random seed (line 936-938) — NO relationship to previous phrase. If non-empty, calls `transformMotif()` (transpose/invert/fragment/retrograde) on the group's FIRST motif (line 951, 955) or `pickMotif()` (reward-weighted).
+- The ONLY inheritance: the transformed motif is a variation of an earlier motif. But the lead MIDI value, the bass position, the kick pattern — all restart fresh.
+- `currentMidi` in generateLearnedLead (line 881) is RE-INITIALIZED every bar from `degreeToMidi(ctx.rootPc, ctx.scale, currentDegree, leadOctave)`. No carry-over of last bar's final pitch.
+- generateLearnedBass's `currentDegree` (line 581) is reset to 0 every bar.
+- F18 audit (line 137-148) identified this exact problem: "lead generator uses this new random motif — the melody jumps to unrelated material."
+
+Q4: Does the lead generator consume bass relationship data?
+NO. generateLearnedLead (MusicalSession.ts:864-929) signature is `(notes, ctx, grammar, barInPhrase, density)`. It receives ONLY ctx (rootPc, scale, section) and the MelodicGrammar. It does NOT receive:
+- The bass notes scheduled for this bar
+- The bass grammar
+- The kick pattern for this bar
+- Any "complement" or "avoid" relationship
+- The learned TimbreProfile (synthParams applied at psyLive.ts:739 — only to oscillator type/cutoff, not to pitch)
+The generation loop (lines 887-917) samples intervals from `grammar.intervalHistogram` independently of what the bass is doing. Lead and bass are statistically independent at generation time. The lead does NOT know what pitch the bass is on.
+
+Q5: Is there any prediction of "what's coming next"?
+NO. Searched for `predict|forecast|nextLikely|anticipat` in foundation/music — 0 hits in code (only in research doc comments).
+- MelodicGrammar has `intervalHistogram` (a Markov-like distribution) but it's a STATISTICAL MODEL of observed intervals, NOT a predictor of the next phrase's structure.
+- There is no "expected bass movement", no "predicted phrase end", no "anticipated section change".
+- The only forward-looking logic is `calculateLeadDensity` (line 759) which returns 0 for INTRO bars 0-3 — a HARDCODED rule, not a prediction.
+
+Q6: Are multiple candidates generated and scored?
+NO. Searched `candidate` — only references are in handleNewPhrase (lines 947, 962) where `pickMotif` returns ONE motif. The motif IS scored (MusicalMemory.ts:158-181, scored by reward × 0.4 + recency + novelty + usage penalty + random tiebreaker), but:
+- This scores EXISTING stored motifs, not freshly generated candidates.
+- There is no "generate 3 basslines, pick the best" pattern.
+- evaluatePhrase (line 998) computes ONE reward per phrase — post-hoc, not comparative.
+- F18 audit (line 108) flagged this: "No candidate scoring."
+- The motif scoring uses `m.reward * 0.4` where all motifs have reward ≈ 0.5 (initial value, drifts slowly via EMA at MusicalMemory.ts:220). F18 audit (line 111) confirmed: "since all motifs have reward ~0.6, the effect is negligible."
+
+Q7: Does evaluation reward feed back into grammar confidence?
+NO. Verified:
+- evaluatePhrase (MusicalSession.ts:998-1010) computes `reward` and calls ONLY `this.memory.recordPhrase(...)`.
+- recordPhrase (MusicalMemory.ts:211-232) updates `motif.reward` (EMA, line 220) and `motifRewards` map.
+- evaluatePhrase does NOT call any method on grammarBuilder. No `grammarBuilder.observeReward()`, no `grammarBuilder.updateConfidence()`.
+- All 4 grammar types have a `reward` field (LearnedGrammar.ts:33, 52, 75, 102) initialized to 0.5 (lines 219, 241, 293, 326) but NEVER WRITTEN after initialization.
+- All 4 grammar types have a `usageCount` field (lines 31, 51, 74, 101) initialized to 0 but NEVER INCREMENTED. Searched `usageCount++|usageCount =|usageCount+=` in foundation/music — 0 code hits.
+- Confidence (line 212, 237, 288, 317) is `Math.min(1, obs.length / 8)` — based on observation COUNT, not on quality of outcomes. Learning more = higher confidence, regardless of whether what was learned works.
+
+Q8: Is learned knowledge persisted (localStorage/JSON)?
+NO. Searched foundation/music for `localStorage|serialize|deserialize|toJSON|fromJSON|persist` — 0 hits in code.
+- GrammarBuilder.reset() (LearnedGrammar.ts:330-339) wipes everything.
+- MusicalSession.reset() (line 1029) calls grammarBuilder.reset() — wipes all learning.
+- No persistence contracts. PSY3_PRODUCTION_KNOWLEDGE.md (line 32) confirms `learner.py` self-improvement was NOT ported.
+- Knowledge is entirely in-memory, lost on page reload / disconnect + reset.
+
+Q9: What's the lead generator's biggest weakness?
+Three weaknesses, ranked by severity:
+1. NO BASS AWARENESS (Q4). generateLearnedLead (line 864) generates intervals from `intervalHistogram` with zero knowledge of what bass note is currently playing. The lead can land on the same pitch class as the bass (muddying), or on dissonant intervals against the bass (clashing), or fail to outline the harmonic changes the bass is making. The bass moves root→fifth→third→octave (line 497) but the lead never tracks this.
+2. NO PHRASE CONTINUITY (Q3). `currentMidi` is re-initialized every bar from `degreeToMidi(ctx.rootPc, ctx.scale, currentDegree, leadOctave)` (line 881). There is no melodic thread across bars — each bar restarts from a sampled degree. A real melody develops a contour across 4-8 bars; this generator restarts every bar.
+3. NO CANDIDATE GENERATION (Q6). One lead per bar, no quality gate. The lead either plays (sampled from histogram) or rests (density gate). No "generate 3 candidates, score against bass complement + contour coherence + tension fit, pick best". This is the single biggest gap relative to a quality-learning system.
+
+Secondary weaknesses:
+- Velocity band still narrow at line 914: `baseVel ± 0.075` → range 0.425-0.575 for weak beats, 0.675-0.825 for strong. Better than F15's 0.30-0.55 (F16 widened it) but still no dynamic-contour sensitivity.
+- Cadence walk (lines 920-928) is hardcoded to `rootMidi + 2` then `rootMidi`. Not learned.
+- Register decision (line 880) is binary: octave 3 or 4, based on `registerPreference > 0.6`. No middle ground.
+
+Q10: What research doc patterns are NOT yet implemented?
+From MUSICAL_GRAMMAR.md:
+- AABA phrase structure (lines 21-34): doc says "Bar 0-1: A, Bar 2: B (octave higher), Bar 3: A' (return with mutation)". PSY4 uses PHRASE_STRUCTURE=[0,0,1,0,0,1,2,0] (MusicalSession.ts:58) which is AABA-like at phrase level, but per-BAR AABA within a phrase is NOT implemented. generateLearnedLead has no B-section (octave shift, density change at bar % 4 === 2).
+- EvolvingSequence controlled mutation (lines 36-64): "mutate ONE note every 4 bars, motif stays recognizable". PSY4's motif system uses transformMotif (transpose/invert/fragment/retrograde) which transforms the WHOLE motif at phrase boundaries, not one note per bar. No EvolvingSequence port exists in foundation/music (searched — 0 hits).
+- AcidPatternEngine with stored patterns + controlled mutation (lines 91-109): NOT ported. ACID bass (MusicalSession.ts:529-543) is hardcoded 16th notes with random skip, not pattern-based.
+- Tension shapes (arc/rise/fall/wave/plateau, lines 111-123): COMPOSITION_ARC in MusicalContext exists but tensionAt() at phrase level not implemented as continuous shape.
+- Density gating downbeat×1.4 / offbeat×1.15 (lines 125-134): PSY4 uses ad-hoc `isStrongBeat ? 0.75 : 0.5` (line 913), not the doc's ratio.
+- Counter-melody (call/response between lead and counter-lead, lines 174-184): marked "P1 enhancement, not yet implemented". Still not implemented.
+
+From PSY3_PRODUCTION_KNOWLEDGE.md:
+- learner.py self-improvement (line 32): "NOT YET IMPLEMENTED" — confirmed. This is exactly the missing reward→grammar feedback loop (Q7).
+- style_clone.py reference analysis (line 31): "NOT YET IMPLEMENTED" — PSY4 has MusicalObservationExtractor which is similar but does NOT output a clonable profile, only feeds GrammarBuilder internally.
+- Shimmer reverb (line 29): MISSING (out of scope for F19, audio FX issue).
+- Chorus (line 30): MISSING (out of scope for F19).
+
+From ARCHITECTURE_SIGNAL_FLOW.md:
+- Dual engine problem (lines 8-32): PSY4 has Studio (Engine A, offline) and PsyLive (Engine B, browser). The musical learning pipeline ONLY feeds Engine B's MusicalSession. Engine A's Studio class does NOT consume learned grammars. This means learned material cannot be applied to offline renders.
+- 17 inline voice functions in psy4LiveEngine.ts (line 24) — applies to psyLive.ts too. applyLearnedTimbre (psyLive.ts:739-751) only sets 4 params (bassWave, bassCut, leadWave, leadCut). TimbreProfile.synthParams has 8 fields (LearnedGrammar.ts:90-99) — bassSaturation, leadSaturation, hatDecay, hatBrightness are EXTRACTED but NEVER APPLIED. Confirmed dead.
+
+---
+
+## F19 ACTIONABLE GAPS (ranked by impact)
+
+P0 (blocks musical quality):
+1. **ContinuousMusicalState** — carry forward last lead MIDI, last bass degree, current kick pattern, harmonic context (key/scale with hysteresis) across phrase boundaries. Currently every bar/phrase restarts from scratch. [Q1, Q3]
+2. **Lead consumes bass relationship** — generateLearnedLead must receive the bass notes for this bar and constrain intervals to complement (avoid unisons on weak beats, target consonant intervals on strong beats). [Q4, Q9]
+
+P1 (blocks learning from being useful):
+3. **Reward feedback loop to grammar** — evaluatePhrase must call `grammarBuilder.observeReward(reward, whichGrammar)`. Grammar.confidence should be `obs.length / 8 × avgReward`. Currently confidence only grows with observation count, regardless of quality. [Q7]
+4. **Candidate generation + scoring** — generate 3 lead/bass candidates per bar, score each on (bass complement, contour coherence, density fit, novelty), pick best. Eliminates single-shot bad material. [Q6, Q9]
+5. **Relational features extracted** — add to PhraseMusicalFeatures: `bassKickAlignment` (cross-correlation of bass onsets vs kick onsets, 0-1), `leadBassHarmonicRelation` (fraction of lead notes that land on bass chord tones), `leadBassComplement` (fraction of lead notes in gaps between bass notes). These feed new grammar fields. [Q2]
+
+P2 (blocks persistence/reuse):
+6. **Grammar persistence** — serialize GrammarBuilder state to localStorage as JSON. Deserialize on init. Add `grammarVersion` field for forward-compat. Without this, all radio learning is lost on reload. [Q8]
+7. **Prediction model** — add `MelodicGrammar.expectedNextInterval` (Markov first-order on actual observed note-to-note transitions, not the histogram approximation currently built from pitch-class histogram at LearnedGrammar.ts:178-192). Lead generator samples from this for "what's coming next" feel. [Q5, Q10]
+
+P3 (research doc ports):
+8. **EvolvingSequence** — port PSY3's one-note-per-4-bars mutation. Replace wholesale transformMotif at phrase boundaries with gradual evolution. [Q10]
+9. **AABA per-bar within phrase** — at barInPhrase===2, shift lead up an octave and increase density; at barInPhrase===3, return to A with one-note mutation. [Q10]
+10. **Apply all 8 TimbreProfile.synthParams** — bassSaturation, leadSaturation, hatDecay, hatBrightness are extracted but never applied to voices. psyLive.ts:747-750 only sets 4. [Q10]
+
+## VERIFICATION STATUS
+
+- No code modified. No files written except this worklog entry.
+- All file:line citations above verified by direct read of current HEAD (0ffb543) source.
+- F18 audit's "dead code" findings (lead/rhythm/timbre grammars unused) are now PARTIALLY FIXED in F18: generateLearnedLead (line 864) and generateLearnedKick (line 653) now exist and consume their grammars. applyLearnedTimbre (psyLive.ts:739) consumes 4 of 8 synthParams. The remaining gaps are ContinuousState + RelationalFeatures + RewardFeedback + CandidateScoring + Persistence + PredictionModel.
+
+Stage Summary:
+- 10 questions answered with file:line evidence.
+- 10 ranked gaps identified (3 P0, 4 P1, 1 P2, 2 P3).
+- F19 implementation scope recommended: P0 + P1 (5 gaps) — these are the learning pipeline holes. P2-P3 can be F20+.

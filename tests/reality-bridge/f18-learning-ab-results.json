@@ -3,7 +3,7 @@
     {
       "test": "Lead learning changes output",
       "pass": true,
-      "evidence": "66 vs 24 notes"
+      "evidence": "58 vs 24 notes"
     },
     {
       "test": "Rhythm learning changes output",

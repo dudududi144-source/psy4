@@ -4,7 +4,7 @@
   "learnedCount": 4,
   "hasBassGrammar": true,
   "bassA": {
-    "count": 371,
+    "count": 364,
     "uniqueMidis": 4,
     "midis": [
       45,
@@ -23,8 +23,8 @@
       57
     ]
   },
-  "bassStepDiff": 152,
-  "totalA": 911,
+  "bassStepDiff": 147,
+  "totalA": 900,
   "totalB": 568,
   "kickPatternsA": 27,
   "kickPatternsB": 3,

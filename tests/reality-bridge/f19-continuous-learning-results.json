@@ -1,0 +1,35 @@
+{
+  "results": [
+    {
+      "test": "Candidate generation",
+      "pass": true,
+      "evidence": "5 candidates, best=0.644"
+    },
+    {
+      "test": "Phrase continuity (lead inherits from previous)",
+      "pass": true,
+      "evidence": "3/3 transitions within octave"
+    },
+    {
+      "test": "Bass↔Lead register separation",
+      "pass": true,
+      "evidence": "13.5 semitones avg"
+    },
+    {
+      "test": "512-bar continuity",
+      "pass": true,
+      "evidence": "10082 events, 512/512 bars"
+    },
+    {
+      "test": "No copying (novelty preserved)",
+      "pass": true,
+      "evidence": "max repeat=6, unique pitches=14"
+    },
+    {
+      "test": "ContinuousMusicalState populated",
+      "pass": true,
+      "evidence": "lead=64, bass=57, sep=16.9"
+    }
+  ],
+  "verdict": "PASS"
+}

@@ -20,6 +20,8 @@ import { type MotifNote, generateMotif, transpose, invert, fragment, retrograde 
 import { Rng } from './primitives/rng';
 import { MusicalObservationExtractor, extractSpectralFeatures, type RadioTickFeatures, type PhraseMusicalFeatures } from './MusicalObservation';
 import { GrammarBuilder, type BassGrammar, type RhythmGrammar, type MelodicGrammar, type TimbreProfile } from './LearnedGrammar';
+import { StateManager, type ContinuousMusicalState } from './ContinuousMusicalState';
+import { CandidateGenerator, type LeadCandidate } from './CandidateGenerator';
 
 export interface ScheduledNote {
   readonly step: number;
@@ -95,6 +97,11 @@ export class MusicalSession {
   private observationExtractor: MusicalObservationExtractor;
   private grammarBuilder: GrammarBuilder;
   private lastPhraseExtracted: number = -1;
+  // F19: Continuous musical state + candidate generation
+  private stateManager: StateManager;
+  private candidateGenerator: CandidateGenerator;
+  private lastSelectedCandidate: LeadCandidate | null = null;
+  private lastCandidateScores: number[] = [];
 
   private currentPlan: NotePlan | null = null;
   private currentMotif: StoredMotif | null = null;
@@ -120,6 +127,8 @@ export class MusicalSession {
     this.rng = new Rng(seed + 1);
     this.observationExtractor = new MusicalObservationExtractor();
     this.grammarBuilder = new GrammarBuilder();
+    this.stateManager = new StateManager();
+    this.candidateGenerator = new CandidateGenerator(seed + 100);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -245,6 +254,14 @@ export class MusicalSession {
       bassFreq: tick.bassFreq ?? undefined,
       confidence: tick.pitchConfidence,
     });
+
+    // F19.1: Update continuous musical state from tick
+    this.stateManager.updateFromTick({
+      bpm: tick.radioBpm,
+      energy: tick.energy,
+      radioConfidence: tick.pitchConfidence,
+      radioActive: true,
+    });
   }
 
   // F17.3 — Extract phrase features and feed to grammar builder.
@@ -268,6 +285,12 @@ export class MusicalSession {
   getLearnedTimbreProfile(): TimbreProfile | null { return this.grammarBuilder.getTimbreProfile(); }
   hasLearnedFromRadio(): boolean { return this.grammarBuilder.hasLearned(); }
   getLearnedPhraseCount(): number { return this.grammarBuilder.getLearnedCount(); }
+
+  // F19: Continuous musical state + candidate generation accessors
+  getContinuousMusicalState(): ContinuousMusicalState { return this.stateManager.getState(); }
+  getLastCandidateScores(): number[] { return this.lastCandidateScores; }
+  getLastSelectedCandidateScore(): number { return this.lastSelectedCandidate?.totalScore ?? 0; }
+  getRelationalContext() { return this.stateManager.getRelationalContext(); }
 
   planBar(bar: number, transportBpm: number): NotePlan {
     // F16: Track cycle for groove evolution
@@ -370,6 +393,28 @@ export class MusicalSession {
 
     this.phraseNotes.push(...notes);
     if (barInPhrase === 7) this.evaluatePhrase(bar, snap, action);
+
+    // F19.1: Update continuous musical state from the bar's notes
+    this.stateManager.updateFromBar(
+      notes.map(n => ({ voice: n.voice, midi: n.midi, step: n.step })),
+      bar,
+    );
+    // F19.1: Update learned grammar availability in state
+    this.stateManager.updateLearnedState({
+      bass: this.getLearnedBassGrammar(),
+      rhythm: this.getLearnedRhythmGrammar(),
+      melodic: this.getLearnedMelodicGrammar(),
+      timbre: this.getLearnedTimbreProfile(),
+      phraseCount: this.getLearnedPhraseCount(),
+    });
+    // F19.3: At phrase boundary, update phrase continuity state
+    if (barInPhrase === 0) {
+      this.stateManager.updateFromPhrase(
+        Math.floor(bar / 8),
+        this.phraseNotes.map(n => ({ voice: n.voice, midi: n.midi, step: n.step })),
+        notes.some(n => n.voice === 'lead') ? 'LEAD' : 'GROOVE',
+      );
+    }
 
     const plan: NotePlan = {
       bar, notes: Object.freeze(notes) as readonly ScheduledNote[],
@@ -856,75 +901,41 @@ export class MusicalSession {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // F18.3: LEARNED LEAD GENERATION
-  // Generates new melodies from learned interval distributions.
-  // This is NOT motif transpose — it's sampling from a learned probability
-  // model of intervals, contour, and register.
+  // F19.4: LEARNED LEAD GENERATION WITH CANDIDATE SCORING
+  // Generates multiple candidates, scores them against the continuous musical
+  // state, and selects the best. This is NOT random — it's evaluative.
   // ═══════════════════════════════════════════════════════════════════════
   private generateLearnedLead(
     notes: ScheduledNote[], ctx: MusicalContextSnapshot, grammar: MelodicGrammar,
     barInPhrase: number, density: number,
   ): void {
-    const section = ctx.sectionName;
-    // F18: Start from a scale degree based on learned preference
-    const degreePrefs = grammar.degreePreference;
-    let currentDegree = 0;
+    const state = this.stateManager.getState();
 
-    // Sample initial degree from preference distribution
-    let r = this.rng.next();
-    for (let d = 0; d < degreePrefs.length; d++) {
-      r -= degreePrefs[d];
-      if (r <= 0) { currentDegree = d; break; }
+    // F19.6: Generate 5 candidates with different characteristics
+    const candidates = this.candidateGenerator.generateCandidates(
+      grammar,
+      { rootPc: ctx.rootPc, scale: ctx.scale, section: ctx.sectionName, tension: ctx.tension, energy: ctx.energy },
+      state,
+      barInPhrase,
+      density,
+      5,
+    );
+
+    // F19.7: Select best candidate by total score
+    const best = this.candidateGenerator.selectBest(candidates);
+    this.lastSelectedCandidate = best;
+    this.lastCandidateScores = candidates.map(c => c.totalScore);
+
+    // F19.3: Emit the selected candidate's notes — CONTINUOUS from previous phrase
+    for (const n of best.notes) {
+      const isStrongBeat = n.step % 4 === 0;
+      const vel = Math.max(0.2, Math.min(0.95, n.velocity + (this.rng.next() - 0.5) * 0.1));
+      notes.push({ step: n.step, voice: 'lead', midi: n.midi, velocity: vel });
     }
 
-    const leadOctave = 3 + (grammar.registerPreference > 0.6 ? 1 : 0); // higher register if learned
-    let currentMidi = degreeToMidi(ctx.rootPc, ctx.scale, currentDegree, leadOctave);
-
-    // F18: Generate notes using learned interval histogram
-    // The interval histogram has 25 values (indices 0-24, center=12 for 0 semitones)
-    const intervalHist = grammar.intervalHistogram;
-
-    for (let step = 0; step < 16; step++) {
-      // Decide whether to play at this step (density + rest density)
-      const restProb = grammar.restDensity;
-      const playProb = density * (1 - restProb);
-
-      if (this.rng.next() < playProb) {
-        // Sample an interval from the learned histogram
-        let r2 = this.rng.next();
-        let intervalIdx = 12; // default: repeat
-        for (let i = 0; i < intervalHist.length; i++) {
-          r2 -= intervalHist[i];
-          if (r2 <= 0) { intervalIdx = i; break; }
-        }
-        const interval = intervalIdx - 12; // -12 to +12 semitones
-
-        // Apply contour preference (ascending/descending/static)
-        let finalInterval = interval;
-        if (this.rng.next() < grammar.ascendingProb && interval < 0) finalInterval = -interval;
-        if (this.rng.next() < grammar.descendingProb && interval > 0) finalInterval = -interval;
-        if (this.rng.next() < grammar.staticProb) finalInterval = 0;
-
-        // Apply interval to current MIDI, clamping to register
-        currentMidi = Math.max(48, Math.min(72, currentMidi + finalInterval));
-
-        // Velocity: accent on strong beats, learned register influence
-        const isStrongBeat = step % 4 === 0;
-        const baseVel = isStrongBeat ? 0.75 : 0.5;
-        const vel = Math.max(0.2, Math.min(0.95, baseVel + (this.rng.next() - 0.5) * 0.15));
-        notes.push({ step, voice: 'lead', midi: currentMidi, velocity: vel });
-      }
-    }
-
-    // F18: Phrase-end cadence — resolve toward root
-    if (barInPhrase === 7) {
-      const rootMidi = degreeToMidi(ctx.rootPc, ctx.scale, 0, leadOctave);
-      const lastNote = notes[notes.length - 1];
-      if (lastNote && lastNote.voice === 'lead') {
-        // Walk toward root in last 2 steps
-        notes.push({ step: 14, voice: 'lead', midi: Math.max(48, Math.min(72, rootMidi + 2)), velocity: 0.5 });
-        notes.push({ step: 15, voice: 'lead', midi: rootMidi, velocity: 0.6 });
-      }
+    // Update continuous state with the selected lead's last MIDI
+    if (best.notes.length > 0) {
+      this.stateManager.getState().leadLastMidi = best.notes[best.notes.length - 1].midi;
     }
   }
 
@@ -1030,6 +1041,7 @@ export class MusicalSession {
     this.ctx.reset(); this.window.reset(); this.memory.reset();
     this.observationExtractor.reset();
     this.grammarBuilder.reset();
+    this.stateManager.reset();
     this.currentPlan = null; this.currentMotif = null;
     this.phraseMotifs.clear(); this.motifGroups = [[], [], []];
     this.phraseNotes = []; this.learned = false;
