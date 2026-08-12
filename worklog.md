@@ -6169,3 +6169,62 @@ Stage Summary:
 - Safety limiter protects master bus
 - All claims honestly classified
 - Ready for MusicalTransport (next step after push)
+
+---
+Task ID: FOUNDATION-F0-INVENTORY
+Agent: main (Foundation Lab / Systems Factory)
+Task: PSY4 FOUNDATION LAB — Gate F0: Freeze + Reality Baseline + PSY Family Inventory
+
+Work Log:
+- Verified repo state: HEAD=44ce401, origin/main=44ce401, worktree clean, 117/117 tests green, lint clean
+- Read all existing audit reports (REALITY_BRIDGE, REALITY_REPAIR, SIGNAL_TRACE, CAPABILITY_MATRIX)
+- Cloned 6 PSY family repos to /tmp/psy-family-scan: psy, psy3-clean, psy5, forge, PromptForge, nova
+- Launched 4 parallel Explore subagents to deep-scan:
+  * psy (mainline groovebox): 1418-line index.html + 576-line soundBank.js + 22 VM-based tests
+  * psy3-clean + psy5: 1148-line + 416-line grooveboxes with unique features (modal theory, pooled engine)
+  * nova: confirmed NON-AUDIO (AI app builder), 2840 tests but zero audio code
+  * psy4 studio/engine: 70 files / 34,469 lines — 48 DEAD_CODE, 17 VERIFIED_LIBRARY (forensic API routes)
+- Read psy/CROSS_REPO_AUDIT.md and psy/PSY6_ARCHITECTURE.md (216 lines) — critical design documents
+- Cataloged 117 subsystems across 4 audio repos
+- Classified every subsystem: VERIFIED_RUNTIME / VERIFIED_LIBRARY / EXPERIMENTAL / DEAD_CODE / CLAIM_ONLY
+- Assigned action per subsystem: KEEP(6) / PORT(35) / REFACTOR(8) / REBUILD(8) / MERGE(6) / ARCHIVE(18) / DELETE(1)
+- Identified 13 duplication domains, selected single source of truth for each
+- Defined foundation/ directory structure (18 domains: transport, radio, analysis, rhythm, melody, harmony, motifs, patterns, composition, synthesis, fx, mixing, learning, memory, synchronization, shared, testing)
+- Wrote audit-reports/PSY_FAMILY_SYSTEM_INVENTORY.md (complete cross-repo forensic scan)
+
+KEY FINDINGS:
+- psy4 live runtime (psyLive + BeatPLL + MelodyObserver + PatternMutator + RadioStateGate): 117 tests, VERIFIED
+- psy groovebox: 22 tests, M2 song model, motif transforms — best musical design
+- psy5 pooled engine: 6 self-gate tests, worker scheduler, parameter locks — best engine design
+- psy4 studio/engine: 48 files / ~32,000 lines DEAD CODE (never imported by runtime)
+- psy4 forensic pipeline: 15 modules VERIFIED_LIBRARY (reachable via API routes, zero tests)
+- psy4 worklets: 2 files / 3,060 lines real AudioWorklet implementations, never loaded
+- psy3-clean: superseded by psy, but has unique generative pattern functions worth porting
+- forge/PromptForge/nova: NON-AUDIO, out of scope
+
+DUPLICATION RESOLUTION (sources of truth selected):
+- Beat tracking → psy4 BeatPLL (48 tests)
+- Pitch detection → psy4 MelodyObserver YIN (13 tests)
+- Pattern mutation → psy4 PatternMutator (200-cycle test)
+- Sound bank → psy4 SoundBank (142 presets) + merge psy(119) + psy5(51)
+- Voice pooling → psy4 PooledEngine (6 tests + stress) + psy5 larger pools
+- Scheduler design → psy PSY6_ARCHITECTURE.md Transport API + psy5 worker pattern
+- Song model → psy M2 buildSong (5 tests)
+- Motif transforms → psy transposeDegree/invert/retrograde (pure, tested)
+- Modal theory → psy SCALES + stableDegrees
+- Chords → psy4 harmonyEngine (11 chord types, voice leading)
+- Key detection → psy4 musicalUnderstanding (Krumhansl-Schmuckler)
+- FX chain → psy delay/reverb/drive/comp/duck
+- Isomorphic DSP → psy4 forensic/dsp.ts (polyBLEP, Moog ladder)
+- Forensic testing → psy4 forensic pipeline (15 modules)
+- PRNG → psy4 forensic/prng.ts (mulberry32, cleanest)
+
+ESTIMATED FOUNDATION TARGET:
+- ~48,000 lines scanned → ~18,000 lines after consolidation (60% reduction)
+- 18 domain directories planned
+- Each domain built in its own Gate (F1-F8)
+
+Stage Summary:
+- Gate F0 COMPLETE: inventory written, no code written, no features added
+- Ready for Gate F1 (MusicalTransport) after commit + push
+- Foundation blueprint: follow psy/PSY6_ARCHITECTURE.md as the primary design document
