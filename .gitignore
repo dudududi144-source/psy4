@@ -52,3 +52,4 @@ upload/
 # Cloudflare Pages build output
 .vercel/
 .wrangler/
+tool-results/
