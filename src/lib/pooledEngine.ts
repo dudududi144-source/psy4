@@ -371,6 +371,8 @@ export class PooledEngine {
   drumPool: DrumVoice[] = [];
   synthIdx = 0;
   drumIdx = 0;
+  activeCount = 0;
+  maxActiveCount = 0;
 
   constructor(ctx: AudioContext) {
     this.ctx = ctx;
@@ -454,6 +456,9 @@ export class PooledEngine {
     }
     this.synthIdx = (this.synthIdx + 1) % this.synthPool.length;
     voice.noteOn(preset, freq, when, vel, stepDur);
+    // Report active count for UI
+    this.activeCount = this.synthPool.filter(v => v.active).length + this.drumPool.filter(v => v.active).length;
+    if (this.activeCount > this.maxActiveCount) this.maxActiveCount = this.activeCount;
   }
 
   // Trigger a drum preset (round-robin allocation)
@@ -469,6 +474,9 @@ export class PooledEngine {
     }
     this.drumIdx = (this.drumIdx + 1) % this.drumPool.length;
     voice.hit(preset, when, vel);
+    // Report active count for UI
+    this.activeCount = this.synthPool.filter(v => v.active).length + this.drumPool.filter(v => v.active).length;
+    if (this.activeCount > this.maxActiveCount) this.maxActiveCount = this.activeCount;
   }
 
   killAll(): void {

@@ -321,8 +321,8 @@ export class PsyLive {
       compositionMode: this.compositionMode,
       composition: this.composition,
       deviceId: this.deviceId,
-      activeNodes: this.activeNodes,
-      maxNodes: this.maxActiveNodes,
+      activeNodes: this.pooled?.activeCount ?? this.activeNodes,
+      maxNodes: this.pooled?.maxActiveCount ?? this.maxActiveNodes,
       songSection: this.songSection,
       songBar: this.songBar,
       bassFreq: this.radioBassFreq,
@@ -379,9 +379,9 @@ export class PsyLive {
 
     // Initialize PooledEngine (plays sound bank presets)
     this.pooled = new PooledEngine(this.ctx);
-    // Connect pooled engine output to analyser (so we see its levels)
+    // Connect pooled engine output through masterGain (so volume slider works)
     this.pooled.master.connect(this.analyser);
-    this.pooled.master.connect(this.masterLimiter);
+    this.pooled.master.connect(this.masterGain);
     // Auto-select presets from bank
     this.selectBankPresets();
 
