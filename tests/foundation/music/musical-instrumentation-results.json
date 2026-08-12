@@ -1,19 +1,19 @@
 {
   "bpm": 145,
   "bars": 64,
-  "totalEvents": 1243,
-  "kickEvents": 317,
-  "bassEvents": 520,
-  "hatEvents": 320,
-  "leadEvents": 86,
+  "totalEvents": 1148,
+  "kickEvents": 318,
+  "bassEvents": 422,
+  "hatEvents": 335,
+  "leadEvents": 73,
   "introLeadEvents": 2,
   "leadStartBar": 6,
   "silentKickBars": 0,
   "bassMidiRange": [
-    45,
+    44,
     57
   ],
-  "leadMaxMidi": 69,
+  "leadMaxMidi": 72,
   "styleHatCounts": {
     "fullOn": 33,
     "dark": 17,
@@ -25,8 +25,8 @@
     "dark": 34
   },
   "sectionLeadCounts": {
-    "climax": 20,
-    "resolution": 7
+    "climax": 14,
+    "resolution": 8
   },
   "gates": {
     "kick present (>0 events)": true,

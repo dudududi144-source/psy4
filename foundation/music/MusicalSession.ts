@@ -22,6 +22,7 @@ import { MusicalObservationExtractor, extractSpectralFeatures, type RadioTickFea
 import { GrammarBuilder, type BassGrammar, type RhythmGrammar, type MelodicGrammar, type TimbreProfile } from './LearnedGrammar';
 import { StateManager, type ContinuousMusicalState } from './ContinuousMusicalState';
 import { CandidateGenerator, type LeadCandidate } from './CandidateGenerator';
+import { StrategySelector, type StrategySet, type BassStrategyType, type LeadStrategyType, type GrooveStrategyType } from './MusicalStrategies';
 
 export interface ScheduledNote {
   readonly step: number;
@@ -102,6 +103,10 @@ export class MusicalSession {
   private candidateGenerator: CandidateGenerator;
   private lastSelectedCandidate: LeadCandidate | null = null;
   private lastCandidateScores: number[] = [];
+  // F20: Musical strategy engine
+  private strategySelector: StrategySelector;
+  private currentStrategies: StrategySet | null = null;
+  private strategyHistory: StrategySet[] = [];
 
   private currentPlan: NotePlan | null = null;
   private currentMotif: StoredMotif | null = null;
@@ -129,6 +134,7 @@ export class MusicalSession {
     this.grammarBuilder = new GrammarBuilder();
     this.stateManager = new StateManager();
     this.candidateGenerator = new CandidateGenerator(seed + 100);
+    this.strategySelector = new StrategySelector(seed + 200);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -291,6 +297,10 @@ export class MusicalSession {
   getLastCandidateScores(): number[] { return this.lastCandidateScores; }
   getLastSelectedCandidateScore(): number { return this.lastSelectedCandidate?.totalScore ?? 0; }
   getRelationalContext() { return this.stateManager.getRelationalContext(); }
+  // F20: Strategy engine accessors
+  getCurrentStrategies(): StrategySet | null { return this.currentStrategies; }
+  getStrategyHistory(): StrategySet[] { return this.strategyHistory; }
+  getStrategyWeights() { return this.strategySelector.getWeights(); }
 
   planBar(bar: number, transportBpm: number): NotePlan {
     // F16: Track cycle for groove evolution
@@ -341,6 +351,20 @@ export class MusicalSession {
       this.phraseStartBar = bar;
       this.handleNewPhrase(snap, bar);
     }
+
+    // F20.1: Select musical strategies for this bar
+    this.currentStrategies = this.strategySelector.selectStrategies({
+      section: snap.sectionName,
+      energy: snap.energy,
+      tension: snap.tension,
+      style: this.style,
+      learnedPhraseCount: this.getLearnedPhraseCount(),
+      isBreak: arrangementOverride === 'BREAK',
+      isBuild: arrangementOverride === 'BUILD',
+      isDrop: arrangementOverride === 'DROP',
+    });
+    this.strategyHistory.push(this.currentStrategies);
+    if (this.strategyHistory.length > 32) this.strategyHistory.shift();
 
     let motif = this.currentMotif!;
     if ((action === 'develop' || action === 'transform' || action === 'variation') && !this.phraseMotifs.has(barInPhrase)) {
@@ -515,7 +539,15 @@ export class MusicalSession {
     const section = ctx.sectionName;
     const humanize = (v: number, jitter: number) => Math.max(0.1, Math.min(1, v + (this.rng.next() - 0.5) * jitter));
 
-    // F17.4: LEARNED BASS GRAMMAR — if we have learned from radio, generate
+    // F20.1: STRATEGY-BASED BASS — if we have a selected strategy, generate
+    // using that strategy's behavioral pattern. This produces fundamentally
+    // different basslines, not just parameter variations.
+    if (this.currentStrategies && section !== 'INTRO') {
+      this.generateStrategicBass(notes, ctx, this.currentStrategies.bass, root, fifth, third, octaveUp, humanize, barInPhrase);
+      return;
+    }
+
+    // F17.4: LEARNED BASS GRAMMAR — fallback if no strategy selected
     // bass from the learned interval transitions + rhythm pattern instead
     // of hardcoded beatDegrees. This produces material that REFLECTS what
     // the radio taught, without copying melodies.
@@ -687,6 +719,121 @@ export class MusicalSession {
         notes.push({ step: 12, voice: 'bass', midi: root, velocity: humanize(0.85, 0.05) });
         notes.push({ step: 14, voice: 'bass', midi: fifth, velocity: humanize(0.7, 0.06) });
         notes.push({ step: 15, voice: 'bass', midi: octaveUp, velocity: humanize(0.6, 0.08) });
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // F20.1: STRATEGIC BASS GENERATION
+  // Each strategy produces a fundamentally different bassline behavior.
+  // This is NOT parameter variation — different strategies have different
+  // rhythmic patterns, note choices, and relationships to the groove.
+  // ═══════════════════════════════════════════════════════════════════════
+  private generateStrategicBass(
+    notes: ScheduledNote[], ctx: MusicalContextSnapshot, strategy: BassStrategyType,
+    root: number, fifth: number, third: number, octaveUp: number,
+    humanize: (v: number, j: number) => number, barInPhrase: number,
+  ): void {
+    const section = ctx.sectionName;
+    const state = this.stateManager.getState();
+
+    switch (strategy) {
+      case 'rolling': {
+        // F20: 16th-note rolling bass — the classic psytrance bass
+        for (let step = 0; step < 16; step++) {
+          const isDownbeat = step % 4 === 0;
+          const midi = isDownbeat ? root : (step % 8 === 4 ? fifth : root);
+          const vel = isDownbeat ? 0.9 : 0.55;
+          notes.push({ step, voice: 'bass', midi, velocity: humanize(vel, 0.06) });
+        }
+        break;
+      }
+      case 'syncopated': {
+        // F20: Offbeat-focused bass — spacey, leaves holes on downbeats
+        for (let step = 2; step < 16; step += 4) {
+          notes.push({ step, voice: 'bass', midi: root, velocity: humanize(0.85, 0.05) });
+          notes.push({ step: step + 1, voice: 'bass', midi: fifth, velocity: humanize(0.6, 0.06) });
+        }
+        // Add a low root on beat 1 for anchor
+        notes.push({ step: 0, voice: 'bass', midi: root, velocity: humanize(0.9, 0.05) });
+        break;
+      }
+      case 'driving': {
+        // F20: 8th-note relentless bass — no offbeats, pure drive
+        for (let beat = 0; beat < 4; beat++) {
+          const midi = beat === 2 ? fifth : root;
+          notes.push({ step: beat * 4, voice: 'bass', midi, velocity: humanize(0.9, 0.04) });
+        }
+        break;
+      }
+      case 'sparse': {
+        // F20: Minimal hypnotic bass — only beats 0 and 8
+        notes.push({ step: 0, voice: 'bass', midi: root, velocity: humanize(0.9, 0.05) });
+        notes.push({ step: 8, voice: 'bass', midi: fifth, velocity: humanize(0.75, 0.06) });
+        if (section === 'CLIMAX' && this.rng.next() < 0.4) {
+          notes.push({ step: 12, voice: 'bass', midi: root, velocity: humanize(0.6, 0.08) });
+        }
+        break;
+      }
+      case 'acid': {
+        // F20: 303-style bass — chromatic approaches, filter sweep implied
+        const degrees = [0, 0, 1, 0, 0, -1, 0, 3]; // chromatic approach pattern
+        for (let beat = 0; beat < 4; beat++) {
+          const deg = degrees[beat % degrees.length];
+          const midi = degreeToMidi(ctx.rootPc, ctx.scale, deg, 2);
+          notes.push({ step: beat * 4, voice: 'bass', midi, velocity: humanize(0.85, 0.06) });
+          // Add 16th between beats for squelch
+          if (this.rng.next() < 0.5) {
+            notes.push({ step: beat * 4 + 2, voice: 'bass', midi, velocity: humanize(0.5, 0.08) });
+          }
+        }
+        break;
+      }
+      case 'melodic': {
+        // F20: Walking bass — harmonic movement
+        const walkDegrees = [0, 4, 2, 7]; // root → fifth → third → octave
+        for (let beat = 0; beat < 4; beat++) {
+          const deg = walkDegrees[beat];
+          const midi = degreeToMidi(ctx.rootPc, ctx.scale, deg, 2);
+          notes.push({ step: beat * 4, voice: 'bass', midi, velocity: humanize(0.85, 0.05) });
+        }
+        break;
+      }
+      case 'tension': {
+        // F20: Chromatic tension bass — approaches root from below
+        for (let beat = 0; beat < 4; beat++) {
+          const approachMidi = beat < 3 ? root - 1 : root; // chromatic approach then resolve
+          notes.push({ step: beat * 4, voice: 'bass', midi: approachMidi, velocity: humanize(0.8, 0.06) });
+        }
+        break;
+      }
+      case 'octave_jump': {
+        // F20: Octave movement for energy — root then octave up
+        for (let beat = 0; beat < 4; beat++) {
+          const midi = beat % 2 === 0 ? root : octaveUp;
+          notes.push({ step: beat * 4, voice: 'bass', midi, velocity: humanize(0.9, 0.05) });
+        }
+        break;
+      }
+    }
+
+    // F20: Phrase-end walk (shared across strategies)
+    if (barInPhrase === 7) {
+      const existing = notes.filter(n => n.step >= 12 && n.voice === 'bass');
+      for (const n of existing) {
+        const idx = notes.indexOf(n);
+        if (idx >= 0) notes.splice(idx, 1);
+      }
+      notes.push({ step: 12, voice: 'bass', midi: root, velocity: humanize(0.85, 0.05) });
+      notes.push({ step: 14, voice: 'bass', midi: fifth, velocity: humanize(0.7, 0.06) });
+      notes.push({ step: 15, voice: 'bass', midi: octaveUp, velocity: humanize(0.6, 0.08) });
+    }
+
+    // F20.3: Update continuous state with bass's last note
+    if (notes.length > 0) {
+      const lastBass = notes.filter(n => n.voice === 'bass').pop();
+      if (lastBass && lastBass.midi !== null) {
+        state.bassLastMidi = lastBass.midi;
       }
     }
   }
@@ -1008,16 +1155,46 @@ export class MusicalSession {
 
   private evaluatePhrase(bar: number, ctx: MusicalContextSnapshot, action: string): void {
     const notes = this.phraseNotes;
-    const coherence = notes.filter(n => n.voice === 'lead').length > 0 ? 0.5 : 0.3;
+    const leadNotes = notes.filter(n => n.voice === 'lead');
+    const bassNotes = notes.filter(n => n.voice === 'bass');
+    const coherence = leadNotes.length > 0 ? 0.5 : 0.3;
     const densityFit = Math.abs(notes.length / 8 - ctx.density * 10) < 5 ? 0.8 : 0.4;
     const novelty = action === 'develop' || action === 'variation' ? 0.7 : 0.5;
-    const reward = coherence * 0.3 + densityFit * 0.25 + 0.25 + novelty * 0.2;
+
+    // F20.8: Strategy-aware reward — different strategies get different rewards
+    // based on how well they fit the current context.
+    let strategyBonus = 0;
+    if (this.currentStrategies) {
+      // Reward sparse bass during INTRO/RESOLUTION
+      if ((ctx.sectionName === 'INTRO' || ctx.sectionName === 'RESOLUTION') &&
+          this.currentStrategies.bass === 'sparse') strategyBonus += 0.15;
+      // Reward rolling bass during CLIMAX
+      if (ctx.sectionName === 'CLIMAX' &&
+          (this.currentStrategies.bass === 'rolling' || this.currentStrategies.bass === 'driving')) strategyBonus += 0.15;
+      // Reward acid bass during ACID style
+      if (this.style === 'ACID' && this.currentStrategies.bass === 'acid') strategyBonus += 0.1;
+      // Reward atmospheric lead during BREAK
+      if (ctx.sectionName === 'RESOLUTION' && this.currentStrategies.lead === 'atmospheric') strategyBonus += 0.1;
+      // Reward call_response lead when bass is busy
+      if ((this.currentStrategies.bass === 'rolling' || this.currentStrategies.bass === 'driving') &&
+          this.currentStrategies.lead === 'call_response') strategyBonus += 0.1;
+      // Penalize dense lead with sparse bass (mismatch)
+      if (this.currentStrategies.bass === 'sparse' &&
+          (this.currentStrategies.lead === 'rolling_motif' || this.currentStrategies.lead === 'hook')) strategyBonus -= 0.1;
+    }
+
+    const reward = Math.max(0.1, Math.min(0.9, coherence * 0.3 + densityFit * 0.25 + 0.25 + novelty * 0.2 + strategyBonus));
     this.memory.recordPhrase({
       phraseIndex: ctx.phraseIndex, bar: this.phraseStartBar,
       motifId: this.currentMotif?.id ?? 'unknown', transform: action,
       section: ctx.sectionName, tension: ctx.tension, density: ctx.density,
       noteCount: notes.length, restRatio: 0, reward, role: 'LEAD',
     });
+
+    // F20.8: REWARD LOOP — update strategy weights based on phrase reward
+    if (this.currentStrategies) {
+      this.strategySelector.updateWeights(reward, this.currentStrategies);
+    }
   }
 
   getCurrentPlan(): NotePlan | null { return this.currentPlan; }
@@ -1042,6 +1219,9 @@ export class MusicalSession {
     this.observationExtractor.reset();
     this.grammarBuilder.reset();
     this.stateManager.reset();
+    this.strategySelector.reset();
+    this.currentStrategies = null;
+    this.strategyHistory = [];
     this.currentPlan = null; this.currentMotif = null;
     this.phraseMotifs.clear(); this.motifGroups = [[], [], []];
     this.phraseNotes = []; this.learned = false;

@@ -1,0 +1,61 @@
+{
+  "results": [
+    {
+      "test": "Strategy diversity (3+ bass, 3+ lead, 2+ groove)",
+      "pass": true,
+      "evidence": "bass=8, lead=11, groove=6"
+    },
+    {
+      "test": "Different strategies produce different bass",
+      "pass": true,
+      "evidence": "8 strategies, overlap=10.7%"
+    },
+    {
+      "test": "Reward changes strategy weights",
+      "pass": true,
+      "evidence": "weights shifted"
+    },
+    {
+      "test": "512-bar strategy diversity (4+ each)",
+      "pass": true,
+      "evidence": "bass=8, lead=10, events=9837"
+    },
+    {
+      "test": "Lead/bass relational fit (10+ semitone separation)",
+      "pass": true,
+      "evidence": "11.1 semitones avg"
+    }
+  ],
+  "bassStrategies": [
+    "rolling",
+    "driving",
+    "acid",
+    "syncopated",
+    "octave_jump",
+    "tension",
+    "melodic",
+    "sparse"
+  ],
+  "leadStrategies": [
+    "sustained",
+    "call_response",
+    "staccato",
+    "acid",
+    "sparse_motif",
+    "counter_melody",
+    "hook",
+    "descending",
+    "rising",
+    "rolling_motif",
+    "arpeggio"
+  ],
+  "grooveStrategies": [
+    "straight",
+    "dense",
+    "sparse",
+    "rolling",
+    "syncopated",
+    "swung"
+  ],
+  "verdict": "PASS"
+}

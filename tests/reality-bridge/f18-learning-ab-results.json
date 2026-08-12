@@ -3,7 +3,7 @@
     {
       "test": "Lead learning changes output",
       "pass": true,
-      "evidence": "58 vs 24 notes"
+      "evidence": "63 vs 27 notes"
     },
     {
       "test": "Rhythm learning changes output",
@@ -18,7 +18,7 @@
     {
       "test": "256-bar continuity (no resets)",
       "pass": true,
-      "evidence": "5056 events, 256/256 bars with notes"
+      "evidence": "4875 events, 256/256 bars with notes"
     },
     {
       "test": "Learning accumulation builds all grammars",
