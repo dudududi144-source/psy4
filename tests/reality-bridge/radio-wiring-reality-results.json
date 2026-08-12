@@ -1,0 +1,77 @@
+{
+  "results": [
+    {
+      "name": "radioLayer exists after play()",
+      "passed": true,
+      "evidence": "radioLayer = object"
+    },
+    {
+      "name": "initial signalState is DISCONNECTED",
+      "passed": true,
+      "evidence": "signalState = DISCONNECTED"
+    },
+    {
+      "name": "connectRadio() transitions signalState from DISCONNECTED",
+      "passed": true,
+      "evidence": "signalState after connect = CONNECTING (was DISCONNECTED)"
+    },
+    {
+      "name": "connectRadio() called markConnected (state is NO_SIGNAL or beyond)",
+      "passed": true,
+      "evidence": "signalState = CONNECTING"
+    },
+    {
+      "name": "no dead psyLive.pll field (removed)",
+      "passed": true,
+      "evidence": "pll field absent (good)"
+    },
+    {
+      "name": "no dead psyLive.melodyObserver field (removed)",
+      "passed": true,
+      "evidence": "melodyObserver field absent (good)"
+    },
+    {
+      "name": "no dead psyLive.radioGate field (removed)",
+      "passed": true,
+      "evidence": "radioGate field absent (good)"
+    },
+    {
+      "name": "no dead psyLive.transportAdapter field (removed)",
+      "passed": true,
+      "evidence": "transportAdapter field absent (good)"
+    },
+    {
+      "name": "disconnectRadio() resets signalState to DISCONNECTED",
+      "passed": true,
+      "evidence": "signalState after disconnect = DISCONNECTED"
+    },
+    {
+      "name": "syncStatus is holdover after disconnect",
+      "passed": true,
+      "evidence": "syncStatus = holdover"
+    },
+    {
+      "name": "STREAMS has exactly 3 entries (dead URLs removed)",
+      "passed": true,
+      "evidence": "STREAMS.length = 3"
+    },
+    {
+      "name": "no psyndora-prog (dead port 9110)",
+      "passed": true,
+      "evidence": "psyndora-prog absent"
+    },
+    {
+      "name": "no psyndora-chill (dead TLS)",
+      "passed": true,
+      "evidence": "psyndora-chill absent"
+    },
+    {
+      "name": "no radiocaprice-psy (dead DNS)",
+      "passed": true,
+      "evidence": "radiocaprice-psy absent"
+    }
+  ],
+  "passed": 14,
+  "total": 14,
+  "verdict": "PASS"
+}

@@ -1,8 +1,8 @@
 {
-  "runAt": "2026-08-12T19:06:08.470Z",
+  "runAt": "2026-08-12T19:33:47.171Z",
   "durationSec": 600,
   "totalNotes": 5800,
-  "elapsedMs": 146,
+  "elapsedMs": 113,
   "crashed": false,
   "crashError": null,
   "maxActiveCount": 28,

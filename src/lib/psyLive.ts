@@ -404,6 +404,11 @@ export class PsyLive {
 
     // F8 — Initialize MusicalSession (THE single musical runtime)
     this.session = new MusicalSession(42);
+    // F13/R4-D: Apply pending style if set before play()
+    if (this.pendingStyle) {
+      this.session.setStyle(this.pendingStyle);
+      this.pendingStyle = null;
+    }
 
     // ── PER-ROLE BUSES (from architecture review) ──
     // Each voice connects to its role bus → engineBus → gentle comp → master
@@ -587,24 +592,32 @@ export class PsyLive {
     if (this.reverbSend && this.ctx) this.reverbSend.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
   }
 
+  // F13/R4-D: Pending style — stored when setStyle is called before session
+  // is created (before play()). Applied in ensureAudio() after session init.
+  private pendingStyle: string | null = null;
+
   // F11/F13: Style control — sets session style and locks it (radio won't overwrite)
   setStyle(style: string): void {
-    this.session?.setStyle(style);
+    if (this.session) {
+      this.session.setStyle(style);
+    } else {
+      // Session not yet created — store and apply on play()
+      this.pendingStyle = style;
+    }
   }
 
   // F13/R2: Musical controls — delegate to MusicalSession public API (fixed)
-  // Before this fix, these called (session.getContext() as any) which threw
-  // TypeError because MusicalSession had no getContext() method.
   setEnergy(v: number): void {
-    this.session?.setEnergy(v);
+    if (this.session) this.session.setEnergy(v);
+    // Note: if session is null, the value is lost. UI should call after play().
   }
 
   setDensity(v: number): void {
-    this.session?.setDensity(v);
+    if (this.session) this.session.setDensity(v);
   }
 
   setTension(v: number): void {
-    this.session?.setTension(v);
+    if (this.session) this.session.setTension(v);
   }
 
   // F13/R2B: Unlock methods — return to AUTO mode

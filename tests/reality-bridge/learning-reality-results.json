@@ -1,0 +1,27 @@
+{
+  "results": [
+    {
+      "name": "learning influenced selection (getLearningInfluencedCount > 0)",
+      "passed": true,
+      "evidence": "learningInfluencedCount = 1"
+    },
+    {
+      "name": "memory has motifs stored",
+      "passed": true,
+      "evidence": "mediumTermMotifCount = 19"
+    },
+    {
+      "name": "memory has lastReward computed",
+      "passed": true,
+      "evidence": "lastReward = 0.6"
+    },
+    {
+      "name": "motifs have varying rewards (learning discriminates)",
+      "passed": true,
+      "evidence": "unique reward values = 5, rewards = [0.53, 0.45, 0.45, 0.45, 0.45...]"
+    }
+  ],
+  "passed": 4,
+  "total": 4,
+  "verdict": "PASS"
+}

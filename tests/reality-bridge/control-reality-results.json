@@ -1,0 +1,97 @@
+{
+  "results": [
+    {
+      "name": "setEnergy(0.9) sets ctx.energy to 0.9",
+      "passed": true,
+      "evidence": "ctx.energy = 0.9"
+    },
+    {
+      "name": "setDensity(0.8) sets ctx.density to 0.8",
+      "passed": true,
+      "evidence": "ctx.density = 0.8"
+    },
+    {
+      "name": "setTension(0.7) sets ctx.tension to 0.7",
+      "passed": true,
+      "evidence": "ctx.tension = 0.7"
+    },
+    {
+      "name": "setStyle(DARK) sets session.style to DARK",
+      "passed": true,
+      "evidence": "session.style = DARK"
+    },
+    {
+      "name": "user energy (0.9) survives radio observe (radio tried 0.3)",
+      "passed": true,
+      "evidence": "ctx.energy after radio = 0.9 (should stay 0.9)"
+    },
+    {
+      "name": "user density (0.8) survives radio observe",
+      "passed": true,
+      "evidence": "ctx.density after radio = 0.8 (should stay 0.8)"
+    },
+    {
+      "name": "user tension (0.7) survives updateFromTransport (arc tried 0.6)",
+      "passed": true,
+      "evidence": "ctx.tension after transport = 0.7 (should stay 0.7)"
+    },
+    {
+      "name": "user style (DARK) survives radio detectStyle (radio detected FULL_ON)",
+      "passed": true,
+      "evidence": "session.style after radio = DARK (should stay DARK)"
+    },
+    {
+      "name": "after unlockEnergy, radio adaptation changes energy",
+      "passed": true,
+      "evidence": "ctx.energy after unlock + 5 radio observes = 0.2 (should differ from 0.9)"
+    },
+    {
+      "name": "setChannelVolume(kick, 0.5) sets kickBus.gain",
+      "passed": true,
+      "evidence": "kickBus.gain = 0.5"
+    },
+    {
+      "name": "user kickBus.gain (0.5) survives ducking",
+      "passed": true,
+      "evidence": "kickBus.gain = 0.5 (should stay ~0.5)"
+    },
+    {
+      "name": "duck gain changes (0.1) instead of bus gain",
+      "passed": true,
+      "evidence": "kickDuck.gain = 0.1 (should be ~0.1)"
+    },
+    {
+      "name": "setChannelMute(bass, true) mutes bass",
+      "passed": true,
+      "evidence": "bassMute.gain = 0"
+    },
+    {
+      "name": "setChannelMute(bass, false) unmutes",
+      "passed": true,
+      "evidence": "bassMute.gain = 1"
+    },
+    {
+      "name": "solo(kick) mutes bass",
+      "passed": true,
+      "evidence": "bassMute.gain = 0"
+    },
+    {
+      "name": "solo(kick) keeps kick audible",
+      "passed": true,
+      "evidence": "kickMute.gain = 1"
+    },
+    {
+      "name": "solo(null) restores bass",
+      "passed": true,
+      "evidence": "bassMute.gain = 1"
+    },
+    {
+      "name": "bassFreq=110 (A2) sets rootPc to 9 (A)",
+      "passed": true,
+      "evidence": "rootPc = 9 (should be 9)"
+    }
+  ],
+  "passed": 18,
+  "total": 18,
+  "verdict": "PASS"
+}
