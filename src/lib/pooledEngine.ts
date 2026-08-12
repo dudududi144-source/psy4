@@ -15,6 +15,29 @@ import { type SoundPreset } from './soundBank';
 const MAX_SYNTH_VOICES = 16;
 const MAX_DRUM_VOICES = 12;
 
+// Tanh saturation curve — makes digital sound warm/analog (from nexus-psy7)
+function makeTanhCurve(amount: number): Float32Array {
+  const n = 1024;
+  const curve = new Float32Array(n);
+  const k = amount;
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    curve[i] = ((1 + k) * x) / (1 + k * Math.abs(x));
+  }
+  return curve;
+}
+
+// Per-track EQ settings (from nexus-psy7)
+const TRACK_EQ: Record<string, { low: number; mid: number; high: number }> = {
+  kick:  { low: 3,  mid: 0,  high: 2 },
+  bass:  { low: 4,  mid: -2, high: -3 },
+  lead:  { low: -3, mid: 2,  high: 3 },
+  hat:   { low: -12, mid: -3, high: 4 },
+  pad:   { low: 0,  mid: 0,  high: 2 },
+  pluck: { low: -2, mid: 2,  high: 3 },
+  arp:   { low: -3, mid: 2,  high: 3 },
+};
+
 // ─── SynthVoice: plays SYNTH/FM presets with full parameter control ───────
 export class SynthVoice {
   osc1: OscillatorNode;
@@ -22,6 +45,10 @@ export class SynthVoice {
   g1: GainNode;
   g2: GainNode;
   filter: BiquadFilterNode;
+  saturation: WaveShaperNode;  // NEW: tanh waveshaper for warm analog sound
+  eqLow: BiquadFilterNode;      // NEW: per-voice low shelf EQ
+  eqMid: BiquadFilterNode;      // NEW: per-voice mid peak EQ
+  eqHigh: BiquadFilterNode;     // NEW: per-voice high shelf EQ
   vca: GainNode;
   lfo: OscillatorNode;
   lfoGain: GainNode;
@@ -37,6 +64,12 @@ export class SynthVoice {
     this.g1 = ctx.createGain();
     this.g2 = ctx.createGain();
     this.filter = ctx.createBiquadFilter();
+    this.saturation = ctx.createWaveShaper();
+    this.saturation.curve = makeTanhCurve(2.5);
+    this.saturation.oversample = '2x';
+    this.eqLow = ctx.createBiquadFilter();
+    this.eqMid = ctx.createBiquadFilter();
+    this.eqHigh = ctx.createBiquadFilter();
     this.vca = ctx.createGain();
     this.lfo = ctx.createOscillator();
     this.lfoGain = ctx.createGain();
@@ -50,11 +83,21 @@ export class SynthVoice {
     this.delaySend.gain.value = 0;
     this.reverbSend.gain.value = 0;
 
+    // EQ defaults (transparent)
+    this.eqLow.type = 'lowshelf'; this.eqLow.frequency.value = 150; this.eqLow.gain.value = 0;
+    this.eqMid.type = 'peaking'; this.eqMid.frequency.value = 800; this.eqMid.Q.value = 1; this.eqMid.gain.value = 0;
+    this.eqHigh.type = 'highshelf'; this.eqHigh.frequency.value = 5000; this.eqHigh.gain.value = 0;
+
     this.osc1.connect(this.g1);
     this.osc2.connect(this.g2);
     this.g1.connect(this.filter);
     this.g2.connect(this.filter);
-    this.filter.connect(this.vca);
+    // NEW CHAIN: filter → saturation → EQ → VCA (was: filter → VCA)
+    this.filter.connect(this.saturation);
+    this.saturation.connect(this.eqLow);
+    this.eqLow.connect(this.eqMid);
+    this.eqMid.connect(this.eqHigh);
+    this.eqHigh.connect(this.vca);
     this.lfo.connect(this.lfoGain);
     this.lfoGain.connect(this.filter.frequency);
     this.vca.connect(dest);
@@ -74,6 +117,14 @@ export class SynthVoice {
     const dur = stepDur * gate * 2;
     const rel = Math.max(p.rel ?? 0.15, 0.02);
     const end = when + dur;
+
+    // Apply per-track EQ based on preset category (from nexus-psy7)
+    const eqSettings = TRACK_EQ[p.cat];
+    if (eqSettings) {
+      this.eqLow.gain.setValueAtTime(eqSettings.low, when);
+      this.eqMid.gain.setValueAtTime(eqSettings.mid, when);
+      this.eqHigh.gain.setValueAtTime(eqSettings.high, when);
+    }
 
     // Oscillators — detuned dual osc (psy approach: 9 cents default if not specified)
     this.osc1.type = p.wave1 ?? 'sawtooth';
