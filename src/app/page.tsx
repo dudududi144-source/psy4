@@ -24,6 +24,7 @@ export default function Page() {
     learned: null, sidechainActive: false, harmonicLocked: false,
     radioRms: 0, radioBands: { low: 0, mid: 0, high: 0 },
     compositionMode: false,
+    occupancy: { kick: 0, bass: 0, lead: 0, hats: 0 },
   });
   const [streamId, setStreamId] = useState('psyndora');
   const [radioVol, setRadioVol] = useState(0.5);

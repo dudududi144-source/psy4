@@ -130,6 +130,8 @@ export interface LiveState {
   radioRms: number;
   radioBands: { low: number; mid: number; high: number };
   compositionMode: boolean;
+  // Occupancy (from architecture review)
+  occupancy: { kick: number; bass: number; lead: number; hats: number };
 }
 
 // ─── Engine (EXACTLY like psy — simple, direct, working) ──────────────────
@@ -167,6 +169,20 @@ export class PsyLive {
   private harmonicLocked = false;
   private compositionMode = false;
   private composition: Composition | null = null;
+
+  // ── OCCUPANCY (the key insight from architecture review) ──
+  // Instead of "radio loud/quiet", we track WHICH ROLES the radio fills
+  private occupancy = { kick: 0, bass: 0, lead: 0, hats: 0 };
+  // Per-role buses (so we can control each independently)
+  private kickBus: GainNode | null = null;
+  private bassBus: GainNode | null = null;
+  private leadBus: GainNode | null = null;
+  private hatBus: GainNode | null = null;
+  private engineBus: GainNode | null = null;
+  // Energy history for relative energy (not absolute)
+  private energyHistory: number[] = [];
+  // Compressor reduction monitoring
+  private comp: DynamicsCompressorNode | null = null;
 
   // Scheduler (like psy — 25ms lookahead, 150ms schedule ahead)
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -237,6 +253,7 @@ export class PsyLive {
       radioRms: this.radioRms,
       radioBands: this.radioBands,
       compositionMode: this.compositionMode,
+      occupancy: this.occupancy,
     });
   }
 
@@ -273,34 +290,60 @@ export class PsyLive {
 
     // Load learning
     this.learningData = loadLearning();
+
+    // ── PER-ROLE BUSES (from architecture review) ──
+    // Each voice connects to its role bus → engineBus → gentle comp → master
+    this.kickBus = this.ctx.createGain(); this.kickBus.gain.value = 0.9;
+    this.bassBus = this.ctx.createGain(); this.bassBus.gain.value = 0.85;
+    this.leadBus = this.ctx.createGain(); this.leadBus.gain.value = 0.7;
+    this.hatBus = this.ctx.createGain(); this.hatBus.gain.value = 0.6;
+    
+    this.engineBus = this.ctx.createGain();
+    this.engineBus.gain.value = 0.8;
+
+    // Gentle compressor on engine bus only (not on radio)
+    this.comp = this.ctx.createDynamicsCompressor();
+    this.comp.threshold.value = -18;
+    this.comp.knee.value = 18;
+    this.comp.ratio.value = 2;
+    this.comp.attack.value = 0.015;
+    this.comp.release.value = 0.12;
+
+    // Connect: role buses → engineBus → comp → master
+    this.kickBus.connect(this.engineBus);
+    this.bassBus.connect(this.engineBus);
+    this.leadBus.connect(this.engineBus);
+    this.hatBus.connect(this.engineBus);
+    this.engineBus.connect(this.comp);
+    this.comp.connect(this.master);
   }
 
-  // ── Voices (EXACTLY like psy — createOscillator per note) ──
+  // ── Voices — connect to role buses (not master directly) ──
   private kick(t: number): void {
-    if (!this.ctx || !this.master) return;
+    if (!this.ctx || !this.kickBus) return;
     const osc = this.ctx.createOscillator(), gain = this.ctx.createGain();
     osc.type = 'sine';
     osc.frequency.setValueAtTime(150, t);
     osc.frequency.exponentialRampToValueAtTime(44, t + 0.09);
     gain.gain.setValueAtTime(1.0, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
-    osc.connect(gain); gain.connect(this.master);
+    osc.connect(gain); gain.connect(this.kickBus);
     osc.start(t); osc.stop(t + 0.32);
   }
 
   private hat(t: number, lvl: number): void {
-    if (!this.ctx || !this.master || !this.noiseBuf) return;
+    if (!this.ctx || !this.hatBus || !this.noiseBuf) return;
     const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuf;
     const hp = this.ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 7000;
     const gain = this.ctx.createGain();
     gain.gain.setValueAtTime(Math.max(0.001, lvl), t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
-    src.connect(hp); hp.connect(gain); gain.connect(this.master);
+    src.connect(hp); hp.connect(gain); gain.connect(this.hatBus);
     src.start(t); src.stop(t + 0.06);
   }
 
   private bass(t: number, freq: number, v: Variant): void {
-    if (!this.ctx || !this.master) return;
+    if (!this.ctx || !this.bassBus) return;
     const osc = this.ctx.createOscillator(); osc.type = v.bassWave; osc.frequency.value = freq;
     const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.Q.value = v.bassQ;
     const fStart = Math.max(60, v.bassCut), fEnd = Math.max(80, v.bassCut * 0.35);
@@ -310,13 +353,13 @@ export class PsyLive {
     gain.gain.setValueAtTime(0.0001, t);
     gain.gain.exponentialRampToValueAtTime(0.85, t + 0.006);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
-    osc.connect(filter); filter.connect(gain); gain.connect(this.master);
+    osc.connect(filter); filter.connect(gain); gain.connect(this.bassBus);
     if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.12; gain.connect(send); send.connect(this.delaySend); }
     osc.start(t); osc.stop(t + 0.22);
   }
 
   private lead(t: number, freq: number, v: Variant, accent: boolean): void {
-    if (!this.ctx || !this.master) return;
+    if (!this.ctx || !this.leadBus) return;
     const peakCut = Math.max(200, v.leadCut * (accent ? 1.25 : 1));
     const o1 = this.ctx.createOscillator(), o2 = this.ctx.createOscillator();
     o1.type = v.leadWave; o2.type = v.leadWave;
@@ -330,7 +373,7 @@ export class PsyLive {
     gain.gain.setValueAtTime(0.0001, t);
     gain.gain.exponentialRampToValueAtTime(peak, t + 0.008);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
-    o1.connect(filter); o2.connect(filter); filter.connect(gain); gain.connect(this.master);
+    o1.connect(filter); o2.connect(filter); filter.connect(gain); gain.connect(this.leadBus);
     if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.3; gain.connect(send); send.connect(this.delaySend); }
     o1.start(t); o2.start(t); o1.stop(t + 0.26); o2.stop(t + 0.26);
   }
@@ -531,6 +574,53 @@ export class PsyLive {
       mid: mi / (Math.max(1, miN) * 255),
       high: hi / (Math.max(1, hiN) * 255),
     };
+
+    // ── OCCUPANCY ANALYSIS (the key insight) ──
+    // Instead of "radio loud/quiet", track WHICH ROLES the radio fills
+    // Kick: sub-bass energy + transient strength
+    // Bass: bass-band energy + stability
+    // Lead: mid-band energy + spectral prominence
+    // Hats: high-band energy
+    const subEnergy = sub;
+    const bassEnergy = lo / (Math.max(1, loN) * 255);
+    const midEnergy = mi / (Math.max(1, miN) * 255);
+    const highEnergy = hi / (Math.max(1, hiN) * 255);
+
+    // Smooth occupancy (attack fast, release slow)
+    const kickTarget = subEnergy > 0.5 ? subEnergy : subEnergy * 0.3;
+    const bassTarget = bassEnergy > 0.5 ? bassEnergy : bassEnergy * 0.3;
+    const leadTarget = midEnergy > 0.4 ? midEnergy * 0.8 : midEnergy * 0.2;
+    const hatsTarget = highEnergy > 0.3 ? highEnergy * 0.7 : highEnergy * 0.2;
+
+    // Fast attack, slow release
+    this.occupancy.kick += (kickTarget - this.occupancy.kick) * (kickTarget > this.occupancy.kick ? 0.5 : 0.05);
+    this.occupancy.bass += (bassTarget - this.occupancy.bass) * (bassTarget > this.occupancy.bass ? 0.3 : 0.05);
+    this.occupancy.lead += (leadTarget - this.occupancy.lead) * (leadTarget > this.occupancy.lead ? 0.3 : 0.05);
+    this.occupancy.hats += (hatsTarget - this.occupancy.hats) * (hatsTarget > this.occupancy.hats ? 0.3 : 0.05);
+
+    // ── ROLE DUCKING (not sidechain — per-role gain) ──
+    // If radio kick is strong → mute engine kick, reduce bass
+    // If radio bass is strong → reduce engine bass
+    // If radio lead is strong → reduce engine lead
+    if (this.kickBus && this.bassBus && this.leadBus && this.hatBus && this.ctx) {
+      const now = this.ctx.currentTime;
+      // Kick: if radio kick > 0.7, mute engine kick
+      const kickGain = this.occupancy.kick > 0.7 ? 0.05 : 0.9;
+      this.kickBus.gain.setTargetAtTime(kickGain, now, 0.03);
+      // Bass: if radio bass > 0.75, reduce engine bass
+      const bassGain = this.occupancy.bass > 0.75 ? 0.35 : 0.85;
+      this.bassBus.gain.setTargetAtTime(bassGain, now, 0.05);
+      // Lead: if radio mid > 0.85, reduce engine lead
+      const leadGain = this.occupancy.lead > 0.85 ? 0.55 : 0.7;
+      this.leadBus.gain.setTargetAtTime(leadGain, now, 0.08);
+      // Hats: if radio high > 0.9, reduce engine hats
+      const hatGain = this.occupancy.hats > 0.9 ? 0.6 : 0.6;
+      this.hatBus.gain.setTargetAtTime(hatGain, now, 0.08);
+    }
+
+    // ── ENERGY HISTORY (for relative energy, not absolute) ──
+    this.energyHistory.push(total);
+    if (this.energyHistory.length > 32) this.energyHistory.shift();
 
     // Kick detection
     this.subBassHistory.push(sub);
