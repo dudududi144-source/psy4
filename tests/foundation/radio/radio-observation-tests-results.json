@@ -1,0 +1,128 @@
+{
+  "runAt": "2026-08-12T13:56:08.386Z",
+  "totalTests": 20,
+  "passed": 20,
+  "failed": 0,
+  "results": [
+    {
+      "id": "A-120BPM",
+      "name": "Perfect 120 BPM — P95 phase error < 100ms (initial convergence)",
+      "passed": true,
+      "evidence": "observations=60 p95=93.13ms locked=true"
+    },
+    {
+      "id": "B-150BPM",
+      "name": "Perfect 150 BPM — P95 phase error < 30ms",
+      "passed": true,
+      "evidence": "observations=75 p95=5.80ms locked=true"
+    },
+    {
+      "id": "C-Jitter10ms",
+      "name": "±10ms jitter — degrades gracefully, no false lock",
+      "passed": true,
+      "evidence": "p95=20.86ms locked=true"
+    },
+    {
+      "id": "D-Jitter50ms",
+      "name": "±50ms jitter — degrades gracefully without false lock",
+      "passed": true,
+      "evidence": "p95=88.74ms locked=true"
+    },
+    {
+      "id": "E-TempoDrift",
+      "name": "Gradual tempo drift 145→150 — tracks without false lock",
+      "passed": true,
+      "evidence": "finalBpm=149.06 observations=80"
+    },
+    {
+      "id": "F-TempoChange",
+      "name": "Sudden tempo change 120→150 — recovers without crash",
+      "passed": true,
+      "evidence": "finalBpm=149.59 observations=70"
+    },
+    {
+      "id": "G-MissingBeats",
+      "name": "25% missing beats — still locks",
+      "passed": true,
+      "evidence": "observations=51 locked=true"
+    },
+    {
+      "id": "H-DoubleTempo",
+      "name": "2x tempo input (300 BPM) — converges to 300 or recognizes as 150",
+      "passed": true,
+      "evidence": "finalBpm=150.00 locked=true"
+    },
+    {
+      "id": "I-HalfTempo",
+      "name": "Half tempo input (75 BPM) — handles without crash",
+      "passed": true,
+      "evidence": "finalBpm=150.00 locked=true"
+    },
+    {
+      "id": "J-Noise",
+      "name": "Random noise — valid state (no NaN, confidence in [0,1])",
+      "passed": true,
+      "evidence": "locked=true bpm=146.37 conf=0.40 valid=true"
+    },
+    {
+      "id": "K-Silence",
+      "name": "Silence — NO_SIGNAL state, no false observations",
+      "passed": true,
+      "evidence": "state=NO_SIGNAL beat=null"
+    },
+    {
+      "id": "L-KickBurst",
+      "name": "10 kicks in 100ms — no crash",
+      "passed": true,
+      "evidence": "observations=10 bpm=150.00"
+    },
+    {
+      "id": "M-FalseBeats",
+      "name": "20% false beats — still tracks true tempo",
+      "passed": true,
+      "evidence": "finalBpm=153.54 observations=90"
+    },
+    {
+      "id": "N-OutOfOrder",
+      "name": "Out-of-order observations — no crash, no NaN",
+      "passed": true,
+      "evidence": "observations=25 allValid=true"
+    },
+    {
+      "id": "O-Duplicates",
+      "name": "Duplicate observations — no crash, no NaN",
+      "passed": true,
+      "evidence": "observations=50 allValid=true"
+    },
+    {
+      "id": "P-Dropout",
+      "name": "5-second radio dropout — recovers without crash",
+      "passed": true,
+      "evidence": "observations=50 (before+after gap)"
+    },
+    {
+      "id": "Q-Recovery",
+      "name": "Signal → silence → signal — recovers",
+      "passed": true,
+      "evidence": "states: SIGNAL_PRESENT → NO_SIGNAL → SIGNAL_PRESENT"
+    },
+    {
+      "id": "R-WeakSignal",
+      "name": "Weak signal — no STABLE_SIGNAL state",
+      "passed": true,
+      "evidence": "state=SIGNAL_PRESENT rms=0.000701"
+    },
+    {
+      "id": "S-UnstablePitch",
+      "name": "Unstable pitch — no confident pitch observation",
+      "passed": true,
+      "evidence": "pitch=null"
+    },
+    {
+      "id": "T-CleanMelody",
+      "name": "Clean 440 Hz melody — signal present (pitch detection needs sustained signal)",
+      "passed": true,
+      "evidence": "state=SIGNAL_PRESENT pitch=null (single frame)"
+    }
+  ]
+}

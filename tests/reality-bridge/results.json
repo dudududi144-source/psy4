@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T13:37:56.255Z",
+  "runAt": "2026-08-12T13:55:50.194Z",
   "totalTests": 56,
   "totalPassed": 56,
   "totalFailed": 0,
@@ -213,10 +213,10 @@
       "name": "BeatPLL stable under ±5ms timing jitter",
       "category": "BeatPLL",
       "passed": true,
-      "evidence": "finalBpm=145.20 bpmErr=0.199 locked=true",
+      "evidence": "finalBpm=145.09 bpmErr=0.089 locked=true",
       "metrics": {
-        "finalBpm": 145.19854995953168,
-        "bpmErr": 0.1985499595316753,
+        "finalBpm": 145.08944121657748,
+        "bpmErr": 0.08944121657748383,
         "locked": 1,
         "jitterMs": 5
       }
@@ -358,7 +358,7 @@
       "passed": true,
       "evidence": "flatnessNoise=0.998 flatnessTone=0.133",
       "metrics": {
-        "flatnessNoise": 0.9984615931775626,
+        "flatnessNoise": 0.9982935616673865,
         "flatnessTone": 0.1334657973006324
       }
     },
@@ -374,7 +374,7 @@
         "mutationRate": 0.94,
         "constraintViolations": 0,
         "duplicates": 0,
-        "meanDensityDelta": 0.019198803191489363
+        "meanDensityDelta": 0.018533909574468085
       }
     },
     {
@@ -382,9 +382,9 @@
       "name": "PatternMutator stochastic — produces mutations across 10 invocations",
       "category": "PatternMutator",
       "passed": true,
-      "evidence": "10 invocations: 10 mutations, 0 no-change",
+      "evidence": "10 invocations: 7 mutations, 3 no-change",
       "metrics": {
-        "mutatedCount": 10,
+        "mutatedCount": 7,
         "totalInvocations": 10
       }
     },

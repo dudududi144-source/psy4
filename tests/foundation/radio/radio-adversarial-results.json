@@ -1,0 +1,80 @@
+{
+  "runAt": "2026-08-12T13:55:50.748Z",
+  "totalTests": 12,
+  "passed": 12,
+  "failed": 0,
+  "results": [
+    {
+      "id": "ADV-1-100Bursts",
+      "name": "100 random beat bursts — no crash, valid state",
+      "passed": true,
+      "evidence": "crashed=false bpm=150.55 valid=true"
+    },
+    {
+      "id": "ADV-2-500Duplicates",
+      "name": "500 duplicate observations — no crash, valid state",
+      "passed": true,
+      "evidence": "crashed=false bpm=150.00 valid=true"
+    },
+    {
+      "id": "ADV-3-OutOfOrder",
+      "name": "Out-of-order timestamps — no crash, valid state",
+      "passed": true,
+      "evidence": "crashed=false valid=true"
+    },
+    {
+      "id": "ADV-4-Impossible",
+      "name": "Impossible timestamps (negative, NaN, Infinity) — no crash",
+      "passed": true,
+      "evidence": "crashed=false valid=true"
+    },
+    {
+      "id": "ADV-5-TempoJumps",
+      "name": "Tempo jumps 80→180→90 — no crash, BPM in valid range",
+      "passed": true,
+      "evidence": "crashed=false bpm=171.35"
+    },
+    {
+      "id": "ADV-6-HalfDouble",
+      "name": "Half/double tempo ambiguity — no crash, valid state",
+      "passed": true,
+      "evidence": "crashed=false bpm=150.00"
+    },
+    {
+      "id": "ADV-7-SilenceSignalSilence",
+      "name": "Silence → signal → silence → signal — no crash",
+      "passed": true,
+      "evidence": "states: SIGNAL_PRESENT → NO_SIGNAL → NO_SIGNAL → SIGNAL_PRESENT"
+    },
+    {
+      "id": "ADV-8-SignalNoiseSignal",
+      "name": "Signal → noise → signal — no crash",
+      "passed": true,
+      "evidence": "states: SIGNAL_PRESENT → SIGNAL_PRESENT → SIGNAL_PRESENT"
+    },
+    {
+      "id": "ADV-9-PitchJump2Octaves",
+      "name": "Pitch jump 220→880 Hz (2 octaves) — no crash",
+      "passed": true,
+      "evidence": "crashed=false"
+    },
+    {
+      "id": "ADV-10-KickPlusMelody",
+      "name": "Kick + melody simultaneously — no crash, pitch may be rejected",
+      "passed": true,
+      "evidence": "state=SIGNAL_PRESENT pitch=null (rejected by kick gate)"
+    },
+    {
+      "id": "ADV-11-30sJitter",
+      "name": "30-second jitter stream — no crash, valid state",
+      "passed": true,
+      "evidence": "crashed=false bpm=146.11"
+    },
+    {
+      "id": "ADV-12-10min",
+      "name": "10-minute observation stream — no crash, no NaN",
+      "passed": true,
+      "evidence": "crashed=false nanCount=0 bpm=145.00"
+    }
+  ]
+}
