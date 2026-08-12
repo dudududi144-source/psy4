@@ -1,0 +1,82 @@
+{
+  "featuresA": {
+    "peak": 0.7641658782958984,
+    "rms": 0.1308095129723736,
+    "crestFactor": 5.841821905240844,
+    "zeroCrossingRate": 0.01087760637860646,
+    "transientStrength": 37.814431998313474,
+    "attackTime": 0.01526077097505669,
+    "decayTime": 0.002290249433106576,
+    "sustainLevel": 0.21583992254593473,
+    "releaseTime": 0.0003854875283446712,
+    "duration": 1.6551927437641722,
+    "spectralCentroid": 932.8903921511138,
+    "spectralSpread": 2804.4993207143543,
+    "spectralRolloff": 538.330078125,
+    "spectralFlatness": 0.061389265415520256,
+    "spectralFlux": 0.40414455444042324,
+    "lowEnergy": 0.39184126083852094,
+    "midEnergy": 0.5404499438377537,
+    "highEnergy": 0.06770879532372338,
+    "subRatio": 0.39184126083852094
+  },
+  "featuresB": {
+    "peak": 0.919891357421875,
+    "rms": 0.08884375267753448,
+    "crestFactor": 10.354035367694275,
+    "zeroCrossingRate": 0.0050141107488286705,
+    "transientStrength": 54.78005563318563,
+    "attackTime": 0.4138095238095238,
+    "decayTime": 0.0021541950113378684,
+    "sustainLevel": 0.12220159111766045,
+    "releaseTime": 0.0014285714285714286,
+    "duration": 1.6551927437641722,
+    "spectralCentroid": 97.09382350446167,
+    "spectralSpread": 222.4326540791398,
+    "spectralRolloff": 129.19921875,
+    "spectralFlatness": 0.0006011334805894392,
+    "spectralFlux": 0.2432641240279186,
+    "lowEnergy": 0.7757028649463029,
+    "midEnergy": 0.22384592134997203,
+    "highEnergy": 0.0004512137037274271,
+    "subRatio": 0.7757028649463029
+  },
+  "differences": {
+    "centroidDiff": 835.7965686466522,
+    "decayDiff": 0.00013605442176870767,
+    "lowDiff": 0.383861604107782
+  },
+  "results": [
+    {
+      "test": "Low-end presence",
+      "pass": true,
+      "evidence": "39.2%"
+    },
+    {
+      "test": "No clipping",
+      "pass": true,
+      "evidence": "peak=0.7642"
+    },
+    {
+      "test": "Transient presence",
+      "pass": true,
+      "evidence": "strength=37.81"
+    },
+    {
+      "test": "Spectral balance",
+      "pass": true,
+      "evidence": "low=39.2%, high=6.8%"
+    },
+    {
+      "test": "Dynamic range",
+      "pass": true,
+      "evidence": "crest=5.84"
+    },
+    {
+      "test": "SoundDNA A/B → different rendered audio",
+      "pass": true,
+      "evidence": "centroid diff=835.8Hz, decay diff=0.0001s"
+    }
+  ],
+  "verdict": "PASS"
+}

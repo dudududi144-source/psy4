@@ -436,10 +436,10 @@ export class PsyLive {
 
     // ── PER-ROLE BUSES (from architecture review) ──
     // Each voice connects to its role bus → engineBus → gentle comp → master
-    this.kickBus = this.ctx.createGain(); this.kickBus.gain.value = 0.95; // F10: slightly louder kick
-    this.bassBus = this.ctx.createGain(); this.bassBus.gain.value = 0.85;
-    this.leadBus = this.ctx.createGain(); this.leadBus.gain.value = 0.5;  // F10: quieter lead (was 0.7)
-    this.hatBus = this.ctx.createGain(); this.hatBus.gain.value = 0.55;   // F10: slightly quieter hats
+    this.kickBus = this.ctx.createGain(); this.kickBus.gain.value = 0.7; // F22: reduced to prevent clipping
+    this.bassBus = this.ctx.createGain(); this.bassBus.gain.value = 0.6;
+    this.leadBus = this.ctx.createGain(); this.leadBus.gain.value = 0.5;
+    this.hatBus = this.ctx.createGain(); this.hatBus.gain.value = 0.5;
     
     this.engineBus = this.ctx.createGain();
     this.engineBus.gain.value = 0.8;
