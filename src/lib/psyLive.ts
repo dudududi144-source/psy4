@@ -655,7 +655,7 @@ export class PsyLive {
     // ── MELODY OBSERVATION (every 4th detect tick — less CPU) ──
     if (this.detectTickCount % 4 === 0) {
       const tdBuf = this.melodyObserver.ensureTimeDomainBuf(this.radioAnalyser);
-      this.radioAnalyser.getByteTimeDomainData(tdBuf);
+      this.radioAnalyser.getFloatTimeDomainData(tdBuf);
       const clock = this.pll.getClock(this.ctx.currentTime);
       this.melodyObserver.observe(
         fd, tdBuf, this.ctx.sampleRate, this.radioAnalyser.fftSize,
