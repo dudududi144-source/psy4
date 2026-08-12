@@ -28,6 +28,7 @@ import { TransportAdapter } from '../../foundation/transport/TransportAdapter';
 import { RadioObservationLayer } from '../../foundation/radio/RadioObservationLayer';
 import { DEFAULT_RADIO_CONFIG } from '../../foundation/radio/RadioObservationTypes';
 import { LiveComposer, type NotePlan, type ScheduledNote } from '../../foundation/music/LiveComposer';
+import { NewMusicalRuntime } from '../../foundation/music/runtime/NewMusicalRuntime';
 
 const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -261,6 +262,11 @@ export class PsyLive {
   private composer: LiveComposer | null = null;
   private currentNotePlan: NotePlan | null = null;
 
+  // F7: NewMusicalRuntime — the rebuilt musical decision layer
+  // Uses OpportunityEngine, StyleGrammar, GrooveEngine, MusicalDirector
+  private newRuntime: NewMusicalRuntime | null = null;
+  private composerMode: 'legacy' | 'new' = 'new'; // F7: default to new runtime
+
   // R6: Master safety limiter
   private safetyLimiter: DynamicsCompressorNode | null = null;
   private safetyReduction: number = 0;
@@ -407,6 +413,10 @@ export class PsyLive {
     // Connects radio observations to musical composition via MusicalContext,
     // MotifMemory, and CompositionPlanner. Replaces hardcoded preset reading.
     this.composer = new LiveComposer(42); // deterministic seed
+
+    // F7 — Initialize NewMusicalRuntime (the rebuilt musical decision layer)
+    // Uses OpportunityEngine, StyleGrammar, GrooveEngine, MusicalDirector
+    this.newRuntime = new NewMusicalRuntime(42); // deterministic seed
 
     // ── PER-ROLE BUSES (from architecture review) ──
     // Each voice connects to its role bus → engineBus → gentle comp → master
@@ -596,68 +606,69 @@ export class PsyLive {
     } catch (e) {}
   }
 
-  // F5: scheduleStep now reads from LiveComposer's NotePlan instead of hardcoded presets.
-  // The NotePlan is generated per-bar by the LiveComposer, which uses MusicalContext,
-  // MotifMemory, and CompositionPlanner to produce musically evolving content.
+  // F7: scheduleStep now uses NewMusicalRuntime (or legacy LiveComposer as fallback).
+  // The runtime generates a NotePlan per bar with musical decisions.
   private scheduleStep(stepIndex: number, time: number): void {
-    if (!this.transport || !this.composer) return;
+    if (!this.transport) return;
     const snap = this.transport.snapshot();
     const s16 = stepIndex % 16;
     const currentBar = snap.bar;
-
-    // F5: Plan the bar if we haven't yet or if we moved to a new bar
-    if (!this.currentNotePlan || this.currentNotePlan.bar !== currentBar) {
-      this.currentNotePlan = this.composer.planBar(currentBar, snap.bpm);
-    }
-
-    const plan = this.currentNotePlan;
-    const v = this.getVariant(); // still use preset variant for synth params
-
-    // ── PATTERN MUTATION (legacy — kept for backward compat but now secondary) ──
-    if (s16 === 0 && this.lastMutatedBar !== currentBar) {
-      this.lastMutatedBar = currentBar;
-    }
-
-    // ── F5: Schedule notes from the LiveComposer's NotePlan ──
-    const notes = plan.notes.filter(n => n.step === s16);
-
-    // Get synth parameters from the current preset variant
+    const v = this.getVariant();
     const p = this.getPreset();
 
+    // F7: Use NewMusicalRuntime or legacy LiveComposer based on feature flag
+    let notes: { step: number; voice: string; midi: number | null; velocity: number }[] = [];
+
+    if (this.composerMode === 'new' && this.newRuntime) {
+      // F7: New musical runtime
+      if (!this.currentNotePlan || this.currentNotePlan.bar !== currentBar) {
+        // Plan the bar using the new runtime
+        const newPlan = this.newRuntime.planBar(currentBar, snap.bpm);
+        // Convert to legacy NotePlan format for compatibility
+        this.currentNotePlan = {
+          bar: currentBar,
+          notes: newPlan.notes,
+          phrasePlan: {} as any,
+          ctx: {} as any,
+          decision: (newPlan as any).decision,
+          barInPhrase: newPlan.barInPhrase,
+        } as any;
+      }
+      notes = this.currentNotePlan.notes.filter(n => n.step === s16);
+    } else if (this.composer) {
+      // F5/F6: Legacy LiveComposer
+      if (!this.currentNotePlan || this.currentNotePlan.bar !== currentBar) {
+        this.currentNotePlan = this.composer.planBar(currentBar, snap.bpm);
+      }
+      notes = this.currentNotePlan.notes.filter(n => n.step === s16);
+    }
+
+    // Schedule notes
     for (const note of notes) {
       switch (note.voice) {
         case 'kick':
-          if (this.occupancy.kick < 0.7) {
-            this.kick(time);
-          }
+          if (this.occupancy.kick < 0.7) this.kick(time);
           break;
         case 'hat':
           this.hat(time, (v.hatLvl || 0.1) * note.velocity);
           break;
         case 'bass':
-          if (this.occupancy.bass < 0.75 && note.midi !== null) {
-            this.bass(time, mtof(note.midi), v);
-          }
+          if (this.occupancy.bass < 0.75 && note.midi !== null) this.bass(time, mtof(note.midi), v);
           break;
         case 'lead':
-          if (this.occupancy.lead < 0.85 && note.midi !== null) {
-            this.lead(time, mtof(note.midi), v, s16 % 4 === 0);
-          }
+          if (this.occupancy.lead < 0.85 && note.midi !== null) this.lead(time, mtof(note.midi), v, s16 % 4 === 0);
           break;
       }
     }
 
-    // Fallback: if no notes were planned for this step, use the preset pattern
-    // (ensures we never have silent steps during the first bar before the composer warms up)
+    // Fallback for bar 0 (before any runtime warms up)
     if (notes.length === 0 && currentBar === 0) {
       const pat = p.patterns;
       const root = p.root;
       if (pat.kick && pat.kick[s16] && this.occupancy.kick < 0.7) this.kick(time);
       if (pat.hat && pat.hat[s16]) this.hat(time, v.hatLvl || 0.1);
       const bn = pat.bass ? pat.bass[s16] : null;
-      if (bn !== null && bn !== undefined && this.occupancy.bass < 0.75) {
-        this.bass(time, mtof(root + bn), v);
-      }
+      if (bn !== null && bn !== undefined && this.occupancy.bass < 0.75) this.bass(time, mtof(root + bn), v);
       if (this.occupancy.lead < 0.85) {
         const ln = pat.lead ? pat.lead[s16] : null;
         if (ln !== null && ln !== undefined && this.musicState.density > 0.4) {
@@ -812,6 +823,17 @@ export class PsyLive {
     // This connects radio → MusicalContext → CompositionPlanner → MotifMemory
     if (this.composer && radioSnap.signal.state !== 'NO_SIGNAL') {
       this.composer.observeRadio({
+        bpm: transportSnap.bpm,
+        energy: radioSnap.signal.spectralEnergy,
+        occupancy: radioSnap.occupancy,
+        bassFreq: this.bassFreq > 0 ? this.bassFreq : undefined,
+        confidence: radioSnap.beat?.confidence ?? 0,
+      });
+    }
+
+    // F7 — Feed radio observations into the NewMusicalRuntime
+    if (this.newRuntime && radioSnap.signal.state !== 'NO_SIGNAL') {
+      this.newRuntime.observeRadio({
         bpm: transportSnap.bpm,
         energy: radioSnap.signal.spectralEnergy,
         occupancy: radioSnap.occupancy,
@@ -994,6 +1016,25 @@ export class PsyLive {
       composerPlanBar: this.composer?.snapshot()?.planBar ?? 0,
       composerNoteCount: this.composer?.snapshot()?.noteCount ?? 0,
       composerHasLearned: this.composer?.hasLearned() ?? false,
+      // F7: NewMusicalRuntime state
+      composerMode: this.composerMode,
+      rtStyle: this.newRuntime?.snapshot()?.style ?? 'FULL_ON',
+      rtStyleState: this.newRuntime?.snapshot()?.styleState ?? 'UNCERTAIN',
+      rtRole: this.newRuntime?.snapshot()?.role ?? 'LEAD',
+      rtAction: this.newRuntime?.snapshot()?.action ?? 'introduce',
+      rtTension: this.newRuntime?.snapshot()?.tension ?? 0,
+      rtDensity: this.newRuntime?.snapshot()?.density ?? 0,
+      rtOpportunity: this.newRuntime?.snapshot()?.opportunitySummary ?? '',
+      rtGrooveStrategy: this.newRuntime?.snapshot()?.grooveStrategy ?? '',
+      rtBassStrategy: this.newRuntime?.snapshot()?.bassStrategy ?? '',
+      rtMotifCount: this.newRuntime?.snapshot()?.motifCount ?? 0,
+      rtSection: this.newRuntime?.snapshot()?.section ?? 'UNKNOWN',
+      rtPhrase: this.newRuntime?.snapshot()?.phrase ?? 0,
+      rtDecisionReason: this.newRuntime?.snapshot()?.decisionReason ?? '',
+      rtRadioInfluence: this.newRuntime?.snapshot()?.radioInfluence ?? 0,
+      rtMemoryInfluence: this.newRuntime?.snapshot()?.memoryInfluence ?? 0,
+      rtHasLearned: this.newRuntime?.hasLearned() ?? false,
+      rtLastReward: this.newRuntime?.snapshot()?.lastReward ?? 0,
     };
   }
 

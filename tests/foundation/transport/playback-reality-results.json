@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T16:49:22.763Z",
+  "runAt": "2026-08-12T17:34:59.175Z",
   "totalTests": 18,
   "passed": 18,
   "failed": 0,
@@ -26,7 +26,7 @@
       "id": "PR-04",
       "name": "scheduleStep called repeatedly (notes started > 100)",
       "passed": true,
-      "evidence": "note start events=185 lastScheduledStepIdx=291"
+      "evidence": "note start events=191 lastScheduledStepIdx=291"
     },
     {
       "id": "PR-05",
@@ -44,31 +44,31 @@
       "id": "PR-07",
       "name": "30s produces sufficient note scheduling (>150 notes)",
       "passed": true,
-      "evidence": "notes in 30s=185 (expected ~290, F7 allows rests)"
+      "evidence": "notes in 30s=191 (expected ~290, F7 allows rests)"
     },
     {
       "id": "PR-08",
       "name": "Notes have plausible inter-onset intervals (gaps < 8s = intentional rests)",
       "passed": true,
-      "evidence": "avgInterval=0.2847s expected=0.1034s min=0.1034s max=2.6897s"
+      "evidence": "avgInterval=0.2300s expected=0.1034s min=0.1034s max=6.0000s"
     },
     {
       "id": "PR-09",
       "name": "Voices (oscillators/sources) are actually started",
       "passed": true,
-      "evidence": "start events in 2s=29"
+      "evidence": "start events in 2s=33"
     },
     {
       "id": "PR-10",
       "name": "Gain envelopes reach audible level (non-zero gain values)",
       "passed": true,
-      "evidence": "gain nodes with value > 0.01: 25/50"
+      "evidence": "gain nodes with value > 0.01: 26/57"
     },
     {
       "id": "PR-11",
       "name": "Role buses connected to master (engineBus → comp → master)",
       "passed": true,
-      "evidence": "master node found: yes (id=gain_812)"
+      "evidence": "master node found: yes (id=gain_879)"
     },
     {
       "id": "PR-12",
@@ -86,13 +86,13 @@
       "id": "PR-14",
       "name": "STOP halts new scheduling (no new note events after stop)",
       "passed": true,
-      "evidence": "noteEvents before stop=68 after 2s stopped=68"
+      "evidence": "noteEvents before stop=62 after 2s stopped=62"
     },
     {
       "id": "PR-15",
       "name": "PLAY after STOP works again (new notes scheduled)",
       "passed": true,
-      "evidence": "new notes after restart=18"
+      "evidence": "new notes after restart=30"
     },
     {
       "id": "PR-16",
@@ -110,7 +110,7 @@
       "id": "PR-18",
       "name": "No runaway allocation (node count bounded)",
       "passed": true,
-      "evidence": "nodes at start=14 after 30s=510 growth=496"
+      "evidence": "nodes at start=14 after 30s=1059 growth=1045"
     }
   ]
 }
