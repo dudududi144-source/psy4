@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T13:10:30.788Z",
+  "runAt": "2026-08-12T13:37:56.522Z",
   "totalTests": 15,
   "passed": 15,
   "failed": 0,
@@ -74,7 +74,7 @@
       "id": "OWN-12",
       "name": "No competing musical clock remains in psyLive.ts",
       "passed": true,
-      "evidence": "engineBpm=false radioBpm=false step=false nextNoteTime=false barCount=false lastScheduledStepKey=false Date.now=false | transport=true snapshot=true predictBeats=true",
+      "evidence": "engineBpm=false radioBpm=false step=false nextNoteTime=false barCount=false lastScheduledStepKey=false Date.now=false | transport=true snapshot=true",
       "metrics": {
         "competingClocksFound": 0,
         "transportPresent": 1

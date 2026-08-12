@@ -531,37 +531,41 @@ export class PsyLive {
 
   // ── Scheduler — reads Transport for ALL musical time ──
   // F1.18: setInterval wakes the scheduler (25ms). The scheduler reads
-  // transport.snapshot() and transport.predictBeats() to decide what to
-  // schedule. NO independent nextNoteTime, step, or barCount.
+  // transport.snapshot() to get the beat grid, then schedules 16th notes
+  // directly. NO independent nextNoteTime, step, or barCount.
+  //
+  // PLAYBACK REALITY FIX: The previous version called predictBeats(0.15)
+  // which only returned BEAT boundaries within 150ms. At 145 BPM, beats
+  // are 414ms apart — so predictBeats returned an EMPTY ARRAY most ticks,
+  // causing silence. The fix: compute 16th-note times directly from the
+  // Transport's beat grid (beatTime + k * stepDur), not from beat boundaries.
   //
   // Policy for tab suspension: DROP STALE EVENTS.
-  // When the scheduler wakes after a stall, it computes the current position
-  // from Transport (which uses AudioContext.currentTime). It schedules only
-  // events in the future. Stale events are dropped, not caught up.
   private scheduler(): void {
     if (!this.ctx || !this.transport) return;
     try {
       const now = this.ctx.currentTime;
       const snap = this.transport.snapshot();
+      const stepDur = snap.beatDuration / 4; // 16th note duration
 
-      // Get predicted beats for the schedule-ahead window
-      const beats = this.transport.predictBeats(this.scheduleAheadTime);
-      const stepDur = snap.beatDuration / 4; // 16th notes
+      // Compute the next 16th-note step from the Transport's beat grid.
+      // snap.beatTime = AudioContext time of the most recent beat boundary.
+      // 16th notes are at: beatTime + k * stepDur (k = 0,1,2,3 within each beat).
+      const elapsedSinceBeat = now - snap.beatTime;
+      const stepsSinceBeat = Math.floor(elapsedSinceBeat / stepDur);
 
-      for (const beatTime of beats) {
-        // Schedule 4 sixteenth notes per beat
-        for (let s = 0; s < 4; s++) {
-          const stepTime = beatTime + s * stepDur;
-          if (stepTime > now && stepTime < now + this.scheduleAheadTime) {
-            // F1.18: dedup based on Transport's beatIndex (not float stepKey)
-            // Compute the global step index this corresponds to
-            const beatIdx = Math.round((stepTime - snap.beatTime) / stepDur);
-            if (beatIdx > this.lastScheduledBeatIndex) {
-              this.scheduleStep(beatIdx, stepTime);
-              this.lastScheduledBeatIndex = beatIdx;
-            }
-          }
+      // Next 16th note to schedule (one step ahead of current position)
+      let stepTime = snap.beatTime + (stepsSinceBeat + 1) * stepDur;
+      let stepIdx = snap.beatIndex * 4 + stepsSinceBeat + 1;
+
+      // Schedule all 16th notes within the schedule-ahead window
+      while (stepTime < now + this.scheduleAheadTime) {
+        if (stepTime > now && stepIdx > this.lastScheduledBeatIndex) {
+          this.scheduleStep(stepIdx, stepTime);
+          this.lastScheduledBeatIndex = stepIdx;
         }
+        stepIdx++;
+        stepTime += stepDur;
       }
     } catch (e) {}
   }

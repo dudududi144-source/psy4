@@ -336,16 +336,15 @@ function test12(): void {
   // Transport must exist
   const hasTransport = /private\s+transport/.test(psyLiveSrc);
   const readsTransportSnapshot = /transport\.snapshot\(\)/.test(psyLiveSrc);
-  const readsTransportPredictBeats = /transport\.predictBeats\(/.test(psyLiveSrc);
 
   const noCompetingClocks = !hasEngineBpm && !hasRadioBpm && !hasStep && !hasNextNoteTime && !hasBarCount && !hasLastScheduledStepKey && !hasDateNow;
-  const hasTransportReads = hasTransport && readsTransportSnapshot && readsTransportPredictBeats;
+  const hasTransportReads = hasTransport && readsTransportSnapshot;
 
   record({
     id: 'OWN-12',
     name: 'No competing musical clock remains in psyLive.ts',
     passed: noCompetingClocks && hasTransportReads,
-    evidence: `engineBpm=${hasEngineBpm} radioBpm=${hasRadioBpm} step=${hasStep} nextNoteTime=${hasNextNoteTime} barCount=${hasBarCount} lastScheduledStepKey=${hasLastScheduledStepKey} Date.now=${hasDateNow} | transport=${hasTransport} snapshot=${readsTransportSnapshot} predictBeats=${readsTransportPredictBeats}`,
+    evidence: `engineBpm=${hasEngineBpm} radioBpm=${hasRadioBpm} step=${hasStep} nextNoteTime=${hasNextNoteTime} barCount=${hasBarCount} lastScheduledStepKey=${hasLastScheduledStepKey} Date.now=${hasDateNow} | transport=${hasTransport} snapshot=${readsTransportSnapshot}`,
     metrics: {
       competingClocksFound: [hasEngineBpm, hasRadioBpm, hasStep, hasNextNoteTime, hasBarCount, hasLastScheduledStepKey, hasDateNow].filter(Boolean).length,
       transportPresent: hasTransport ? 1 : 0,

@@ -1151,25 +1151,24 @@ function testMusicStateAndScheduler(): void {
     });
   }
 
-  // Test 10C: F1.18 — Scheduler reads Transport (not PLL directly, no own-clock fallback)
+  // Test 10C: F1.18 — Scheduler reads Transport snapshot (not PLL directly, no own-clock fallback)
   {
     const psyLiveSrc = fs.readFileSync(
       path.join(__dirname, '..', '..', 'src', 'lib', 'psyLive.ts'),
       'utf8',
     );
-    // F1.18: Scheduler must read Transport, not PLL directly
+    // F1.18: Scheduler must read Transport snapshot for musical time
     const usesTransportSnapshot = /transport\.snapshot\(\)/.test(psyLiveSrc);
-    const usesTransportPredictBeats = /transport\.predictBeats\(/.test(psyLiveSrc);
     // F1.18: No own-clock fallback (nextNoteTime accumulation is FORBIDDEN)
     const hasOwnClockFallback = /nextNoteTime\s*\+=\s*this\.stepDur\(\)/.test(psyLiveSrc);
     // F1.18: No direct PLL reads in scheduler (PLL is observer, Transport is time model)
     const schedulerReadsPLLDirectly = /pll\.predictBeats\(/.test(psyLiveSrc);
     record({
       id: 'MS-10C',
-      name: 'F1.18: Scheduler reads Transport (not PLL directly, no own-clock fallback)',
+      name: 'F1.18: Scheduler reads Transport snapshot (not PLL directly, no own-clock fallback)',
       category: 'Scheduler',
-      passed: usesTransportSnapshot && usesTransportPredictBeats && !hasOwnClockFallback && !schedulerReadsPLLDirectly,
-      evidence: `transportSnapshot=${usesTransportSnapshot} transportPredictBeats=${usesTransportPredictBeats} ownClockFallback=${hasOwnClockFallback} schedulerReadsPLLDirectly=${schedulerReadsPLLDirectly}`,
+      passed: usesTransportSnapshot && !hasOwnClockFallback && !schedulerReadsPLLDirectly,
+      evidence: `transportSnapshot=${usesTransportSnapshot} ownClockFallback=${hasOwnClockFallback} schedulerReadsPLLDirectly=${schedulerReadsPLLDirectly}`,
       metrics: { usesTransport: usesTransportSnapshot ? 1 : 0, hasOwnClockFallback: hasOwnClockFallback ? 1 : 0, schedulerReadsPLLDirectly: schedulerReadsPLLDirectly ? 1 : 0 },
     });
   }

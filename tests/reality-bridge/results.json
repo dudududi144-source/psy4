@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T13:10:30.545Z",
+  "runAt": "2026-08-12T13:37:56.255Z",
   "totalTests": 56,
   "totalPassed": 56,
   "totalFailed": 0,
@@ -213,10 +213,10 @@
       "name": "BeatPLL stable under ±5ms timing jitter",
       "category": "BeatPLL",
       "passed": true,
-      "evidence": "finalBpm=144.95 bpmErr=0.046 locked=true",
+      "evidence": "finalBpm=145.20 bpmErr=0.199 locked=true",
       "metrics": {
-        "finalBpm": 144.95376336749842,
-        "bpmErr": 0.04623663250157506,
+        "finalBpm": 145.19854995953168,
+        "bpmErr": 0.1985499595316753,
         "locked": 1,
         "jitterMs": 5
       }
@@ -356,9 +356,9 @@
       "name": "spectralFlatness: noise→high, tone→low (R2 fix: melodic band + realistic fixture)",
       "category": "MelodyObserver",
       "passed": true,
-      "evidence": "flatnessNoise=0.999 flatnessTone=0.133",
+      "evidence": "flatnessNoise=0.998 flatnessTone=0.133",
       "metrics": {
-        "flatnessNoise": 0.9990860284948216,
+        "flatnessNoise": 0.9984615931775626,
         "flatnessTone": 0.1334657973006324
       }
     },
@@ -367,14 +367,14 @@
       "name": "PatternMutator runs 200 cycles; mutation rate + constraint violations",
       "category": "PatternMutator",
       "passed": true,
-      "evidence": "mutations=187/200 (93.5%); violations=0; duplicates=0; meanDensityDelta=0.020",
+      "evidence": "mutations=188/200 (94.0%); violations=0; duplicates=0; meanDensityDelta=0.019",
       "metrics": {
         "cycles": 200,
-        "mutations": 187,
-        "mutationRate": 0.935,
+        "mutations": 188,
+        "mutationRate": 0.94,
         "constraintViolations": 0,
         "duplicates": 0,
-        "meanDensityDelta": 0.019635695187165774
+        "meanDensityDelta": 0.019198803191489363
       }
     },
     {
@@ -382,9 +382,9 @@
       "name": "PatternMutator stochastic — produces mutations across 10 invocations",
       "category": "PatternMutator",
       "passed": true,
-      "evidence": "10 invocations: 9 mutations, 1 no-change",
+      "evidence": "10 invocations: 10 mutations, 0 no-change",
       "metrics": {
-        "mutatedCount": 9,
+        "mutatedCount": 10,
         "totalInvocations": 10
       }
     },
@@ -597,10 +597,10 @@
       "name": "Feed silence after signal → state degrades (age grows)",
       "category": "RadioStateGate",
       "passed": true,
-      "evidence": "state=CONNECTED_NO_SIGNAL signalAgeMs=1ms (will reach CONNECTED_NO_SIGNAL after 2000ms)",
+      "evidence": "state=CONNECTED_NO_SIGNAL signalAgeMs=0ms (will reach CONNECTED_NO_SIGNAL after 2000ms)",
       "metrics": {
         "state": "CONNECTED_NO_SIGNAL",
-        "signalAgeMs": 1
+        "signalAgeMs": 0
       }
     },
     {
@@ -682,10 +682,10 @@
     },
     {
       "id": "MS-10C",
-      "name": "F1.18: Scheduler reads Transport (not PLL directly, no own-clock fallback)",
+      "name": "F1.18: Scheduler reads Transport snapshot (not PLL directly, no own-clock fallback)",
       "category": "Scheduler",
       "passed": true,
-      "evidence": "transportSnapshot=true transportPredictBeats=true ownClockFallback=false schedulerReadsPLLDirectly=false",
+      "evidence": "transportSnapshot=true ownClockFallback=false schedulerReadsPLLDirectly=false",
       "metrics": {
         "usesTransport": 1,
         "hasOwnClockFallback": 0,
