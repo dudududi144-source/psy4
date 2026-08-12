@@ -6287,3 +6287,201 @@ Stage Summary:
 - Anchor-based clock eliminates float drift (30-min test = 0ms)
 - Holdover + epoch + hypotheses + drop-stale-events all implemented
 - Next: F2 (Radio Observation Layer) only after user approval
+
+---
+Task ID: F13-A-UI
+Agent: Forensic Audit Agent A (UI)
+Task: Forensic audit of PSY4 UI (page.tsx + components)
+
+Work Log:
+- Read worklog tail (last 300 lines) to establish F0-F11 history; confirmed HEAD=017ef70 (F11 "Device rebuild")
+- Read /home/z/my-project/src/app/page.tsx in full (290 lines — the ENTIRE UI)
+- Read /home/z/my-project/src/app/layout.tsx (38 lines) — imports Toaster only
+- Read /home/z/my-project/src/app/globals.css (198 lines) — Tailwind + psy theme tokens
+- Read /home/z/my-project/src/lib/utils.ts (7 lines — cn helper, unused by page.tsx)
+- Confirmed page.tsx imports ONLY `React` + `{ PsyLive, LiveState, STREAMS }` from `@/lib/psyLive` (line 3-4). ZERO imports from `src/components/` or `src/hooks/`. The shadcn/ui library (50+ components in src/components/ui/) is entirely unused by the live UI.
+- Identified two inline local components: `Metric` (lines 271-278) and `SliderControl` (lines 280-290). No external component deps.
+- Read /home/z/my-project/src/lib/psyLive.ts in full (1053 lines) — traced every method called from page.tsx
+- Read /home/z/my-project/foundation/music/MusicalSession.ts (385 lines) — verified setStyle/setEnergy/setDensity/setTension targets
+- Read /home/z/my-project/foundation/music/MusicalContext.ts (224 lines) — verified private-field overwrite behavior
+- Grep'd tests/ for all 10 UI control methods (setStyle/setEnergy/setDensity/setTension/setChannelVolume/setDelayAmount/setDelayFeedback/setReverbSend/setVolume/setRadioVolume) — ZERO test coverage
+- Grep'd tests/ for React/RTL/page.tsx imports — ZERO UI rendering tests exist
+- Grep'd page.tsx for forbidden blue/indigo colors — confirmed 4 violations
+- Verified bassFreq is declared at psyLive.ts:200 but NEVER assigned anywhere — KEY metric always shows '—'
+- Traced audio graph: voices → roleBus(kick/bass/lead/hat) → engineBus → comp → master → safetyLimiter → analyser → destination; radio → radioGain → radioAnalyser → engineBus (F10 routing)
+- Traced role-ducking conflict: psyLive.ts:868-877 overwrites kickBus/bassBus/leadBus/hatBus gains every 200ms when radio is on, clobbering user's mixer slider values
+- Traced MusicalContext.updateFromRadio (line 112-117) overwrites energy/density from radio every 200ms; updateFromTransport (line 159) smooths tension back toward COMPOSITION_ARC targets every bar — clobbering user's Energy/Density/Tension slider values
+
+Stage Summary:
+- 24 visible interactive controls audited: 9 LIVE (play/stop/connect/disconnect/vol/radioVol/delay/feedback/reverb), 4 BROKEN (kick/bass/lead/hat mixer sliders — overwritten by ducking when radio on; tension slider — pulled back to arc target every bar), 4 DEAD (energy slider — ctx.energy never read by note generators; density slider — only affects phrase-reward bookkeeping, not audio; style buttons — only change label, note generation is style-agnostic AND gets overwritten by detectStyle when radio on; KEY metric — bassFreq never assigned), 1 DECORATIVE (role activity bars — reflect slider state not audio state), 6 DISPLAY-ONLY (BPM/SECTION/PHRASE/sync badge/LOW-MID-HIGH/KICKS readouts)
+- UI is DASHBOARD/INSTRUMENT HYBRID: footer literally says "PSY4 · Musical Device" (line 264) and uses instrument styling (gradient title, neon sliders, rounded transport), BUT exposes dashboard diagnostics (LOW/MID/HIGH %, KICKS count, ROLE/MOTIFS/TENSION readouts, sync state machine with 5 states, window.__psy4TransportDebug global)
+- Footer IS sticky (marginTop:'auto' in flex column, line 263); layout DOES use min-h-screen flex flex-col equivalent (minHeight:'100dvh', display:'flex', flexDirection:'column', line 134)
+- FORBIDDEN COLORS PRESENT: 4 violations — connecting badge #3b82f6 (blue-500, line 9), DELAY slider #3b82f6 (blue-500, line 226), FEEDBACK slider #8b5cf6 (violet-500, line 227), REVERB slider #06b6d4 (cyan-500, line 228)
+- NOT mobile-first: mixer grid is fixed 4-col (line 214), FX grid fixed 3-col (line 225); touch targets for style buttons (~24px), connect/disconnect (~24px), stream select (~24px), and sliders (~16px) all BELOW 44px minimum
+- ZERO tests for any UI control surface (10 setter methods, 0 test calls); only getTransportDebug() is exercised, and only for transport/radio state, not audio-effect verification
+
+---
+Task ID: F13-D-RADIO
+Agent: Forensic Audit Agent D (Radio)
+Task: Forensic audit of PSY4 radio subsystem + two-stations problem
+
+Work Log:
+- Read worklog tail (last 400 lines) for context; HEAD confirmed at 017ef70 (F11)
+- Read psyLive.ts (1053 lines) — full radio connect/disconnect/detect/switch logic + audio graph
+- Read beatPLL.ts (213 lines) — PLL observer (note: psyLive.this.pll is DEAD CODE, actual PLL is inside RadioObservationLayer→BeatObservationEngine)
+- Read melodyObserver.ts (394 lines) — YIN pitch detection (note: psyLive.this.melodyObserver is used ONLY for ensureTimeDomainBuf(), never observe()d; actual pitch detection is inside radioLayer's own MelodyObserver instance)
+- Read radioStateGate.ts (169 lines) — 7-state gate (DISCONNECTED/CONNECTING/CONNECTED_NO_SIGNAL/CONNECTED_SIGNAL/PLAYING_SIGNAL/BUFFERING/ERROR); observe() NEVER called from psyLive.ts → gate is DECORATIVE at runtime
+- Read foundation/radio/RadioObservationLayer.ts (366 lines) — SINGLE entry point for radio analysis; owns signalState + observationState
+- Read foundation/radio/RadioObservationTypes.ts (179 lines) — 9 signal states + 6 observation states
+- Read foundation/radio/BeatObservationEngine.ts (170 lines) — wraps BeatPLL with real confidence (onsetStrength×0.5 + regularityFit×0.3 + signalQuality×0.2)
+- Read src/lib/studio/engine/reference/radioStreams.ts (128 lines) — 10-station registry, but DEAD CODE (only imported by dead referenceListener modules, NOT by runtime)
+- Read foundation/music/MusicalSession.ts (386 lines) — planBar/observeRadio; session.reset() NEVER called from psyLive.ts
+- Read src/app/page.tsx (radio UI section) — station <select> is disabled while radioOn (line 236), forcing disconnect→reselect→connect workflow
+- Curl-tested all 6 runtime station URLs (HEAD requests with -I -L --max-time 10)
+- Traced audio graph: radioSource → radioGain(0.5) → radioAnalyser → engineBus(0.8) → comp(-18dB,2:1) → master(0.9) → safetyLimiter(-1dB,20:1) → analyser → destination
+- Traced data path: radioAnalyser → radioLayer.process() → [BROKEN: signalState stuck at DISCONNECTED] → transport.observeBeat() NEVER called → PLL NEVER locks → syncStatus stuck at 'no_signal'
+- Searched for radioLayer.markConnected/markConnecting calls in psyLive.ts — ZERO results (only in tests)
+- Confirmed RadioStateGate.observe() is NEVER called from runtime (only initialized, never fed data)
+- Confirmed this.pll (BeatPLL at psyLive.ts:238) is DEAD CODE — only referenced at line 783 (reset on disconnect), never fed observations, never queried
+- Confirmed this.melodyObserver is used ONLY for ensureTimeDomainBuf() (buffer allocator); observe() never called → observations array always empty
+
+Stage Summary:
+- STATION COUNT + URLs: 6 hardcoded in psyLive.ts:55-62 (STREAMS array): psyndora(9111), babaganousha(8443), spaceunicorn, psyndora-prog(9110), psyndora-chill(9112), radiocaprice-psy(radcap.net/psytrance.pls). A 10-station registry exists in reference/radioStreams.ts but is DEAD CODE (not imported by runtime).
+- TWO-STATIONS PROBLEM: CONFIRMED via curl -I. Only 3 of 6 return HTTP 200: Psyndora(9111)✅, Babaganousha(8443)✅, Space Unicorn✅. Three are DEAD: Psyndora Progressive(9110)→Connection refused (port closed), Psyndora Chill(9112)→SSL unexpected EOF (TLS handshake fails), Radio Caprice(radcap.net)→DNS resolution failure (domain unresolvable). All 3 working stations return Access-Control-Allow-Origin:* (CORS OK). User's "only 2 work" perception is accurate ±1 (Space Unicorn is broader trance, not purist psytrance — may be perceived as "not really working").
+- SWITCH: CLEAN HANDOFF — no zombie stream. Old radioEl.pause()+src='' (line 736,770), old radioSource.disconnect() (line 735,771), new Audio()+createMediaElementSource() per connect (lines 737,740). radioGain+radioAnalyser REUSED (lines 741-746, created once). UI forces disconnect→reselect→connect (select disabled while radioOn, page.tsx:236). No Web Audio API double-MediaElementSource violation (new element each time).
+- RADIO→COMPOSITION: REAL ADAPTATION but BROKEN PIPELINE. MusicalSession.observeRadio() feeds ctx.updateFromRadio + window.observe + detectStyle. planBar() uses occupancy to: reduce kick velocity (radioKickOcc>0.7→vel 0.6), skip kick/bass/lead notes in scheduler (psyLive.ts:690,696,699 — if occupancy.kick>0.7/bass>0.75/lead>0.85), reduce lead density (radio.currentOccupancy.lead>0.6→density×0.5). BUT: entire pipeline is DEAD because radioLayer.signalState is stuck at 'DISCONNECTED' (markConnected() never called from psyLive.ts:731-767 connectRadio()). updateSignalState() returns early at RadioObservationLayer.ts:266-269. Beat detection (line 141) and pitch observation (line 183) never run. transport.observeBeat() never called. PLL never locks. syncStatus stuck at 'no_signal' after first detect tick. The REALITY-REPAIR-GATE browser test (163 BPM, 20 kicks) was pre-F2.5 (old inline detect); at HEAD 017ef70 the radio follower is NON-FUNCTIONAL.
+- STATE MACHINE: THREE parallel machines, LEAKY/DESYNCED. (1) RadioStateGate (radioStateGate.ts) — 7 states, initialized but observe() never called → frozen at CONNECTED_NO_SIGNAL. (2) RadioObservationLayer signalState — 9 states, stuck at DISCONNECTED (markConnected never called). (3) RadioObservationLayer observationState — 6 states, stuck at NO_SIGNAL. (4) psyLive syncStatus — 5 states (idle/connecting/no_signal/listening/following), driven by observationState which is stuck. NO reconnect/backoff logic. disconnectRadio() calls transport.loseSource() (holdover with 10s half-life confidence decay) but radioLayer.reset() puts signalState back to DISCONNECTED, so re-connect has same bug. session.reset() NEVER called → learned state persists across disconnect/reconnect.
+
+---
+Task ID: F13-B-FOUNDATION
+Agent: Forensic Audit Agent B (Foundation)
+Task: Forensic audit of PSY4 foundation (transport/radio/music)
+
+Work Log:
+- Verified HEAD=017ef70 (F11). Read tail of worklog.md (lines 5889-6289) for project history.
+- Read all 19 foundation .ts files (4 transport + 4 radio + 5 music + 6 primitives) line-by-line.
+- Read /home/z/my-project/src/lib/psyLive.ts (1054 lines) to trace how foundation is actually wired into the runtime.
+- Grepped for: ABSTAIN, MusicalRole, PhraseAction, bassFreq, TODO/FIXME/stub, pickMotif, wasUsedRecently, transportAdapter., radioLayer., session?/session., all primitives imports.
+- Verified TransportAdapter is instantiated (psyLive:406) but ZERO methods are called on it (grep `transportAdapter\.` returns no matches).
+- Verified MusicalSession has NO getContext() method — psyLive setEnergy/setDensity/setTension calls `(this.session as any).getContext()` which returns undefined and throws TypeError on `.energy = v`.
+- Verified `this.bassFreq` in psyLive is initialized to 0 and NEVER WRITTEN anywhere — MusicalContext.updateFromRadio's bassFreq branch (MusicalContext.ts:130-138) is permanently dead.
+- Verified foundation/radio produces RadioPitchObservation every detect tick (RadioObservationLayer.ts:180-228) but NO consumer reads `radioSnap.pitch` — wasted CPU on YIN pitch detection.
+- Verified `pickMotif` (MusicalMemory.ts:154) is NEVER CALLED — reward is computed and stored but never influences future motif selection. Learning = bookkeeping only.
+- Verified foundation/music/primitives/rhythm.ts (134 lines), bass.ts (112 lines), chords.ts (108 lines) are NEVER IMPORTED by any module in foundation or src.
+- Verified foundation/music/index.ts:16 exports `MusicalRole` and `PhraseAction` types that DO NOT EXIST in MusicalSession.ts — broken barrel export.
+- Verified 64-bar form IS real code (MusicalContext.ts:58-67 COMPOSITION_ARC + line 151 `Math.floor((bar % 64) / 8)`), cycles infinitely.
+- Verified PHRASE_STRUCTURE = [0,0,1,0,0,1,2,0] (MusicalSession.ts:56) is real but produces A-A-B-A-A-B-C-A pattern, NOT "A→A'→B→A-return" as the audit prompt claimed.
+- Verified ABSTAIN appears ONLY in 2 comments (MusicalSession.ts:5 and :238) — no ABSTAIN identifier, string, or action exists.
+- Verified MusicalTransport IS the actual clock: psyLive.scheduler (line 641-668) reads `this.transport.snapshot().beatTime` and `.beatDuration`. No independent nextNoteTime/step/barCount variables in psyLive.
+- Verified BeatPLL still exists (src/lib/beatPLL.ts) and is wrapped by BeatObservationEngine (foundation/radio/BeatObservationEngine.ts:46) which is wrapped by RadioObservationLayer. PLL feeds Transport.observeBeat via psyLive.detect (line 820).
+
+Stage Summary:
+- STATE OWNERSHIP CONFLICTS:
+  * BPM: CLEAN — MusicalTransport.bpm is single source (anchor-based, no float drift); MusicalContext.bpm is a redundant smoothed copy that always converges to transportBpm.
+  * KEY (rootPc/scaleName): MusicalContext owns — but the bassFreq branch that updates them is DEAD (psyLive.bassFreq never written). Key is permanently stuck at default A phrygian-dominant (MusicalContext.ts:70-71) unless setInternal() is called (never invoked by psyLive).
+  * STYLE: CONFLICT — MusicalSession.style (auto-detected in detectStyle) AND psyLive.currentStyle/musicState.style (separately classified in psyLive.classifyStyle with 8s hysteresis). setStyle writes via `(this.session as any).style = style` (psyLive:597) bypassing API; detectStyle overwrites on next tick.
+  * ENERGY: DUAL — MusicalContext.energy (smoothed from energyHistory) AND psyLive.musicState.energy (separately smoothed from same energyHistory). Two independent variables.
+  * DENSITY: DUAL — MusicalContext.density (derived from energy, line 117) AND psyLive.musicState.density (derived from energySlope, lines 911-918). Used by different consumers.
+  * TENSION: MusicalContext owns (target from COMPOSITION_ARC, smoothed at 0.05 rate). psyLive.setTension tries to override but is BROKEN (calls non-existent getContext()).
+  * SECTION/PHRASE: CLEAN — derived from bar via COMPOSITION_ARC and `bar % 8`.
+  * LEAD/BASS/MASTER VOLUME: NOT IN FOUNDATION — owned entirely by psyLive (kickBus/bassBus/leadBus/hatBus/master gain nodes). Foundation has zero volume control.
+  * barIndex/beatIndex/beatTime: CLEAN — Transport.snapshot() is single source; MusicalContext and MusicalSession accept `bar` as a parameter.
+- MUSICAL AUTHORITY: FRACTURED. MusicalSession is the single COMPOSER (only NotePlan generator). BUT psyLive.scheduleStep (line 690-700) independently GATES notes based on occupancy: kick removed if occupancy.kick>=0.7, bass removed if occupancy.bass>=0.75, lead removed if occupancy.lead>=0.85. psyLive.detect (line 867-877) also mutates bus gains (role ducking) in parallel. So MusicalSession decides WHAT to plan; psyLive decides WHETHER to play. Negative-control authority is in psyLive, not foundation.
+- COMPOSITION FORM: REAL — 64-bar form via COMPOSITION_ARC is live code (8 sections × 8 bars, cycles via `bar % 64`). Phrase structure A-A-B-A-A-B-C-A is real (PHRASE_STRUCTURE array). ABSTAIN is COMMENT-ONLY (no code). Learning is BOOKKEEPING ONLY (reward computed, EMA-stored, but pickMotif never called → reward never influences selection).
+- TRANSPORT: ACTUALLY THE CLOCK. MusicalTransport.snapshot() is read by scheduler (psyLive:645). No duplicate nextNoteTime/step/barCount variables. BeatPLL remains as observer wrapped by BeatObservationEngine wrapped by RadioObservationLayer. TransportAdapter is DEAD (instantiated, zero method calls).
+- RADIO OBSERVATION: FEEDS COMPOSITION PARTIALLY. RadioBeatObservation crosses into Transport (only {time, confidence, source}). RadioPitchObservation is PRODUCED BUT NEVER CONSUMED (wasted YIN/flatness/melodic-band computation every 200ms). Occupancy feeds MusicalSession.observeRadio. bassFreq is always undefined → key detection dead. Radio loss: signal→LOST after 2s, but Transport.loseSource() only called on explicit disconnectRadio; on silent drop, composition continues with low-energy observations (density naturally reduces). No specific "radio lost" branch in MusicalSession.
+- DEAD CODE COUNT: ~600+ lines across foundation. TransportAdapter (~155 lines, 10 dead methods). MusicalTransport.predictBeats/getHypotheses/subscribe/isRunning (~50 lines). MusicalMemory.pickMotif/getLastPhrase/getPhraseHistory/wasUsedRecently (~50 lines). motif.vary/allInScale (~30 lines). rhythm.ts ENTIRE FILE (134 lines, 10 functions, zero imports). bass.ts ENTIRE FILE (112 lines, 4 functions, zero imports — MusicalSession has its own inline bass). chords.ts ENTIRE FILE (108 lines, 6 functions, zero imports — no harmony generation). RadioObservationLayer pitch block (~50 lines, produces unused output). foundation/*/index.ts barrels (never imported). music/index.ts:16 has BROKEN EXPORTS (MusicalRole, PhraseAction types don't exist in MusicalSession.ts). psyLive.setEnergy/setDensity/setTension are BROKEN (call non-existent MusicalSession.getContext()).
+
+---
+Task ID: F13-C-STUDIO-TESTS
+Agent: Forensic Audit Agent C (Studio Engines + Tests)
+Task: Forensic audit of studio/engine dead code + test theater
+
+Work Log:
+- Read worklog tail (last 400 lines) for context (HEAD=017ef70 post-F11)
+- Listed src/lib/studio/engine/ contents: 67 .ts files, 34,185 total lines (37 top-level + 17 forensic/ + 13 reference/)
+- Computed per-file line counts via wc -l
+- Read /home/z/my-project/src/lib/psyLive.ts imports (lines 15-30): imports only learning, beatPLL, patternMutator, melodyObserver, radioStateGate, foundation/{transport,radio,music}/* — ZERO imports from studio/engine/
+- Grep'd src/ for "studio/engine" — only 3 API routes import it: api/reference/train, api/forensic/render, api/forensic/analyze
+- Verified foundation/{transport,radio,music}/*.ts do NOT import studio/engine (grep returned 0 matches)
+- Verified learning.ts, beatPLL.ts, patternMutator.ts, melodyObserver.ts, radioStateGate.ts have NO imports at all (zero `from` lines)
+- Traced transitive imports of each API route:
+  * /api/reference/train → forensic/{offlineRenderer,audioAnalyzer,worlds} + reference/{referenceScore,parameterRegistry,worldDNA,referenceListener(type-only)}
+  * /api/forensic/render → forensic/{offlineRenderer,worlds,voices}
+  * /api/forensic/analyze → forensic/forensicRunner (transitively loads 11 more forensic/* files + engine/musicalGrammar.ts)
+- Traced intra-engine imports: psy4EngineV2 (5485) imported only by legacyAudioGraph (also dead) → entire psy4EngineV2 dependency tree is DEAD
+- Confirmed continuousTrainer.ts, perVoiceAnalyzer.ts, renderWorker.ts, referenceListener.ts, referenceListenerV2.ts, selfAnalyzer.ts, trainingLoop.ts, musicalUnderstanding.ts, performanceMonitor.ts, radioStreams.ts — NONE imported by any source file outside studio/engine/reference/ itself
+- Confirmed phaseSync.ts, djController.ts — imported only by psy4EngineV2 (dead) and referenceListener (type-only, erased at runtime) → DEAD
+- Confirmed engine/offlineRenderer.ts (114 lines) — NOT imported anywhere (dead orphan that imports engineWorklet, sampleBank, multisampleGenerator — all dead)
+- Confirmed forensic/liteRenderer.ts + forensic/latencyMonitor.ts — only imported by orphaned continuousTrainer/perVoiceAnalyzer/renderWorker → DEAD
+- Verified referenceListener.ts (818 lines) — only `import type` from API route and other dead files. Type-only imports are erased by TypeScript compilation. File is NEVER loaded at runtime.
+- Ran all 13 test suites via bun to verify pass counts:
+  * reality-bridge/run-all.ts: 56/56 pass
+  * reality-bridge/beatpll-convergence.ts: 48/48 pass
+  * reality-bridge/melody-acceptance.ts: 13/13 pass
+  * reality-bridge/stress-test.ts: 1/1 pass (single result)
+  * foundation/music/musical-instrumentation.ts: 6 gates PASS (verdict=PASS)
+  * foundation/radio/radio-observation-tests.ts: 20/20 pass
+  * foundation/radio/radio-adversarial.ts: 12/12 pass
+  * foundation/radio/radio-integration-tests.ts: 12/12 pass
+  * foundation/transport/transport-tests.ts: 21/21 pass
+  * foundation/transport/transport-adversarial.ts: 6/6 pass
+  * foundation/transport/transport-runtime-ownership.ts: 15/15 pass
+  * foundation/transport/playback-reality.ts: 18/18 pass
+  * foundation/transport/f3-hardening.ts: 28/28 pass
+  * TOTAL: 256 tests, 256 pass, 0 fail
+- Read every test file (12 .ts files, ~5,000 lines) and classified each test for theater risk
+- For each test, evaluated 12 failure modes (silence, constant tone, white noise, one-instrument-only, bypassed device, false UI claim, metadata-only, random material, wrong station, radio disconnected, composer bypassed)
+- Identified 4 explicit "theater" patterns: tests that PASS when the claimed capability is ABSENT (LR-5D, MS-10A, PE-7E, SB-6B, MO-3J)
+- Identified 4 static-analysis tests that regex-match source code (MS-10B/C/D, OWN-12) — could be defeated by comments
+- Identified musical-instrumentation.ts as the worst theater: reads composer.planBar() NotePlan metadata, NOT actual AudioContext output
+
+Stage Summary:
+- studio/engine: 0 LIVE-RUNTIME files (0 lines), 19 API-ONLY files (5,729 lines), 48 DEAD files (28,456 lines). Total 67 files / 34,185 lines. DEAD = 83% of files, 83% of lines.
+  * Worklog claim CONFIRMED: psy4EngineV2.ts (5485), musicalDirector.ts (1987), layerEngine/melodyEngine/harmonyEngine/flowEngine/djController, sendEffects/effectsRack/multibandCompressor, schedulerWorker/workletEngine/engineWorklet, sampleBank, ALL reference/* (except referenceScore/parameterRegistry/worldDNA), ALL forensic/* (except the 15 forensic files reachable from API routes) — NONE imported by psyLive.ts chain.
+  * API-ONLY forensic pipeline = 15 files / 4,849 lines (reachable from /api/forensic/render, /api/forensic/analyze, /api/reference/train). Has ZERO tests.
+  * API-ONLY reference files = 3 files / 709 lines (referenceScore, parameterRegistry, worldDNA).
+  * Total DEAD = 28,456 lines (83% of studio/engine). Worklog's "~23,000 lines" estimate was conservative.
+- tests: 256 total, 256 pass, 0 fail. Breakdown: STRONG ≈ 215, WEAK ≈ 31, THEATER ≈ 10.
+  * STRONG: BeatPLL convergence (48), MelodyObserver acceptance (13), PatternMutator (3), RadioStateGate (8), Transport matrix+adversarial+runtime-ownership+f3-hardening (70), radio-observation (20), radio-integration (12), playback-reality PR-01..09/14..18 (~14), FailureInjection (3), most of AnalyserNode (5).
+  * WEAK: stress-test (1 — explicitly states gcDropoutsClaimProven=false), musical-instrumentation (6 — reads NotePlan metadata, not audio), playback-reality PR-10/11/12 (orphaned-gain/path checks, no voice→master verification), radio-adversarial (12 — mostly "no crash" not "correct"), MS-10B/C/D + OWN-12 (static regex on source), AN-1A..F (test the shim, not the engine).
+  * THEATER: LR-5D (passes when NOT online learning), MS-10A (passes when NO song structure), PE-7E (passes when PooledEngine NOT used), SB-6B (passes when SoundBank NOT connected), MO-3J (passed:true always, informational only).
+- Worst theater examples:
+  1. MS-10A "Does psyLive.ts implement song structure INTRO→BUILD→PEAK→BREAK→OUTRO?" — passed:true while evidence says "NO SONG STRUCTURE — worklog claim of intro→build→peak→break→peak2→outro is FALSE for current HEAD". Test gives green check while explicitly falsifying the claim.
+  2. musical-instrumentation.ts — reads composer.planBar() NotePlan metadata, not actual AudioContext output. A bypassed composer whose plans are ignored by the scheduler still PASSES all 6 gates. No check that bass AND kick AND lead AND hats are distinct. No check that the planned notes are audible.
+  3. PE-7E + SB-6B — "tests" that pass when the module is NOT connected to runtime. Honest about disconnection but the green checkmarks mislead readers into thinking PooledEngine and SoundBank are tested/working.
+  4. playback-reality PR-09/PR-10 — counts oscillator.start() calls and non-zero gain nodes. Does NOT verify started oscillators are connected to master. Could pass with orphaned voices + master→limiter→analyser→destination chain producing silence.
+  5. stress-test.ts — output JSON explicitly says `"gcDropoutsClaimProven": false` and `"PooledEngine is DEAD CODE — not connected to psyLive runtime"` yet the test "passes" (exit 0).
+  6. MS-10B/C/D + OWN-12 — pure regex on psyLive.ts source. A comment containing "transport.snapshot()" or a removed-variable reference would pass/fail the test without reflecting runtime behavior.
+
+---
+Task ID: F13-FORENSIC-AUDIT
+Agent: main (Principal Audio Systems Engineer)
+Task: GATE F13 — Forensic Product Reset (no code, audit only). Produce 9 audit deliverables.
+
+Work Log:
+- PHASE 0 FREEZE: HEAD=017ef70 (F11), origin/main=017ef70 (sync), worktree clean, lint CLEAN, typecheck FAILS (9 errors in psyLive.ts: Pattern import conflict, tempoStats, getContext×3, createMediaElementSource overload, engineBus null, Uint8Array/Float32Array generics ×2; plus errors in tests + selfAnalyzer), dev server running HTTP 200 but Fast Refresh runtime errors, 256 tests pass.
+- PHASE 1-4 READ: Dispatched 4 parallel forensic subagents (UI, Foundation, Studio+Tests, Radio) + read core files myself (psyLive.ts 1054 lines, MusicalSession.ts 385, RadioObservationLayer.ts 367, MusicalContext.ts 225, motif.ts 178, page.tsx 290). Verified all agent findings against source code.
+- PHASE 5 MUSICAL AUTHORITY: MusicalSession is single composer of WHAT. But WHETHER (occupancy gating at psyLive:690,696,699) and HOW LOUD (bus ducking at psyLive:867-877) are owned by psyLive. Authority FRACTURED. Learning is BOOKKEEPING (pickMotif never called).
+- PHASE 6 STARTUP LEAD: calculateLeadDensity returns 0.237 for INTRO bar 0 → lead plays immediately on PLAY. No "groove-first" startup sequence. F9 comment "default REST" is false. Lead register is MIDI 48-72 (C3-C5), mostly C3-C4 after -12 shift.
+- PHASE 7 KICK/BASS: Kick always 4-on-floor (planned). Bass always 8 notes (interlocked). BUT scheduleStep skips kick if occupancy.kick>0.7, bass if >0.75. Intentional ducking, but combined with dead radio follower (no tempo sync), creates unsynchronized gaps.
+- PHASE 8-9 RADIO: 🔴 P0 — radioLayer.markConnected() NEVER called from connectRadio(). signalState stuck at DISCONNECTED. Beat detection block (RadioObservationLayer.ts:141) never entered. transport.observeBeat() never called. PLL never locks. syncStatus stuck at 'no_signal'. 'listening'/'following' UNREACHABLE. Only spectral occupancy + energy survive. TWO STATIONS CONFIRMED: 3/6 dead (psyndora-prog port closed, psyndora-chill TLS EOF, radiocaprice DNS dead). 3 alive (Psyndora, Babaganousha, Space Unicorn) with CORS *.
+- PHASE 10-13 UI: 24 controls. 9 LIVE, 5 BROKEN (mixer clobbered by detect when radio on, TENSION TypeError+arc-revert, STYLE label-only+overwritten), 3 DEAD (ENERGY/DENSITY TypeError — getContext() doesn't exist, KEY metric bassFreq never assigned), 1 FAKE (role activity bars show slider values not audio), 1 DECORATIVE (visualizer), 8 DISPLAY. 4 forbidden blue/indigo colors. Not mobile-first. 50-file shadcn library unused. window.__psy4TransportDebug exposes 20+ internal fields.
+- PHASE 17-18 TESTS: 256 tests pass. ~215 STRONG, ~31 WEAK, ~10 THEATER. WORST: musical-instrumentation.ts reads NotePlan metadata not audio (bypassed composer passes). MS-10A passes BY FALSIFYING song-structure claim. 15 critical wiring points, 0 tested, 11 broken at runtime. Studio/engine: 34,185 lines, 83% DEAD, 17% API-only, 0% live.
+- Wrote 9 audit documents (2,200 lines total) in audit/ directory:
+  1. F13_FORENSIC_SYSTEM_MAP.md (279 lines) — real call graph (engine + radio paths), edge-by-edge audit, 20 runs vs 14 doesn't-run items
+  2. F13_REALITY_VS_VISION.md (75 lines) — 32 claims audited: 7 PROVEN, 8 PARTIAL, 13 FALSE, 3 DEAD, 1 MISSING
+  3. F13_AUDIO_GRAPH.md (241 lines) — complete node inventory, pathologies, signal levels. Structurally sound, needs de-clobbering.
+  4. F13_STATE_OWNERSHIP.md (240 lines) — 16 properties mapped. 6 clean, 10 broken/conflicted/dead.
+  5. F13_MUSICAL_AUTHORITY.md (267 lines) — authority table, fracture analysis, startup sequence root cause, target model
+  6. F13_UI_FORENSIC.md (287 lines) — control-by-control audit, structural audit, product audit, target IA
+  7. F13_RADIO_FORENSIC.md (266 lines) — station inventory, switch trace, dead follower proof, state machine analysis, failure matrix
+  8. F13_TEST_GAP_ANALYSIS.md (249 lines) — per-file verdicts, theater matrix, 15-point integration gap, required new tests
+  9. F13_REBUILD_PLAN.md (296 lines) — KEEP/MERGE/REWIRE/REBUILD/DELETE/ARCHIVE table, target architecture, 9-phase implementation order, 3 vertical slices, success criteria
+
+Stage Summary:
+- BASELINE: HEAD 017ef70, lint clean, typecheck FAILS (9 psyLive.ts errors), 256 tests pass, dev server 200 (Fast Refresh errors)
+- P0 ROOT CAUSES: (1) radioLayer.markConnected() never called → entire radio follower dead. (2) MusicalSession has no getContext() → setEnergy/setDensity/setTension throw TypeError. (3) 3/6 radio station URLs dead.
+- P1 ROOT CAUSES: (1) Lead enters on bar 0 (no startup sequence). (2) pickMotif never called (learning is bookkeeping). (3) bassFreq never assigned (key detection dead). (4) Bus gains clobbered by detect() when radio on. (5) Style field never read by generators. (6) 4 desynced radio state machines.
+- VERDICT: READY FOR REBUILD. Architecture is mostly sound (Transport, audio graph, MusicalSession structure are keepable). The failures are WIRING failures (missing method calls, broken setters, dead selectors), not architectural failures. Minimum viable fix: R1 (wire radio follower) + R2 (fix musical controls). Full rebuild: 9 phases, critical path R1→R2→R3/R4→R5→R6→R8.
+- No code was modified. No features were added. 9 audit documents produced.
