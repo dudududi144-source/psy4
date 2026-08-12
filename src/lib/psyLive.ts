@@ -875,7 +875,7 @@ export class PsyLive {
 
       // Pad: sustained when radio is in break/low energy
       if (intensity.pad && barPos === 0 && this.bankPad && this.pooled) {
-        const radioEnergy = this.getRadioEnergy();
+        const radioEnergy = this.radioEnergyLevel || 0;
         if (radioEnergy < 0.4) { // only when radio is quiet
           this.pooled.triggerSynth(this.bankPad, mtof(harmonicRoot + currentChordRoot), t, 0.3, stepDur * 16);
         }
