@@ -219,6 +219,10 @@ export class PsyLive {
   private energyHistory: number[] = [];
   // Compressor reduction monitoring
   private comp: DynamicsCompressorNode | null = null;
+  // F15: Master EQ for frequency balancing
+  private masterEqLow: BiquadFilterNode | null = null;
+  private masterEqMid: BiquadFilterNode | null = null;
+  private masterEqHigh: BiquadFilterNode | null = null;
   // F13/R1: Time-domain buffer for radio analysis (inlined, was melodyObserver)
   private radioTdBuf: Float32Array | null = null;
 
@@ -338,20 +342,40 @@ export class PsyLive {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
     this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
 
-    // Simple chain: voices → master → safetyLimiter → analyser → destination
-    // R6: Safety limiter added to prevent clipping (engine + radio sum)
+    // F15: Master chain — EQ → comp → master → safetyLimiter → analyser → destination
+    // EQ for frequency balancing (was missing — mix was unbalanced)
+    this.masterEqLow = this.ctx.createBiquadFilter();
+    this.masterEqLow.type = 'lowshelf';
+    this.masterEqLow.frequency.value = 80;
+    this.masterEqLow.gain.value = 2;  // boost sub for weight
+
+    this.masterEqMid = this.ctx.createBiquadFilter();
+    this.masterEqMid.type = 'peaking';
+    this.masterEqMid.frequency.value = 350;
+    this.masterEqMid.Q.value = 0.8;
+    this.masterEqMid.gain.value = -1; // gentle mid cut to reduce muddiness
+
+    this.masterEqHigh = this.ctx.createBiquadFilter();
+    this.masterEqHigh.type = 'highshelf';
+    this.masterEqHigh.frequency.value = 8000;
+    this.masterEqHigh.gain.value = 1.5; // airy top
+
     this.master = this.ctx.createGain();
     this.master.gain.value = 0.9;
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 512;
     this.analyser.smoothingTimeConstant = 0.7;
-    // R6: Safety limiter — brickwall-style, only activates on peaks near 0dBFS
     this.safetyLimiter = this.ctx.createDynamicsCompressor();
-    this.safetyLimiter.threshold.value = -1.0;   // only catches peaks above -1dB
-    this.safetyLimiter.knee.value = 0;            // hard knee
-    this.safetyLimiter.ratio.value = 20;          // 20:1 = brickwall-ish
-    this.safetyLimiter.attack.value = 0.003;      // 3ms (fast)
-    this.safetyLimiter.release.value = 0.05;      // 50ms
+    this.safetyLimiter.threshold.value = -1.0;
+    this.safetyLimiter.knee.value = 0;
+    this.safetyLimiter.ratio.value = 20;
+    this.safetyLimiter.attack.value = 0.003;
+    this.safetyLimiter.release.value = 0.05;
+    // F15: Chain — comp → EQ → master → limiter → analyser → destination
+    // (comp comes before EQ so EQ doesn't trigger more compression)
+    this.masterEqLow.connect(this.masterEqMid);
+    this.masterEqMid.connect(this.masterEqHigh);
+    this.masterEqHigh.connect(this.master);
     this.master.connect(this.safetyLimiter);
     this.safetyLimiter.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
@@ -364,7 +388,7 @@ export class PsyLive {
     const wet = this.ctx.createGain(); wet.gain.value = 0.22;
     this.delayFb = this.ctx.createGain(); this.delayFb.gain.value = 0.34;
     this.delaySend.connect(this.delay);
-    this.delay.connect(wet); wet.connect(this.master);
+    this.delay.connect(wet); wet.connect(this.masterEqLow!);
     this.delay.connect(this.delayFb); this.delayFb.connect(this.delay);
 
     // F11: Reverb bus
@@ -374,7 +398,7 @@ export class PsyLive {
     const reverbWet = this.ctx.createGain(); reverbWet.gain.value = 0.5;
     this.reverbSend.connect(this.convolver);
     this.convolver.connect(reverbWet);
-    reverbWet.connect(this.master);
+    reverbWet.connect(this.masterEqLow!);
 
     // Noise buffer for hats
     const len = Math.floor(this.ctx.sampleRate * 0.25);
@@ -446,85 +470,159 @@ export class PsyLive {
     this.leadBus.connect(this.leadMute); this.leadMute.connect(this.leadDuck); this.leadDuck.connect(this.engineBus);
     this.hatBus.connect(this.hatMute);   this.hatMute.connect(this.hatDuck);   this.hatDuck.connect(this.engineBus);
     this.engineBus.connect(this.comp);
-    this.comp.connect(this.master);
+    // F15: comp → master EQ chain → master
+    this.comp.connect(this.masterEqLow!);
   }
 
-  // ── Voices — connect to role buses (not master directly) ──
-  private kick(t: number): void {
-    if (!this.ctx || !this.kickBus) return;
-    // F10: Kick with punch — sine body + noise click for transient presence
-    const osc = this.ctx.createOscillator(), gain = this.ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(180, t); // F10: higher attack pitch for punch
-    osc.frequency.exponentialRampToValueAtTime(44, t + 0.09);
-    gain.gain.setValueAtTime(1.0, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5); // F10: longer decay
-    osc.connect(gain); gain.connect(this.kickBus);
-    osc.start(t); osc.stop(t + 0.52);
+  // ── F15 SYNTHESIS REBUILD — professional-quality voices ──
+  // Each voice uses layered oscillators, saturation, and per-note variation
+  // to produce release-ready sound instead of demo beeps.
 
-    // F10: Add noise click for transient definition
+  private kick(t: number, velocity = 0.9): void {
+    if (!this.ctx || !this.kickBus) return;
+    const v = Math.max(0.1, Math.min(1, velocity));
+    // F15: Layered kick — sub sine (sustain) + body sine (pitch env) + transient
+    // Sub layer: 55Hz sine sustained for punch weight
+    const sub = this.ctx.createOscillator();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(55, t);
+    const subGain = this.ctx.createGain();
+    subGain.gain.setValueAtTime(0.6 * v, t);
+    subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+    sub.connect(subGain); subGain.connect(this.kickBus);
+    sub.start(t); sub.stop(t + 0.2);
+
+    // Body: pitch envelope 150→45Hz (the "thump")
+    const body = this.ctx.createOscillator();
+    body.type = 'sine';
+    body.frequency.setValueAtTime(150, t);
+    body.frequency.exponentialRampToValueAtTime(45, t + 0.04);
+    const bodyGain = this.ctx.createGain();
+    bodyGain.gain.setValueAtTime(0.9 * v, t);
+    bodyGain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+    // F15: Waveshaper saturation for punch character
+    const sat = this.makeShaper(8);
+    body.connect(bodyGain); bodyGain.connect(sat); sat.connect(this.kickBus);
+    body.start(t); body.stop(t + 0.24);
+
+    // Transient: short noise burst through highpass for click definition
     if (this.noiseBuf) {
       const click = this.ctx.createBufferSource(); click.buffer = this.noiseBuf;
-      const clickHp = this.ctx.createBiquadFilter(); clickHp.type = 'highpass'; clickHp.frequency.value = 3000;
+      const clickHp = this.ctx.createBiquadFilter(); clickHp.type = 'highpass'; clickHp.frequency.value = 4000;
       const clickGain = this.ctx.createGain();
-      clickGain.gain.setValueAtTime(0.4, t);
-      clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.02);
+      clickGain.gain.setValueAtTime(0.3 * v, t);
+      clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.015);
       click.connect(clickHp); clickHp.connect(clickGain); clickGain.connect(this.kickBus);
-      click.start(t); click.stop(t + 0.03);
+      click.start(t); click.stop(t + 0.02);
     }
   }
 
-  private hat(t: number, lvl: number): void {
+  private hat(t: number, lvl: number, open = false): void {
     if (!this.ctx || !this.hatBus || !this.noiseBuf) return;
+    // F15: Metallic hat — noise through bandpass + highpass for character
     const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuf;
     const hp = this.ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 7000;
+    const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 10000; bp.Q.value = 0.7;
     const gain = this.ctx.createGain();
+    const decay = open ? 0.12 : 0.04;
     gain.gain.setValueAtTime(Math.max(0.001, lvl), t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
-    src.connect(hp); hp.connect(gain); gain.connect(this.hatBus);
-    src.start(t); src.stop(t + 0.06);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + decay);
+    src.connect(hp); hp.connect(bp); bp.connect(gain); gain.connect(this.hatBus);
+    src.start(t); src.stop(t + decay + 0.01);
   }
 
-  private bass(t: number, freq: number, v: Variant): void {
+  private bass(t: number, freq: number, v: Variant, velocity = 0.85): void {
     if (!this.ctx || !this.bassBus) return;
-    const osc = this.ctx.createOscillator(); osc.type = v.bassWave; osc.frequency.value = freq;
+    const vel = Math.max(0.1, Math.min(1, velocity));
+    // F15: Layered bass — sub sine (weight) + mid saw (character) → saturation
+    // Sub layer: pure sine at fundamental for sub-bass presence
+    const sub = this.ctx.createOscillator();
+    sub.type = 'sine';
+    sub.frequency.value = freq;
+    const subGain = this.ctx.createGain();
+    subGain.gain.setValueAtTime(0.0001, t);
+    subGain.gain.exponentialRampToValueAtTime(0.5 * vel, t + 0.008);
+    subGain.gain.exponentialRampToValueAtTime(0.25 * vel, t + 0.12);
+    subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    sub.connect(subGain); subGain.connect(this.bassBus);
+    sub.start(t); sub.stop(t + 0.37);
+
+    // Mid layer: sawtooth through LPF with per-note filter envelope
+    const mid = this.ctx.createOscillator(); mid.type = v.bassWave; mid.frequency.value = freq;
     const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.Q.value = v.bassQ;
-    // F10: Gentler filter sweep — keep more body, less plucky
-    const fStart = Math.max(200, v.bassCut), fEnd = Math.max(150, v.bassCut * 0.5);
+    // F15: Filter sweeps from open to closed — rolling psytrance bass character
+    const fStart = Math.max(300, v.bassCut);
+    const fEnd = Math.max(120, v.bassCut * 0.4);
     filter.frequency.setValueAtTime(fStart, t);
-    filter.frequency.exponentialRampToValueAtTime(fEnd, t + 0.25);
-    const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(0.0001, t);
-    gain.gain.exponentialRampToValueAtTime(0.85, t + 0.006);
-    gain.gain.exponentialRampToValueAtTime(0.3, t + 0.15); // F10: sustain instead of full decay
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35); // F10: longer decay
-    osc.connect(filter); filter.connect(gain); gain.connect(this.bassBus);
-    if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.08; gain.connect(send); send.connect(this.delaySend); }
-    osc.start(t); osc.stop(t + 0.37);
+    filter.frequency.exponentialRampToValueAtTime(fEnd, t + 0.1);
+    const midGain = this.ctx.createGain();
+    midGain.gain.setValueAtTime(0.0001, t);
+    midGain.gain.exponentialRampToValueAtTime(0.5 * vel, t + 0.006);
+    midGain.gain.exponentialRampToValueAtTime(0.2 * vel, t + 0.15);
+    midGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    // F15: Saturation for grit and presence
+    const sat = this.makeShaper(4);
+    mid.connect(filter); filter.connect(midGain); midGain.connect(sat); sat.connect(this.bassBus);
+    if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.06; midGain.connect(send); send.connect(this.delaySend); }
+    mid.start(t); mid.stop(t + 0.37);
   }
 
   private lead(t: number, freq: number, v: Variant, accent: boolean): void {
     if (!this.ctx || !this.leadBus) return;
-    // F13/R8: Lead timbre — now respects Variant.leadWave (was hardcoded triangle).
-    // F10 kept the softer defaults but now the preset's leadWave is honored.
-    const peakCut = Math.max(200, v.leadCut * (accent ? 1.15 : 1));
-    const o1 = this.ctx.createOscillator(), o2 = this.ctx.createOscillator();
-    o1.type = v.leadWave; o2.type = v.leadWave;
-    o1.frequency.value = freq; o2.frequency.value = freq * Math.pow(2, 7 / 1200); // 7 cents detune
+    // F15: Unison lead — 3 detuned oscillators → LPF → stereo → saturation
+    const peakCut = Math.max(200, v.leadCut * (accent ? 1.2 : 1));
+    const oscs: OscillatorNode[] = [];
+    const detunes = [-7, 0, 7]; // cents — 3-voice unison
+    for (const det of detunes) {
+      const o = this.ctx.createOscillator();
+      o.type = v.leadWave;
+      o.frequency.value = freq;
+      o.detune.value = det;
+      oscs.push(o);
+    }
+    // F15: Stereo widen — hard-pan outer oscillators
+    const merger = this.ctx.createGain();
+    const panL = this.ctx.createStereoPanner(); panL.pan.value = -0.6;
+    const panC = this.ctx.createStereoPanner(); panC.pan.value = 0;
+    const panR = this.ctx.createStereoPanner(); panR.pan.value = 0.6;
+    oscs[0].connect(panL); panL.connect(merger);
+    oscs[1].connect(panC); panC.connect(merger);
+    oscs[2].connect(panR); panR.connect(merger);
+
+    // F15: Per-note filter envelope with movement
     const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass';
-    filter.Q.value = Math.min(5, v.leadQ * 0.5);
-    filter.frequency.setValueAtTime(200, t);
-    filter.frequency.exponentialRampToValueAtTime(peakCut, t + 0.02);
-    filter.frequency.exponentialRampToValueAtTime(300, t + 0.22);
+    filter.Q.value = Math.min(7, v.leadQ);
+    filter.frequency.setValueAtTime(300, t);
+    filter.frequency.exponentialRampToValueAtTime(peakCut, t + 0.03);
+    filter.frequency.exponentialRampToValueAtTime(Math.max(400, peakCut * 0.5), t + 0.3);
+    // F15: Longer sustain — notes are melodic, not just stabs
     const gain = this.ctx.createGain();
-    const peak = Math.max(0.03, v.leadLvl * 0.6 * (accent ? 1 : 0.7));
+    const peak = Math.max(0.05, v.leadLvl * 0.7 * (accent ? 1 : 0.75));
     gain.gain.setValueAtTime(0.0001, t);
-    gain.gain.exponentialRampToValueAtTime(peak, t + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
-    o1.connect(filter); o2.connect(filter); filter.connect(gain); gain.connect(this.leadBus);
-    if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.12; gain.connect(send); send.connect(this.delaySend); }
-    if (this.reverbSend) { const rs = this.ctx.createGain(); rs.gain.value = 0.15; gain.connect(rs); rs.connect(this.reverbSend); }
-    o1.start(t); o2.start(t); o1.stop(t + 0.26); o2.stop(t + 0.26);
+    gain.gain.exponentialRampToValueAtTime(peak, t + 0.015);
+    gain.gain.exponentialRampToValueAtTime(peak * 0.4, t + 0.15);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+    // F15: Light saturation for character
+    const sat = this.makeShaper(2);
+    merger.connect(filter); filter.connect(gain); gain.connect(sat); sat.connect(this.leadBus);
+    if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.15; gain.connect(send); send.connect(this.delaySend); }
+    if (this.reverbSend) { const rs = this.ctx.createGain(); rs.gain.value = 0.2; gain.connect(rs); rs.connect(this.reverbSend); }
+    for (const o of oscs) { o.start(t); o.stop(t + 0.42); }
+  }
+
+  // F15: Waveshaper saturation — adds harmonic content for professional character
+  private makeShaper(amount: number): WaveShaperNode {
+    const shaper = this.ctx!.createWaveShaper();
+    const samples = 1024;
+    const curve = new Float32Array(samples);
+    const k = amount;
+    for (let i = 0; i < samples; i++) {
+      const x = (i * 2) / samples - 1;
+      curve[i] = ((1 + k) * x) / (1 + k * Math.abs(x));
+    }
+    shaper.curve = curve;
+    shaper.oversample = '2x';
+    return shaper;
   }
 
   // ── Play / Stop ──
@@ -627,6 +725,14 @@ export class PsyLive {
   unlockTension(): void { this.session?.unlockTension(); }
   unlockKey(): void { this.session?.unlockKey(); }
 
+  // F15 Phase 4: Arrangement controls — user can direct the arrangement
+  forceSection(section: string): void { this.session?.forceSection(section); }
+  releaseSection(): void { this.session?.releaseSection(); }
+  triggerBreak(bars = 4): void { this.session?.triggerBreak(bars); }
+  triggerBuild(bars = 4): void { this.session?.triggerBuild(bars); }
+  triggerDrop(bars = 4): void { this.session?.triggerDrop(bars); }
+  getArrangementState() { return this.session?.getArrangementState(); }
+
   private updateDelayTime(): void {
     if (this.delay) this.delay.delayTime.value = this.stepDur() * 3;
   }
@@ -707,13 +813,14 @@ export class PsyLive {
     for (const note of notes) {
       switch (note.voice) {
         case 'kick':
-          this.kick(time);
+          this.kick(time, note.velocity);
           break;
         case 'hat':
-          this.hat(time, (v.hatLvl || 0.1) * note.velocity);
+          // F15: Open hat on phrase-end fills, closed otherwise
+          this.hat(time, (v.hatLvl || 0.1) * note.velocity, s16 === 15);
           break;
         case 'bass':
-          if (note.midi !== null) this.bass(time, mtof(note.midi), v);
+          if (note.midi !== null) this.bass(time, mtof(note.midi), v, note.velocity);
           break;
         case 'lead':
           if (note.midi !== null) this.lead(time, mtof(note.midi), v, s16 % 4 === 0);

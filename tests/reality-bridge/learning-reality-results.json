@@ -18,7 +18,7 @@
     {
       "name": "motifs have varying rewards (learning discriminates)",
       "passed": true,
-      "evidence": "unique reward values = 5, rewards = [0.53, 0.45, 0.45, 0.45, 0.45...]"
+      "evidence": "unique reward values = 5, rewards = [0.54, 0.45, 0.45, 0.45, 0.45...]"
     }
   ],
   "passed": 4,

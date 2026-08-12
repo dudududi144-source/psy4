@@ -1,0 +1,22 @@
+{
+  "bars": 8,
+  "bpm": 145,
+  "bassNotes": 65,
+  "uniqueBassMidis": 3,
+  "bassHarmonicMovement": 2,
+  "leadNotes": 3,
+  "leadNotesPerBar": 0.375,
+  "uniqueLeadPitches": 2,
+  "uniqueIntervals": 2,
+  "kickPatterns": 2,
+  "kickVelocities": 13,
+  "densityArc": {
+    "firstHalf": 16,
+    "secondHalf": 17.75
+  },
+  "issues": [
+    "LEAD: too sparse (0.4/bar)",
+    "SYNTHESIS: demo-quality waveforms (single osc, no saturation, no sub layers)",
+    "MASTER: no EQ, no stereo width, no multiband compression"
+  ]
+}

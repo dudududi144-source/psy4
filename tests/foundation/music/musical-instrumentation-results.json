@@ -1,19 +1,19 @@
 {
   "bpm": 145,
   "bars": 64,
-  "totalEvents": 1103,
-  "kickEvents": 264,
-  "bassEvents": 512,
-  "hatEvents": 264,
-  "leadEvents": 63,
-  "introLeadEvents": 0,
-  "leadStartBar": 8,
+  "totalEvents": 1188,
+  "kickEvents": 273,
+  "bassEvents": 520,
+  "hatEvents": 317,
+  "leadEvents": 78,
+  "introLeadEvents": 4,
+  "leadStartBar": 4,
   "silentKickBars": 0,
   "bassMidiRange": [
     45,
-    52
+    57
   ],
-  "leadMaxMidi": 69,
+  "leadMaxMidi": 70,
   "styleHatCounts": {
     "fullOn": 33,
     "dark": 17,
@@ -21,22 +21,24 @@
     "acid": 65
   },
   "styleBassCounts": {
-    "fullOn": 64,
-    "dark": 32
+    "fullOn": 65,
+    "dark": 34
   },
   "sectionLeadCounts": {
-    "climax": 10,
-    "resolution": 9
+    "climax": 14,
+    "resolution": 7
   },
   "gates": {
     "kick present (>0 events)": true,
     "bass present (>0 events)": true,
     "hats present (>0 events)": true,
     "all 4 voices present (not one replacing all)": true,
-    "lead does NOT play in INTRO (R4-A)": true,
-    "lead first event at bar >= 8": true,
+    "lead SPARSE in INTRO first half (F15: <2 events bars 0-3)": true,
+    "lead present in INTRO second half (F15: >0 events bars 4-7)": true,
+    "lead develops by STATEMENT (>5 events bars 8-15)": true,
     "no silent kick bars": true,
-    "bass in low register (MIDI <= 55)": true,
+    "bass has harmonic movement (>=3 unique MIDIs)": true,
+    "bass in low register (MIDI <= 60, C3)": true,
     "lead does not exceed MIDI 72 (C5)": true,
     "DARK has fewer hats than FULL_ON (R4-D)": true,
     "ACID has more hats than FULL_ON (R4-D)": true,

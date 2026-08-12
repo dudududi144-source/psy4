@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T19:39:02.564Z",
+  "runAt": "2026-08-12T19:57:42.840Z",
   "totalTests": 56,
   "totalPassed": 56,
   "totalFailed": 0,
@@ -213,10 +213,10 @@
       "name": "BeatPLL stable under ±5ms timing jitter",
       "category": "BeatPLL",
       "passed": true,
-      "evidence": "finalBpm=145.09 bpmErr=0.092 locked=true",
+      "evidence": "finalBpm=144.91 bpmErr=0.088 locked=true",
       "metrics": {
-        "finalBpm": 145.09171848091023,
-        "bpmErr": 0.09171848091023094,
+        "finalBpm": 144.9119931990954,
+        "bpmErr": 0.08800680090459423,
         "locked": 1,
         "jitterMs": 5
       }
@@ -356,9 +356,9 @@
       "name": "spectralFlatness: noise→high, tone→low (R2 fix: melodic band + realistic fixture)",
       "category": "MelodyObserver",
       "passed": true,
-      "evidence": "flatnessNoise=0.999 flatnessTone=0.133",
+      "evidence": "flatnessNoise=0.998 flatnessTone=0.133",
       "metrics": {
-        "flatnessNoise": 0.9992032355023636,
+        "flatnessNoise": 0.9984488317032852,
         "flatnessTone": 0.1334657973006324
       }
     },
@@ -367,14 +367,14 @@
       "name": "PatternMutator runs 200 cycles; mutation rate + constraint violations",
       "category": "PatternMutator",
       "passed": true,
-      "evidence": "mutations=184/200 (92.0%); violations=0; duplicates=0; meanDensityDelta=0.017",
+      "evidence": "mutations=191/200 (95.5%); violations=0; duplicates=0; meanDensityDelta=0.018",
       "metrics": {
         "cycles": 200,
-        "mutations": 184,
-        "mutationRate": 0.92,
+        "mutations": 191,
+        "mutationRate": 0.955,
         "constraintViolations": 0,
         "duplicates": 0,
-        "meanDensityDelta": 0.016813858695652172
+        "meanDensityDelta": 0.01767015706806283
       }
     },
     {
@@ -382,9 +382,9 @@
       "name": "PatternMutator stochastic — produces mutations across 10 invocations",
       "category": "PatternMutator",
       "passed": true,
-      "evidence": "10 invocations: 7 mutations, 3 no-change",
+      "evidence": "10 invocations: 8 mutations, 2 no-change",
       "metrics": {
-        "mutatedCount": 7,
+        "mutatedCount": 8,
         "totalInvocations": 10
       }
     },

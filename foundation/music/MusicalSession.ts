@@ -108,6 +108,49 @@ export class MusicalSession {
   isTensionLocked(): boolean { return this.ctx.isTensionLocked(); }
   isKeyLocked(): boolean { return this.ctx.isKeyLocked(); }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // F15 Phase 4 — ARRANGEMENT CONTROLS
+  // Lets the user direct the arrangement: force sections, trigger breaks/builds
+  // ═══════════════════════════════════════════════════════════════════════
+  private forcedSection: string | null = null;
+  private breakRemaining = 0;      // bars of break remaining
+  private buildRemaining = 0;      // bars of build remaining
+  private dropRemaining = 0;       // bars of drop remaining
+
+  /** Jump to a specific section (INTRO, STATEMENT, DEVELOPMENT, etc.) */
+  forceSection(section: string): void {
+    this.forcedSection = section;
+  }
+
+  /** Clear forced section — return to automatic arc */
+  releaseSection(): void {
+    this.forcedSection = null;
+  }
+
+  /** Trigger a breakdown — drop to kick+bass only for N bars */
+  triggerBreak(bars = 4): void {
+    this.breakRemaining = bars;
+  }
+
+  /** Trigger a build — ramp density up over N bars */
+  triggerBuild(bars = 4): void {
+    this.buildRemaining = bars;
+  }
+
+  /** Trigger a drop — peak density for N bars */
+  triggerDrop(bars = 4): void {
+    this.dropRemaining = bars;
+  }
+
+  getArrangementState(): { forced: string | null; break: number; build: number; drop: number } {
+    return {
+      forced: this.forcedSection,
+      break: this.breakRemaining,
+      build: this.buildRemaining,
+      drop: this.dropRemaining,
+    };
+  }
+
   observeRadio(data: {
     bpm: number; energy: number;
     occupancy: { kick: number; bass: number; lead: number; hats: number };
@@ -121,10 +164,30 @@ export class MusicalSession {
 
   planBar(bar: number, transportBpm: number): NotePlan {
     this.ctx.updateFromTransport(bar, transportBpm);
-    const snap = this.ctx.snapshot(bar);
+    let snap = this.ctx.snapshot(bar);
     const radio = this.window.snapshot(bar);
-    const barInPhrase = bar % 8;
-    const action = BAR_ACTIONS[barInPhrase];
+    let barInPhrase = bar % 8;
+    let action = BAR_ACTIONS[barInPhrase];
+
+    // F15 Phase 4: Arrangement overrides
+    let arrangementOverride = '';
+    if (this.forcedSection) {
+      // Override the section name in the snapshot
+      snap = { ...snap, sectionName: this.forcedSection } as MusicalContextSnapshot;
+      arrangementOverride = `forced=${this.forcedSection}`;
+    }
+    if (this.breakRemaining > 0) {
+      this.breakRemaining--;
+      arrangementOverride = 'BREAK';
+    }
+    if (this.buildRemaining > 0) {
+      this.buildRemaining--;
+      arrangementOverride = 'BUILD';
+    }
+    if (this.dropRemaining > 0) {
+      this.dropRemaining--;
+      arrangementOverride = 'DROP';
+    }
 
     // ── Motif management ──
     if (barInPhrase === 0) {
@@ -149,21 +212,38 @@ export class MusicalSession {
     // ── GENERATE NOTES (hierarchical: groove → bass → lead) ──
     const notes: ScheduledNote[] = [];
 
+    // F15: BREAK — only kick + bass (no hats, no lead)
+    const isBreak = arrangementOverride === 'BREAK';
+    // F15: DROP — maximum density (all voices, high velocity)
+    const isDrop = arrangementOverride === 'DROP';
+    // F15: BUILD — gradually increase density
+    const isBuild = arrangementOverride === 'BUILD';
+
     // F9 RULE 3: KICK FIRST — always present, never removed
     this.generateKick(notes, snap, barInPhrase);
 
     // F9 RULE 4: BASS — interlocked with kick
     this.generateBass(notes, snap, barInPhrase);
 
-    // F9 RULE 8: HATS — complementary
-    this.generateHats(notes, snap, barInPhrase);
+    // F15: BREAK — no hats, no lead (just kick + bass)
+    if (!isBreak) {
+      // F9 RULE 8: HATS — complementary
+      this.generateHats(notes, snap, barInPhrase);
 
-    // F9 RULE 8: LEAD — optional, controlled, lower register
-    const leadDensity = this.calculateLeadDensity(snap, radio, barInPhrase);
-    if (leadDensity > 0) {
-      this.generateLead(notes, snap, motif, barInPhrase, action, leadDensity);
+      // F9 RULE 8: LEAD — optional, controlled, lower register
+      let leadDensity = this.calculateLeadDensity(snap, radio, barInPhrase);
+      // F15: DROP — force high lead density
+      if (isDrop) leadDensity = Math.max(leadDensity, 0.75);
+      // F15: BUILD — ramp density (higher as build progresses)
+      if (isBuild) leadDensity = Math.max(leadDensity, 0.3 + (1 - this.buildRemaining / 4) * 0.4);
+
+      if (leadDensity > 0) {
+        this.generateLead(notes, snap, motif, barInPhrase, action, leadDensity);
+      } else {
+        this.lastReason = 'lead resting (groove sufficient)';
+      }
     } else {
-      this.lastReason = 'lead resting (groove sufficient)';
+      this.lastReason = 'BREAK — kick + bass only';
     }
 
     this.phraseNotes.push(...notes);
@@ -171,8 +251,8 @@ export class MusicalSession {
 
     const plan: NotePlan = {
       bar, notes: Object.freeze(notes) as readonly ScheduledNote[],
-      role: leadDensity > 0 ? 'LEAD' : 'GROOVE',
-      action, style: this.style,
+      role: isBreak ? 'BREAK' : (notes.some(n => n.voice === 'lead') ? 'LEAD' : 'GROOVE'),
+      action: arrangementOverride || action, style: this.style,
       section: snap.sectionName, tension: snap.tension,
       barInPhrase, reason: this.lastReason,
     };
@@ -181,120 +261,210 @@ export class MusicalSession {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // F13/R4-D: KICK — style affects kick grammar
-  // FULL_ON: 4-on-floor + fill. DARK: sparser, half-time feel. PROGRESSIVE: 4-on-floor, no fill. ACID: 4-on-floor + extra syncopation.
+  // F15 COMPOSITION REBUILD — real musical development
+  // Kick: accents, ghost notes, velocity humanization, style-specific grammar
+  // Bass: harmonic movement (root, fifth, octave, walking), per-note variation
+  // Lead: melodic development, longer phrases, register movement
+  // Hats: swing, open/closed, velocity humanization
   // ═══════════════════════════════════════════════════════════════════════
+
   private generateKick(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number): void {
     const radioKickOcc = (ctx as any).radioRoles?.kick ?? 0;
-    const velocity = radioKickOcc > 0.7 ? 0.6 : 0.9;
     const style = this.style;
+    const section = ctx.sectionName;
 
-    // Base: 4-on-floor (steps 0,4,8,12)
-    const kickSteps = [0, 4, 8, 12];
+    // F15: Velocity humanization — accent on beat 1, variation on others
+    const baseVel = radioKickOcc > 0.7 ? 0.6 : 0.9;
+    const humanize = (v: number, jitter: number) => Math.max(0.1, Math.min(1, v + (this.rng.next() - 0.5) * jitter));
 
-    // DARK: half-time feel — skip kicks at steps 8 and 12 every other bar
-    if (style === 'DARK' && barInPhrase % 2 === 1) {
-      kickSteps.splice(2, 2); // remove steps 8,12
+    // Base: 4-on-floor with ACCENT on beat 1 (downbeat)
+    const kickSteps = [
+      { step: 0, vel: humanize(baseVel + 0.05, 0.04) },  // accented downbeat
+      { step: 4, vel: humanize(baseVel, 0.06) },
+      { step: 8, vel: humanize(baseVel, 0.06) },
+      { step: 12, vel: humanize(baseVel, 0.06) },
+    ];
+
+    // F15: Style-specific kick grammar
+    if (style === 'DARK') {
+      // Half-time feel on odd bars
+      if (barInPhrase % 2 === 1) {
+        kickSteps.splice(2, 2);
+        // Add a ghost kick on step 10 for hypnotic pulse
+        kickSteps.push({ step: 10, vel: humanize(0.4, 0.08) });
+      }
+    } else if (style === 'ACID') {
+      // Syncopated kicks for hypnotic 303-feel
+      if (this.rng.next() < 0.4) kickSteps.push({ step: 14, vel: humanize(0.7, 0.08) });
+      if (this.rng.next() < 0.2) kickSteps.push({ step: 6, vel: humanize(0.5, 0.1) });
+    } else if (style === 'PROGRESSIVE') {
+      // Cleaner — no extra kicks, but add a soft ghost on offbeats during DEVELOPMENT
+      if (section === 'DEVELOPMENT' || section === 'CLIMAX') {
+        kickSteps.push({ step: 10, vel: humanize(0.35, 0.1) });
+      }
+    } else if (style === 'FULL_ON') {
+      // Full-on: add ghost kicks during CLIMAX for intensity
+      if (section === 'CLIMAX' && this.rng.next() < 0.3) {
+        kickSteps.push({ step: 7, vel: humanize(0.4, 0.1) });
+      }
     }
-    // PROGRESSIVE: no fill at phrase end (cleaner)
-    // ACID: add syncopated kick at step 14 occasionally
-    if (style === 'ACID' && this.rng.next() < 0.3) {
-      kickSteps.push(14);
+
+    for (const k of kickSteps) {
+      notes.push({ step: k.step, voice: 'kick', midi: null, velocity: k.vel });
     }
 
-    for (const s of kickSteps) {
-      notes.push({ step: s, voice: 'kick', midi: null, velocity });
-    }
-
-    // Fill at phrase ending (except PROGRESSIVE which stays clean)
+    // F15: Phrase-end fill with velocity ramp (not just one note)
     if (barInPhrase === 7 && style !== 'PROGRESSIVE') {
-      notes.push({ step: 14, voice: 'kick', midi: null, velocity: 0.8 });
+      const fillSteps = style === 'ACID' ? [12, 13, 14] : [14, 15];
+      for (let i = 0; i < fillSteps.length; i++) {
+        const fillVel = 0.6 + (i / fillSteps.length) * 0.3; // ramp up
+        notes.push({ step: fillSteps[i], voice: 'kick', midi: null, velocity: humanize(fillVel, 0.06) });
+      }
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // F13/R4-D: BASS — style affects bass pattern
-  // FULL_ON: 8 notes, rolling. DARK: sparser, lower. PROGRESSIVE: smooth, fewer offbeats. ACID: syncopated, higher octave.
+  // F15 BASS — harmonic movement + rolling articulation
+  // Moves through root → fifth → octave → root for harmonic development
   // ═══════════════════════════════════════════════════════════════════════
   private generateBass(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number): void {
-    const octave = this.style === 'ACID' ? 2 : 2; // MIDI 33-45 range (low bass)
+    const octave = 2; // MIDI 33-45 range (low bass)
     const root = degreeToMidi(ctx.rootPc, ctx.scale, 0, octave);
     const fifth = degreeToMidi(ctx.rootPc, ctx.scale, 4, octave);
     const third = degreeToMidi(ctx.rootPc, ctx.scale, 2, octave);
+    const octaveUp = degreeToMidi(ctx.rootPc, ctx.scale, 0, octave + 1);
+    const style = this.style;
+    const section = ctx.sectionName;
+    const humanize = (v: number, jitter: number) => Math.max(0.1, Math.min(1, v + (this.rng.next() - 0.5) * jitter));
 
-    // Base: bass interlock — hits WITH kick + offbeat response
-    let bassSteps = [
-      { step: 0, midi: root, vel: 0.9 },
-      { step: 2, midi: root, vel: 0.6 },
-      { step: 4, midi: root, vel: 0.9 },
-      { step: 6, midi: root, vel: 0.6 },
-      { step: 8, midi: root, vel: 0.9 },
-      { step: 10, midi: root, vel: 0.6 },
-      { step: 12, midi: root, vel: 0.9 },
-      { step: 14, midi: root, vel: 0.6 },
-    ];
-
-    // DARK: remove offbeat responses (sparser, hypnotic)
-    if (this.style === 'DARK') {
-      bassSteps = bassSteps.filter(bs => bs.step % 4 === 0);
-    }
-    // PROGRESSIVE: remove every other offbeat (smoother)
-    if (this.style === 'PROGRESSIVE') {
-      bassSteps = bassSteps.filter(bs => bs.step % 4 === 0 || bs.step === 6 || bs.step === 14);
-    }
-    // ACID: add 16th-note syncopation
-    if (this.style === 'ACID') {
-      bassSteps.push({ step: 1, midi: root, vel: 0.4 });
-      bassSteps.push({ step: 9, midi: fifth, vel: 0.4 });
+    // F15: Harmonic movement — which degree per beat
+    // Beat 0 (bar 0): root. Beat 4: root. Beat 8: fifth (movement). Beat 12: root.
+    // During DEVELOPMENT/CLIMAX: more movement (octave, third)
+    let beatDegrees: number[]; // degree per beat [0,1,2,3] → [root, root/fifth, fifth/octave, root]
+    if (section === 'INTRO' || section === 'RESOLUTION') {
+      beatDegrees = [0, 0, 0, 0]; // static root (establishing/resolving)
+    } else if (section === 'STATEMENT') {
+      beatDegrees = [0, 0, 4, 0]; // root → fifth on beat 3
+    } else if (section === 'DEVELOPMENT' || section === 'DEVELOPMENT2') {
+      beatDegrees = [0, 4, 0, 2]; // root → fifth → root → third
+    } else if (section === 'CONTRAST') {
+      beatDegrees = [4, 0, 2, 4]; // more movement
+    } else {
+      // CLIMAX — most movement
+      beatDegrees = [0, 4, 2, 7]; // root → fifth → third → octave
     }
 
-    // Modify based on phrase position
-    for (const bs of bassSteps) {
-      let midi = bs.midi;
-      let vel = bs.vel;
-
-      if (barInPhrase === 6) {
-        if (bs.step === 0) midi = fifth;
-        if (bs.step === 12) midi = root;
-      } else if (barInPhrase === 7) {
-        if (bs.step === 14) midi = third;
-      } else if (barInPhrase >= 3 && barInPhrase <= 5 && this.rng.next() < 0.2) {
-        if (bs.step % 4 === 2) midi = fifth;
+    // Style modifies the pattern
+    if (style === 'DARK') {
+      // Sparse — only on beats (no offbeat response)
+      for (let beat = 0; beat < 4; beat++) {
+        const midi = beatDegrees[beat] === 4 ? fifth : beatDegrees[beat] === 2 ? third : beatDegrees[beat] === 7 ? octaveUp : root;
+        notes.push({ step: beat * 4, voice: 'bass', midi, velocity: humanize(0.9, 0.05) });
       }
+    } else if (style === 'PROGRESSIVE') {
+      // Smooth — root on beats, occasional offbeat
+      for (let beat = 0; beat < 4; beat++) {
+        const midi = beatDegrees[beat] === 4 ? fifth : beatDegrees[beat] === 2 ? third : beatDegrees[beat] === 7 ? octaveUp : root;
+        notes.push({ step: beat * 4, voice: 'bass', midi, velocity: humanize(0.9, 0.05) });
+        if (beat % 2 === 1) {
+          notes.push({ step: beat * 4 + 2, voice: 'bass', midi, velocity: humanize(0.55, 0.06) });
+        }
+      }
+    } else if (style === 'ACID') {
+      // 303-style — 16th-note rolling with filter movement implied
+      for (let beat = 0; beat < 4; beat++) {
+        const midi = beatDegrees[beat] === 4 ? fifth : beatDegrees[beat] === 2 ? third : beatDegrees[beat] === 7 ? octaveUp : root;
+        // Every 16th, with velocity pattern (accent on downbeats)
+        for (let sub = 0; sub < 4; sub++) {
+          const step = beat * 4 + sub;
+          const vel = sub === 0 ? 0.9 : sub === 2 ? 0.6 : 0.4;
+          // Skip some for breathing room
+          if (sub === 1 || sub === 3) {
+            if (this.rng.next() < 0.4) continue;
+          }
+          notes.push({ step, voice: 'bass', midi, velocity: humanize(vel, 0.08) });
+        }
+      }
+    } else {
+      // FULL_ON — rolling 16ths with offbeat response
+      for (let beat = 0; beat < 4; beat++) {
+        const midi = beatDegrees[beat] === 4 ? fifth : beatDegrees[beat] === 2 ? third : beatDegrees[beat] === 7 ? octaveUp : root;
+        notes.push({ step: beat * 4, voice: 'bass', midi, velocity: humanize(0.9, 0.05) });
+        notes.push({ step: beat * 4 + 2, voice: 'bass', midi, velocity: humanize(0.6, 0.06) });
+      }
+    }
 
-      notes.push({ step: bs.step, voice: 'bass', midi, velocity: vel });
+    // F15: Phrase-end bass walk (cadence)
+    if (barInPhrase === 7) {
+      // Replace last beat with a walk: root → fifth → octave (resolving to root next phrase)
+      const lastBeatStep = 12;
+      const existing = notes.filter(n => n.step >= lastBeatStep && n.voice === 'bass');
+      for (const n of existing) {
+        const idx = notes.indexOf(n);
+        if (idx >= 0) notes.splice(idx, 1);
+      }
+      notes.push({ step: 12, voice: 'bass', midi: root, velocity: humanize(0.85, 0.05) });
+      notes.push({ step: 14, voice: 'bass', midi: fifth, velocity: humanize(0.7, 0.06) });
+      notes.push({ step: 15, voice: 'bass', midi: octaveUp, velocity: humanize(0.6, 0.08) });
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // F13/R4-D: HATS — style affects hat pattern
-  // FULL_ON: offbeat + fill. DARK: sparse, slow. PROGRESSIVE: steady. ACID: busy, 16ths.
+  // F15 HATS — swing, open/closed, velocity humanization, style groove
   // ═══════════════════════════════════════════════════════════════════════
   private generateHats(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number): void {
     const style = this.style;
-    const vel = 0.25 + ctx.tension * 0.25;
+    const section = ctx.sectionName;
+    const humanize = (v: number, jitter: number) => Math.max(0.1, Math.min(1, v + (this.rng.next() - 0.5) * jitter));
 
-    // Base: offbeat hats (steps 2,6,10,14)
-    const hatSteps = [2, 6, 10, 14];
+    // F15: Base offbeat hats with SWING (delay odd steps slightly)
+    // Swing is implicit in the step grid — we add ghost hats for groove
+    const hatSteps: Array<{step: number, vel: number, open: boolean}> = [];
 
-    // DARK: sparse — only steps 6 and 14
     if (style === 'DARK') {
-      hatSteps.length = 0;
-      hatSteps.push(6, 14);
-    }
-    // ACID: add 16th-note busy hats
-    if (style === 'ACID') {
+      // Sparse — only steps 6 and 14 (half-time offbeats)
+      hatSteps.push({ step: 6, vel: humanize(0.3 + ctx.tension * 0.2, 0.06), open: false });
+      hatSteps.push({ step: 14, vel: humanize(0.35 + ctx.tension * 0.2, 0.06), open: false });
+    } else if (style === 'ACID') {
+      // Busy 16ths with velocity alternation
       for (let s = 0; s < 16; s += 2) {
-        if (!hatSteps.includes(s)) hatSteps.push(s);
+        const isStrong = s % 4 === 0;
+        hatSteps.push({ step: s, vel: humanize(isStrong ? 0.3 : 0.18, 0.05), open: s === 14 });
+      }
+      // Add offbeat 16ths for density
+      if (section === 'CLIMAX' || section === 'DEVELOPMENT') {
+        for (let s = 1; s < 16; s += 4) {
+          hatSteps.push({ step: s, vel: humanize(0.15, 0.04), open: false });
+        }
+      }
+    } else if (style === 'PROGRESSIVE') {
+      // Steady offbeats — clean
+      for (const s of [2, 6, 10, 14]) {
+        hatSteps.push({ step: s, vel: humanize(0.25 + ctx.tension * 0.2, 0.05), open: false });
+      }
+    } else {
+      // FULL_ON — offbeats + ghost notes for groove
+      for (const s of [2, 6, 10, 14]) {
+        hatSteps.push({ step: s, vel: humanize(0.3 + ctx.tension * 0.25, 0.06), open: s === 14 });
+      }
+      // Ghost hats on 16ths for full-time feel
+      if (section === 'CLIMAX' || section === 'CONTRAST') {
+        for (let s = 0; s < 16; s += 1) {
+          if ([2,6,10,14].includes(s)) continue;
+          if (this.rng.next() < 0.3) {
+            hatSteps.push({ step: s, vel: humanize(0.12, 0.04), open: false });
+          }
+        }
       }
     }
 
-    for (const s of hatSteps) {
-      notes.push({ step: s, voice: 'hat', midi: null, velocity: vel });
+    for (const h of hatSteps) {
+      notes.push({ step: h.step, voice: 'hat', midi: null, velocity: h.vel });
     }
-    // Extra hat at phrase end (except PROGRESSIVE)
+
+    // F15: Phrase-end fill — open hat rush
     if (barInPhrase === 7 && style !== 'PROGRESSIVE') {
-      notes.push({ step: 15, voice: 'hat', midi: null, velocity: 0.4 });
+      notes.push({ step: 15, voice: 'hat', midi: null, velocity: humanize(0.45, 0.06) });
     }
   }
 
@@ -302,55 +472,46 @@ export class MusicalSession {
   // F9: LEAD — optional, controlled, LOWER register (octave 3-4, not 4-5)
   // ═══════════════════════════════════════════════════════════════════════
   private calculateLeadDensity(ctx: MusicalContextSnapshot, radio: RadioWindowSnapshot, barInPhrase: number): number {
-    // F13/R4-A STARTUP SEQUENCE: Lead does NOT play during INTRO (bars 0-7).
-    // The groove (kick + bass + hats) must establish first. Lead enters at
-    // STATEMENT (bar 8). This fixes the "high-pitched lead on bar 0" complaint
-    // at its root — the lead was entering immediately because density was 0.2,
-    // not 0.
-    if (ctx.sectionName === 'INTRO') {
-      this.lastReason = 'lead RESTING (INTRO — groove establishing)';
+    // F15: INTRO now has SPARSE lead (not zero) — establishes a motif seed
+    // instead of 33 seconds of empty groove. Lead enters softly at bar 4.
+    if (ctx.sectionName === 'INTRO' && barInPhrase < 4) {
+      this.lastReason = 'lead RESTING (INTRO first half — groove establishing)';
       return 0;
     }
 
-    // F13/R4-B ABSTAIN: If radio is dense in the lead/mid band, the engine
-    // should ABSTAIN from lead to avoid clashing with the radio's melody.
-    // This is a real REST decision, not just a density reduction.
+    // F15: ABSTAIN — if radio is dense in the lead/mid band, rest to avoid clash
     if (radio.currentOccupancy.lead > 0.7 && ctx.sectionName !== 'CLIMAX') {
       this.lastReason = 'lead ABSTAIN (radio melody present, avoiding clash)';
       return 0;
     }
 
-    let density = 0.3; // default: low
+    let density = 0.3;
 
-    // Section influence
     const section = ctx.sectionName;
-    if (section === 'STATEMENT') density = 0.4;
-    else if (section === 'DEVELOPMENT' || section === 'DEVELOPMENT2') density = 0.5;
-    else if (section === 'CONTRAST') density = 0.4;
-    else if (section === 'CLIMAX') density = 0.6;
-    else if (section === 'RESOLUTION') density = 0.2;
+    if (section === 'INTRO') density = 0.2;           // F15: sparse lead in late INTRO
+    else if (section === 'STATEMENT') density = 0.45;
+    else if (section === 'DEVELOPMENT' || section === 'DEVELOPMENT2') density = 0.55;
+    else if (section === 'CONTRAST') density = 0.5;
+    else if (section === 'CLIMAX') density = 0.7;     // F15: more lead at climax
+    else if (section === 'RESOLUTION') density = 0.25;
 
-    // F13/R4-D STYLE → MUSIC: style affects lead density
-    // FULL_ON: more lead (peak-time). DARK: sparse, eerie. PROGRESSIVE: gradual. ACID: squelchy, dense.
+    // F15: Style affects lead density and character
     if (this.style === 'FULL_ON') density *= 1.1;
-    else if (this.style === 'DARK') density *= 0.6;
-    else if (this.style === 'PROGRESSIVE') density *= 0.8;
-    else if (this.style === 'ACID') density *= 1.2;
+    else if (this.style === 'DARK') density *= 0.65;  // sparse, eerie
+    else if (this.style === 'PROGRESSIVE') density *= 0.85;
+    else if (this.style === 'ACID') density *= 1.25;  // dense, squelchy
 
-    // Phrase position influence
-    if (barInPhrase === 0) density += 0.1; // introduce
-    if (barInPhrase === 6) density -= 0.1; // cadence
-    if (barInPhrase === 7) density -= 0.15; // response
+    if (barInPhrase === 0) density += 0.1;
+    if (barInPhrase === 6) density -= 0.1;
+    if (barInPhrase === 7) density -= 0.15;
 
-    // Radio influence — radio doesn't kill lead, just modulates
-    if (radio.currentOccupancy.lead > 0.6) density *= 0.5; // radio lead present → reduce
-    if (radio.energyRising) density = Math.min(0.8, density + 0.1);
+    if (radio.currentOccupancy.lead > 0.6) density *= 0.5;
+    if (radio.energyRising) density = Math.min(0.85, density + 0.1);
 
-    // Tension influence
     density = density * (0.7 + ctx.tension * 0.3);
 
     this.lastReason = `lead density=${density.toFixed(2)} (section=${section} style=${this.style} barInPhrase=${barInPhrase})`;
-    return Math.max(0, Math.min(0.8, density));
+    return Math.max(0, Math.min(0.85, density));
   }
 
   private generateLead(notes: ScheduledNote[], ctx: MusicalContextSnapshot, motif: StoredMotif, barInPhrase: number, action: string, density: number): void {
