@@ -163,6 +163,11 @@ export interface LiveState {
   maxNodes: number;
   songSection: string;
   songBar: number;
+  // Musical analysis
+  bassFreq: number;
+  leadFreq: number;
+  energyTrend: string;
+  textureDensity: number;
 }
 
 // ─── Engine ────────────────────────────────────────────────────────────────
@@ -228,6 +233,17 @@ export class PsyLive {
   // Radio follower state
   private radioFollowActive = false;
   private radioEnergyHistory: number[] = [];
+
+  // FULL MUSICAL ANALYSIS (not just kicks)
+  private radioBassFreq = 0;
+  private radioBassHistory: number[] = [];
+  private radioLeadFreq = 0;
+  private radioLeadHistory: number[] = [];
+  private radioEnergyLevel = 0;
+  private radioEnergyTrend: 'rising' | 'falling' | 'stable' = 'stable';
+  private radioDynamics = 0;
+  private radioTextureDensity = 0;
+  private lastEnergyPeak = 0;
 
   // Intelligent rhythm (evolves every 4 bars)
   private barCount = 0;
@@ -309,6 +325,10 @@ export class PsyLive {
       maxNodes: this.maxActiveNodes,
       songSection: this.songSection,
       songBar: this.songBar,
+      bassFreq: this.radioBassFreq,
+      leadFreq: this.radioLeadFreq,
+      energyTrend: this.radioEnergyTrend,
+      textureDensity: this.radioTextureDensity,
     });
   }
 
@@ -1133,12 +1153,14 @@ export class PsyLive {
     const fd = this.radioFreqBuf;
     this.radioAnalyser.getByteFrequencyData(fd);
 
+    const binHz = this.ctx.sampleRate / this.radioAnalyser.fftSize;
+
     // Sub-bass (0-100Hz) for kick detection
     let sub = 0;
     for (let i = 0; i < 10; i++) sub += fd[i];
     sub /= (10 * 255);
 
-    // Overall RMS — sample every 4th bin (4x faster)
+    // Overall RMS — sample every 4th bin
     let total = 0;
     let cnt = 0;
     for (let i = 0; i < fd.length; i += 4) { total += fd[i]; cnt++; }
@@ -1146,8 +1168,53 @@ export class PsyLive {
     this.radioLevel = total;
     this.radioRms = this.radioRms * 0.85 + total * 0.15;
 
+    // ─── FULL MUSICAL ANALYSIS ───
+    // 1. Bass note detection (100-400Hz)
+    const bassMinBin = Math.floor(100 / binHz);
+    const bassMaxBin = Math.floor(400 / binHz);
+    let bassPeakBin = 0, bassPeakVal = 0;
+    for (let i = bassMinBin; i <= bassMaxBin && i < fd.length; i++) {
+      if (fd[i] > bassPeakVal) { bassPeakVal = fd[i]; bassPeakBin = i; }
+    }
+    if (bassPeakVal > 60) {
+      this.radioBassFreq = bassPeakBin * binHz;
+      this.radioBassHistory.push(this.radioBassFreq);
+      if (this.radioBassHistory.length > 32) this.radioBassHistory.shift();
+    }
+
+    // 2. Lead/melody detection (400-4000Hz)
+    const leadMinBin = Math.floor(400 / binHz);
+    const leadMaxBin = Math.floor(4000 / binHz);
+    let leadPeakBin = 0, leadPeakVal = 0;
+    for (let i = leadMinBin; i <= leadMaxBin && i < fd.length; i++) {
+      if (fd[i] > leadPeakVal) { leadPeakVal = fd[i]; leadPeakBin = i; }
+    }
+    if (leadPeakVal > 50) {
+      this.radioLeadFreq = leadPeakBin * binHz;
+      this.radioLeadHistory.push(this.radioLeadFreq);
+      if (this.radioLeadHistory.length > 32) this.radioLeadHistory.shift();
+    }
+
+    // 3. Energy trend
+    this.radioEnergyHistory.push(total);
+    if (this.radioEnergyHistory.length > 32) this.radioEnergyHistory.shift();
+    if (this.radioEnergyHistory.length >= 8) {
+      const recent = this.radioEnergyHistory.slice(-4).reduce((a,b) => a+b, 0) / 4;
+      const older = this.radioEnergyHistory.slice(-8, -4).reduce((a,b) => a+b, 0) / 4;
+      this.radioEnergyLevel = recent;
+      if (recent > older * 1.15) this.radioEnergyTrend = 'rising';
+      else if (recent < older * 0.85) this.radioEnergyTrend = 'falling';
+      else this.radioEnergyTrend = 'stable';
+    }
+
+    // 4. Texture density (how busy)
+    let activeBins = 0;
+    for (let i = 0; i < fd.length; i += 2) {
+      if (fd[i] > 40) activeBins++;
+    }
+    this.radioTextureDensity = activeBins / (fd.length / 2);
+
     // Spectral bands — sample (not every bin)
-    const binHz = this.ctx.sampleRate / this.radioAnalyser.fftSize;
     const lowEnd = Math.floor(250 / binHz);
     const midEnd = Math.floor(2500 / binHz);
     let lo = 0, mi = 0, hi = 0, loN = 0, miN = 0, hiN = 0;

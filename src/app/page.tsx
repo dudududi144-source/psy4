@@ -27,6 +27,7 @@ export default function Page() {
     compositionMode: false, composition: null, deviceId: '',
     activeNodes: 0, maxNodes: 0,
     songSection: 'intro', songBar: 0,
+    bassFreq: 0, leadFreq: 0, energyTrend: 'stable', textureDensity: 0,
   });
   const [streamId, setStreamId] = useState('psyndora');
   const [radioVol, setRadioVol] = useState(0.5);
