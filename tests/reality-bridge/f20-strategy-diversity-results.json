@@ -8,7 +8,7 @@
     {
       "test": "Different strategies produce different bass",
       "pass": true,
-      "evidence": "8 strategies, overlap=10.7%"
+      "evidence": "8 strategies, overlap=9.5%"
     },
     {
       "test": "Reward changes strategy weights",
@@ -18,12 +18,12 @@
     {
       "test": "512-bar strategy diversity (4+ each)",
       "pass": true,
-      "evidence": "bass=8, lead=10, events=9837"
+      "evidence": "bass=8, lead=10, events=12641"
     },
     {
       "test": "Lead/bass relational fit (10+ semitone separation)",
       "pass": true,
-      "evidence": "11.1 semitones avg"
+      "evidence": "15.2 semitones avg"
     }
   ],
   "bassStrategies": [

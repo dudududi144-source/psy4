@@ -1,0 +1,38 @@
+{
+  "results": [
+    {
+      "test": "Lead avoids bass-busy steps",
+      "pass": true,
+      "evidence": "free=59.0% vs busy=31.3%"
+    },
+    {
+      "test": "Lead fills bass-silent space",
+      "pass": true,
+      "evidence": "59.0% fill rate"
+    },
+    {
+      "test": "Lead targets chord tones on strong beats",
+      "pass": true,
+      "evidence": "61.5% chord tones"
+    },
+    {
+      "test": "Phrase N+1 has lineage from phrase N",
+      "pass": true,
+      "evidence": "parent=phrase-2, operator=CONTRAST, notes=4"
+    },
+    {
+      "test": "Tension state drives generation",
+      "pass": true,
+      "evidence": "overall=0.296, trajectory=falling"
+    },
+    {
+      "test": "256-bar development (no collapse)",
+      "pass": true,
+      "evidence": "6297 events, 25 pitches"
+    }
+  ],
+  "leadOnBassRatio": 0.31313131313131315,
+  "leadOnFreeRatio": 0.59,
+  "chordToneRatio": 0.6153846153846154,
+  "verdict": "PASS"
+}

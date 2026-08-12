@@ -2,8 +2,8 @@
   "results": [
     {
       "test": "Candidate generation",
-      "pass": true,
-      "evidence": "5 candidates, best=0.541"
+      "pass": false,
+      "evidence": "0 candidates, best=0.000"
     },
     {
       "test": "Phrase continuity (lead inherits from previous)",
@@ -13,23 +13,23 @@
     {
       "test": "Bass↔Lead register separation",
       "pass": true,
-      "evidence": "14.7 semitones avg"
+      "evidence": "13.8 semitones avg"
     },
     {
       "test": "512-bar continuity",
       "pass": true,
-      "evidence": "9837 events, 512/512 bars"
+      "evidence": "12641 events, 512/512 bars"
     },
     {
       "test": "No copying (novelty preserved)",
       "pass": true,
-      "evidence": "max repeat=5, unique pitches=15"
+      "evidence": "max repeat=3, unique pitches=23"
     },
     {
       "test": "ContinuousMusicalState populated",
       "pass": true,
-      "evidence": "lead=64, bass=57, sep=16.9"
+      "evidence": "lead=57, bass=57, sep=9.6"
     }
   ],
-  "verdict": "PASS"
+  "verdict": "FAIL"
 }

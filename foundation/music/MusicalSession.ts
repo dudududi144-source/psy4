@@ -23,6 +23,10 @@ import { GrammarBuilder, type BassGrammar, type RhythmGrammar, type MelodicGramm
 import { StateManager, type ContinuousMusicalState } from './ContinuousMusicalState';
 import { CandidateGenerator, type LeadCandidate } from './CandidateGenerator';
 import { StrategySelector, type StrategySet, type BassStrategyType, type LeadStrategyType, type GrooveStrategyType } from './MusicalStrategies';
+import { type GrooveState, generateGrooveState, createDefaultGroove } from './GrooveState';
+import { type HarmonicState, generateHarmonicState, getChordAtStep, isChordTone, nearestChordTone, type ChordVoicing } from './HarmonicState';
+import { type PhraseDevelopmentState, type PhraseRecord as PhraseDevRecord, type DevelopmentOperator, type PhraseNote, createInitialPhraseState, selectDevelopmentOperator, transformPhrase, createPhraseRecord, motifSimilarity } from './PhraseDevelopmentState';
+import { type TensionState, createInitialTension, updateTension } from './TensionState';
 
 export interface ScheduledNote {
   readonly step: number;
@@ -107,6 +111,11 @@ export class MusicalSession {
   private strategySelector: StrategySelector;
   private currentStrategies: StrategySet | null = null;
   private strategyHistory: StrategySet[] = [];
+  // F21: Core musical state (causal, not observational)
+  private grooveState: GrooveState;
+  private harmonicState: HarmonicState | null = null;
+  private phraseState: PhraseDevelopmentState;
+  private tensionState: TensionState;
 
   private currentPlan: NotePlan | null = null;
   private currentMotif: StoredMotif | null = null;
@@ -135,6 +144,9 @@ export class MusicalSession {
     this.stateManager = new StateManager();
     this.candidateGenerator = new CandidateGenerator(seed + 100);
     this.strategySelector = new StrategySelector(seed + 200);
+    this.grooveState = createDefaultGroove();
+    this.phraseState = createInitialPhraseState();
+    this.tensionState = createInitialTension();
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -301,6 +313,11 @@ export class MusicalSession {
   getCurrentStrategies(): StrategySet | null { return this.currentStrategies; }
   getStrategyHistory(): StrategySet[] { return this.strategyHistory; }
   getStrategyWeights() { return this.strategySelector.getWeights(); }
+  // F21: Core musical state accessors
+  getGrooveState(): GrooveState { return this.grooveState; }
+  getHarmonicState(): HarmonicState | null { return this.harmonicState; }
+  getTensionState(): TensionState { return this.tensionState; }
+  getPhraseState(): PhraseDevelopmentState { return this.phraseState; }
 
   planBar(bar: number, transportBpm: number): NotePlan {
     // F16: Track cycle for groove evolution
@@ -378,36 +395,69 @@ export class MusicalSession {
       motif = this.phraseMotifs.get(barInPhrase)!;
     }
 
-    // ── GENERATE NOTES (hierarchical: groove → bass → lead) ──
+    // ── F21: RELATIONAL GENERATION ──
+    // Generation order: groove → harmony → kick → bass(reads kick) → lead(reads kick+bass)
+    // Each voice knows what came before it. The lead is NOT independent.
     const notes: ScheduledNote[] = [];
 
-    // F15: BREAK — only kick + bass (no hats, no lead)
+    // F21 Phase 1: Update groove state (stable per section, not per bar)
+    if (barInPhrase === 0 || !this.grooveState) {
+      this.grooveState = generateGrooveState({
+        section: snap.sectionName, style: this.style, energy: snap.energy,
+        bpm: transportBpm, isBreak: arrangementOverride === 'BREAK', isDrop: arrangementOverride === 'DROP',
+      });
+    }
+
+    // F21 Phase 1: Update harmonic state (per phrase)
+    if (barInPhrase === 0 || !this.harmonicState) {
+      this.harmonicState = generateHarmonicState({
+        rootPc: snap.rootPc, scaleName: snap.scaleName || 'phrygian-dominant',
+        section: snap.sectionName, phraseIndex: this.phraseState.phraseIndex,
+        tension: snap.tension,
+      });
+    }
+
+    // F21 Phase 1: Update tension state (per bar)
+    this.tensionState = updateTension(this.tensionState, {
+      section: snap.sectionName, phraseIndex: this.phraseState.phraseIndex,
+      barInPhrase, energy: snap.energy,
+      isBuild: arrangementOverride === 'BUILD', isDrop: arrangementOverride === 'DROP',
+      isBreak: arrangementOverride === 'BREAK',
+    });
+
+    // F21 Phase 1: Select phrase development operator (per phrase)
+    if (barInPhrase === 0) {
+      const operator = selectDevelopmentOperator(this.phraseState.phraseIndex, snap.sectionName);
+      this.phraseState.operator = operator;
+    }
+
     const isBreak = arrangementOverride === 'BREAK';
-    // F15: DROP — maximum density (all voices, high velocity)
     const isDrop = arrangementOverride === 'DROP';
-    // F15: BUILD — gradually increase density
     const isBuild = arrangementOverride === 'BUILD';
 
-    // F9 RULE 3: KICK FIRST — always present, never removed
+    // ── KICK: generates from GrooveState ──
     this.generateKick(notes, snap, barInPhrase, bar);
 
-    // F9 RULE 4: BASS — interlocked with kick
+    // F21: Extract kick notes for bass/lead awareness
+    const kickNotes = notes.filter(n => n.voice === 'kick');
+
+    // ── BASS: reads kick + groove + harmony ──
     this.generateBass(notes, snap, barInPhrase);
 
-    // F15: BREAK — no hats, no lead (just kick + bass)
+    // F21: Extract bass notes for lead awareness
+    const bassNotes = notes.filter(n => n.voice === 'bass');
+
+    // ── HATS + LEAD: reads kick + bass + groove + harmony ──
     if (!isBreak) {
-      // F9 RULE 8: HATS — complementary
       this.generateHats(notes, snap, barInPhrase);
 
-      // F9 RULE 8: LEAD — optional, controlled, lower register
       let leadDensity = this.calculateLeadDensity(snap, radio, barInPhrase);
-      // F15: DROP — force high lead density
       if (isDrop) leadDensity = Math.max(leadDensity, 0.75);
-      // F15: BUILD — ramp density (higher as build progresses)
       if (isBuild) leadDensity = Math.max(leadDensity, 0.3 + (1 - this.buildRemaining / 4) * 0.4);
 
       if (leadDensity > 0) {
-        this.generateLead(notes, snap, motif, barInPhrase, action, leadDensity);
+        // F21 Phase 3: Lead receives kick + bass notes + harmonic state + phrase state
+        this.generateRelationalLead(notes, snap, barInPhrase, leadDensity, kickNotes, bassNotes, bar);
       } else {
         this.lastReason = 'lead resting (groove sufficient)';
       }
@@ -1086,6 +1136,177 @@ export class MusicalSession {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // F21 Phase 3: RELATIONAL LEAD GENERATION
+  // The lead KNOWS the kick and bass notes for THIS bar. It:
+  // - Leaves holes where bass is busy
+  // - Fills space where bass is silent
+  // - Targets chord tones on strong beats
+  // - Develops the previous phrase's motif
+  // - Responds to tension state
+  // ═══════════════════════════════════════════════════════════════════════
+  private generateRelationalLead(
+    notes: ScheduledNote[],
+    ctx: MusicalContextSnapshot,
+    barInPhrase: number,
+    density: number,
+    kickNotes: ScheduledNote[],
+    bassNotes: ScheduledNote[],
+    bar: number,
+  ): void {
+    // Build maps of which steps have kick/bass
+    const kickSteps = new Set(kickNotes.map(n => n.step));
+    const bassSteps = new Set(bassNotes.filter(n => n.midi !== null).map(n => n.step));
+    const bassMidiByStep = new Map<number, number>();
+    for (const bn of bassNotes) {
+      if (bn.midi !== null) bassMidiByStep.set(bn.step, bn.midi);
+    }
+
+    // Get harmonic state for chord-tone targeting
+    const harmonic = this.harmonicState;
+    const groove = this.grooveState;
+    const tension = this.tensionState;
+
+    // F21: Start from previous phrase's last note (continuity)
+    const state = this.stateManager.getState();
+    let currentMidi = state.leadLastMidi > 0
+      ? Math.max(48, Math.min(72, state.leadLastMidi))
+      : degreeToMidi(ctx.rootPc, ctx.scale, 0, 3);
+
+    // F21: Get previous phrase notes for development
+    const prevPhrase = this.phraseState.previous;
+    const operator = this.phraseState.operator;
+
+    // F21: If we have a previous phrase, transform it
+    let inheritedNotes: PhraseNote[] | null = null;
+    if (prevPhrase && prevPhrase.notes.length > 0) {
+      const scaleIntervals = ctx.scale.intervals;
+      inheritedNotes = transformPhrase(prevPhrase, operator, ctx.rootPc, scaleIntervals);
+    }
+
+    // F21: Generate lead notes — RELATIONAL
+    for (let step = 0; step < 16; step++) {
+      const isStrongBeat = step % 4 === 0;
+      const hasBass = bassSteps.has(step);
+      const hasKick = kickSteps.has(step);
+
+      // F21: RHYTHMIC RELATIONSHIP
+      // Leave holes where bass is busy (avoid collision)
+      // Fill space where bass is silent (complement)
+      let playProb = density;
+      if (hasBass && !isStrongBeat) {
+        // Bass is busy here and it's not a strong beat → leave a hole
+        playProb *= 0.3;
+      } else if (!hasBass && groove.spaceMap[step] > 0.4) {
+        // Bass is silent and there's space → fill it
+        playProb *= 1.5;
+      }
+
+      // F21: TENSION DRIVES DENSITY
+      // High rhythmic tension → more notes
+      playProb *= (0.7 + tension.rhythmic * 0.6);
+      // Resolving → fewer notes
+      if (tension.resolving) playProb *= 0.6;
+
+      // F21: Use inherited notes if available (phrase development)
+      if (inheritedNotes) {
+        const inherited = inheritedNotes.find(n => n.step === step);
+        if (inherited && this.rng.next() < playProb) {
+          // F21: HARMONIC TARGETING — snap to nearest chord tone on strong beats
+          let midi = inherited.midi;
+          if (harmonic && isStrongBeat) {
+            // 70% chance to target chord tone on strong beats
+            if (this.rng.next() < 0.7) {
+              midi = nearestChordTone(harmonic, midi, step, barInPhrase);
+            }
+          }
+          // F21: REGISTER SEPARATION — avoid bass register
+          if (bassMidiByStep.has(step)) {
+            const bassMidi = bassMidiByStep.get(step)!;
+            if (Math.abs(midi - bassMidi) < 7) {
+              midi = Math.min(72, bassMidi + 12); // shift up an octave
+            }
+          }
+          currentMidi = Math.max(48, Math.min(72, midi));
+          const vel = isStrongBeat ? 0.75 : 0.5;
+          notes.push({ step, voice: 'lead', midi: currentMidi, velocity: vel });
+          continue;
+        }
+      }
+
+      // F21: Generate new note (when no inherited note)
+      if (this.rng.next() < playProb) {
+        // F21: Choose interval based on tension
+        // High melodic tension → larger intervals
+        const maxInterval = Math.round(2 + tension.melodic * 7); // 2-9 semitones
+        const interval = Math.round((this.rng.next() - 0.5) * 2 * maxInterval);
+
+        let newMidi = currentMidi + interval;
+
+        // F21: HARMONIC TARGETING — on strong beats, snap to chord tone
+        if (harmonic && isStrongBeat && this.rng.next() < 0.7) {
+          newMidi = nearestChordTone(harmonic, newMidi, step, barInPhrase);
+        }
+
+        // F21: REGISTER SEPARATION — avoid landing in bass register
+        if (bassMidiByStep.has(step)) {
+          const bassMidi = bassMidiByStep.get(step)!;
+          if (Math.abs(newMidi - bassMidi) < 7) {
+            newMidi = Math.min(72, bassMidi + 12);
+          }
+        }
+
+        // F21: TENSION DRIVES REGISTER
+        // High register tension → push up
+        if (tension.register > 0.6 && this.rng.next() < 0.3) {
+          newMidi = Math.min(72, newMidi + 2);
+        }
+        // Resolving → descend
+        if (tension.resolving && this.rng.next() < 0.4) {
+          newMidi = Math.max(48, newMidi - 2);
+        }
+
+        currentMidi = Math.max(48, Math.min(72, newMidi));
+        const vel = isStrongBeat ? 0.75 : 0.5;
+        notes.push({ step, voice: 'lead', midi: currentMidi, velocity: vel });
+      }
+    }
+
+    // F21: Phrase-end cadence — resolve to root on last step
+    if (barInPhrase === 7) {
+      const rootMidi = degreeToMidi(ctx.rootPc, ctx.scale, 0, 3);
+      notes.push({ step: 15, voice: 'lead', midi: rootMidi, velocity: 0.6 });
+      currentMidi = rootMidi;
+    }
+
+    // F21: Update continuous state
+    state.leadLastMidi = currentMidi;
+
+    // F21: Create phrase record at phrase end
+    if (barInPhrase === 7) {
+      const leadNotesInPhrase = notes.filter(n => n.voice === 'lead' && n.midi !== null);
+      const phraseNotes: PhraseNote[] = leadNotesInPhrase.map(n => ({
+        step: n.step, midi: n.midi as number, velocity: n.velocity,
+      }));
+      const record = createPhraseRecord(
+        phraseNotes,
+        `phrase-${this.phraseState.phraseIndex}`,
+        this.phraseState.previous?.phraseId ?? null,
+        this.phraseState.motifFamilyId,
+        this.phraseState.operator,
+        bar - 7,
+        this.tensionState.harmonic,
+        this.tensionState.harmonic,
+        ctx.energy,
+        ctx.energy,
+      );
+      this.phraseState.beforePrevious = this.phraseState.previous;
+      this.phraseState.previous = record;
+      this.phraseState.current = record;
+      this.phraseState.phraseIndex++;
+    }
+  }
+
   // ── Phrase management ──
   private handleNewPhrase(ctx: MusicalContextSnapshot, bar: number): void {
     const groupIdx = PHRASE_STRUCTURE[ctx.phraseIndex % 8];
@@ -1220,6 +1441,10 @@ export class MusicalSession {
     this.grammarBuilder.reset();
     this.stateManager.reset();
     this.strategySelector.reset();
+    this.grooveState = createDefaultGroove();
+    this.harmonicState = null;
+    this.phraseState = createInitialPhraseState();
+    this.tensionState = createInitialTension();
     this.currentStrategies = null;
     this.strategyHistory = [];
     this.currentPlan = null; this.currentMotif = null;
