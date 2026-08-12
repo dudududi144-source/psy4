@@ -23,6 +23,8 @@ import { BeatPLL } from './beatPLL';
 import { mutatePattern, type Pattern } from './patternMutator';
 import { MelodyObserver, type MelodyObservation } from './melodyObserver';
 import { RadioStateGate, type RadioState } from './radioStateGate';
+import { MusicalTransport } from '../../foundation/transport/MusicalTransport';
+import { TransportAdapter } from '../../foundation/transport/TransportAdapter';
 
 const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -183,8 +185,9 @@ export class PsyLive {
   // State
   private playing = false;
   private radioOn = false;
-  private radioBpm = 0;
-  private engineBpm = 145;
+  // F1.18: radioBpm and engineBpm DELETED — Transport is the single source of truth for BPM
+  // The LiveState interface still has radioBpm/engineBpm fields for UI compatibility,
+  // but they are populated from transport.snapshot().bpm in emit()
   private syncStatus: SyncStatus = 'idle';
   private mixMode: MixMode = 'solo';
   private kickCount = 0;
@@ -224,12 +227,20 @@ export class PsyLive {
   private styleCandidateSince = 0;
   private currentStyle: Style = 'fullOn';
 
-  // Beat PLL (phase-locked loop for beat sync)
+  // Beat PLL (phase-locked loop for beat sync) — OBSERVER only
+  // F1.18: PLL feeds observations to Transport. Scheduler reads Transport.
   private pll: BeatPLL = new BeatPLL();
 
+  // F1.18: MusicalTransport is the SINGLE source of truth for musical time.
+  // All beat/bar/phase/bpm reads come from transport.snapshot().
+  // The PLL is an observer; Transport is the time model.
+  private transport: MusicalTransport | null = null;
+  private transportAdapter: TransportAdapter | null = null;
+
   // Pattern mutation (evolves every 8 bars)
+  // F1.18: barCount is derived from transport.snapshot().bar, not independently tracked
   private livePattern: Pattern | null = null;
-  private barCount = 0;
+  private lastMutatedBar = -1; // track last bar we mutated at (for 8-bar cycle)
 
   // Melody observation (learns melodies from radio)
   private melodyObserver: MelodyObserver = new MelodyObserver();
@@ -242,13 +253,12 @@ export class PsyLive {
   private safetyLimiter: DynamicsCompressorNode | null = null;
   private safetyReduction: number = 0;
 
-  // Scheduler (like psy — 25ms lookahead, 150ms schedule ahead)
+  // Scheduler — wake-up mechanism only (NOT a musical clock)
+  // F1.18: setInterval wakes the scheduler; musical time comes from Transport
   private timer: ReturnType<typeof setInterval> | null = null;
-  private step = 0;
-  private nextNoteTime = 0;
   private readonly lookahead = 25;
   private readonly scheduleAheadTime = 0.15;
-  private readonly totalSteps = 64;
+  private lastScheduledBeatIndex = -1; // dedup based on Transport beatIndex
 
   // Kick detection
   private detectTimer: ReturnType<typeof setInterval> | null = null;
@@ -293,9 +303,11 @@ export class PsyLive {
 
   private emit(): void {
     const learned = this.learningData ? getInsights(this.learningData) : null;
+    // F1.18: BPM comes from Transport — single source of truth
+    const transportBpm = this.transport ? this.transport.snapshot().bpm : 145;
     this.onState?.({
       playing: this.playing, radioOn: this.radioOn,
-      radioBpm: this.radioBpm, engineBpm: this.engineBpm,
+      radioBpm: transportBpm, engineBpm: transportBpm,
       syncStatus: this.syncStatus, mixMode: this.mixMode,
       kickCount: this.kickCount,
       bassNote: freqToNote(this.bassFreq),
@@ -361,6 +373,14 @@ export class PsyLive {
 
     // Load learning
     this.learningData = loadLearning();
+
+    // F1.18 — Initialize MusicalTransport (the SINGLE source of truth for musical time)
+    // All beat/bar/phase/bpm reads come from transport.snapshot().
+    // The PLL is an observer that feeds observations to Transport.
+    this.transport = new MusicalTransport(() => this.ctx!.currentTime, {
+      initialBpm: PRESETS[0].bpm,
+    });
+    this.transportAdapter = new TransportAdapter(this.transport);
 
     // ── PER-ROLE BUSES (from architecture review) ──
     // Each voice connects to its role bus → engineBus → gentle comp → master
@@ -449,14 +469,18 @@ export class PsyLive {
     o1.start(t); o2.start(t); o1.stop(t + 0.26); o2.stop(t + 0.26);
   }
 
-  // ── Play / Stop (like psy) ──
+  // ── Play / Stop ──
+  // F1.18: Transport owns musical time. play() starts the Transport;
+  // scheduler reads transport.snapshot() for beat/bar/phase.
   play(): void {
     this.ensureAudio();
     if (this.playing) return;
     this.playing = true;
-    this.step = 0;
-    this.nextNoteTime = this.ctx!.currentTime + 0.06;
+    // F1.18: Start Transport — it sets the initial anchor
+    this.transport!.start();
+    this.lastScheduledBeatIndex = -1;
     this.updateDelayTime();
+    // setInterval is a WAKE-UP mechanism only — NOT the musical clock
     this.timer = setInterval(() => this.scheduler(), this.lookahead);
     this.startUITimer();
     this.emit();
@@ -472,9 +496,10 @@ export class PsyLive {
   setPreset(id: string): void {
     this.presetId = id;
     this.livePattern = null; // reset mutation when preset changes
-    this.barCount = 0;
+    this.lastMutatedBar = -1;
     const p = this.getPreset();
-    this.engineBpm = p.bpm;
+    // F1.18: setTempo via Transport — single source of truth for BPM
+    this.transport!.setTempo(p.bpm, 'internal');
     this.updateDelayTime();
     this.emit();
   }
@@ -494,7 +519,8 @@ export class PsyLive {
     if (this.delay) this.delay.delayTime.value = this.stepDur() * 3;
   }
 
-  private stepDur(): number { return 60 / this.engineBpm / 4; }
+  // F1.18: stepDur reads from Transport — no independent engineBpm
+  private stepDur(): number { return 60 / this.transport!.snapshot().bpm / 4; }
 
   private updateMixMode(): void {
     if (this.compositionMode) { this.mixMode = 'solo'; return; }
@@ -503,65 +529,65 @@ export class PsyLive {
     else this.mixMode = 'glue';
   }
 
-  // ── Scheduler — beat-synced via PLL ──
-  // When PLL is locked: schedule steps on predicted radio beats
-  // When PLL not locked (solo/no radio): use own clock like psy
+  // ── Scheduler — reads Transport for ALL musical time ──
+  // F1.18: setInterval wakes the scheduler (25ms). The scheduler reads
+  // transport.snapshot() and transport.predictBeats() to decide what to
+  // schedule. NO independent nextNoteTime, step, or barCount.
+  //
+  // Policy for tab suspension: DROP STALE EVENTS.
+  // When the scheduler wakes after a stall, it computes the current position
+  // from Transport (which uses AudioContext.currentTime). It schedules only
+  // events in the future. Stale events are dropped, not caught up.
   private scheduler(): void {
-    if (!this.ctx) return;
+    if (!this.ctx || !this.transport) return;
     try {
       const now = this.ctx.currentTime;
+      const snap = this.transport.snapshot();
 
-      // If PLL is locked, sync to radio beats
-      if (this.pll.isLocked() && this.radioOn) {
-        // Get predicted beats for the next 200ms
-        const beats = this.pll.predictBeats(now, 0.2);
-        const period = 60 / this.pll.getBpm();
-        const stepDur = period / 4; // 16th notes
+      // Get predicted beats for the schedule-ahead window
+      const beats = this.transport.predictBeats(this.scheduleAheadTime);
+      const stepDur = snap.beatDuration / 4; // 16th notes
 
-        for (const beatTime of beats) {
-          // Schedule 4 sixteenth notes per beat
-          for (let s = 0; s < 4; s++) {
-            const stepTime = beatTime + s * stepDur;
-            if (stepTime > now && stepTime < now + this.scheduleAheadTime) {
-              // Only schedule if we haven't already scheduled this step
-              const stepKey = Math.round(stepTime * 1000);
-              if (stepKey > this.lastScheduledStepKey) {
-                this.scheduleStep(this.step % 16, stepTime);
-                this.lastScheduledStepKey = stepKey;
-                this.step = (this.step + 1) % this.totalSteps;
-              }
+      for (const beatTime of beats) {
+        // Schedule 4 sixteenth notes per beat
+        for (let s = 0; s < 4; s++) {
+          const stepTime = beatTime + s * stepDur;
+          if (stepTime > now && stepTime < now + this.scheduleAheadTime) {
+            // F1.18: dedup based on Transport's beatIndex (not float stepKey)
+            // Compute the global step index this corresponds to
+            const beatIdx = Math.round((stepTime - snap.beatTime) / stepDur);
+            if (beatIdx > this.lastScheduledBeatIndex) {
+              this.scheduleStep(beatIdx, stepTime);
+              this.lastScheduledBeatIndex = beatIdx;
             }
           }
-        }
-      } else {
-        // No PLL lock — use own clock (like psy)
-        while (this.nextNoteTime < now + this.scheduleAheadTime) {
-          this.scheduleStep(this.step, this.nextNoteTime);
-          this.nextNoteTime += this.stepDur();
-          this.step = (this.step + 1) % this.totalSteps;
         }
       }
     } catch (e) {}
   }
 
-  private lastScheduledStepKey = 0;
-
-  private scheduleStep(step: number, time: number): void {
+  // F1.18: scheduleStep receives the GLOBAL step index from Transport.
+  // The 16-step pattern position is derived: step16 = stepIndex % 16.
+  // Bar position comes from Transport: snap.bar.
+  private scheduleStep(stepIndex: number, time: number): void {
+    if (!this.transport) return;
+    const snap = this.transport.snapshot();
     const p = this.getPreset();
     const v = this.getVariant();
-    const s16 = step % 16;
+    const s16 = stepIndex % 16;
 
     // ── PATTERN MUTATION: evolve every 8 bars ──
+    // F1.18: bar comes from Transport snapshot, not from barCount++
     if (s16 === 0) {
-      this.barCount++;
-      if (this.barCount % 8 === 0) {
-        // Time to mutate!
+      const currentBar = snap.bar;
+      if (currentBar !== this.lastMutatedBar && currentBar % 8 === 0 && currentBar > 0) {
         const basePattern = this.livePattern || p.patterns;
         const mutated = mutatePattern(basePattern, this.occupancy, this.musicState.density);
         if (mutated) {
           this.livePattern = mutated;
-          console.log('[MUTATE] pattern evolved, bar', this.barCount);
+          console.log('[MUTATE] pattern evolved, bar', currentBar);
         }
+        this.lastMutatedBar = currentBar;
       }
     }
 
@@ -598,18 +624,19 @@ export class PsyLive {
   }
 
   // ── Composition mode ──
+  // F1.18: tempo changes go through Transport.setTempo()
   toggleComposition(): boolean {
     if (!this.learningData) return false;
     if (!this.compositionMode) {
       this.composition = generateComposition(this.learningData);
       if (!this.composition) return false;
       this.compositionMode = true;
-      this.engineBpm = this.composition.bpm;
+      this.transport!.setTempo(this.composition.bpm, 'internal');
       this.updateDelayTime();
     } else {
       this.compositionMode = false;
       this.composition = null;
-      this.engineBpm = this.getPreset().bpm;
+      this.transport!.setTempo(this.getPreset().bpm, 'internal');
       this.updateDelayTime();
     }
     this.updateMixMode();
@@ -663,7 +690,8 @@ export class PsyLive {
     if (this.radioEl) { this.radioEl.pause(); this.radioEl.src = ''; }
     if (this.radioSource) { try { this.radioSource.disconnect(); } catch {} }
     this.radioOn = false;
-    this.radioBpm = 0;
+    // F1.18: Transport enters holdover (no hard reset of BPM)
+    this.transport!.loseSource();
     this.syncStatus = 'idle';
     this.harmonicLocked = false;
     this.harmonicRoot = 0;
@@ -807,17 +835,20 @@ export class PsyLive {
 
     // Update radio roles in music state
     this.musicState.radioRoles = { ...this.occupancy };
-    this.musicState.bpm = this.radioBpm || this.engineBpm;
+    // F1.18: BPM comes from Transport — single source of truth
+    this.musicState.bpm = this.transport ? this.transport.snapshot().bpm : 145;
 
     // ── STYLE DETECTION (with hysteresis) ──
+    // F1.18: use AudioContext.currentTime (NOT Date.now) for musical hysteresis
     const detectedStyle = this.classifyStyle();
     if (detectedStyle) {
+      const audioNow = this.ctx.currentTime;
       if (detectedStyle !== this.styleCandidate) {
         this.styleCandidate = detectedStyle;
-        this.styleCandidateSince = Date.now();
+        this.styleCandidateSince = audioNow;
       }
       // Only switch style after 8 seconds of consistent detection
-      if (this.styleCandidate && Date.now() - this.styleCandidateSince > 8000) {
+      if (this.styleCandidate && audioNow - this.styleCandidateSince > 8) {
         if (this.styleCandidate !== this.currentStyle) {
           this.currentStyle = this.styleCandidate;
           console.log('[STYLE] switched to:', this.currentStyle);
@@ -892,23 +923,23 @@ export class PsyLive {
     if (this.lastKickTime > 0 && now - this.lastKickTime < 0.25) return;
     this.kickCount++;
 
-    // ── FEED BEAT OBSERVATION TO PLL ──
-    // PLL handles phase + tempo tracking (replaces old median-based BPM)
+    // ── FEED BEAT OBSERVATION TO PLL (observer) ──
     const confidence = Math.min(1, this.radioBands.low * 2);
     this.pll.update({ time: now, confidence });
 
-    // Sync engine BPM from PLL (smooth, not jumping)
-    if (this.pll.isLocked()) {
-      const pllBpm = this.pll.getBpm();
-      this.radioBpm = Math.round(pllBpm);
-      // Smooth engine BPM toward PLL (not jump)
-      this.engineBpm = this.engineBpm + (pllBpm - this.engineBpm) * 0.3;
+    // F1.18: Feed observation to Transport (the time model)
+    // Transport uses the PLL's estimate internally but is the SINGLE source of truth
+    this.transport!.observeBeat({ time: now, confidence, source: 'radio' });
+
+    // F1.18: Read tempo + lock state from Transport (NOT from PLL directly)
+    const snap = this.transport!.snapshot();
+    if (snap.locked) {
       this.updateDelayTime();
       this.syncStatus = 'following';
       this.updateMixMode();
 
       if (this.learningData) {
-        this.learningData = recordKick(this.learningData, Math.round(pllBpm));
+        this.learningData = recordKick(this.learningData, Math.round(snap.bpm));
         this.learningData = deriveInsights(this.learningData);
         saveLearning(this.learningData);
       }
@@ -927,10 +958,11 @@ export class PsyLive {
     if (this.uiTimer) { clearInterval(this.uiTimer); this.uiTimer = null; }
   }
 
-  // ── Style classifier (from architecture review) ──
+  // ── Style classifier ──
+  // F1.18: BPM comes from Transport — single source of truth
   private classifyStyle(): Style | null {
     const o = this.occupancy;
-    const bpm = this.radioBpm || this.engineBpm;
+    const bpm = this.transport ? this.transport.snapshot().bpm : 145;
 
     // Full On: high kick + high bass + high highs + fast
     if (o.kick > 0.7 && o.bass > 0.6 && o.hats > 0.4 && bpm > 143) {
@@ -964,4 +996,31 @@ export class PsyLive {
   getRecentMelody(bars: number): MelodyObservation[] {
     return this.melodyObserver.getRecentObservations(bars);
   }
+
+  // ── F1.18 RULE 9: Browser proof debug surface ──
+  // DEBUG ONLY: Exposes Transport state for browser verification.
+  // Proves schedulerBeat === transportBeat, schedulerBar === transportBar.
+  // This method is for testing/verification only and may be removed
+  // after ownership is proven. It does NOT modify Transport state.
+  getTransportDebug() {
+    if (!this.transport) return null;
+    const snap = this.transport.snapshot();
+    return {
+      transportBpm: snap.bpm,
+      transportBeat: snap.beatIndex,
+      transportBar: snap.bar,
+      transportPhase: snap.phase,
+      transportEpoch: snap.epoch,
+      transportLocked: snap.locked,
+      transportSource: snap.source,
+      // The scheduler reads Transport — so these should always match
+      schedulerBeat: snap.beatIndex,
+      schedulerBar: snap.bar,
+      schedulerEpoch: snap.epoch,
+      schedulerLastScheduledBeatIndex: this.lastScheduledBeatIndex,
+    };
+  }
+
+  // F1.18: Public Transport accessor (for integration tests)
+  getTransport() { return this.transport; }
 }

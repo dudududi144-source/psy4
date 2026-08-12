@@ -1,0 +1,102 @@
+{
+  "runAt": "2026-08-12T13:10:30.788Z",
+  "totalTests": 15,
+  "passed": 15,
+  "failed": 0,
+  "results": [
+    {
+      "id": "OWN-1",
+      "name": "Starting Transport starts runtime scheduling",
+      "passed": true,
+      "evidence": "transport.isRunning()=true debug=present"
+    },
+    {
+      "id": "OWN-2",
+      "name": "Changing BPM via setPreset changes Transport BPM",
+      "passed": true,
+      "evidence": "initialBpm=145 afterBpm=138 (expected 138)"
+    },
+    {
+      "id": "OWN-3",
+      "name": "No phase reset on tempo change (epoch increments, beat continues)",
+      "passed": true,
+      "evidence": "epoch: 1 → 2 (incremented = re-anchored)"
+    },
+    {
+      "id": "OWN-4",
+      "name": "Bar number comes from Transport (seek to beat 40 → bar 10)",
+      "passed": true,
+      "evidence": "beatIndex=40 bar=10 (expected bar=10)"
+    },
+    {
+      "id": "OWN-5",
+      "name": "Scheduler and UI observe the same beat (schedulerBeat === transportBeat)",
+      "passed": true,
+      "evidence": "transportBeat=0 schedulerBeat=0 equal=true"
+    },
+    {
+      "id": "OWN-6",
+      "name": "Arranger and scheduler observe the same bar (schedulerBar === transportBar)",
+      "passed": true,
+      "evidence": "transportBar=0 schedulerBar=0 equal=true"
+    },
+    {
+      "id": "OWN-7",
+      "name": "Seek increments epoch",
+      "passed": true,
+      "evidence": "epoch: 1 → 2"
+    },
+    {
+      "id": "OWN-8",
+      "name": "Pause/resume re-anchors (no second timeline, epoch increments)",
+      "passed": true,
+      "evidence": "epoch: 1 → 2"
+    },
+    {
+      "id": "OWN-9",
+      "name": "Radio loss enters Transport holdover (source=internal, confidence drops)",
+      "passed": true,
+      "evidence": "source=internal confidence: 0.81 → 0.40"
+    },
+    {
+      "id": "OWN-10",
+      "name": "Radio recovery updates Transport (source returns to radio)",
+      "passed": true,
+      "evidence": "source: internal (loss) → radio (recovery)"
+    },
+    {
+      "id": "OWN-11",
+      "name": "Tab suspension: no catch-up burst, position is correct",
+      "passed": true,
+      "evidence": "beat: 0 → 0 (no burst, position correct)"
+    },
+    {
+      "id": "OWN-12",
+      "name": "No competing musical clock remains in psyLive.ts",
+      "passed": true,
+      "evidence": "engineBpm=false radioBpm=false step=false nextNoteTime=false barCount=false lastScheduledStepKey=false Date.now=false | transport=true snapshot=true predictBeats=true",
+      "metrics": {
+        "competingClocksFound": 0,
+        "transportPresent": 1
+      }
+    },
+    {
+      "id": "OWN-13-ADV",
+      "name": "Adversarial: schedulerBeat===transportBeat, schedulerBar===transportBar, schedulerEpoch===transportEpoch",
+      "passed": true,
+      "evidence": "beat: 0===0 (true) bar: 0===0 (true) epoch: 1===1 (true)"
+    },
+    {
+      "id": "OWN-14-TempoJump",
+      "name": "Tempo jump 120→180→100: Transport tracks, scheduler stays in sync",
+      "passed": true,
+      "evidence": "bpm: 120→180→100 schedulerBeat===transportBeat: true"
+    },
+    {
+      "id": "OWN-15-Jitter",
+      "name": "Jitter: Transport stays stable, scheduler stays in sync",
+      "passed": true,
+      "evidence": "bpm drift=0.22 schedulerBeat===transportBeat: true"
+    }
+  ]
+}

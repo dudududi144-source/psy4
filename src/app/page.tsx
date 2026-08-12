@@ -42,6 +42,11 @@ export default function Page() {
     const e = new PsyLive();
     e.onState = setS;
     engineRef.current = e;
+    // F1.18 RULE 9: Expose debug surface for browser verification
+    // DEBUG ONLY: Proves schedulerBeat === transportBeat (one clock, one owner)
+    if (typeof window !== 'undefined') {
+      (window as any).__psy4TransportDebug = () => engineRef.current?.getTransportDebug();
+    }
   }, []);
 
   useEffect(() => { init(); }, [init]);

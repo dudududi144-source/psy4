@@ -1151,39 +1151,46 @@ function testMusicStateAndScheduler(): void {
     });
   }
 
-  // Test 10C: Scheduler actually consumes PLL predictions?
+  // Test 10C: F1.18 — Scheduler reads Transport (not PLL directly, no own-clock fallback)
   {
     const psyLiveSrc = fs.readFileSync(
       path.join(__dirname, '..', '..', 'src', 'lib', 'psyLive.ts'),
       'utf8',
     );
-    const usesPLLLock = /pll\.isLocked\(\)/.test(psyLiveSrc);
-    const usesPredictBeats = /pll\.predictBeats\(/.test(psyLiveSrc);
-    const usesOwnClockFallback = /nextNoteTime\s*\+=\s*this\.stepDur\(\)/.test(psyLiveSrc);
+    // F1.18: Scheduler must read Transport, not PLL directly
+    const usesTransportSnapshot = /transport\.snapshot\(\)/.test(psyLiveSrc);
+    const usesTransportPredictBeats = /transport\.predictBeats\(/.test(psyLiveSrc);
+    // F1.18: No own-clock fallback (nextNoteTime accumulation is FORBIDDEN)
+    const hasOwnClockFallback = /nextNoteTime\s*\+=\s*this\.stepDur\(\)/.test(psyLiveSrc);
+    // F1.18: No direct PLL reads in scheduler (PLL is observer, Transport is time model)
+    const schedulerReadsPLLDirectly = /pll\.predictBeats\(/.test(psyLiveSrc);
     record({
       id: 'MS-10C',
-      name: 'Scheduler uses PLL.predictBeats when locked; falls back to own clock when not',
+      name: 'F1.18: Scheduler reads Transport (not PLL directly, no own-clock fallback)',
       category: 'Scheduler',
-      passed: usesPLLLock && usesPredictBeats && usesOwnClockFallback,
-      evidence: `usesPLLLock=${usesPLLLock} usesPredictBeats=${usesPredictBeats} usesOwnClockFallback=${usesOwnClockFallback}`,
-      metrics: { usesPLLLock: usesPLLLock ? 1 : 0, usesPredictBeats: usesPredictBeats ? 1 : 0, usesOwnClockFallback: usesOwnClockFallback ? 1 : 0 },
+      passed: usesTransportSnapshot && usesTransportPredictBeats && !hasOwnClockFallback && !schedulerReadsPLLDirectly,
+      evidence: `transportSnapshot=${usesTransportSnapshot} transportPredictBeats=${usesTransportPredictBeats} ownClockFallback=${hasOwnClockFallback} schedulerReadsPLLDirectly=${schedulerReadsPLLDirectly}`,
+      metrics: { usesTransport: usesTransportSnapshot ? 1 : 0, hasOwnClockFallback: hasOwnClockFallback ? 1 : 0, schedulerReadsPLLDirectly: schedulerReadsPLLDirectly ? 1 : 0 },
     });
   }
 
-  // Test 10D: Verify scheduler step deduplication (lastScheduledStepKey)
+  // Test 10D: F1.18 — Scheduler deduplication uses Transport beatIndex (not float stepKey)
   {
     const psyLiveSrc = fs.readFileSync(
       path.join(__dirname, '..', '..', 'src', 'lib', 'psyLive.ts'),
       'utf8',
     );
-    const hasDedup = /lastScheduledStepKey/.test(psyLiveSrc);
+    // F1.18: dedup uses lastScheduledBeatIndex (integer from Transport)
+    const hasTransportDedup = /lastScheduledBeatIndex/.test(psyLiveSrc);
+    // Old float-based dedup is FORBIDDEN
+    const hasOldFloatDedup = /lastScheduledStepKey/.test(psyLiveSrc);
     record({
       id: 'MS-10D',
-      name: 'Scheduler has step deduplication (lastScheduledStepKey)',
+      name: 'F1.18: Scheduler dedup uses Transport beatIndex (not float stepKey)',
       category: 'Scheduler',
-      passed: hasDedup,
-      evidence: `lastScheduledStepKey present: ${hasDedup}`,
-      metrics: { hasDedup: hasDedup ? 1 : 0 },
+      passed: hasTransportDedup && !hasOldFloatDedup,
+      evidence: `transportDedup=${hasTransportDedup} oldFloatDedup=${hasOldFloatDedup}`,
+      metrics: { transportDedup: hasTransportDedup ? 1 : 0, oldFloatDedup: hasOldFloatDedup ? 1 : 0 },
     });
   }
 }
