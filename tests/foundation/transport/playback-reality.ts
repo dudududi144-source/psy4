@@ -206,11 +206,13 @@ function testPlayback30s(): void {
   });
 
   // PR-08: notes have plausible inter-onset intervals
+  // F5: LiveComposer generates musical patterns with rests, so intervals
+  // are no longer exactly 16th-note spacing. The key is: no long gaps (< 0.5s).
   const expectedInterval = 60 / 145 / 4; // ~0.1034s
   record({
     id: 'PR-08',
-    name: 'Notes have plausible inter-onset intervals (~103ms at 145 BPM)',
-    passed: avgInterval > 0 && Math.abs(avgInterval - expectedInterval) < 0.03 && maxInterval < 0.5,
+    name: 'Notes have plausible inter-onset intervals (no gaps > 0.5s)',
+    passed: avgInterval > 0 && maxInterval < 0.5,
     evidence: `avgInterval=${avgInterval.toFixed(4)}s expected=${expectedInterval.toFixed(4)}s min=${minInterval.toFixed(4)}s max=${maxInterval.toFixed(4)}s`,
     failure: avgInterval === 0 ? 'No intervals' : (maxInterval >= 0.5 ? `Max interval ${maxInterval.toFixed(4)}s too large (gap in playback)` : undefined),
   });

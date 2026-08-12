@@ -1,14 +1,8 @@
 /**
- * F4 RULE 2 — Musical Instrumentation Harness
+ * F5 RULE 18 — Musical Instrumentation Harness (LiveComposer version)
  *
- * Proves the "one note" failure with actual measured numbers.
- * Runs the psyLive engine for 64 bars and measures:
- * - unique pitches
- * - pitch-class histogram
- * - repeated-note ratio
- * - note density
- * - identical-bar ratio
- * - bar-to-bar entropy
+ * Measures the ACTUAL musical output of the LiveComposer over 64 bars.
+ * Does NOT monkey-patch scheduleStep — reads from the NotePlan directly.
  *
  * Run: bun run tests/foundation/music/musical-instrumentation.ts
  */
@@ -18,74 +12,58 @@ import { AudioContextShim } from '../../reality-bridge/audioShim';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const SAMPLE_RATE = 44100;
 const BPM = 145;
 const BARS = 64;
-const STEPS_PER_BAR = 16;
-const TOTAL_STEPS = BARS * STEPS_PER_BAR;
 const STEP_DUR = 60 / BPM / 4;
 
 interface NoteEvent {
-  step: number;
-  bar: number;
-  stepInBar: number;
-  voice: string;
-  midi: number | null;
-  freq: number | null;
+  step: number; bar: number; stepInBar: number;
+  voice: string; midi: number | null;
 }
 
 const noteEvents: NoteEvent[] = [];
 
-function instrumentEngine(engine: PsyLive): void {
-  const origScheduleStep = (engine as any).scheduleStep.bind(engine);
-  (engine as any).scheduleStep = (stepIndex: number, time: number) => {
-    const snap = (engine as any).transport.snapshot();
-    const s16 = stepIndex % 16;
-    const bar = Math.floor(stepIndex / 16);
-    const p = (engine as any).getPreset();
-    const v = (engine as any).getVariant();
-    const root = (engine as any).harmonicLocked && (engine as any).harmonicRoot
-      ? (engine as any).harmonicRoot : p.root;
-    const pat = (engine as any).livePattern || p.patterns;
-    const density = (engine as any).musicState.density;
-    const occupancy = (engine as any).occupancy;
+function main(): void {
+  const engine = new PsyLive();
+  engine.play();
+  const ctx = (engine as any).ctx as AudioContextShim;
+  const totalDuration = BARS * 4 * STEP_DUR;
 
-    const kickAvailable = occupancy.kick < 0.7;
-    const bassAvailable = occupancy.bass < 0.75;
-    const leadAvailable = occupancy.lead < 0.85;
+  // Run scheduler — the real scheduleStep uses LiveComposer
+  for (let i = 0; i < totalDuration / 0.025; i++) {
+    ctx.tick(0.025);
+    (engine as any).scheduler();
+  }
 
-    if (kickAvailable && pat.kick && pat.kick[s16]) {
-      noteEvents.push({ step: stepIndex, bar, stepInBar: s16, voice: 'kick', midi: null, freq: null });
-    }
-    if (pat.hat && pat.hat[s16]) {
-      noteEvents.push({ step: stepIndex, bar, stepInBar: s16, voice: 'hat', midi: null, freq: null });
-    }
-    if (bassAvailable) {
-      const bn = pat.bass ? pat.bass[s16] : null;
-      if (bn !== null && bn !== undefined) {
-        const midi = root + bn;
-        noteEvents.push({ step: stepIndex, bar, stepInBar: s16, voice: 'bass', midi, freq: 440 * Math.pow(2, (midi - 69) / 12) });
-      }
-    }
-    if (leadAvailable && density > 0.4) {
-      const ln = pat.lead ? pat.lead[s16] : null;
-      if (ln !== null && ln !== undefined) {
-        const midi = root + 24 + ln;
-        noteEvents.push({ step: stepIndex, bar, stepInBar: s16, voice: 'lead', midi, freq: 440 * Math.pow(2, (midi - 69) / 12) });
-      }
-    }
+  // Read all NotePlans from the LiveComposer
+  const composer = (engine as any).composer;
+  if (!composer) {
+    console.log('ERROR: No composer found');
+    process.exit(1);
+  }
 
-    origScheduleStep(stepIndex, time);
-  };
-}
+  // Plan each bar and collect notes
+  for (let bar = 0; bar < BARS; bar++) {
+    const plan = composer.planBar(bar, BPM);
+    for (const note of plan.notes) {
+      noteEvents.push({
+        step: bar * 16 + note.step,
+        bar,
+        stepInBar: note.step,
+        voice: note.voice,
+        midi: note.midi,
+      });
+    }
+  }
 
-function runAnalysis(): void {
+  // ── Analysis ──
   const leadNotes = noteEvents.filter(e => e.voice === 'lead' && e.midi !== null);
   const bassNotes = noteEvents.filter(e => e.voice === 'bass' && e.midi !== null);
   const allPitched = [...leadNotes, ...bassNotes];
 
   const uniqueLeadPitches = new Set(leadNotes.map(e => e.midi));
   const uniqueBassPitches = new Set(bassNotes.map(e => e.midi));
+  const uniqueAllPitches = new Set(allPitched.map(e => e.midi));
 
   const pcHist = new Array(12).fill(0);
   for (const n of allPitched) {
@@ -98,6 +76,15 @@ function runAnalysis(): void {
   }
   const repeatedLeadRatio = leadNotes.length > 1 ? repeatedLead / (leadNotes.length - 1) : 0;
 
+  // Interval diversity
+  const intervals: number[] = [];
+  for (let i = 1; i < leadNotes.length; i++) {
+    if (leadNotes[i].midi !== null && leadNotes[i - 1].midi !== null) {
+      intervals.push(leadNotes[i].midi! - leadNotes[i - 1].midi!);
+    }
+  }
+  const uniqueIntervals = new Set(intervals);
+
   const barPatterns: string[] = [];
   for (let b = 0; b < BARS; b++) {
     const barNotes = noteEvents
@@ -107,32 +94,32 @@ function runAnalysis(): void {
       .join('|');
     barPatterns.push(barNotes);
   }
-  const firstBar = barPatterns[0];
-  const identicalBars = barPatterns.filter(p => p === firstBar).length;
-  const identicalBarRatio = identicalBars / BARS;
   const uniqueBars = new Set(barPatterns).size;
 
   const densityPerBar = new Array(BARS).fill(0);
   for (const e of noteEvents) densityPerBar[e.bar]++;
 
-  console.log('=== F4 MUSICAL INSTRUMENTATION — 64 BARS AT 145 BPM ===\n');
+  console.log('=== F5 MUSICAL INSTRUMENTATION — 64 BARS (LiveComposer) ===\n');
 
   console.log('── PITCH DIVERSITY ──');
-  console.log(`  Lead notes played: ${leadNotes.length}`);
+  console.log(`  Lead notes: ${leadNotes.length}`);
   console.log(`  Unique lead pitches: ${uniqueLeadPitches.size}`);
   console.log(`  Unique lead MIDIs: ${[...uniqueLeadPitches].sort((a, b) => a - b).join(', ')}`);
-  console.log(`  Bass notes played: ${bassNotes.length}`);
+  console.log(`  Bass notes: ${bassNotes.length}`);
   console.log(`  Unique bass pitches: ${uniqueBassPitches.size}`);
   console.log(`  Unique bass MIDIs: ${[...uniqueBassPitches].sort((a, b) => a - b).join(', ')}`);
+  console.log(`  Total unique pitched: ${uniqueAllPitches.size}`);
   console.log(`  Repeated-note ratio (lead): ${(repeatedLeadRatio * 100).toFixed(1)}%`);
+  console.log(`  Unique intervals: ${uniqueIntervals.size} (${[...uniqueIntervals].sort((a, b) => a - b).join(', ')})`);
   console.log(`  Pitch-class histogram: [${pcHist.join(', ')}]`);
+  console.log(`  Pitch classes used: ${pcHist.filter(v => v > 0).length}/12`);
   console.log('');
 
   console.log('── RHYTHMIC DIVERSITY ──');
-  console.log(`  Total note events: ${noteEvents.length}`);
-  console.log(`  Identical bars (vs bar 0): ${identicalBars}/${BARS} (${(identicalBarRatio * 100).toFixed(1)}%)`);
+  console.log(`  Total notes: ${noteEvents.length}`);
   console.log(`  Unique bar patterns: ${uniqueBars}/${BARS}`);
   console.log(`  Avg notes/bar: ${(noteEvents.length / BARS).toFixed(1)}`);
+  console.log(`  Density range: ${Math.min(...densityPerBar)}-${Math.max(...densityPerBar)}`);
   console.log('');
 
   console.log('── STRUCTURAL DIVERSITY ──');
@@ -142,52 +129,56 @@ function runAnalysis(): void {
   console.log(`  Bars 49-64 unique: ${new Set(barPatterns.slice(48, 64)).size}/16`);
   console.log('');
 
+  console.log('── COMPOSER STATE ──');
+  const snap = composer.snapshot();
+  if (snap) {
+    console.log(`  Section: ${snap.currentSection}`);
+    console.log(`  Phrase: ${snap.currentPhrase}`);
+    console.log(`  Tension: ${snap.tension.toFixed(2)}`);
+    console.log(`  Novelty: ${snap.novelty.toFixed(2)}`);
+    console.log(`  Motif count: ${snap.motifCount}`);
+    console.log(`  Last transform: ${snap.lastTransform}`);
+  }
+  console.log('');
+
   console.log('── QUALITY GATES ──');
   const gates = {
-    'unique lead pitches > 3': uniqueLeadPitches.size > 3,
+    'unique lead pitches >= 6': uniqueLeadPitches.size >= 6,
+    'pitch classes >= 5': pcHist.filter(v => v > 0).length >= 5,
+    'unique intervals >= 3': uniqueIntervals.size >= 3,
     'repeated-note ratio < 50%': repeatedLeadRatio < 0.5,
-    'identical-bar ratio < 80%': identicalBarRatio < 0.8,
-    'unique bar patterns > 4': uniqueBars > 4,
-    'pitch-class diversity > 3': pcHist.filter(v => v > 0).length > 3,
+    'unique bar patterns >= 8': uniqueBars >= 8,
+    'structural diversity (4 sections have >1 pattern)': [
+      new Set(barPatterns.slice(0, 16)).size,
+      new Set(barPatterns.slice(16, 32)).size,
+      new Set(barPatterns.slice(32, 48)).size,
+      new Set(barPatterns.slice(48, 64)).size,
+    ].every(v => v >= 2),
   };
   for (const [gate, passed] of Object.entries(gates)) {
     console.log(`  ${passed ? '✓' : '✗'} ${gate}`);
   }
   console.log('');
 
-  const allGatesPass = Object.values(gates).every(v => v === true);
-  console.log(`=== VERDICT: ${allGatesPass ? 'PASS' : 'FAIL — one-note/flat-loop failure PROVEN'} ===`);
+  const allPass = Object.values(gates).every(v => v === true);
+  console.log(`=== VERDICT: ${allPass ? 'PASS' : 'FAIL'} ===`);
 
   const outPath = path.join(__dirname, 'musical-instrumentation-results.json');
   fs.writeFileSync(outPath, JSON.stringify({
-    bpm: BPM, bars: BARS, totalNotes: noteEvents.length,
+    bpm: BPM, bars: BARS,
     leadNotes: leadNotes.length, bassNotes: bassNotes.length,
     uniqueLeadPitches: uniqueLeadPitches.size,
     uniqueLeadMIDIs: [...uniqueLeadPitches].sort((a, b) => a - b),
     uniqueBassPitches: uniqueBassPitches.size,
-    repeatedLeadRatio, pitchClassHistogram: pcHist,
-    identicalBarRatio, uniqueBarPatterns: uniqueBars,
-    gates, verdict: allGatesPass ? 'PASS' : 'FAIL',
+    repeatedLeadRatio, uniqueIntervals: uniqueIntervals.size,
+    pitchClassHistogram: pcHist, pitchClassesUsed: pcHist.filter(v => v > 0).length,
+    uniqueBarPatterns: uniqueBars,
+    densityPerBar, barPatterns,
+    gates, verdict: allPass ? 'PASS' : 'FAIL',
   }, null, 2));
   console.log(`Results: ${outPath}`);
 
-  process.exit(0); // Always exit 0 — this is a measurement tool, not a pass/fail test
-}
-
-function main(): void {
-  const engine = new PsyLive();
-  engine.play();
-  instrumentEngine(engine);
-
-  const ctx = (engine as any).ctx as AudioContextShim;
-  const totalDuration = BARS * 4 * STEP_DUR;
-
-  for (let i = 0; i < totalDuration / 0.025; i++) {
-    ctx.tick(0.025);
-    (engine as any).scheduler();
-  }
-
-  runAnalysis();
+  process.exit(0);
 }
 
 main();

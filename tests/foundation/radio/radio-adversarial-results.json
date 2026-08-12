@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T15:53:13.982Z",
+  "runAt": "2026-08-12T16:11:21.025Z",
   "totalTests": 12,
   "passed": 12,
   "failed": 0,
@@ -8,7 +8,7 @@
       "id": "ADV-1-100Bursts",
       "name": "100 random beat bursts — no crash, valid state",
       "passed": true,
-      "evidence": "crashed=false bpm=147.89 valid=true"
+      "evidence": "crashed=false bpm=150.81 valid=true"
     },
     {
       "id": "ADV-2-500Duplicates",
@@ -68,7 +68,7 @@
       "id": "ADV-11-30sJitter",
       "name": "30-second jitter stream — no crash, valid state",
       "passed": true,
-      "evidence": "crashed=false bpm=146.01"
+      "evidence": "crashed=false bpm=145.13"
     },
     {
       "id": "ADV-12-10min",

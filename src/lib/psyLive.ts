@@ -27,6 +27,7 @@ import { MusicalTransport } from '../../foundation/transport/MusicalTransport';
 import { TransportAdapter } from '../../foundation/transport/TransportAdapter';
 import { RadioObservationLayer } from '../../foundation/radio/RadioObservationLayer';
 import { DEFAULT_RADIO_CONFIG } from '../../foundation/radio/RadioObservationTypes';
+import { LiveComposer, type NotePlan, type ScheduledNote } from '../../foundation/music/LiveComposer';
 
 const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -255,6 +256,11 @@ export class PsyLive {
   // Replaces inline detect()/onKick() with a timestamped, deterministic layer
   private radioLayer: RadioObservationLayer | null = null;
 
+  // F5: LiveComposer — the live learning loop that connects radio to musical output
+  // Replaces hardcoded preset reading in scheduleStep with motif-based composition
+  private composer: LiveComposer | null = null;
+  private currentNotePlan: NotePlan | null = null;
+
   // R6: Master safety limiter
   private safetyLimiter: DynamicsCompressorNode | null = null;
   private safetyReduction: number = 0;
@@ -396,6 +402,11 @@ export class PsyLive {
       sampleRate: this.ctx.sampleRate,
       fftSize: this.radioAnalyser?.fftSize ?? 512,
     });
+
+    // F5 — Initialize LiveComposer (the live learning loop)
+    // Connects radio observations to musical composition via MusicalContext,
+    // MotifMemory, and CompositionPlanner. Replaces hardcoded preset reading.
+    this.composer = new LiveComposer(42); // deterministic seed
 
     // ── PER-ROLE BUSES (from architecture review) ──
     // Each voice connects to its role bus → engineBus → gentle comp → master
@@ -585,60 +596,74 @@ export class PsyLive {
     } catch (e) {}
   }
 
-  // F1.18: scheduleStep receives the GLOBAL step index from Transport.
-  // The 16-step pattern position is derived: step16 = stepIndex % 16.
-  // Bar position comes from Transport: snap.bar.
+  // F5: scheduleStep now reads from LiveComposer's NotePlan instead of hardcoded presets.
+  // The NotePlan is generated per-bar by the LiveComposer, which uses MusicalContext,
+  // MotifMemory, and CompositionPlanner to produce musically evolving content.
   private scheduleStep(stepIndex: number, time: number): void {
-    if (!this.transport) return;
+    if (!this.transport || !this.composer) return;
     const snap = this.transport.snapshot();
-    const p = this.getPreset();
-    const v = this.getVariant();
     const s16 = stepIndex % 16;
+    const currentBar = snap.bar;
 
-    // ── PATTERN MUTATION: evolve every 8 bars ──
-    // F1.18: bar comes from Transport snapshot, not from barCount++
-    if (s16 === 0) {
-      const currentBar = snap.bar;
-      if (currentBar !== this.lastMutatedBar && currentBar % 8 === 0 && currentBar > 0) {
-        const basePattern = this.livePattern || p.patterns;
-        const mutated = mutatePattern(basePattern, this.occupancy, this.musicState.density);
-        if (mutated) {
-          this.livePattern = mutated;
-          console.log('[MUTATE] pattern evolved, bar', currentBar);
-        }
-        this.lastMutatedBar = currentBar;
+    // F5: Plan the bar if we haven't yet or if we moved to a new bar
+    if (!this.currentNotePlan || this.currentNotePlan.bar !== currentBar) {
+      this.currentNotePlan = this.composer.planBar(currentBar, snap.bpm);
+    }
+
+    const plan = this.currentNotePlan;
+    const v = this.getVariant(); // still use preset variant for synth params
+
+    // ── PATTERN MUTATION (legacy — kept for backward compat but now secondary) ──
+    if (s16 === 0 && this.lastMutatedBar !== currentBar) {
+      this.lastMutatedBar = currentBar;
+    }
+
+    // ── F5: Schedule notes from the LiveComposer's NotePlan ──
+    const notes = plan.notes.filter(n => n.step === s16);
+
+    // Get synth parameters from the current preset variant
+    const p = this.getPreset();
+
+    for (const note of notes) {
+      switch (note.voice) {
+        case 'kick':
+          if (this.occupancy.kick < 0.7) {
+            this.kick(time);
+          }
+          break;
+        case 'hat':
+          this.hat(time, (v.hatLvl || 0.1) * note.velocity);
+          break;
+        case 'bass':
+          if (this.occupancy.bass < 0.75 && note.midi !== null) {
+            this.bass(time, mtof(note.midi), v);
+          }
+          break;
+        case 'lead':
+          if (this.occupancy.lead < 0.85 && note.midi !== null) {
+            this.lead(time, mtof(note.midi), v, s16 % 4 === 0);
+          }
+          break;
       }
     }
 
-    // Use live pattern if available, else preset pattern
-    const pat = this.livePattern || p.patterns;
-
-    // Use detected root if locked, else preset root
-    const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
-
-    // ── ARRANGER: decide what to play based on occupancy ──
-    const kickAvailable = this.occupancy.kick < 0.7;
-    const bassAvailable = this.occupancy.bass < 0.75;
-    const leadAvailable = this.occupancy.lead < 0.85;
-    const density = this.musicState.density;
-
-    // Kick: only if role is available AND density allows
-    if (kickAvailable && pat.kick && pat.kick[s16] && Math.random() < density) {
-      this.kick(time);
-    }
-    // Hats: always available (fills high end)
-    if (pat.hat && pat.hat[s16]) this.hat(time, v.hatLvl || 0.1);
-
-    // Bass: only if role is available
-    if (bassAvailable) {
+    // Fallback: if no notes were planned for this step, use the preset pattern
+    // (ensures we never have silent steps during the first bar before the composer warms up)
+    if (notes.length === 0 && currentBar === 0) {
+      const pat = p.patterns;
+      const root = p.root;
+      if (pat.kick && pat.kick[s16] && this.occupancy.kick < 0.7) this.kick(time);
+      if (pat.hat && pat.hat[s16]) this.hat(time, v.hatLvl || 0.1);
       const bn = pat.bass ? pat.bass[s16] : null;
-      if (bn !== null && bn !== undefined) this.bass(time, mtof(root + bn), v);
-    }
-
-    // Lead: only if role is available AND density is high enough
-    if (leadAvailable && density > 0.4) {
-      const ln = pat.lead ? pat.lead[s16] : null;
-      if (ln !== null && ln !== undefined) this.lead(time, mtof(root + 24 + ln), v, s16 % 4 === 0);
+      if (bn !== null && bn !== undefined && this.occupancy.bass < 0.75) {
+        this.bass(time, mtof(root + bn), v);
+      }
+      if (this.occupancy.lead < 0.85) {
+        const ln = pat.lead ? pat.lead[s16] : null;
+        if (ln !== null && ln !== undefined && this.musicState.density > 0.4) {
+          this.lead(time, mtof(root + 24 + ln), v, s16 % 4 === 0);
+        }
+      }
     }
   }
 
@@ -749,6 +774,8 @@ export class PsyLive {
     // This replaces: RadioStateGate, inline beat detection, inline pitch observation
     const audioTime = this.ctx.currentTime;
     const radioSnap = this.radioLayer.process(tdBuf, fd, audioTime);
+    // F5: Get Transport snapshot early (needed for LiveComposer feed)
+    const transportSnap = this.transport!.snapshot();
 
     // F2.5 — Feed beat observations to Transport (the ONLY crossing point)
     // RadioObservationLayer produces timestamped RadioBeatObservation.
@@ -780,6 +807,18 @@ export class PsyLive {
 
     // F2.5 — Update occupancy from radio layer (for arranger decisions)
     this.occupancy = radioSnap.occupancy;
+
+    // F5 — Feed radio observations into the LiveComposer (the live learning loop)
+    // This connects radio → MusicalContext → CompositionPlanner → MotifMemory
+    if (this.composer && radioSnap.signal.state !== 'NO_SIGNAL') {
+      this.composer.observeRadio({
+        bpm: transportSnap.bpm,
+        energy: radioSnap.signal.spectralEnergy,
+        occupancy: radioSnap.occupancy,
+        bassFreq: this.bassFreq > 0 ? this.bassFreq : undefined,
+        confidence: radioSnap.beat?.confidence ?? 0,
+      });
+    }
 
     // Update radio level for UI
     this.radioLevel = radioSnap.signal.spectralEnergy;
@@ -844,7 +883,7 @@ export class PsyLive {
     }
 
     // ── LEARNING (record kicks when locked) ──
-    const transportSnap = this.transport!.snapshot();
+    // F5: transportSnap already declared above
     if (transportSnap.locked && radioSnap.beat) {
       if (this.learningData) {
         this.learningData = recordKick(this.learningData, Math.round(transportSnap.bpm));
@@ -945,6 +984,16 @@ export class PsyLive {
       lastObservationTime: radioSnap?.beat?.timestamp.observedAt ?? 0,
       radioRms: radioSnap?.signal.rms ?? 0,
       radioConfidence: radioSnap?.beat?.confidence ?? 0,
+      // F5: LiveComposer state
+      composerSection: this.composer?.snapshot()?.currentSection ?? 'UNKNOWN',
+      composerPhrase: this.composer?.snapshot()?.currentPhrase ?? 0,
+      composerTension: this.composer?.snapshot()?.tension ?? 0,
+      composerNovelty: this.composer?.snapshot()?.novelty ?? 0,
+      composerMotifCount: this.composer?.snapshot()?.motifCount ?? 0,
+      composerLastTransform: this.composer?.snapshot()?.lastTransform ?? 'none',
+      composerPlanBar: this.composer?.snapshot()?.planBar ?? 0,
+      composerNoteCount: this.composer?.snapshot()?.noteCount ?? 0,
+      composerHasLearned: this.composer?.hasLearned() ?? false,
     };
   }
 
