@@ -6522,3 +6522,41 @@ Stage Summary:
 - Browser proof: radio follower works, mixer survives, styles change music, startup has no lead
 - HEAD: pushed to origin/main
 - All R1-R9 gates complete
+
+---
+Task ID: F16-AUDIT
+Agent: Forensic Audit (Explore sub-agent)
+Task: Deep audit of CURRENT composition quality at 256 bars — does the music EVOLVE or LOOP?
+
+Work Log:
+- Read worklog tail (last 100 lines), F15_FORENSIC.md, F15_RUNTIME_PROOF.md for context. HEAD = fd88446 (F15).
+- Read full source: MusicalSession.ts (666 lines), MusicalContext.ts (278), MusicalMemory.ts (304), primitives/motif.ts (178), primitives/scales.ts (153), psyLive.ts scheduleStep/detect/voices (lines 640-1080).
+- Verified F15 composition rebuild: generateKick now uses style+section grammar with humanize(); generateBass has section-dependent beatDegrees (root/fifth/third/octave); generateHats has style+section ghost notes; calculateLeadDensity returns 0 for INTRO bars 0-3, sparse for 4-7, full for CLIMAX; handleNewPhrase wires pickMotif.
+- Ran existing test: `bun run tests/foundation/music/musical-instrumentation.ts` → PASS, 16/16 gates. Baseline 64-bar data: 273 kicks, 520 bass, 317 hats, 78 lead, bass MIDI range 45-57, lead max 70.
+- Wrote /tmp/f16-256bar-audit.ts (372 lines) — creates PsyLive engine, plans 256 bars (4 cycles × 64), captures per-bar: section, barInPhrase, kickSteps, bassMidis, leadMidis, hatSteps, per-voice velocities. Analyzes 12 dimensions.
+- Ran audit: `bun run /tmp/f16-256bar-audit.ts` — completed in <60s, captured all 256 bar records.
+
+Stage Summary (256-bar audit):
+- Q1. UNIQUE BAR PATTERNS: 185/256 (72.27%). NOT a flat loop.
+- Q2. BASS NON-ROOT: 37.31% (776/2080 notes). Up from F14 baseline of 8%. BUT per-cycle count is identical (194 non-root in each of the 4 cycles) — bass PATTERN is deterministic, only velocities vary.
+- Q3. UNIQUE LEAD PITCHES: 13 (52,53,55,57,58,61,62,64,65,67,69,70,72). Range C4–C5, full scale coverage of phrygian-dominant.
+- Q4. CLIMAX vs INTRO: total notes/bar 16.94 → 21.84 (1.29x, MARGINAL on total); LEAD notes/bar 0.44 → 1.75 (4x, YES material lead growth); HATS 4.13 → 7.47 (1.81x). Arc builds (17→22) and releases (22→17.4).
+- Q5. CYCLE DIFFERENTIATION: 0/6 cycle pairs identical. Bars differing cycle0 vs cycle1=46/64 (72%), cycle2=50/64 (78%), cycle3=48/64 (75%). The 4 cycles do DIFFER.
+- Q6. LEARNING: learningInfluencedCount=129 (pickMotif fired 129 times across 256 bars), 24 motifs in memory (cap reached). Learning IS influencing selection.
+- KICK PATTERN DIVERSITY: ONLY 4 unique kick step patterns across 256 bars. [0,4,8,12] dominates (217/256 = 85%). Other 3 patterns are phrase-end fills or CLIMAX ghost variants. WEAKNESS.
+- VELOCITY HUMANIZATION: kick=162 unique vels, bass=169, hat=168 (machine-gun GONE). Lead=29 unique vels (range 0.30–0.55) — NARROW band, lead velocity is effectively tension-clamped.
+- DENSITY CURVE: All 4 cycles peak at phrase 6 (CLIMAX). Range 17.0–22.9 across all cycles. Shape consistent, magnitudes vary slightly (cycle1 peaks 22.9, cycle2 21.0).
+- PHRASE DIFFERENTIATION: 0/8 phrases identical across all 4 cycles. Phrases within a section DO vary.
+- MOTIF RECURRENCE: 29 unique phrase-bar0-1 lead signatures across 32 phrases. Only 1 recurring signature: [] (empty lead in 4 phrases — INTRO bars 0-1 of each cycle, by design).
+
+ROOT-CAUSE ANALYSIS (evolve vs loop):
+- The music EVOLVES (verdict). Cycles differ by 72-78% of bars. 185 unique patterns / 256 bars.
+- BUT evolution is concentrated in the LEAD layer (random density gating + motif transforms + pickMotif learning).
+- The GROOVE layer (kick steps, bass steps, bass pitches, hat steps) is DETERMINISTIC per (section, barInPhrase) position. Only velocities vary (humanization jitter).
+- This is "decorated loop" — same harmonic/rhythmic skeleton across cycles, with lead+velocity layers providing surface variation.
+- 4 unique kick patterns (85% dominance of basic 4-on-floor) is the most evident "loop feel". A listener would hear the kick as identical throughout 256 bars except for fills on bar 7 and ghost kicks in CLIMAX.
+- Lead velocity band is too narrow (29 unique values, 0.30-0.55) — lead is always quiet relative to its potential range.
+
+VERDICT: EVOLVES (technically) but only in the lead/motif/velocity layers. The groove layer (kick+bass+hat) is a decorated static loop. A listener would perceive the music as "the same groove with varying lead noodles on top" rather than "evolving composition".
+
+No code was modified. No files were written except /tmp/f16-256bar-audit.ts (test script) and this worklog entry.

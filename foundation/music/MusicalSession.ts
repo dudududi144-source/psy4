@@ -56,6 +56,34 @@ export interface SessionSnapshot {
 const PHRASE_STRUCTURE = [0, 0, 1, 0, 0, 1, 2, 0];
 const BAR_ACTIONS = ['introduce', 'repeat', 'repeat', 'develop', 'develop', 'variation', 'cadence', 'response'];
 
+// F16 GROOVE EVOLUTION — kick pattern grammar
+// Instead of always [0,4,8,12], select from a grammar based on section + cycle.
+// This makes the groove evolve across 256 bars instead of looping.
+const KICK_GRAMMARS: Record<string, number[][]> = {
+  base: [
+    [0, 4, 8, 12],           // 4-on-floor (most common)
+    [0, 4, 8, 12, 10],       // + ghost on 10
+    [0, 4, 7, 8, 12],        // + ghost on 7
+    [0, 3, 4, 8, 11, 12],    // syncopated
+  ],
+  climax: [
+    [0, 4, 7, 8, 12, 14],    // drive
+    [0, 4, 8, 10, 12, 14],   // push
+    [0, 3, 4, 7, 8, 11, 12], // dense
+    [0, 4, 8, 12, 14, 15],   // fill drive
+  ],
+  dark: [
+    [0, 8],                  // half-time
+    [0, 6, 8],               // + ghost
+    [0, 8, 10],              // + push
+    [0, 4],                  // sparse
+  ],
+  break_pattern: [
+    [0, 8],                  // minimal during break
+    [0, 4, 8],               // sparse
+  ],
+};
+
 export class MusicalSession {
   private ctx: MusicalContext;
   private window: RadioMusicalWindow;
@@ -75,6 +103,9 @@ export class MusicalSession {
   private lastReason = '';
   // F13/R4-C: Track whether learning has influenced selection (for proof)
   private learningInfluencedCount = 0;
+  // F16: Track cycle (which 64-bar iteration we're in) for groove evolution
+  private cycleCount = 0;
+  private lastBarPlanned = -1;
 
   constructor(seed = 42) {
     this.ctx = new MusicalContext();
@@ -163,6 +194,14 @@ export class MusicalSession {
   }
 
   planBar(bar: number, transportBpm: number): NotePlan {
+    // F16: Track cycle for groove evolution
+    const cycle = Math.floor(bar / 64);
+    if (bar <= this.lastBarPlanned + 1 && bar > this.lastBarPlanned) {
+      // sequential planning — track cycle transitions
+      if (cycle > this.cycleCount) this.cycleCount = cycle;
+    }
+    this.lastBarPlanned = bar;
+
     this.ctx.updateFromTransport(bar, transportBpm);
     let snap = this.ctx.snapshot(bar);
     const radio = this.window.snapshot(bar);
@@ -220,7 +259,7 @@ export class MusicalSession {
     const isBuild = arrangementOverride === 'BUILD';
 
     // F9 RULE 3: KICK FIRST — always present, never removed
-    this.generateKick(notes, snap, barInPhrase);
+    this.generateKick(notes, snap, barInPhrase, bar);
 
     // F9 RULE 4: BASS — interlocked with kick
     this.generateBass(notes, snap, barInPhrase);
@@ -268,57 +307,59 @@ export class MusicalSession {
   // Hats: swing, open/closed, velocity humanization
   // ═══════════════════════════════════════════════════════════════════════
 
-  private generateKick(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number): void {
+  private generateKick(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number, bar: number): void {
     const radioKickOcc = (ctx as any).radioRoles?.kick ?? 0;
     const style = this.style;
     const section = ctx.sectionName;
+    const cycle = this.cycleCount;
 
-    // F15: Velocity humanization — accent on beat 1, variation on others
+    // F16: Velocity humanization
     const baseVel = radioKickOcc > 0.7 ? 0.6 : 0.9;
     const humanize = (v: number, jitter: number) => Math.max(0.1, Math.min(1, v + (this.rng.next() - 0.5) * jitter));
 
-    // Base: 4-on-floor with ACCENT on beat 1 (downbeat)
-    const kickSteps = [
-      { step: 0, vel: humanize(baseVel + 0.05, 0.04) },  // accented downbeat
-      { step: 4, vel: humanize(baseVel, 0.06) },
-      { step: 8, vel: humanize(baseVel, 0.06) },
-      { step: 12, vel: humanize(baseVel, 0.06) },
-    ];
-
-    // F15: Style-specific kick grammar
-    if (style === 'DARK') {
-      // Half-time feel on odd bars
-      if (barInPhrase % 2 === 1) {
-        kickSteps.splice(2, 2);
-        // Add a ghost kick on step 10 for hypnotic pulse
-        kickSteps.push({ step: 10, vel: humanize(0.4, 0.08) });
-      }
-    } else if (style === 'ACID') {
-      // Syncopated kicks for hypnotic 303-feel
-      if (this.rng.next() < 0.4) kickSteps.push({ step: 14, vel: humanize(0.7, 0.08) });
-      if (this.rng.next() < 0.2) kickSteps.push({ step: 6, vel: humanize(0.5, 0.1) });
-    } else if (style === 'PROGRESSIVE') {
-      // Cleaner — no extra kicks, but add a soft ghost on offbeats during DEVELOPMENT
-      if (section === 'DEVELOPMENT' || section === 'CLIMAX') {
-        kickSteps.push({ step: 10, vel: humanize(0.35, 0.1) });
-      }
-    } else if (style === 'FULL_ON') {
-      // Full-on: add ghost kicks during CLIMAX for intensity
-      if (section === 'CLIMAX' && this.rng.next() < 0.3) {
-        kickSteps.push({ step: 7, vel: humanize(0.4, 0.1) });
-      }
+    // F16: Select kick pattern from grammar based on section + cycle + phrase position
+    // This makes the groove EVOLVE across 256 bars instead of always [0,4,8,12]
+    let grammar: number[][];
+    if (section === 'CLIMAX') {
+      grammar = KICK_GRAMMARS.climax;
+    } else if (style === 'DARK' && barInPhrase % 2 === 1) {
+      grammar = KICK_GRAMMARS.dark;
+    } else if (style === 'DARK') {
+      grammar = KICK_GRAMMARS.base.slice(0, 2); // darker = fewer patterns
+    } else {
+      grammar = KICK_GRAMMARS.base;
     }
 
-    for (const k of kickSteps) {
-      notes.push({ step: k.step, voice: 'kick', midi: null, velocity: k.vel });
+    // F16: Cycle drift — each cycle picks a different pattern index offset
+    // Cycle 0: patterns 0,1. Cycle 1: patterns 1,2. Cycle 2: patterns 2,3. Cycle 3: patterns 0,3.
+    const cycleOffset = cycle % grammar.length;
+    const phraseVariant = barInPhrase < 4 ? 0 : 1;
+    const patternIdx = (cycleOffset + phraseVariant) % grammar.length;
+    let kickSteps = [...grammar[patternIdx]];
+
+    // F16: Style-specific additions
+    if (style === 'ACID' && this.rng.next() < 0.35) {
+      kickSteps.push(14);
+    }
+    if (style === 'FULL_ON' && section === 'CLIMAX' && this.rng.next() < 0.25) {
+      if (!kickSteps.includes(7)) kickSteps.push(7);
     }
 
-    // F15: Phrase-end fill with velocity ramp (not just one note)
+    // F16: Accent pattern — beat 1 always loudest, others vary
+    for (const s of kickSteps) {
+      let vel = baseVel;
+      if (s === 0) vel = baseVel + 0.05;           // downbeat accent
+      else if (s === 8) vel = baseVel - 0.05;      // backbeat slightly softer
+      else if (s !== 4 && s !== 12) vel = baseVel - 0.25; // ghosts much softer
+      notes.push({ step: s, voice: 'kick', midi: null, velocity: humanize(vel, 0.06) });
+    }
+
+    // F16: Phrase-end fill with velocity ramp
     if (barInPhrase === 7 && style !== 'PROGRESSIVE') {
-      const fillSteps = style === 'ACID' ? [12, 13, 14] : [14, 15];
+      const fillSteps = style === 'ACID' ? [13, 14] : [14, 15];
       for (let i = 0; i < fillSteps.length; i++) {
-        const fillVel = 0.6 + (i / fillSteps.length) * 0.3; // ramp up
-        notes.push({ step: fillSteps[i], voice: 'kick', midi: null, velocity: humanize(fillVel, 0.06) });
+        const fillVel = 0.65 + (i / fillSteps.length) * 0.25;
+        notes.push({ step: fillSteps[i], voice: 'kick', midi: null, velocity: humanize(fillVel, 0.05) });
       }
     }
   }
@@ -352,6 +393,19 @@ export class MusicalSession {
     } else {
       // CLIMAX — most movement
       beatDegrees = [0, 4, 2, 7]; // root → fifth → third → octave
+    }
+
+    // F16: Cycle drift — each cycle shifts the bass pattern distinctly
+    // This ensures 4 cycles of 64 bars don't produce identical basslines.
+    if (this.cycleCount === 1 && section !== 'INTRO' && section !== 'RESOLUTION') {
+      // Cycle 1: walk to third on beat 2 (instead of root or fifth)
+      beatDegrees = [beatDegrees[0], 2, beatDegrees[2], beatDegrees[3]];
+    } else if (this.cycleCount === 2 && section !== 'INTRO' && section !== 'RESOLUTION') {
+      // Cycle 2: octave on beat 3, fifth on beat 2
+      beatDegrees = [beatDegrees[0], 4, 7, beatDegrees[3]];
+    } else if (this.cycleCount >= 3 && section !== 'INTRO' && section !== 'RESOLUTION') {
+      // Cycle 3+: full chromatic walk
+      beatDegrees = [0, 4, 2, 7];
     }
 
     // Style modifies the pattern
@@ -529,7 +583,13 @@ export class MusicalSession {
         if (this.rng.next() < density) {
           // F9: Clamp MIDI to 48-72 (C3 to C5) — no higher
           const midi = Math.max(48, Math.min(72, mn.midi - 12 + registerShift));
-          notes.push({ step: localStep, voice: 'lead', midi, velocity: mn.velocity * (0.5 + ctx.tension * 0.3) });
+          // F16: Widen velocity band — was 0.30-0.55, now 0.25-0.95
+          // Accents on strong beats, softer on weak. Tension adds energy.
+          const isStrongBeat = localStep % 4 === 0;
+          const baseVel = isStrongBeat ? 0.75 : 0.45;
+          const tensionBoost = ctx.tension * 0.2;
+          const vel = Math.max(0.2, Math.min(0.95, baseVel + tensionBoost + (this.rng.next() - 0.5) * 0.15));
+          notes.push({ step: localStep, voice: 'lead', midi, velocity: vel });
         }
       }
     } else {
