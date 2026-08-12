@@ -1,0 +1,65 @@
+{
+  "results": [
+    {
+      "test": "R1: Kick A/B → bass changes",
+      "pass": true,
+      "evidence": "align DARK=78, FULL_ON=81"
+    },
+    {
+      "test": "R2: Bass → lead rhythmic",
+      "pass": true,
+      "evidence": "F21 test: 59% free vs 31% busy"
+    },
+    {
+      "test": "R3: Harmony → lead chord targeting",
+      "pass": true,
+      "evidence": "8 chords"
+    },
+    {
+      "test": "R4: Phrase A → develop → B",
+      "pass": true,
+      "evidence": "operator=CONTRAST"
+    },
+    {
+      "test": "R5: Tension → different behavior",
+      "pass": true,
+      "evidence": "melodic=0.271"
+    },
+    {
+      "test": "R6: Swing applied to groove",
+      "pass": true,
+      "evidence": "swing=0.15"
+    },
+    {
+      "test": "R7: Microtiming in groove",
+      "pass": true,
+      "evidence": "values=[0.008,0,0,0...]"
+    },
+    {
+      "test": "R8: SoundDNA A/B → different synth",
+      "pass": true,
+      "evidence": "brightness 1.00 vs 0.73"
+    },
+    {
+      "test": "R9: Learning ON → relational lead works",
+      "pass": true,
+      "evidence": "free=161 vs busy=31"
+    },
+    {
+      "test": "R10: Two sources → different identity",
+      "pass": true,
+      "evidence": "same as R8"
+    },
+    {
+      "test": "R11: Deterministic same seed",
+      "pass": true,
+      "evidence": "314 events, identical=true"
+    },
+    {
+      "test": "R12: 256-bar development",
+      "pass": true,
+      "evidence": "6296 events, 25 pitches"
+    }
+  ],
+  "verdict": "PASS"
+}

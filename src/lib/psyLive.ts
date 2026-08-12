@@ -531,9 +531,33 @@ export class PsyLive {
     src.start(t); src.stop(t + decay + 0.01);
   }
 
+  // F22 P0-F: Convert learned TimbreProfile to SynthRecipe for voice functions
+  private timbreToRecipe(timbre: any): { oscType: OscillatorType; oscLayers: number; filterCutoff: number; filterResonance: number; saturationAmount: number; stereoWidth: number } {
+    const params = timbre.synthParams || {};
+    return {
+      oscType: (params.bassWave || params.leadWave || 'sawtooth') as OscillatorType,
+      oscLayers: timbre.harmonicity > 0.6 ? 3 : 2,
+      filterCutoff: params.bassCut || params.leadCut || 600,
+      filterResonance: 1 + (timbre.roughness ?? 0.3) * 6,
+      saturationAmount: params.bassSaturation ?? params.leadSaturation ?? 0.3,
+      stereoWidth: timbre.stereoWidth ?? 0.3,
+    };
+  }
+
   private bass(t: number, freq: number, v: Variant, velocity = 0.85): void {
     if (!this.ctx || !this.bassBus) return;
     const vel = Math.max(0.1, Math.min(1, velocity));
+    // F22 P0-F: SoundDNA reaches audio graph.
+    // Voice function reads SynthRecipe from learned timbre, overriding
+    // the hardcoded preset variant. If no recipe, falls back to variant.
+    const timbre = this.session?.getLearnedTimbreProfile();
+    const recipe = timbre ? this.timbreToRecipe(timbre) : null;
+    const oscType = recipe?.oscType ?? v.bassWave;
+    const layers = recipe?.oscLayers ?? 2;
+    const cutoff = recipe?.filterCutoff ?? v.bassCut;
+    const resonance = recipe?.filterResonance ?? v.bassQ;
+    const satAmount = recipe?.saturationAmount ?? 0.4;
+
     // F15: Layered bass — sub sine (weight) + mid saw (character) → saturation
     // Sub layer: pure sine at fundamental for sub-bass presence
     const sub = this.ctx.createOscillator();
@@ -547,12 +571,12 @@ export class PsyLive {
     sub.connect(subGain); subGain.connect(this.bassBus);
     sub.start(t); sub.stop(t + 0.37);
 
-    // Mid layer: sawtooth through LPF with per-note filter envelope
-    const mid = this.ctx.createOscillator(); mid.type = v.bassWave; mid.frequency.value = freq;
-    const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.Q.value = v.bassQ;
+    // Mid layer: F22 P0-F uses recipe oscType + filter + saturation
+    const mid = this.ctx.createOscillator(); mid.type = oscType; mid.frequency.value = freq;
+    const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.Q.value = resonance;
     // F15: Filter sweeps from open to closed — rolling psytrance bass character
-    const fStart = Math.max(300, v.bassCut);
-    const fEnd = Math.max(120, v.bassCut * 0.4);
+    const fStart = Math.max(300, cutoff);
+    const fEnd = Math.max(120, cutoff * 0.4);
     filter.frequency.setValueAtTime(fStart, t);
     filter.frequency.exponentialRampToValueAtTime(fEnd, t + 0.1);
     const midGain = this.ctx.createGain();
@@ -560,8 +584,8 @@ export class PsyLive {
     midGain.gain.exponentialRampToValueAtTime(0.5 * vel, t + 0.006);
     midGain.gain.exponentialRampToValueAtTime(0.2 * vel, t + 0.15);
     midGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
-    // F15: Saturation for grit and presence
-    const sat = this.makeShaper(4);
+    // F22 P0-F: Saturation amount from recipe (was hardcoded k=4)
+    const sat = this.makeShaper(Math.round(satAmount * 10));
     mid.connect(filter); filter.connect(midGain); midGain.connect(sat); sat.connect(this.bassBus);
     if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.06; midGain.connect(send); send.connect(this.delaySend); }
     mid.start(t); mid.stop(t + 0.37);
@@ -569,22 +593,30 @@ export class PsyLive {
 
   private lead(t: number, freq: number, v: Variant, accent: boolean): void {
     if (!this.ctx || !this.leadBus) return;
+    // F22 P0-F: SoundDNA reaches lead audio graph
+    const timbre = this.session?.getLearnedTimbreProfile();
+    const recipe = timbre ? this.timbreToRecipe(timbre) : null;
+    const leadWave = recipe?.oscType ?? v.leadWave;
+    const leadCut = recipe?.filterCutoff ?? v.leadCut;
+    const leadSat = recipe?.saturationAmount ?? 0.2;
+    const stereoW = recipe?.stereoWidth ?? 0.6;
+
     // F15: Unison lead — 3 detuned oscillators → LPF → stereo → saturation
-    const peakCut = Math.max(200, v.leadCut * (accent ? 1.2 : 1));
+    const peakCut = Math.max(200, leadCut * (accent ? 1.2 : 1));
     const oscs: OscillatorNode[] = [];
     const detunes = [-7, 0, 7]; // cents — 3-voice unison
     for (const det of detunes) {
       const o = this.ctx.createOscillator();
-      o.type = v.leadWave;
+      o.type = leadWave;
       o.frequency.value = freq;
       o.detune.value = det;
       oscs.push(o);
     }
-    // F15: Stereo widen — hard-pan outer oscillators
+    // F22 P0-F: Stereo width from recipe (was hardcoded ±0.6)
     const merger = this.ctx.createGain();
-    const panL = this.ctx.createStereoPanner(); panL.pan.value = -0.6;
+    const panL = this.ctx.createStereoPanner(); panL.pan.value = -stereoW;
     const panC = this.ctx.createStereoPanner(); panC.pan.value = 0;
-    const panR = this.ctx.createStereoPanner(); panR.pan.value = 0.6;
+    const panR = this.ctx.createStereoPanner(); panR.pan.value = stereoW;
     oscs[0].connect(panL); panL.connect(merger);
     oscs[1].connect(panC); panC.connect(merger);
     oscs[2].connect(panR); panR.connect(merger);
@@ -603,7 +635,8 @@ export class PsyLive {
     gain.gain.exponentialRampToValueAtTime(peak * 0.4, t + 0.15);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
     // F15: Light saturation for character
-    const sat = this.makeShaper(2);
+    // F22 P0-F: Saturation from recipe (was hardcoded k=2)
+    const sat = this.makeShaper(Math.round(leadSat * 10));
     merger.connect(filter); filter.connect(gain); gain.connect(sat); sat.connect(this.leadBus);
     if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.15; gain.connect(send); send.connect(this.delaySend); }
     if (this.reverbSend) { const rs = this.ctx.createGain(); rs.gain.value = 0.2; gain.connect(rs); rs.connect(this.reverbSend); }
@@ -787,9 +820,12 @@ export class PsyLive {
       const snap = this.transport.snapshot();
       const stepDur = snap.beatDuration / 4; // 16th note duration
 
+      // F22 P0-E: Get groove state for swing + microtiming
+      const groove = this.session?.getGrooveState();
+      const swing = groove?.swing ?? 0;
+      const microTiming = groove?.microTiming ?? new Array(16).fill(0);
+
       // Compute the next 16th-note step from the Transport's beat grid.
-      // snap.beatTime = AudioContext time of the most recent beat boundary.
-      // 16th notes are at: beatTime + k * stepDur (k = 0,1,2,3 within each beat).
       const elapsedSinceBeat = now - snap.beatTime;
       const stepsSinceBeat = Math.floor(elapsedSinceBeat / stepDur);
 
@@ -799,8 +835,15 @@ export class PsyLive {
 
       // Schedule all 16th notes within the schedule-ahead window
       while (stepTime < now + this.scheduleAheadTime) {
-        if (stepTime > now && stepIdx > this.lastScheduledBeatIndex) {
-          this.scheduleStep(stepIdx, stepTime);
+        // F22 P0-E: Apply swing + microtiming to step time
+        const stepInBar = stepIdx % 16;
+        const isOffbeat = stepInBar % 2 === 1; // odd 16th = offbeat
+        const swingOffset = isOffbeat ? swing * stepDur * 0.3 : 0; // swing delays offbeats
+        const microOffset = microTiming[stepInBar] ?? 0;
+        const adjustedTime = stepTime + swingOffset + microOffset;
+
+        if (adjustedTime > now && stepIdx > this.lastScheduledBeatIndex) {
+          this.scheduleStep(stepIdx, adjustedTime);
           this.lastScheduledBeatIndex = stepIdx;
         }
         stepIdx++;

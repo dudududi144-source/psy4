@@ -442,7 +442,8 @@ export class MusicalSession {
     const kickNotes = notes.filter(n => n.voice === 'kick');
 
     // ── BASS: reads kick + groove + harmony ──
-    this.generateBass(notes, snap, barInPhrase);
+    // F22 P0-B: Bass now receives kickNotes — it can LOCK/ANSWER/ANTICIPATE/SPACE
+    this.generateBass(notes, snap, barInPhrase, kickNotes);
 
     // F21: Extract bass notes for lead awareness
     const bassNotes = notes.filter(n => n.voice === 'bass');
@@ -576,10 +577,11 @@ export class MusicalSession {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // F15 BASS — harmonic movement + rolling articulation
-  // Moves through root → fifth → octave → root for harmonic development
+  // F22 P0-B: BASS READS KICK — relational groove
+  // Bass chooses a RELATIONSHIP to kick: LOCK, ANSWER, ANTICIPATE, SPACE
+  // The relationship is chosen per bar based on groove + tension + phrase state.
   // ═══════════════════════════════════════════════════════════════════════
-  private generateBass(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number): void {
+  private generateBass(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number, kickNotes: ScheduledNote[]): void {
     const octave = 2; // MIDI 33-45 range (low bass)
     const root = degreeToMidi(ctx.rootPc, ctx.scale, 0, octave);
     const fifth = degreeToMidi(ctx.rootPc, ctx.scale, 4, octave);
@@ -589,99 +591,101 @@ export class MusicalSession {
     const section = ctx.sectionName;
     const humanize = (v: number, jitter: number) => Math.max(0.1, Math.min(1, v + (this.rng.next() - 0.5) * jitter));
 
-    // F20.1: STRATEGY-BASED BASS — if we have a selected strategy, generate
-    // using that strategy's behavioral pattern. This produces fundamentally
-    // different basslines, not just parameter variations.
-    if (this.currentStrategies && section !== 'INTRO') {
-      this.generateStrategicBass(notes, ctx, this.currentStrategies.bass, root, fifth, third, octaveUp, humanize, barInPhrase);
-      return;
-    }
+    // F22 P0-B: RELATIONAL BASS — reads kick notes and chooses a relationship.
+    // LOCK: bass hits WITH kick (reinforce downbeat)
+    // ANSWER: bass hits BETWEEN kicks (fill space)
+    // ANTICIPATE: bass hits BEFORE kick (push)
+    // SPACE: bass intentionally rests where kick is dense
+    const kickSteps = new Set(kickNotes.map(n => n.step));
+    const groove = this.grooveState;
+    const tension = this.tensionState;
 
-    // F17.4: LEARNED BASS GRAMMAR — fallback if no strategy selected
-    // bass from the learned interval transitions + rhythm pattern instead
-    // of hardcoded beatDegrees. This produces material that REFLECTS what
-    // the radio taught, without copying melodies.
-    const learnedBass = this.getLearnedBassGrammar();
-    if (learnedBass && learnedBass.confidence > 0.25 && section !== 'INTRO') {
-      this.generateLearnedBass(notes, ctx, learnedBass, root, fifth, third, octaveUp, humanize, barInPhrase);
-      return;
-    }
+    // Choose relationship based on context
+    const relationship: 'LOCK' | 'ANSWER' | 'ANTICIPATE' | 'SPACE' =
+      (section === 'INTRO' || section === 'RESOLUTION') ? 'LOCK'
+      : tension.resolving ? 'LOCK'
+      : (section === 'CLIMAX' || tension.rhythmic > 0.5) ? (this.rng.next() < 0.3 ? 'ANTICIPATE' : this.rng.next() < 0.5 ? 'ANSWER' : 'LOCK')
+      : (style === 'DARK' || groove.syncopation > 0.4) ? 'SPACE'
+      : (this.rng.next() < 0.15 ? 'ANTICIPATE' : this.rng.next() < 0.6 ? 'LOCK' : 'ANSWER');
 
-    // F15: Harmonic movement — which degree per beat
-    // Beat 0 (bar 0): root. Beat 4: root. Beat 8: fifth (movement). Beat 12: root.
-    // During DEVELOPMENT/CLIMAX: more movement (octave, third)
-    let beatDegrees: number[]; // degree per beat [0,1,2,3] → [root, root/fifth, fifth/octave, root]
-    if (section === 'INTRO' || section === 'RESOLUTION') {
-      beatDegrees = [0, 0, 0, 0]; // static root (establishing/resolving)
-    } else if (section === 'STATEMENT') {
-      beatDegrees = [0, 0, 4, 0]; // root → fifth on beat 3
-    } else if (section === 'DEVELOPMENT' || section === 'DEVELOPMENT2') {
-      beatDegrees = [0, 4, 0, 2]; // root → fifth → root → third
-    } else if (section === 'CONTRAST') {
-      beatDegrees = [4, 0, 2, 4]; // more movement
-    } else {
-      // CLIMAX — most movement
-      beatDegrees = [0, 4, 2, 7]; // root → fifth → third → octave
-    }
+    // F22 P0-D: Bass targets chord roots from HarmonicState
+    const harmonic = this.harmonicState;
 
-    // F16: Cycle drift — each cycle shifts the bass pattern distinctly
-    // This ensures 4 cycles of 64 bars don't produce identical basslines.
-    if (this.cycleCount === 1 && section !== 'INTRO' && section !== 'RESOLUTION') {
-      // Cycle 1: walk to third on beat 2 (instead of root or fifth)
-      beatDegrees = [beatDegrees[0], 2, beatDegrees[2], beatDegrees[3]];
-    } else if (this.cycleCount === 2 && section !== 'INTRO' && section !== 'RESOLUTION') {
-      // Cycle 2: octave on beat 3, fifth on beat 2
-      beatDegrees = [beatDegrees[0], 4, 7, beatDegrees[3]];
-    } else if (this.cycleCount >= 3 && section !== 'INTRO' && section !== 'RESOLUTION') {
-      // Cycle 3+: full chromatic walk
-      beatDegrees = [0, 4, 2, 7];
-    }
-
-    // Style modifies the pattern
-    if (style === 'DARK') {
-      // Sparse — only on beats (no offbeat response)
-      for (let beat = 0; beat < 4; beat++) {
-        const midi = beatDegrees[beat] === 4 ? fifth : beatDegrees[beat] === 2 ? third : beatDegrees[beat] === 7 ? octaveUp : root;
-        notes.push({ step: beat * 4, voice: 'bass', midi, velocity: humanize(0.9, 0.05) });
-      }
-    } else if (style === 'PROGRESSIVE') {
-      // Smooth — root on beats, occasional offbeat
-      for (let beat = 0; beat < 4; beat++) {
-        const midi = beatDegrees[beat] === 4 ? fifth : beatDegrees[beat] === 2 ? third : beatDegrees[beat] === 7 ? octaveUp : root;
-        notes.push({ step: beat * 4, voice: 'bass', midi, velocity: humanize(0.9, 0.05) });
-        if (beat % 2 === 1) {
-          notes.push({ step: beat * 4 + 2, voice: 'bass', midi, velocity: humanize(0.55, 0.06) });
-        }
-      }
-    } else if (style === 'ACID') {
-      // 303-style — 16th-note rolling with filter movement implied
-      for (let beat = 0; beat < 4; beat++) {
-        const midi = beatDegrees[beat] === 4 ? fifth : beatDegrees[beat] === 2 ? third : beatDegrees[beat] === 7 ? octaveUp : root;
-        // Every 16th, with velocity pattern (accent on downbeats)
-        for (let sub = 0; sub < 4; sub++) {
-          const step = beat * 4 + sub;
-          const vel = sub === 0 ? 0.9 : sub === 2 ? 0.6 : 0.4;
-          // Skip some for breathing room
-          if (sub === 1 || sub === 3) {
-            if (this.rng.next() < 0.4) continue;
+    // Generate bass based on relationship to kick
+    switch (relationship) {
+      case 'LOCK': {
+        // Bass hits WITH kick — reinforces groove
+        for (const ks of kickSteps) {
+          if (ks % 4 === 0) { // only on beats (not ghosts)
+            // F22 P0-D: Target chord root
+            let midi = root;
+            if (harmonic) {
+              const chord = getChordAtStep(harmonic, ks, barInPhrase);
+              midi = degreeToMidi(ctx.rootPc, ctx.scale, chord.bassDegree, octave);
+            }
+            notes.push({ step: ks, voice: 'bass', midi, velocity: humanize(0.9, 0.05) });
           }
-          notes.push({ step, voice: 'bass', midi, velocity: humanize(vel, 0.08) });
         }
+        // Add offbeat response on steps 2, 6, 10, 14 (classic psytrance)
+        for (const s of [2, 6, 10, 14]) {
+          if (!kickSteps.has(s)) {
+            notes.push({ step: s, voice: 'bass', midi: root, velocity: humanize(0.55, 0.06) });
+          }
+        }
+        break;
       }
-    } else {
-      // FULL_ON — rolling 16ths with offbeat response
-      for (let beat = 0; beat < 4; beat++) {
-        const midi = beatDegrees[beat] === 4 ? fifth : beatDegrees[beat] === 2 ? third : beatDegrees[beat] === 7 ? octaveUp : root;
-        notes.push({ step: beat * 4, voice: 'bass', midi, velocity: humanize(0.9, 0.05) });
-        notes.push({ step: beat * 4 + 2, voice: 'bass', midi, velocity: humanize(0.6, 0.06) });
+      case 'ANSWER': {
+        // Bass fills holes left by kick
+        for (let step = 0; step < 16; step++) {
+          if (!kickSteps.has(step) && step % 2 === 1) {
+            // Offbeat where kick is silent
+            let midi = root;
+            if (step === 6 || step === 14) midi = fifth; // harmonic movement
+            notes.push({ step, voice: 'bass', midi, velocity: humanize(0.7, 0.06) });
+          }
+        }
+        // Anchor on beat 0
+        notes.push({ step: 0, voice: 'bass', midi: root, velocity: humanize(0.9, 0.05) });
+        break;
+      }
+      case 'ANTICIPATE': {
+        // Bass hits BEFORE kick — creates push/tension
+        for (const ks of kickSteps) {
+          if (ks % 4 === 0 && ks > 0) {
+            const anticipStep = ks - 1;
+            if (anticipStep >= 0 && !kickSteps.has(anticipStep)) {
+              // Approach from fifth → resolve to root on kick
+              notes.push({ step: anticipStep, voice: 'bass', midi: fifth, velocity: humanize(0.6, 0.06) });
+            }
+          }
+          // Hit with kick too (lock + anticipate)
+          if (ks % 4 === 0) {
+            notes.push({ step: ks, voice: 'bass', midi: root, velocity: humanize(0.85, 0.05) });
+          }
+        }
+        break;
+      }
+      case 'SPACE': {
+        // Bass intentionally leaves space — sparse, hypnotic
+        // Only play on beats where kick is NOT dense
+        const kickDensity = kickSteps.size;
+        if (kickDensity > 6) {
+          // Dense kick → bass plays only beats 0 and 8
+          notes.push({ step: 0, voice: 'bass', midi: root, velocity: humanize(0.9, 0.05) });
+          notes.push({ step: 8, voice: 'bass', midi: fifth, velocity: humanize(0.75, 0.06) });
+        } else {
+          // Sparse kick → bass fills more
+          for (const s of [0, 4, 8, 12]) {
+            notes.push({ step: s, voice: 'bass', midi: s === 8 ? fifth : root, velocity: humanize(0.8, 0.05) });
+          }
+        }
+        break;
       }
     }
 
-    // F15: Phrase-end bass walk (cadence)
+    // F22: Phrase-end bass walk (shared across all relationships)
     if (barInPhrase === 7) {
-      // Replace last beat with a walk: root → fifth → octave (resolving to root next phrase)
-      const lastBeatStep = 12;
-      const existing = notes.filter(n => n.step >= lastBeatStep && n.voice === 'bass');
+      const existing = notes.filter(n => n.step >= 12 && n.voice === 'bass');
       for (const n of existing) {
         const idx = notes.indexOf(n);
         if (idx >= 0) notes.splice(idx, 1);
@@ -690,6 +694,15 @@ export class MusicalSession {
       notes.push({ step: 14, voice: 'bass', midi: fifth, velocity: humanize(0.7, 0.06) });
       notes.push({ step: 15, voice: 'bass', midi: octaveUp, velocity: humanize(0.6, 0.08) });
     }
+
+    // F22: Update continuous state with bass's last note
+    const state = this.stateManager.getState();
+    const lastBass = notes.filter(n => n.voice === 'bass').pop();
+    if (lastBass && lastBass.midi !== null) {
+      state.bassLastMidi = lastBass.midi;
+    }
+
+    this.lastReason = `bass relationship=${relationship} (kick steps=${kickSteps.size})`;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1042,15 +1055,18 @@ export class MusicalSession {
   }
 
   private generateLead(notes: ScheduledNote[], ctx: MusicalContextSnapshot, motif: StoredMotif, barInPhrase: number, action: string, density: number): void {
-    // F18.3: LEARNED LEAD GENERATION — if we have learned melodic grammar,
-    // generate new melodies from learned interval distributions instead of
-    // using random motifs. This produces material that REFLECTS what the
-    // radio taught, without copying melodies.
-    const learnedMelodic = this.getLearnedMelodicGrammar();
-    if (learnedMelodic && learnedMelodic.confidence > 0.25 && ctx.sectionName !== 'INTRO') {
-      this.generateLearnedLead(notes, ctx, learnedMelodic, barInPhrase, density);
-      return;
-    }
+    // F22 P0-A: FIX LEAD BYPASS BUG.
+    // The old code checked learnedMelodic.confidence > 0.25 and called
+    // generateLearnedLead() which returned early, BYPASSING generateRelationalLead().
+    // This meant: when radio learning was active, the lead lost its relational
+    // awareness (bass avoidance, chord targeting, phrase development).
+    //
+    // FIX: generateRelationalLead() is the ONLY lead path. It already handles
+    // learned grammar as one of its inputs (via interval sampling + phrase
+    // state). Learning is an INPUT, not an alternate composer.
+    //
+    // The old generateLearnedLead and generateLead paths are REMOVED.
+    // All lead generation goes through generateRelationalLead().
 
     // F9 RULE 10: Register control — octave 3 (MIDI 48-60), NOT octave 4-5 (69-88)
     const leadOctave = 3; // MIDI ~45-57 (low-mid register)
