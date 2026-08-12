@@ -14,6 +14,7 @@
 
 import { type LearningData, type Composition, loadLearning, saveLearning, recordKick, recordBassNote, recordRadioBands, recordEnergy, deriveInsights, getInsights, generateComposition } from './learning';
 import { SOUND_BANK, getById, autoSelect, type SoundPreset } from './soundBank';
+import { BeatPLL } from './beatPLL';
 
 const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -207,6 +208,9 @@ export class PsyLive {
   private styleCandidate: Style | null = null;
   private styleCandidateSince = 0;
   private currentStyle: Style = 'fullOn';
+
+  // Beat PLL (phase-locked loop for beat sync)
+  private pll: BeatPLL = new BeatPLL();
 
   // Scheduler (like psy — 25ms lookahead, 150ms schedule ahead)
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -572,6 +576,7 @@ export class PsyLive {
     this.kickIntervals = [];
     this.subBassHistory = [];
     if (this.detectTimer) { clearInterval(this.detectTimer); this.detectTimer = null; }
+    this.pll.reset();
     this.updateMixMode();
     this.emit();
   }
@@ -758,35 +763,28 @@ export class PsyLive {
     if (this.lastKickTime > 0 && now - this.lastKickTime < 0.25) return;
     this.kickCount++;
 
-    if (this.lastKickTime > 0) {
-      const interval = now - this.lastKickTime;
-      if (interval >= 0.32 && interval <= 0.55) {
-        this.kickIntervals.push(interval);
-        if (this.kickIntervals.length > 16) this.kickIntervals.shift();
-        if (this.kickIntervals.length >= 4) {
-          const sorted = [...this.kickIntervals].sort((a, b) => a - b);
-          const median = sorted[Math.floor(sorted.length / 2)];
-          let bpm = 60 / median;
-          if (bpm < 110) bpm *= 2;
-          if (bpm > 170) bpm /= 2;
-          if (bpm >= 110 && bpm <= 170) {
-            bpm = Math.round(bpm);
-            if (this.radioBpm === 0 || Math.abs(bpm - this.radioBpm) <= 8) {
-              this.radioBpm = bpm;
-              this.engineBpm = Math.round(this.engineBpm + (bpm - this.engineBpm) * 0.7);
-              this.updateDelayTime();
-              this.syncStatus = 'following';
-              this.updateMixMode();
-              if (this.learningData) {
-                this.learningData = recordKick(this.learningData, bpm);
-                this.learningData = deriveInsights(this.learningData);
-                saveLearning(this.learningData);
-              }
-            }
-          }
-        }
+    // ── FEED BEAT OBSERVATION TO PLL ──
+    // PLL handles phase + tempo tracking (replaces old median-based BPM)
+    const confidence = Math.min(1, this.radioBands.low * 2);
+    this.pll.update({ time: now, confidence });
+
+    // Sync engine BPM from PLL (smooth, not jumping)
+    if (this.pll.isLocked()) {
+      const pllBpm = this.pll.getBpm();
+      this.radioBpm = Math.round(pllBpm);
+      // Smooth engine BPM toward PLL (not jump)
+      this.engineBpm = this.engineBpm + (pllBpm - this.engineBpm) * 0.3;
+      this.updateDelayTime();
+      this.syncStatus = 'following';
+      this.updateMixMode();
+
+      if (this.learningData) {
+        this.learningData = recordKick(this.learningData, Math.round(pllBpm));
+        this.learningData = deriveInsights(this.learningData);
+        saveLearning(this.learningData);
       }
     }
+
     this.lastKickTime = now;
     this.emit();
   }
