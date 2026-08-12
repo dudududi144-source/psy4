@@ -1,0 +1,32 @@
+{
+  "learningWorks": true,
+  "hasLearned": true,
+  "learnedCount": 4,
+  "hasBassGrammar": true,
+  "bassA": {
+    "count": 362,
+    "uniqueMidis": 4,
+    "midis": [
+      45,
+      49,
+      52,
+      57
+    ]
+  },
+  "bassB": {
+    "count": 260,
+    "uniqueMidis": 4,
+    "midis": [
+      45,
+      49,
+      52,
+      57
+    ]
+  },
+  "bassStepDiff": 147,
+  "totalA": 669,
+  "totalB": 568,
+  "kickPatternsA": 3,
+  "kickPatternsB": 3,
+  "verdict": "PASS"
+}

@@ -18,6 +18,8 @@ import { RadioMusicalWindow, type RadioWindowSnapshot } from './RadioMusicalWind
 import { type Scale, degreeToMidi, stableDegrees, getScale } from './primitives/scales';
 import { type MotifNote, generateMotif, transpose, invert, fragment, retrograde } from './primitives/motif';
 import { Rng } from './primitives/rng';
+import { MusicalObservationExtractor, extractSpectralFeatures, type RadioTickFeatures, type PhraseMusicalFeatures } from './MusicalObservation';
+import { GrammarBuilder, type BassGrammar, type RhythmGrammar, type MelodicGrammar, type TimbreProfile } from './LearnedGrammar';
 
 export interface ScheduledNote {
   readonly step: number;
@@ -89,6 +91,10 @@ export class MusicalSession {
   private window: RadioMusicalWindow;
   private memory: MusicalMemory;
   private rng: Rng;
+  // F17: Musical observation + learning
+  private observationExtractor: MusicalObservationExtractor;
+  private grammarBuilder: GrammarBuilder;
+  private lastPhraseExtracted: number = -1;
 
   private currentPlan: NotePlan | null = null;
   private currentMotif: StoredMotif | null = null;
@@ -112,6 +118,8 @@ export class MusicalSession {
     this.window = new RadioMusicalWindow();
     this.memory = new MusicalMemory(seed);
     this.rng = new Rng(seed + 1);
+    this.observationExtractor = new MusicalObservationExtractor();
+    this.grammarBuilder = new GrammarBuilder();
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -193,6 +201,74 @@ export class MusicalSession {
     this.learned = true;
   }
 
+  // F17.2 — Observe radio tick with FULL musical feature extraction.
+  // This is the real learning pipeline: extracts spectral features, pitch,
+  // rhythm, and timbre — not just scalar occupancy.
+  observeRadioTick(tick: {
+    audioTime: number;
+    radioBpm: number;           // F17: use RADIO bpm, not transport bpm (fixes circular observation)
+    energy: number;
+    occupancy: { kick: number; bass: number; lead: number; hats: number };
+    bassFreq: number | null;
+    pitchClass: number | null;
+    pitchConfidence: number;
+    freqData: Uint8Array;       // raw FFT data for spectral analysis
+    sampleRate: number;
+    fftSize: number;
+  }): void {
+    // Extract spectral features from FFT
+    const spectral = extractSpectralFeatures(tick.freqData, tick.sampleRate, tick.fftSize);
+
+    const tickFeatures: RadioTickFeatures = {
+      timestamp: tick.audioTime,
+      bpm: tick.radioBpm,        // F17: radio's BPM, not engine's
+      energy: tick.energy,
+      occupancy: tick.occupancy,
+      bassFreq: tick.bassFreq,
+      pitchClass: tick.pitchClass,
+      pitchConfidence: tick.pitchConfidence,
+      spectralCentroid: spectral.centroid,
+      spectralFlatness: spectral.flatness,
+      spectralRolloff: spectral.rolloff,
+      lowEnergy: spectral.low,
+      midEnergy: spectral.mid,
+      highEnergy: spectral.high,
+    };
+
+    this.observationExtractor.observe(tickFeatures);
+
+    // Also feed the legacy observation path (for backward compat)
+    this.observeRadio({
+      bpm: tick.radioBpm,
+      energy: tick.energy,
+      occupancy: tick.occupancy,
+      bassFreq: tick.bassFreq ?? undefined,
+      confidence: tick.pitchConfidence,
+    });
+  }
+
+  // F17.3 — Extract phrase features and feed to grammar builder.
+  // Called at phrase boundaries (barInPhrase === 0).
+  // Public for testing — the learning pipeline must be provable.
+  extractPhraseLearning(phraseIndex: number, startBar: number, bars: number): void {
+    if (phraseIndex === this.lastPhraseExtracted) return;
+    this.lastPhraseExtracted = phraseIndex;
+
+    const features = this.observationExtractor.extractPhraseFeatures(phraseIndex, startBar, bars);
+    if (features) {
+      this.grammarBuilder.observePhrase(features);
+      this.learned = true;
+    }
+  }
+
+  // F17.4 — Get learned bass grammar (or null if not enough learning yet)
+  getLearnedBassGrammar(): BassGrammar | null { return this.grammarBuilder.getBassGrammar(); }
+  getLearnedRhythmGrammar(): RhythmGrammar | null { return this.grammarBuilder.getRhythmGrammar(); }
+  getLearnedMelodicGrammar(): MelodicGrammar | null { return this.grammarBuilder.getMelodicGrammar(); }
+  getLearnedTimbreProfile(): TimbreProfile | null { return this.grammarBuilder.getTimbreProfile(); }
+  hasLearnedFromRadio(): boolean { return this.grammarBuilder.hasLearned(); }
+  getLearnedPhraseCount(): number { return this.grammarBuilder.getLearnedCount(); }
+
   planBar(bar: number, transportBpm: number): NotePlan {
     // F16: Track cycle for groove evolution
     const cycle = Math.floor(bar / 64);
@@ -230,6 +306,13 @@ export class MusicalSession {
 
     // ── Motif management ──
     if (barInPhrase === 0) {
+      // F17.8: Phrase continuity — extract learning from PREVIOUS phrase
+      // before clearing. The grammar builder accumulates across phrases.
+      const phraseIndex = Math.floor(bar / 8);
+      this.extractPhraseLearning(phraseIndex - 1, bar - 8, 8);
+
+      // F17.8: Do NOT wipe everything — carry forward learned grammars.
+      // Only clear per-phrase motif cache (the grammar builder persists).
       this.phraseMotifs.clear();
       this.phraseNotes = [];
       this.phraseStartBar = bar;
@@ -378,6 +461,16 @@ export class MusicalSession {
     const section = ctx.sectionName;
     const humanize = (v: number, jitter: number) => Math.max(0.1, Math.min(1, v + (this.rng.next() - 0.5) * jitter));
 
+    // F17.4: LEARNED BASS GRAMMAR — if we have learned from radio, generate
+    // bass from the learned interval transitions + rhythm pattern instead
+    // of hardcoded beatDegrees. This produces material that REFLECTS what
+    // the radio taught, without copying melodies.
+    const learnedBass = this.getLearnedBassGrammar();
+    if (learnedBass && learnedBass.confidence > 0.25 && section !== 'INTRO') {
+      this.generateLearnedBass(notes, ctx, learnedBass, root, fifth, third, octaveUp, humanize, barInPhrase);
+      return;
+    }
+
     // F15: Harmonic movement — which degree per beat
     // Beat 0 (bar 0): root. Beat 4: root. Beat 8: fifth (movement). Beat 12: root.
     // During DEVELOPMENT/CLIMAX: more movement (octave, third)
@@ -460,6 +553,87 @@ export class MusicalSession {
       notes.push({ step: 12, voice: 'bass', midi: root, velocity: humanize(0.85, 0.05) });
       notes.push({ step: 14, voice: 'bass', midi: fifth, velocity: humanize(0.7, 0.06) });
       notes.push({ step: 15, voice: 'bass', midi: octaveUp, velocity: humanize(0.6, 0.08) });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // F17.4: LEARNED BASS GENERATION
+  // Generates bass from learned interval transitions + rhythm pattern.
+  // This is NEW material that reflects radio learning, not copied notes.
+  // ═══════════════════════════════════════════════════════════════════════
+  private generateLearnedBass(
+    notes: ScheduledNote[], ctx: MusicalContextSnapshot, grammar: BassGrammar,
+    root: number, fifth: number, third: number, octaveUp: number,
+    humanize: (v: number, j: number) => number, barInPhrase: number,
+  ): void {
+    const section = ctx.sectionName;
+    // Use learned rhythm pattern to determine WHICH steps get bass notes
+    // Use learned interval transitions to determine WHICH pitch (degree)
+    let currentDegree = 0; // start at root
+
+    for (let step = 0; step < 16; step++) {
+      // Learned rhythm pattern: probability of note at this step
+      const rhythmProb = grammar.rhythmPattern[step] ?? 0.5;
+      // Section density modulation
+      const densityMod = section === 'CLIMAX' ? 1.2 : section === 'RESOLUTION' ? 0.7 : 1.0;
+      const playProb = Math.min(1, rhythmProb * densityMod);
+
+      if (this.rng.next() < playProb) {
+        // Choose degree using learned interval transitions
+        // Map current degree to pitch class, sample transition
+        const currentPc = ctx.rootPc;
+        const transitions = grammar.intervalTransitions[currentPc] ?? grammar.intervalTransitions[0];
+        if (transitions) {
+          // Sample a target pitch class
+          let r = this.rng.next();
+          let targetPc = 0;
+          for (let pc = 0; pc < 12; pc++) {
+            r -= transitions[pc];
+            if (r <= 0) { targetPc = pc; break; }
+          }
+          // Map target PC to a scale degree
+          const interval = ((targetPc - ctx.rootPc) + 12) % 12;
+          // Choose midi note: root, fifth, third, or octave based on interval
+          let midi: number;
+          if (interval === 0 || interval === 7) midi = root;        // root/5th → root
+          else if (interval === 5 || interval === 2) midi = fifth;   // 4th/2nd → fifth
+          else if (interval === 3 || interval === 4) midi = third;   // 3rd → third
+          else if (interval === 8 || interval === 9) midi = octaveUp; // 6th → octave
+          else midi = root; // default
+
+          // Octave jump probability
+          if (this.rng.next() < grammar.octaveJumpProb && step % 4 === 0) {
+            midi = octaveUp;
+          }
+
+          // Velocity: accent on downbeats, learned syncopation
+          const isDownbeat = step % 4 === 0;
+          const vel = isDownbeat ? 0.85 : (grammar.syncopation > 0.4 ? 0.6 : 0.5);
+          notes.push({ step, voice: 'bass', midi, velocity: humanize(vel, 0.06) });
+
+          // Update current degree for next transition
+          currentDegree = interval;
+        }
+      }
+    }
+
+    // F17: Phrase-end walk (learned approach tone behavior)
+    if (barInPhrase === 7) {
+      const existing = notes.filter(n => n.step >= 12 && n.voice === 'bass');
+      for (const n of existing) {
+        const idx = notes.indexOf(n);
+        if (idx >= 0) notes.splice(idx, 1);
+      }
+      // Approach from above or below based on learned grammar
+      if (grammar.approachFromAbove > grammar.approachFromBelow) {
+        notes.push({ step: 12, voice: 'bass', midi: root, velocity: humanize(0.85, 0.05) });
+        notes.push({ step: 14, voice: 'bass', midi: third, velocity: humanize(0.7, 0.06) });
+        notes.push({ step: 15, voice: 'bass', midi: root, velocity: humanize(0.6, 0.08) });
+      } else {
+        notes.push({ step: 12, voice: 'bass', midi: root, velocity: humanize(0.85, 0.05) });
+        notes.push({ step: 14, voice: 'bass', midi: fifth, velocity: humanize(0.7, 0.06) });
+        notes.push({ step: 15, voice: 'bass', midi: octaveUp, velocity: humanize(0.6, 0.08) });
+      }
     }
   }
 
@@ -714,6 +888,8 @@ export class MusicalSession {
 
   reset(): void {
     this.ctx.reset(); this.window.reset(); this.memory.reset();
+    this.observationExtractor.reset();
+    this.grammarBuilder.reset();
     this.currentPlan = null; this.currentMotif = null;
     this.phraseMotifs.clear(); this.motifGroups = [[], [], []];
     this.phraseNotes = []; this.learned = false;
@@ -721,5 +897,12 @@ export class MusicalSession {
     this.userStyleLocked = false;
     this.learningInfluencedCount = 0;
     this.lastReason = '';
+    this.lastPhraseExtracted = -1;
+    this.cycleCount = 0;
+    this.lastBarPlanned = -1;
+    this.forcedSection = null;
+    this.breakRemaining = 0;
+    this.buildRemaining = 0;
+    this.dropRemaining = 0;
   }
 }

@@ -1033,12 +1033,24 @@ export class PsyLive {
 
     // F8 — Feed radio observations into MusicalSession (THE single composer)
     if (this.session && radioSnap.signal.state !== 'NO_SIGNAL') {
-      this.session.observeRadio({
-        bpm: transportSnap.bpm,
+      // F17.2: Full musical feature extraction — pass FFT data + pitch + radio BPM
+      // to the session's learning pipeline. This fixes the circular BPM
+      // observation (was passing transportSnap.bpm, now passing radioSnap.beat.estimatedBpm).
+      const radioBpm = radioSnap.beat?.estimatedBpm ?? transportSnap.bpm;
+      const pitchClass = radioSnap.pitch?.pitchClass ?? null;
+      const pitchConfidence = radioSnap.pitch?.confidence ?? 0;
+
+      this.session.observeRadioTick({
+        audioTime,
+        radioBpm,
         energy: radioSnap.signal.spectralEnergy,
         occupancy: radioSnap.occupancy,
-        bassFreq: this.bassFreq > 0 ? this.bassFreq : undefined,
-        confidence: radioSnap.beat?.confidence ?? 0,
+        bassFreq: this.bassFreq > 0 ? this.bassFreq : null,
+        pitchClass,
+        pitchConfidence,
+        freqData: fd,
+        sampleRate: this.ctx.sampleRate,
+        fftSize: this.radioAnalyser.fftSize,
       });
     }
 
@@ -1232,6 +1244,13 @@ export class PsyLive {
       sessionReason: this.session?.snapshot()?.reason ?? '',
       sessionHasLearned: this.session?.hasLearned() ?? false,
       sessionLastReward: this.session?.snapshot()?.lastReward ?? 0,
+      // F17: Learning state
+      learnedFromRadio: this.session?.hasLearnedFromRadio() ?? false,
+      learnedPhraseCount: this.session?.getLearnedPhraseCount() ?? 0,
+      hasBassGrammar: this.session?.getLearnedBassGrammar() != null,
+      hasRhythmGrammar: this.session?.getLearnedRhythmGrammar() != null,
+      hasMelodicGrammar: this.session?.getLearnedMelodicGrammar() != null,
+      hasTimbreProfile: this.session?.getLearnedTimbreProfile() != null,
     };
   }
 
