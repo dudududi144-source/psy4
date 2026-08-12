@@ -1,0 +1,39 @@
+{
+  "bpm": 145,
+  "bars": 64,
+  "totalNotes": 384,
+  "leadNotes": 55,
+  "bassNotes": 185,
+  "uniqueLeadPitches": 3,
+  "uniqueLeadMIDIs": [
+    60,
+    69,
+    72
+  ],
+  "uniqueBassPitches": 2,
+  "repeatedLeadRatio": 0.14814814814814814,
+  "pitchClassHistogram": [
+    39,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    201,
+    0,
+    0
+  ],
+  "identicalBarRatio": 0.015625,
+  "uniqueBarPatterns": 5,
+  "gates": {
+    "unique lead pitches > 3": false,
+    "repeated-note ratio < 50%": true,
+    "identical-bar ratio < 80%": true,
+    "unique bar patterns > 4": true,
+    "pitch-class diversity > 3": false
+  },
+  "verdict": "FAIL"
+}

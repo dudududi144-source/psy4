@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T15:37:58.198Z",
+  "runAt": "2026-08-12T15:53:13.860Z",
   "totalTests": 18,
   "passed": 18,
   "failed": 0,
@@ -26,7 +26,7 @@
       "id": "PR-04",
       "name": "scheduleStep called repeatedly (notes started > 100)",
       "passed": true,
-      "evidence": "note start events=459 lastScheduledStepIdx=291"
+      "evidence": "note start events=470 lastScheduledStepIdx=291"
     },
     {
       "id": "PR-05",
@@ -44,19 +44,19 @@
       "id": "PR-07",
       "name": "30s produces continuous note scheduling (>200 notes)",
       "passed": true,
-      "evidence": "notes in 30s=459 (expected ~290)"
+      "evidence": "notes in 30s=470 (expected ~290)"
     },
     {
       "id": "PR-08",
       "name": "Notes have plausible inter-onset intervals (~103ms at 145 BPM)",
       "passed": true,
-      "evidence": "avgInterval=0.1132s expected=0.1034s min=0.1034s max=0.3103s"
+      "evidence": "avgInterval=0.1111s expected=0.1034s min=0.1034s max=0.2069s"
     },
     {
       "id": "PR-09",
       "name": "Voices (oscillators/sources) are actually started",
       "passed": true,
-      "evidence": "start events in 2s=30"
+      "evidence": "start events in 2s=31"
     },
     {
       "id": "PR-10",
@@ -68,7 +68,7 @@
       "id": "PR-11",
       "name": "Role buses connected to master (engineBus → comp → master)",
       "passed": true,
-      "evidence": "master node found: yes (id=gain_1749)"
+      "evidence": "master node found: yes (id=gain_1793)"
     },
     {
       "id": "PR-12",
@@ -86,7 +86,7 @@
       "id": "PR-14",
       "name": "STOP halts new scheduling (no new note events after stop)",
       "passed": true,
-      "evidence": "noteEvents before stop=62 after 2s stopped=62"
+      "evidence": "noteEvents before stop=64 after 2s stopped=64"
     },
     {
       "id": "PR-15",
@@ -110,7 +110,7 @@
       "id": "PR-18",
       "name": "No runaway allocation (node count bounded)",
       "passed": true,
-      "evidence": "nodes at start=14 after 30s=1535 growth=1521"
+      "evidence": "nodes at start=14 after 30s=1543 growth=1529"
     }
   ]
 }
