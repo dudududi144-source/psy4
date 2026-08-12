@@ -436,8 +436,8 @@ export class PsyLive {
 
     // ── PER-ROLE BUSES (from architecture review) ──
     // Each voice connects to its role bus → engineBus → gentle comp → master
-    this.kickBus = this.ctx.createGain(); this.kickBus.gain.value = 0.7; // F22: reduced to prevent clipping
-    this.bassBus = this.ctx.createGain(); this.bassBus.gain.value = 0.6;
+    this.kickBus = this.ctx.createGain(); this.kickBus.gain.value = 0.8; // F22: boosted for punch
+    this.bassBus = this.ctx.createGain(); this.bassBus.gain.value = 0.5; // F22: reduced for clean kick/bass ratio
     this.leadBus = this.ctx.createGain(); this.leadBus.gain.value = 0.5;
     this.hatBus = this.ctx.createGain(); this.hatBus.gain.value = 0.5;
     
@@ -493,27 +493,31 @@ export class PsyLive {
       click.start(t); click.stop(t + 0.005);
     }
 
-    // 2. PITCH-DROP BODY — 180→50Hz in 30ms, 120ms decay
+    // 2. PITCH-DROP BODY — 120→48Hz in 15ms, 80ms decay (matches reference)
     const body = this.ctx.createOscillator(); body.type = 'sine';
-    body.frequency.setValueAtTime(180, t);
-    body.frequency.exponentialRampToValueAtTime(50, t + 0.03);
+    body.frequency.setValueAtTime(120, t);
+    body.frequency.exponentialRampToValueAtTime(48, t + 0.015);
     const bodyGain = this.ctx.createGain();
     bodyGain.gain.setValueAtTime(0, t);
-    bodyGain.gain.linearRampToValueAtTime(0.9 * v, t + 0.001); // 1ms attack
-    bodyGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12); // 120ms decay
-    const bodySat = this.makeShaper(6);
-    body.connect(bodyGain); bodyGain.connect(bodySat); bodySat.connect(this.kickBus);
-    body.start(t); body.stop(t + 0.13);
+    bodyGain.gain.linearRampToValueAtTime(0.8 * v, t + 0.0005); // 0.5ms attack
+    bodyGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08); // 80ms decay
+    // F22 AUDIO FIX: Removed waveshaper from bus path.
+    // The waveshaper was on the shared kickBus, causing intermodulation
+    // distortion between kick and bass that created sustained bleed.
+    // Saturation is now applied PER-VOICE (each voice has its own shaper
+    // before connecting to the bus, not after).
+    body.connect(bodyGain); bodyGain.connect(this.kickBus);
+    body.start(t); body.stop(t + 0.09);
 
-    // 3. SUB BODY — 50Hz weight (150ms controlled tail)
+    // 3. SUB BODY — 48Hz weight (100ms tail)
     const sub = this.ctx.createOscillator(); sub.type = 'sine';
-    sub.frequency.setValueAtTime(50, t);
+    sub.frequency.setValueAtTime(48, t);
     const subGain = this.ctx.createGain();
     subGain.gain.setValueAtTime(0, t);
-    subGain.gain.linearRampToValueAtTime(0.7 * v, t + 0.002);
-    subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+    subGain.gain.linearRampToValueAtTime(0.5 * v, t + 0.003);
+    subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
     sub.connect(subGain); subGain.connect(this.kickBus);
-    sub.start(t); sub.stop(t + 0.16);
+    sub.start(t); sub.stop(t + 0.11);
   }
 
   private hat(t: number, lvl: number, open = false): void {
@@ -558,32 +562,33 @@ export class PsyLive {
     const satAmount = recipe?.saturationAmount ?? 0.4;
 
     // F22: Layered bass — sub + mid (harmonic pluck) + character (transient)
-    // KEY FIX: 80ms decay (was 350ms) — clean separation between rolling events
+    // KEY FIX: 65ms decay using LINEAR ramp (exponential never reaches silence)
+    // Reference: sub=0.4 peak, 65ms decay; mid=0.25 peak, 65ms decay
     // 1. SUB — mono fundamental
     const sub = this.ctx.createOscillator();
     sub.type = 'sine';
     sub.frequency.value = freq;
     const subGain = this.ctx.createGain();
     subGain.gain.setValueAtTime(0.0001, t);
-    subGain.gain.exponentialRampToValueAtTime(0.6 * vel, t + 0.002); // 2ms attack
-    subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08); // 80ms decay
+    subGain.gain.linearRampToValueAtTime(0.4 * vel, t + 0.001); // 1ms attack
+    subGain.gain.linearRampToValueAtTime(0.0, t + 0.065); // 65ms LINEAR decay to ZERO
     sub.connect(subGain); subGain.connect(this.bassBus);
-    sub.start(t); sub.stop(t + 0.09);
+    sub.start(t); sub.stop(t + 0.07);
 
     // 2. MID — harmonic oscillator through rapidly closing LPF (the pluck)
     const mid = this.ctx.createOscillator(); mid.type = oscType; mid.frequency.value = freq;
     const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.Q.value = resonance;
     // Filter starts open, closes fast — creates the psy bass pluck character
-    const fStart = Math.max(800, cutoff);
-    const fEnd = Math.max(150, cutoff * 0.3);
+    const fStart = Math.max(1000, cutoff);
+    const fEnd = Math.max(150, cutoff * 0.25);
     filter.frequency.setValueAtTime(fStart, t);
-    filter.frequency.exponentialRampToValueAtTime(fEnd, t + 0.04); // 40ms filter close
+    filter.frequency.exponentialRampToValueAtTime(fEnd, t + 0.025); // 25ms filter close
     const midGain = this.ctx.createGain();
     midGain.gain.setValueAtTime(0.0001, t);
-    midGain.gain.exponentialRampToValueAtTime(0.4 * vel, t + 0.002); // 2ms attack
-    midGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08); // 80ms decay
-    const sat = this.makeShaper(Math.round(satAmount * 10));
-    mid.connect(filter); filter.connect(midGain); midGain.connect(sat); sat.connect(this.bassBus);
+    midGain.gain.linearRampToValueAtTime(0.25 * vel, t + 0.001); // 1ms attack
+    midGain.gain.linearRampToValueAtTime(0.0, t + 0.065); // 65ms LINEAR decay to ZERO
+    // F22 AUDIO FIX: Removed shared waveshaper — was causing intermodulation bleed
+    mid.connect(filter); filter.connect(midGain); midGain.connect(this.bassBus);
 
     // 3. CHARACTER — short noise transient for attack definition
     if (this.noiseBuf) {
@@ -598,7 +603,7 @@ export class PsyLive {
     }
 
     if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.06; midGain.connect(send); send.connect(this.delaySend); }
-    mid.start(t); mid.stop(t + 0.09);
+    mid.start(t); mid.stop(t + 0.07);
   }
 
   private lead(t: number, freq: number, v: Variant, accent: boolean): void {
