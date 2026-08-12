@@ -1,25 +1,26 @@
 /**
- * LiveComposer — the live learning loop.
+ * LiveComposer — F7 REBUILD
  *
- * F6 REBUILD: Fixes the musicality failures from F5:
- * 1. Motif now LIVES across bars within a phrase (introduce→repeat→transform→cadence)
- * 2. Bass gets passing tones and phrase-ending movement
- * 3. Lead fills ALL bars using motif development (not just bars 0-1)
- * 4. Transformations actually happen within phrases
- * 5. Call/response between phrases (phrase B responds to phrase A)
- * 6. Role selection based on radio occupancy (ABSTAIN when radio fills the space)
- * 7. Melody has direction (contour planning: ascending, arch, resolution)
+ * F7: The complete live learning loop with:
+ * - RadioMusicalWindow (context history)
+ * - MusicalMemory (short/medium/long-term with learning)
+ * - MusicalIntent (role selection with ABSTAIN)
+ * - Phrase structure (A→A'→B→A-return)
+ * - Learning feedback (phrase evaluation → reward → memory update)
  *
  * Chain:
- *   RadioObservationLayer → MusicalContext → CompositionPlanner → MotifMemory
- *     → NotePlan (per bar) → Scheduler
+ *   Radio → RadioMusicalWindow → MusicalContext → MusicalIntent
+ *     → MusicalMemory → CompositionPlanner → NotePlan → Scheduler
+ *     → Audio → evaluate → reward → memory update ↺
  */
 
-import { MusicalContext, type MusicalContextSnapshot } from './MusicalContext';
-import { MotifMemory, type StoredMotif, type MotifTransformType } from './MotifMemory';
+import { MusicalContext, type MusicalContextSnapshot, COMPOSITION_ARC } from './MusicalContext';
+import { MusicalMemory, type StoredMotif, type PhraseRecord } from './MusicalMemory';
+import { MusicalIntent, type MusicalDecision, type MusicalRole, type PhraseAction } from './MusicalIntent';
+import { RadioMusicalWindow, type RadioWindowSnapshot } from './RadioMusicalWindow';
 import { CompositionPlanner, type PhrasePlan } from './CompositionPlanner';
-import { type Scale, degreeToMidi, stableDegrees, nearestDegree } from './primitives/scales';
-import { type MotifNote, transpose, invert, fragment, retrograde } from './primitives/motif';
+import { type Scale, degreeToMidi, stableDegrees } from './primitives/scales';
+import { type MotifNote, generateMotif, transpose, invert, fragment, retrograde } from './primitives/motif';
 import { type BassNote } from './primitives/bass';
 import { type RhythmPattern } from './primitives/rhythm';
 import { Rng } from './primitives/rng';
@@ -36,17 +37,16 @@ export interface NotePlan {
   readonly notes: ScheduledNote[];
   readonly phrasePlan: PhrasePlan;
   readonly ctx: MusicalContextSnapshot;
-  readonly role: MusicalRole;
+  readonly decision: MusicalDecision;
   readonly barInPhrase: number;
-  readonly motifAction: string;
 }
-
-export type MusicalRole = 'SUPPORT' | 'RESPONSE' | 'COUNTERMELODY' | 'BASS' | 'RHYTHMIC' | 'TEXTURE' | 'LEAD' | 'ABSTAIN';
 
 export interface LiveComposerSnapshot {
   readonly ctx: MusicalContextSnapshot;
+  readonly radio: RadioWindowSnapshot;
+  readonly memory: import('./MusicalMemory').MusicalMemorySnapshot;
+  readonly decision: MusicalDecision;
   readonly motifCount: number;
-  readonly lastTransform: string;
   readonly currentSection: string;
   readonly currentPhrase: number;
   readonly tension: number;
@@ -54,29 +54,46 @@ export interface LiveComposerSnapshot {
   readonly planBar: number;
   readonly noteCount: number;
   readonly role: MusicalRole;
+  readonly action: PhraseAction;
+  readonly hasLearned: boolean;
+  readonly lastReward: number;
 }
 
-// Phrase development policy (F6 RULE 8)
-// Bar 0-1: introduce, 2-3: repeat, 4-5: transform, 6: variation, 7: cadence
-const PHRASE_BAR_ACTIONS = ['introduce', 'repeat', 'repeat', 'transform', 'transform', 'variation', 'cadence', 'response'];
+// Phrase structure: A → A' → B → A-return (F7 RULE 4)
+// Phrases 0,1 = A (same motif, second is transformed)
+// Phrase 2 = B (new motif, contrast)
+// Phrase 3 = A-return (callback to phrase 0's motif)
+// Phrases 4,5 = A'' B' (development)
+// Phrase 6 = Climax (new or transformed)
+// Phrase 7 = A-return (final callback)
+const PHRASE_STRUCTURE: number[] = [0, 0, 1, 0, 0, 1, 2, 0]; // indices into motif groups
 
 export class LiveComposer {
   private context: MusicalContext;
-  private memory: MotifMemory;
+  private window: RadioMusicalWindow;
+  private memory: MusicalMemory;
+  private intent: MusicalIntent;
   private planner: CompositionPlanner;
+  private rng: Rng;
+
   private currentPlan: PhrasePlan | null = null;
   private currentNotePlan: NotePlan | null = null;
-  private rng: Rng;
+  private currentMotif: StoredMotif | null = null;
+  private phraseMotifs: Map<number, StoredMotif> = new Map(); // barInPhrase → motif
   private learned: boolean = false;
 
-  // F6: Motif development within phrase
-  private currentMotif: StoredMotif | null = null;
-  private currentPhraseMotifs: StoredMotif[] = []; // transformed versions for each bar
-  private lastPhraseMotif: StoredMotif | null = null; // for call/response
+  // F7: Track phrase for evaluation
+  private currentPhraseNotes: ScheduledNote[] = [];
+  private currentPhraseStartBar: number = 0;
+
+  // F7: Motif groups for A→A'→B→A-return structure
+  private motifGroups: StoredMotif[][] = [[], [], []]; // group 0=A, 1=B, 2=C(climax)
 
   constructor(seed: number = 42) {
     this.context = new MusicalContext();
-    this.memory = new MotifMemory(seed);
+    this.window = new RadioMusicalWindow();
+    this.memory = new MusicalMemory(seed);
+    this.intent = new MusicalIntent();
     this.planner = new CompositionPlanner(this.memory, seed);
     this.rng = new Rng(seed + 1);
   }
@@ -89,134 +106,130 @@ export class LiveComposer {
     confidence: number;
   }): void {
     this.context.updateFromRadio(data);
+    this.window.observe(data);
     this.learned = true;
-  }
-
-  /**
-   * F6: Choose musical role based on radio occupancy.
-   * The system can ABSTAIN when the radio fills the space.
-   */
-  private chooseRole(ctx: MusicalContextSnapshot, barInPhrase: number): MusicalRole {
-    const occ = ctx.radioRoles ?? { kick: 0, bass: 0, lead: 0, hats: 0 };
-
-    // If radio is very dense, take a supporting role
-    if (occ.bass > 0.7 && occ.lead > 0.6) {
-      // Radio is full — abstain from lead, provide texture
-      return barInPhrase < 4 ? 'TEXTURE' : 'RHYTHMIC';
-    }
-    if (occ.bass > 0.7) {
-      // Radio bass is strong — don't compete, provide countermelody
-      return 'COUNTERMELODY';
-    }
-    if (occ.lead > 0.6) {
-      // Radio lead is strong — provide bass support
-      return 'BASS';
-    }
-    if (occ.kick > 0.7 && occ.hats > 0.5) {
-      // Radio rhythm is full — respond with melodic content
-      return 'RESPONSE';
-    }
-    // Radio is sparse — take the lead
-    return 'LEAD';
   }
 
   planBar(bar: number, transportBpm: number): NotePlan {
     this.context.updateFromTransport(bar, transportBpm);
-
-    // Check if we need a new phrase plan
-    if (this.planner.needsNewPlan(bar)) {
-      const ctx = this.context.snapshot(bar);
-      this.currentPlan = this.planner.planPhrase(ctx);
-      // F6: Initialize motif development for the new phrase
-      this.currentMotif = this.currentPlan.motif;
-      this.currentPhraseMotifs = [];
-      this.lastPhraseMotif = this.currentMotif; // remember for call/response
-    }
-
     const ctx = this.context.snapshot(bar);
-    const plan = this.currentPlan!;
+    const radio = this.window.snapshot(bar);
+    const memSnap = this.memory.snapshot();
+
+    // ── F7: Decide musical intent ──
     const barInPhrase = bar % 8;
-    const action = PHRASE_BAR_ACTIONS[barInPhrase] ?? 'repeat';
-    const role = this.chooseRole(ctx, barInPhrase);
+    const decision = this.intent.decide(barInPhrase, bar, ctx, radio, memSnap);
 
-    // ── F6: Motif development within the phrase ──
-    let motifForBar: StoredMotif = this.currentMotif!;
+    // ── F7: Phrase planning ──
+    if (this.planner.needsNewPlan(bar)) {
+      this.currentPlan = this.planner.planPhrase(ctx);
+      this.phraseMotifs.clear();
+      this.currentPhraseNotes = [];
+      this.currentPhraseStartBar = bar;
 
-    if (action === 'transform' && barInPhrase >= 3) {
-      // Transform the motif — but only if we haven't already transformed for this bar
-      if (this.currentPhraseMotifs[barInPhrase] === undefined) {
-        const transformType = this.memory.chooseTransform();
-        motifForBar = this.memory.transformMotif(
-          this.currentMotif, transformType, ctx.rootPc, ctx.scale, bar
-        );
-        this.currentPhraseMotifs[barInPhrase] = motifForBar;
+      // F7: A→A'→B→A-return structure
+      const phraseIndex = ctx.phraseIndex;
+      const structureGroup = PHRASE_STRUCTURE[phraseIndex % 8];
+
+      // Get or create motif for this structure group
+      if (this.motifGroups[structureGroup].length === 0) {
+        // Create new motif for this group
+        const motifNotes = generateMotif(ctx.rootPc, ctx.scale, {
+          seed: this.rng.int(1, 100000),
+          steps: 32,
+          density: ctx.density,
+          glideProb: 0.3 + ctx.novelty * 0.2,
+          responseShift: this.rng.int(1, 3),
+        });
+        this.currentMotif = this.memory.createMotif(motifNotes, ctx.rootPc, ctx.scaleName, bar);
+        this.motifGroups[structureGroup].push(this.currentMotif);
       } else {
-        motifForBar = this.currentPhraseMotifs[barInPhrase];
-      }
-    } else if (action === 'variation' && barInPhrase === 5) {
-      // Create a variation — small change to the motif
-      if (this.currentPhraseMotifs[barInPhrase] === undefined) {
-        motifForBar = this.memory.transformMotif(
-          this.currentMotif, 'transpose', ctx.rootPc, ctx.scale, bar
-        );
-        this.currentPhraseMotifs[barInPhrase] = motifForBar;
-      } else {
-        motifForBar = this.currentPhraseMotifs[barInPhrase];
-      }
-    } else if (action === 'cadence' && barInPhrase === 6) {
-      // Cadence — fragment + resolve to stable degree
-      if (this.currentPhraseMotifs[barInPhrase] === undefined) {
-        motifForBar = this.memory.transformMotif(
-          this.currentMotif, 'fragment', ctx.rootPc, ctx.scale, bar
-        );
-        this.currentPhraseMotifs[barInPhrase] = motifForBar;
-      } else {
-        motifForBar = this.currentPhraseMotifs[barInPhrase];
-      }
-    } else if (action === 'response' && barInPhrase === 7) {
-      // Response — return to original motif (call/response structure)
-      motifForBar = this.currentMotif;
-    } else {
-      // Use the base motif (or previously transformed version)
-      motifForBar = this.currentPhraseMotifs[barInPhrase] ?? this.currentMotif;
-    }
-
-    // ── Generate notes for this bar ──
-    const notes: ScheduledNote[] = [];
-
-    // Kick pattern
-    for (let s = 0; s < 16; s++) {
-      if (plan.kickPattern.hits[s]) {
-        const kickAllowed = ctx.energy < 0.8 || this.rng.next() < ctx.density;
-        if (kickAllowed && role !== 'ABSTAIN') {
-          notes.push({ step: s, voice: 'kick', midi: null, velocity: 0.9 });
+        // Reuse motif from this group (A-return)
+        const groupMotifs = this.motifGroups[structureGroup];
+        // Use the original (first) motif for A-return, or a transformed version for A'
+        if (phraseIndex % 8 === 1 || phraseIndex % 8 === 4) {
+          // A' — transform the original
+          const original = groupMotifs[0];
+          this.currentMotif = this.memory.transformMotif(
+            original, 'transpose', ctx.rootPc, ctx.scale, bar
+          );
+          groupMotifs.push(this.currentMotif);
+        } else {
+          // A-return — use the original
+          this.currentMotif = groupMotifs[0];
         }
       }
     }
 
-    // Hat pattern
-    for (let s = 0; s < 16; s++) {
-      if (plan.hatPattern.hits[s] && role !== 'ABSTAIN') {
-        const vel = (plan.hatPattern.velocities?.[s] ?? 0.5) * (0.7 + ctx.tension * 0.3);
-        notes.push({ step: s, voice: 'hat', midi: null, velocity: Math.min(1, vel) });
+    const plan = this.currentPlan!;
+
+    // ── F7: Motif development within phrase ──
+    let motifForBar = this.currentMotif!;
+    const action = decision.action;
+
+    if ((action === 'develop' || action === 'variation') && !this.phraseMotifs.has(barInPhrase)) {
+      const transformType = decision.transformType !== 'none' ? decision.transformType : 'transpose';
+      motifForBar = this.memory.transformMotif(
+        this.currentMotif, transformType, ctx.rootPc, ctx.scale, bar
+      );
+      this.phraseMotifs.set(barInPhrase, motifForBar);
+    } else if (action === 'cadence' && !this.phraseMotifs.has(barInPhrase)) {
+      motifForBar = this.memory.transformMotif(
+        this.currentMotif, 'fragment', ctx.rootPc, ctx.scale, bar
+      );
+      this.phraseMotifs.set(barInPhrase, motifForBar);
+    } else if (this.phraseMotifs.has(barInPhrase)) {
+      motifForBar = this.phraseMotifs.get(barInPhrase)!;
+    }
+
+    // ── Generate notes ──
+    const notes: ScheduledNote[] = [];
+
+    // ABSTAIN → minimal or no notes
+    if (decision.shouldRest || decision.role === 'ABSTAIN') {
+      // Only play a sparse hat or nothing
+      if (this.rng.next() < 0.3) {
+        notes.push({ step: 8, voice: 'hat', midi: null, velocity: 0.2 });
+      }
+    } else {
+      // Kick
+      if (decision.role !== 'ABSTAIN') {
+        for (let s = 0; s < 16; s++) {
+          if (plan.kickPattern.hits[s] && this.rng.next() < decision.density) {
+            notes.push({ step: s, voice: 'kick', midi: null, velocity: 0.9 });
+          }
+        }
+      }
+
+      // Hats
+      if (decision.role !== 'ABSTAIN') {
+        for (let s = 0; s < 16; s++) {
+          if (plan.hatPattern.hits[s]) {
+            const vel = (plan.hatPattern.velocities?.[s] ?? 0.5) * (0.6 + ctx.tension * 0.4);
+            notes.push({ step: s, voice: 'hat', midi: null, velocity: Math.min(1, vel) });
+          }
+        }
+      }
+
+      // Bass
+      if (['BASS', 'SUPPORT', 'LEAD', 'RESPONSE'].includes(decision.role)) {
+        const bassNotes = this.generateBass(ctx, plan, barInPhrase, decision);
+        notes.push(...bassNotes);
+      }
+
+      // Lead
+      if (!['ABSTAIN', 'BASS', 'RHYTHMIC'].includes(decision.role)) {
+        const leadNotes = this.generateLead(ctx, motifForBar, barInPhrase, action, decision);
+        notes.push(...leadNotes);
       }
     }
 
-    // ── F6: Bass with musical movement ──
-    if (role !== 'ABSTAIN' && (role === 'BASS' || role === 'SUPPORT' || role === 'LEAD' || role === 'RESPONSE')) {
-      const bassOctave = 2;
-      const bassNotes = this.generateBassForBar(ctx, plan, barInPhrase, bassOctave);
-      for (const bn of bassNotes) {
-        notes.push(bn);
-      }
-    }
+    // Track notes for phrase evaluation
+    this.currentPhraseNotes.push(...notes);
 
-    // ── F6: Lead with motif development across ALL bars ──
-    if (role !== 'ABSTAIN' && role !== 'BASS' && role !== 'RHYTHMIC') {
-      const leadNotes = this.generateLeadForBar(ctx, motifForBar, barInPhrase, action, role);
-      for (const ln of leadNotes) {
-        notes.push(ln);
-      }
+    // ── F7: Evaluate phrase at end ──
+    if (barInPhrase === 7) {
+      this.evaluatePhrase(bar, ctx, decision);
     }
 
     const notePlan: NotePlan = {
@@ -224,9 +237,8 @@ export class LiveComposer {
       notes: Object.freeze(notes) as ScheduledNote[],
       phrasePlan: plan,
       ctx,
-      role,
+      decision,
       barInPhrase,
-      motifAction: action,
     };
 
     this.currentNotePlan = notePlan;
@@ -234,141 +246,135 @@ export class LiveComposer {
   }
 
   /**
-   * F6: Generate bass notes with musical movement.
-   * Not just root — includes passing tones, fifths, and phrase endings.
+   * F7 RULE 12: Evaluate phrase and update memory (learning).
    */
-  private generateBassForBar(
-    ctx: MusicalContextSnapshot,
-    plan: PhrasePlan,
-    barInPhrase: number,
-    octave: number,
-  ): ScheduledNote[] {
-    const notes: ScheduledNote[] = [];
-    const rootMidi = degreeToMidi(ctx.rootPc, ctx.scale, 0, octave);
-    const fifthMidi = degreeToMidi(ctx.rootPc, ctx.scale, 4, octave); // perfect fifth
-    const thirdMidi = degreeToMidi(ctx.rootPc, ctx.scale, 2, octave); // third
+  private evaluatePhrase(bar: number, ctx: MusicalContextSnapshot, decision: MusicalDecision): void {
+    const notes = this.currentPhraseNotes;
+    const leadNotes = notes.filter(n => n.voice === 'lead' && n.midi !== null);
+    const bassNotes = notes.filter(n => n.voice === 'bass' && n.midi !== null);
+    const restBars = notes.length < 4 ? 1 : 0;
 
-    // Bass pattern from the plan
+    // Reward components
+    const coherenceScore = leadNotes.length > 0 ? 0.5 : 0.3;
+    const densityFit = Math.abs(notes.length / 8 - ctx.density * 10) < 5 ? 0.8 : 0.4;
+    const radioFit = decision.radioInfluence > 0.3 ? 0.7 : 0.5;
+    const noveltyScore = decision.action === 'develop' || decision.action === 'variation' ? 0.7 : 0.5;
+
+    const reward = (coherenceScore * 0.3 + densityFit * 0.25 + radioFit * 0.25 + noveltyScore * 0.2);
+
+    const record: PhraseRecord = {
+      phraseIndex: ctx.phraseIndex,
+      bar: this.currentPhraseStartBar,
+      motifId: this.currentMotif?.id ?? 'unknown',
+      transform: decision.transformType,
+      section: ctx.sectionName,
+      tension: ctx.tension,
+      density: ctx.density,
+      noteCount: notes.length,
+      restRatio: restBars / 8,
+      reward,
+      role: decision.role,
+    };
+
+    this.memory.recordPhrase(record);
+  }
+
+  /**
+   * F7 RULE 10: Bass with musical movement.
+   */
+  private generateBass(ctx: MusicalContextSnapshot, plan: PhrasePlan, barInPhrase: number, decision: MusicalDecision): ScheduledNote[] {
+    const notes: ScheduledNote[] = [];
+    const octave = 2;
+    const rootMidi = degreeToMidi(ctx.rootPc, ctx.scale, 0, octave);
+    const fifthMidi = degreeToMidi(ctx.rootPc, ctx.scale, 4, octave);
+    const thirdMidi = degreeToMidi(ctx.rootPc, ctx.scale, 2, octave);
+
     for (const bn of plan.bassPattern) {
       let midi = rootMidi;
-      let velocity = bn.velocity;
 
-      // F6: Musical bass movement based on bar position in phrase
-      if (barInPhrase === 7) {
-        // Phrase ending — walk to the fifth or third
-        if (bn.step === 0) midi = rootMidi;
-        else if (bn.step === plan.bassPattern.length - 1) midi = fifthMidi;
-        else midi = this.rng.next() > 0.5 ? thirdMidi : rootMidi;
-      } else if (barInPhrase === 6) {
-        // Cadence bar — approach note
-        if (bn.step === 0) midi = fifthMidi;
-        else midi = rootMidi;
-      } else if (barInPhrase >= 4 && this.rng.next() < 0.3) {
-        // Development — occasional passing tone
+      // Bass behavior based on phrase position
+      if (barInPhrase === 6) {
+        // Cadence: fifth → root
+        midi = bn.step === 0 ? fifthMidi : rootMidi;
+      } else if (barInPhrase === 7) {
+        // Response: root with occasional third
+        midi = bn.step === plan.bassPattern.length - 1 ? thirdMidi : rootMidi;
+      } else if (barInPhrase >= 3 && barInPhrase <= 5 && this.rng.next() < 0.3) {
+        // Development: occasional fifth or third
         midi = this.rng.next() > 0.5 ? fifthMidi : thirdMidi;
-      } else if (bn.step > 0 && this.rng.next() < ctx.novelty * 0.2) {
-        // Sparse passing tone based on novelty
-        const degree = this.rng.pick([0, 2, 4]); // root, 3rd, 5th
-        midi = degreeToMidi(ctx.rootPc, ctx.scale, degree, octave);
+      } else if (barInPhrase >= 1 && barInPhrase <= 2 && this.rng.next() < 0.15) {
+        // Repeat: sparse passing tone
+        midi = thirdMidi;
       }
 
-      notes.push({
-        step: bn.step,
-        voice: 'bass',
-        midi,
-        velocity,
-      });
+      notes.push({ step: bn.step, voice: 'bass', midi, velocity: bn.velocity });
     }
 
     return notes;
   }
 
   /**
-   * F6: Generate lead notes from motif, filling ALL bars.
-   * Uses motif development: introduce, repeat, transform, cadence.
-   * Adds contour direction and ensures musical coherence.
+   * F7 RULE 11: Lead with motif identity, contour, development.
    */
-  private generateLeadForBar(
-    ctx: MusicalContextSnapshot,
-    motif: StoredMotif,
-    barInPhrase: number,
-    action: string,
-    role: MusicalRole,
-  ): ScheduledNote[] {
+  private generateLead(ctx: MusicalContextSnapshot, motif: StoredMotif, barInPhrase: number, action: PhraseAction, decision: MusicalDecision): ScheduledNote[] {
     const notes: ScheduledNote[] = [];
+    const registerShift = Math.round(decision.register * 12);
     const motifStart = barInPhrase * 16;
 
-    // F6: Register shift based on tension and section
-    const registerShift = ctx.tension > 0.7 ? 12 : (ctx.tension > 0.5 ? 0 : -12);
-    // For countermelody, shift up an octave
-    const roleShift = role === 'COUNTERMELODY' ? 12 : 0;
-
-    // Map motif notes to this bar's steps
-    const motifNotesInBar = motif.notes.filter(mn =>
-      mn.step >= motifStart && mn.step < motifStart + 16
-    );
+    // Map motif notes to this bar
+    const motifNotesInBar = motif.notes.filter(mn => mn.step >= motifStart && mn.step < motifStart + 16);
 
     if (motifNotesInBar.length > 0) {
-      // Play the motif notes
       for (const mn of motifNotesInBar) {
         const localStep = mn.step - motifStart;
-        if (this.rng.next() < ctx.density) {
+        if (this.rng.next() < decision.density) {
           notes.push({
             step: localStep,
             voice: 'lead',
-            midi: mn.midi + registerShift + roleShift,
+            midi: mn.midi + registerShift,
             velocity: mn.velocity * (0.6 + ctx.tension * 0.4),
           });
         }
       }
     } else {
-      // F6: No motif notes in this bar — generate complementary content
-      // based on the action and musical context
+      // F7: Fill bars without motif notes using action-appropriate content
       if (action === 'cadence') {
-        // Cadence — resolve to stable degree
-        const stableDeg = this.rng.pick([0, 4]); // root or fifth
-        const midi = degreeToMidi(ctx.rootPc, ctx.scale, stableDeg, 5 + (registerShift / 12));
-        notes.push({ step: 0, voice: 'lead', midi: midi + roleShift, velocity: 0.7 });
-        notes.push({ step: 8, voice: 'lead', midi: midi + roleShift, velocity: 0.6 });
+        // Resolve to stable degree
+        const stableDeg = this.rng.pick([0, 4]);
+        const midi = degreeToMidi(ctx.rootPc, ctx.scale, stableDeg, 5) + registerShift;
+        notes.push({ step: 0, voice: 'lead', midi, velocity: 0.6 });
+        notes.push({ step: 8, voice: 'lead', midi, velocity: 0.5 });
       } else if (action === 'response') {
-        // Response — echo the motif's opening
+        // Echo the motif's opening
         if (motif.notes.length > 0) {
           const firstNote = motif.notes[0];
-          const midi = firstNote.midi + registerShift + roleShift;
-          notes.push({ step: 0, voice: 'lead', midi, velocity: 0.6 });
-          notes.push({ step: 4, voice: 'lead', midi, velocity: 0.5 });
+          const midi = firstNote.midi + registerShift;
+          notes.push({ step: 0, voice: 'lead', midi, velocity: 0.5 });
+          if (this.rng.next() < 0.5) {
+            notes.push({ step: 4, voice: 'lead', midi, velocity: 0.4 });
+          }
         }
       } else if (action === 'repeat') {
-        // Repeat — sparse echoes of the motif
+        // Sparse echoes
         if (motif.notes.length > 0) {
-          // Pick 1-2 notes from the motif to echo
           const echoCount = this.rng.int(1, 2);
           for (let i = 0; i < echoCount; i++) {
             const srcNote = this.rng.pick(motif.notes);
-            const midi = srcNote.midi + registerShift + roleShift;
+            const midi = srcNote.midi + registerShift;
             const step = this.rng.pick([0, 4, 8, 12]);
-            notes.push({ step, voice: 'lead', midi, velocity: 0.4 });
+            notes.push({ step, voice: 'lead', midi, velocity: 0.35 });
           }
         }
-      } else if (action === 'transform' || action === 'variation') {
-        // Transform — play a variation using nearby scale degrees
+      } else if (action === 'develop' || action === 'variation') {
+        // Transform — play nearby scale degrees
         if (motif.notes.length > 0) {
-          const baseNote = motif.notes[0];
           const nearbyDegree = this.rng.pick([-1, 1, 2, -2]);
-          const midi = degreeToMidi(ctx.rootPc, ctx.scale, nearbyDegree, 5) + roleShift;
-          notes.push({ step: 0, voice: 'lead', midi, velocity: 0.5 });
+          const midi = degreeToMidi(ctx.rootPc, ctx.scale, nearbyDegree, 5) + registerShift;
+          notes.push({ step: 0, voice: 'lead', midi, velocity: 0.45 });
           if (this.rng.next() < 0.5) {
-            const midi2 = degreeToMidi(ctx.rootPc, ctx.scale, 0, 5) + roleShift;
-            notes.push({ step: 8, voice: 'lead', midi: midi2, velocity: 0.4 });
+            const midi2 = degreeToMidi(ctx.rootPc, ctx.scale, 0, 5) + registerShift;
+            notes.push({ step: 8, voice: 'lead', midi: midi2, velocity: 0.35 });
           }
-        }
-      } else if (action === 'introduce' && motif.notes.length === 0) {
-        // Fallback: generate a simple ascending contour
-        const startDeg = this.rng.pick([0, 2, 4]);
-        for (let i = 0; i < 4; i++) {
-          const deg = startDeg + i;
-          const midi = degreeToMidi(ctx.rootPc, ctx.scale, deg, 5) + roleShift;
-          notes.push({ step: i * 4, voice: 'lead', midi, velocity: 0.5 });
         }
       }
     }
@@ -381,18 +387,24 @@ export class LiveComposer {
   snapshot(): LiveComposerSnapshot | null {
     if (!this.currentNotePlan) return null;
     const ctx = this.currentNotePlan.ctx;
-    const memSnap = this.memory.snapshot();
+    const radio = this.window.snapshot(ctx.bar);
+    const mem = this.memory.snapshot();
     return {
       ctx,
-      motifCount: memSnap.motifCount,
-      lastTransform: memSnap.lastTransform,
+      radio,
+      memory: mem,
+      decision: this.currentNotePlan.decision,
+      motifCount: mem.mediumTermMotifCount,
       currentSection: ctx.sectionName,
       currentPhrase: ctx.phraseIndex,
       tension: ctx.tension,
       novelty: ctx.novelty,
       planBar: this.currentNotePlan.bar,
       noteCount: this.currentNotePlan.notes.length,
-      role: this.currentNotePlan.role,
+      role: this.currentNotePlan.decision.role,
+      action: this.currentNotePlan.decision.action,
+      hasLearned: this.learned,
+      lastReward: mem.lastReward,
     };
   }
 
@@ -400,18 +412,23 @@ export class LiveComposer {
 
   reset(): void {
     this.context.reset();
+    this.window.reset();
     this.memory.reset();
+    this.intent.reset();
     this.planner.reset();
     this.currentPlan = null;
     this.currentNotePlan = null;
     this.currentMotif = null;
-    this.currentPhraseMotifs = [];
-    this.lastPhraseMotif = null;
-    this.rng = new Rng(43);
+    this.phraseMotifs.clear();
+    this.motifGroups = [[], [], []];
+    this.currentPhraseNotes = [];
     this.learned = false;
+    this.rng = new Rng(43);
   }
 
   getContext(): MusicalContext { return this.context; }
-  getMemory(): MotifMemory { return this.memory; }
+  getMemory(): MusicalMemory { return this.memory; }
+  getWindow(): RadioMusicalWindow { return this.window; }
+  getIntent(): MusicalIntent { return this.intent; }
   getPlanner(): CompositionPlanner { return this.planner; }
 }

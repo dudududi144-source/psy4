@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T16:38:14.668Z",
+  "runAt": "2026-08-12T16:48:45.166Z",
   "totalTests": 12,
   "passed": 12,
   "failed": 0,
@@ -38,7 +38,7 @@
       "id": "INT-F-Noise",
       "name": "White noise — no false FOLLOWING (no lock or low confidence)",
       "passed": true,
-      "evidence": "locked=false conf=0.18 observationCount=4"
+      "evidence": "locked=false conf=0.13 observationCount=3"
     },
     {
       "id": "INT-G-HalfTime",

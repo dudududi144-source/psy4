@@ -1,28 +1,28 @@
 /**
  * foundation/music — Musical Intelligence Layer
  *
- * F5: Live learning loop that connects radio observations to musical output.
+ * F7: Complete live learning loop with radio-coupled musical intelligence.
  *
  * Chain:
- *   RadioObservationLayer → LiveComposer.observeRadio()
- *   → MusicalContext (key, scale, energy, tension, phrase position)
- *   → CompositionPlanner (8-bar plans with motif/bass/rhythm)
- *   → MotifMemory (extract, store, transform motifs)
- *   → LiveComposer.planBar() → NotePlan → Scheduler
- *
- * The scheduler reads NotePlan instead of hardcoded presets.
+ *   Radio → RadioMusicalWindow → MusicalContext → MusicalIntent
+ *     → MusicalMemory → CompositionPlanner → LiveComposer.planBar()
+ *     → NotePlan → Scheduler → Audio → evaluate → reward → memory update ↺
  */
 
 export { MusicalContext, COMPOSITION_ARC } from './MusicalContext';
 export type { MusicalContextSnapshot, SectionArc } from './MusicalContext';
-export { MotifMemory } from './MotifMemory';
-export type { StoredMotif, MotifTransformType, MotifMemorySnapshot } from './MotifMemory';
+export { MusicalMemory } from './MusicalMemory';
+export type { StoredMotif, PhraseRecord, MusicalMemorySnapshot } from './MusicalMemory';
+export { MusicalIntent } from './MusicalIntent';
+export type { MusicalDecision, MusicalRole, PhraseAction, MusicalIntentSnapshot } from './MusicalIntent';
+export { RadioMusicalWindow } from './RadioMusicalWindow';
+export type { RadioWindowSnapshot } from './RadioMusicalWindow';
 export { CompositionPlanner } from './CompositionPlanner';
 export type { PhrasePlan } from './CompositionPlanner';
 export { LiveComposer } from './LiveComposer';
 export type { ScheduledNote, NotePlan, LiveComposerSnapshot } from './LiveComposer';
 
-// Re-export primitives for convenience
+// Re-export primitives
 export * from './primitives/scales';
 export * from './primitives/motif';
 export * from './primitives/rhythm';

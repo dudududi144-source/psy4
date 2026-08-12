@@ -13,12 +13,15 @@
  */
 
 import { type MusicalContextSnapshot, type SectionArc, COMPOSITION_ARC } from './MusicalContext';
-import { type StoredMotif, type MotifTransformType, MotifMemory } from './MotifMemory';
+import { type StoredMotif, MusicalMemory } from './MusicalMemory';
 import { type Scale } from './primitives/scales';
 import { type MotifNote, generateMotif } from './primitives/motif';
 import { type BassNote, generateBassPattern, type BassStyle, type TensionCurve, sampleTension } from './primitives/bass';
 import { type RhythmPattern, fourOnFloor, offbeatHats, psyKick, drivingHats, backbeat, swing, combine } from './primitives/rhythm';
 import { Rng } from './primitives/rng';
+
+// Compatibility type for the planner
+type MotifTransformType = 'none' | 'transpose' | 'invert' | 'retrograde' | 'fragment' | 'vary';
 
 export interface PhrasePlan {
   readonly phraseIndex: number;
@@ -45,19 +48,21 @@ export interface PhrasePlan {
 }
 
 export class CompositionPlanner {
-  private memory: MotifMemory;
+  private memory: MusicalMemory;
   private currentPlan: PhrasePlan | null = null;
   private lastNewMotifBar: number = -100;
   private lastTransformBar: number = -100;
   private rng: Rng;
 
-  constructor(memory: MotifMemory, seed: number = 42) {
+  constructor(memory: MusicalMemory, seed: number = 42) {
     this.memory = memory;
     this.rng = new Rng(seed);
   }
 
   /**
    * Plan the next 8-bar phrase based on the current musical context.
+   * F7: The planner now only handles bass/rhythm/tension structure.
+   * Motif decisions are handled by the LiveComposer (which uses MusicalMemory).
    */
   planPhrase(ctx: MusicalContextSnapshot): PhrasePlan {
     const phraseIndex = ctx.phraseIndex;
@@ -65,50 +70,25 @@ export class CompositionPlanner {
     const endBar = startBar + 8;
     const section = COMPOSITION_ARC[ctx.sectionIndex] ?? COMPOSITION_ARC[0];
 
-    // ── Motif decision ──
-    let motif: StoredMotif;
-    let isTransformed = false;
-    let transformType: MotifTransformType = 'none';
+    // F7: Get the current motif from memory (set by LiveComposer before calling planPhrase)
+    const motif = this.memory.getCurrentMotif() ?? {
+      id: 'placeholder',
+      notes: [],
+      rootPc: ctx.rootPc,
+      scaleName: ctx.scaleName,
+      createdAt: startBar,
+      transform: 'none',
+      usageCount: 0,
+      lastUsedBar: -1,
+      reward: 0.5,
+      phraseIds: [],
+    };
 
-    const barsSinceNew = startBar - this.lastNewMotifBar;
-    const barsSinceTransform = startBar - this.lastTransformBar;
-
-    if (this.memory.snapshot().motifCount === 0 || this.memory.shouldGenerateNew(ctx.novelty, barsSinceNew)) {
-      // Generate new motif
-      motif = this.memory.generateMotif(
-        ctx.rootPc, ctx.scale, ctx.scaleName, startBar, ctx.density, ctx.novelty
-      );
-      this.lastNewMotifBar = startBar;
-    } else if (this.memory.shouldTransform(ctx.novelty, barsSinceTransform)) {
-      // Transform existing motif
-      const base = this.memory.pickMotif(startBar, ctx.novelty);
-      if (base) {
-        transformType = this.memory.chooseTransform();
-        motif = this.memory.transformMotif(base, transformType, ctx.rootPc, ctx.scale, startBar);
-        this.lastTransformBar = startBar;
-        isTransformed = true;
-      } else {
-        motif = this.memory.generateMotif(
-          ctx.rootPc, ctx.scale, ctx.scaleName, startBar, ctx.density, ctx.novelty
-        );
-        this.lastNewMotifBar = startBar;
-      }
-    } else {
-      // Reuse existing motif
-      const picked = this.memory.pickMotif(startBar, ctx.novelty);
-      if (picked) {
-        motif = picked;
-      } else {
-        motif = this.memory.generateMotif(
-          ctx.rootPc, ctx.scale, ctx.scaleName, startBar, ctx.density, ctx.novelty
-        );
-        this.lastNewMotifBar = startBar;
-      }
-    }
+    const isTransformed = motif.transform !== 'none';
+    const transformType = (motif.transform as MotifTransformType) || 'none';
 
     // ── Bass pattern ──
     const bassStyles: BassStyle[] = ['kb3', 'four-on-floor', 'offbeat', 'syncopated'];
-    // Choose bass style based on section and energy
     let bassStyle: BassStyle;
     if (section.name === 'INTRO' || section.name === 'RESOLUTION') {
       bassStyle = ctx.energy > 0.5 ? 'offbeat' : 'kb3';
