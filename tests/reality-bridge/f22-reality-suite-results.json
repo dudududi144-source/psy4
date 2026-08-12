@@ -3,7 +3,7 @@
     {
       "test": "R1: Kick A/B → bass changes",
       "pass": true,
-      "evidence": "align DARK=78, FULL_ON=81"
+      "evidence": "align DARK=78, FULL_ON=82"
     },
     {
       "test": "R2: Bass → lead rhythmic",
@@ -43,7 +43,7 @@
     {
       "test": "R9: Learning ON → relational lead works",
       "pass": true,
-      "evidence": "free=161 vs busy=31"
+      "evidence": "free=63 vs busy=58"
     },
     {
       "test": "R10: Two sources → different identity",
@@ -53,12 +53,12 @@
     {
       "test": "R11: Deterministic same seed",
       "pass": true,
-      "evidence": "314 events, identical=true"
+      "evidence": "321 events, identical=true"
     },
     {
       "test": "R12: 256-bar development",
       "pass": true,
-      "evidence": "6296 events, 25 pitches"
+      "evidence": "5976 events, 32 pitches"
     }
   ],
   "verdict": "PASS"

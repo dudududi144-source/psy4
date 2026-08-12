@@ -1,0 +1,30 @@
+{
+  "results": [
+    {
+      "test": "L1: Phrase coherence",
+      "pass": true,
+      "evidence": "6/7 coherent"
+    },
+    {
+      "test": "L2: Phrase development",
+      "pass": true,
+      "evidence": "sim=50.0%, op=CONTRAST"
+    },
+    {
+      "test": "L3: Lead sits with bass",
+      "pass": true,
+      "evidence": "complement=1.84x, sep=14.2"
+    },
+    {
+      "test": "L4: Harmonic phrase",
+      "pass": true,
+      "evidence": "69.2% chord tones"
+    },
+    {
+      "test": "L5: Learning changes vocabulary",
+      "pass": true,
+      "evidence": "distDiff=1.398, regDiff=7.42"
+    }
+  ],
+  "verdict": "PASS"
+}

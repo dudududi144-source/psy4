@@ -27,6 +27,7 @@ import { type GrooveState, generateGrooveState, createDefaultGroove } from './Gr
 import { type HarmonicState, generateHarmonicState, getChordAtStep, isChordTone, nearestChordTone, type ChordVoicing } from './HarmonicState';
 import { type PhraseDevelopmentState, type PhraseRecord as PhraseDevRecord, type DevelopmentOperator, type PhraseNote, createInitialPhraseState, selectDevelopmentOperator, transformPhrase, createPhraseRecord, motifSimilarity } from './PhraseDevelopmentState';
 import { type TensionState, createInitialTension, updateTension } from './TensionState';
+import { generatePhrase, type PhraseContext } from './PhraseEngine';
 
 export interface ScheduledNote {
   readonly step: number;
@@ -1153,13 +1154,10 @@ export class MusicalSession {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // F21 Phase 3: RELATIONAL LEAD GENERATION
-  // The lead KNOWS the kick and bass notes for THIS bar. It:
-  // - Leaves holes where bass is busy
-  // - Fills space where bass is silent
-  // - Targets chord tones on strong beats
-  // - Develops the previous phrase's motif
-  // - Responds to tension state
+  // F22 P0-C: PHRASE-LEVEL LEAD GENERATION
+  // The lead is NO LONGER a per-step probability generator.
+  // It builds a PhrasePlan, generates a motif from the plan, transforms
+  // it using the development operator, and realizes it as notes.
   // ═══════════════════════════════════════════════════════════════════════
   private generateRelationalLead(
     notes: ScheduledNote[],
@@ -1170,7 +1168,7 @@ export class MusicalSession {
     bassNotes: ScheduledNote[],
     bar: number,
   ): void {
-    // Build maps of which steps have kick/bass
+    // Build context for phrase engine
     const kickSteps = new Set(kickNotes.map(n => n.step));
     const bassSteps = new Set(bassNotes.filter(n => n.midi !== null).map(n => n.step));
     const bassMidiByStep = new Map<number, number>();
@@ -1178,134 +1176,58 @@ export class MusicalSession {
       if (bn.midi !== null) bassMidiByStep.set(bn.step, bn.midi);
     }
 
-    // Get harmonic state for chord-tone targeting
-    const harmonic = this.harmonicState;
-    const groove = this.grooveState;
-    const tension = this.tensionState;
-
-    // F21: Start from previous phrase's last note (continuity)
     const state = this.stateManager.getState();
-    let currentMidi = state.leadLastMidi > 0
-      ? Math.max(48, Math.min(72, state.leadLastMidi))
-      : degreeToMidi(ctx.rootPc, ctx.scale, 0, 3);
+    const learnedMelodic = this.getLearnedMelodicGrammar();
+    const phraseCtx: PhraseContext = {
+      rootPc: ctx.rootPc,
+      scale: ctx.scale,
+      barInPhrase,
+      density,
+      harmonic: this.harmonicState,
+      groove: this.grooveState,
+      tension: this.tensionState,
+      prevPhrase: this.phraseState.previous,
+      operator: this.phraseState.operator,
+      leadLastMidi: state.leadLastMidi,
+      kickSteps,
+      bassSteps,
+      bassMidiByStep,
+      learnedIntervalHist: learnedMelodic?.intervalHistogram ?? null,
+      learnedRestDensity: learnedMelodic?.restDensity ?? 0.3,
+      learnedRegisterPref: learnedMelodic?.registerPreference ?? 0.5,
+    };
 
-    // F21: Get previous phrase notes for development
-    const prevPhrase = this.phraseState.previous;
-    const operator = this.phraseState.operator;
+    // Generate phrase using the phrase engine
+    const phraseNotes = generatePhrase(phraseCtx, this.rng);
 
-    // F21: If we have a previous phrase, transform it
-    let inheritedNotes: PhraseNote[] | null = null;
-    if (prevPhrase && prevPhrase.notes.length > 0) {
-      const scaleIntervals = ctx.scale.intervals;
-      inheritedNotes = transformPhrase(prevPhrase, operator, ctx.rootPc, scaleIntervals);
+    // Realize phrase notes as ScheduledNotes
+    let currentMidi = state.leadLastMidi > 0 ? state.leadLastMidi : 48;
+    for (const pn of phraseNotes) {
+      currentMidi = pn.midi;
+      notes.push({ step: pn.step, voice: 'lead', midi: pn.midi, velocity: pn.velocity });
     }
 
-    // F21: Generate lead notes — RELATIONAL
-    for (let step = 0; step < 16; step++) {
-      const isStrongBeat = step % 4 === 0;
-      const hasBass = bassSteps.has(step);
-      const hasKick = kickSteps.has(step);
-
-      // F21: RHYTHMIC RELATIONSHIP
-      // Leave holes where bass is busy (avoid collision)
-      // Fill space where bass is silent (complement)
-      let playProb = density;
-      if (hasBass && !isStrongBeat) {
-        // Bass is busy here and it's not a strong beat → leave a hole
-        playProb *= 0.3;
-      } else if (!hasBass && groove.spaceMap[step] > 0.4) {
-        // Bass is silent and there's space → fill it
-        playProb *= 1.5;
-      }
-
-      // F21: TENSION DRIVES DENSITY
-      // High rhythmic tension → more notes
-      playProb *= (0.7 + tension.rhythmic * 0.6);
-      // Resolving → fewer notes
-      if (tension.resolving) playProb *= 0.6;
-
-      // F21: Use inherited notes if available (phrase development)
-      if (inheritedNotes) {
-        const inherited = inheritedNotes.find(n => n.step === step);
-        if (inherited && this.rng.next() < playProb) {
-          // F21: HARMONIC TARGETING — snap to nearest chord tone on strong beats
-          let midi = inherited.midi;
-          if (harmonic && isStrongBeat) {
-            // 70% chance to target chord tone on strong beats
-            if (this.rng.next() < 0.7) {
-              midi = nearestChordTone(harmonic, midi, step, barInPhrase);
-            }
-          }
-          // F21: REGISTER SEPARATION — avoid bass register
-          if (bassMidiByStep.has(step)) {
-            const bassMidi = bassMidiByStep.get(step)!;
-            if (Math.abs(midi - bassMidi) < 7) {
-              midi = Math.min(72, bassMidi + 12); // shift up an octave
-            }
-          }
-          currentMidi = Math.max(48, Math.min(72, midi));
-          const vel = isStrongBeat ? 0.75 : 0.5;
-          notes.push({ step, voice: 'lead', midi: currentMidi, velocity: vel });
-          continue;
-        }
-      }
-
-      // F21: Generate new note (when no inherited note)
-      if (this.rng.next() < playProb) {
-        // F21: Choose interval based on tension
-        // High melodic tension → larger intervals
-        const maxInterval = Math.round(2 + tension.melodic * 7); // 2-9 semitones
-        const interval = Math.round((this.rng.next() - 0.5) * 2 * maxInterval);
-
-        let newMidi = currentMidi + interval;
-
-        // F21: HARMONIC TARGETING — on strong beats, snap to chord tone
-        if (harmonic && isStrongBeat && this.rng.next() < 0.7) {
-          newMidi = nearestChordTone(harmonic, newMidi, step, barInPhrase);
-        }
-
-        // F21: REGISTER SEPARATION — avoid landing in bass register
-        if (bassMidiByStep.has(step)) {
-          const bassMidi = bassMidiByStep.get(step)!;
-          if (Math.abs(newMidi - bassMidi) < 7) {
-            newMidi = Math.min(72, bassMidi + 12);
-          }
-        }
-
-        // F21: TENSION DRIVES REGISTER
-        // High register tension → push up
-        if (tension.register > 0.6 && this.rng.next() < 0.3) {
-          newMidi = Math.min(72, newMidi + 2);
-        }
-        // Resolving → descend
-        if (tension.resolving && this.rng.next() < 0.4) {
-          newMidi = Math.max(48, newMidi - 2);
-        }
-
-        currentMidi = Math.max(48, Math.min(72, newMidi));
-        const vel = isStrongBeat ? 0.75 : 0.5;
-        notes.push({ step, voice: 'lead', midi: currentMidi, velocity: vel });
-      }
-    }
-
-    // F21: Phrase-end cadence — resolve to root on last step
+    // Phrase-end cadence
     if (barInPhrase === 7) {
       const rootMidi = degreeToMidi(ctx.rootPc, ctx.scale, 0, 3);
-      notes.push({ step: 15, voice: 'lead', midi: rootMidi, velocity: 0.6 });
+      // Only add if not already there
+      if (!notes.some(n => n.voice === 'lead' && n.step === 15)) {
+        notes.push({ step: 15, voice: 'lead', midi: rootMidi, velocity: 0.6 });
+      }
       currentMidi = rootMidi;
     }
 
-    // F21: Update continuous state
+    // Update continuous state
     state.leadLastMidi = currentMidi;
 
-    // F21: Create phrase record at phrase end
+    // Create phrase record at phrase end
     if (barInPhrase === 7) {
       const leadNotesInPhrase = notes.filter(n => n.voice === 'lead' && n.midi !== null);
-      const phraseNotes: PhraseNote[] = leadNotesInPhrase.map(n => ({
+      const phraseRecordNotes: PhraseNote[] = leadNotesInPhrase.map(n => ({
         step: n.step, midi: n.midi as number, velocity: n.velocity,
       }));
       const record = createPhraseRecord(
-        phraseNotes,
+        phraseRecordNotes,
         `phrase-${this.phraseState.phraseIndex}`,
         this.phraseState.previous?.phraseId ?? null,
         this.phraseState.motifFamilyId,
