@@ -474,47 +474,46 @@ export class PsyLive {
     this.comp.connect(this.masterEqLow!);
   }
 
-  // ── F15 SYNTHESIS REBUILD — professional-quality voices ──
-  // Each voice uses layered oscillators, saturation, and per-note variation
-  // to produce release-ready sound instead of demo beeps.
+  // ── F22 AUDIO REALITY: Real kick + bass synthesis ──
+  // Kick: transient + pitch-drop body + sub body + controlled tail
+  // Bass: sub + mid (harmonic pluck) + character (transient) — 80ms decay
 
   private kick(t: number, velocity = 0.9): void {
     if (!this.ctx || !this.kickBus) return;
     const v = Math.max(0.1, Math.min(1, velocity));
-    // F15: Layered kick — sub sine (sustain) + body sine (pitch env) + transient
-    // Sub layer: 55Hz sine sustained for punch weight
-    const sub = this.ctx.createOscillator();
-    sub.type = 'sine';
-    sub.frequency.setValueAtTime(55, t);
-    const subGain = this.ctx.createGain();
-    subGain.gain.setValueAtTime(0.6 * v, t);
-    subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-    sub.connect(subGain); subGain.connect(this.kickBus);
-    sub.start(t); sub.stop(t + 0.2);
 
-    // Body: pitch envelope 150→45Hz (the "thump")
-    const body = this.ctx.createOscillator();
-    body.type = 'sine';
-    body.frequency.setValueAtTime(150, t);
-    body.frequency.exponentialRampToValueAtTime(45, t + 0.04);
-    const bodyGain = this.ctx.createGain();
-    bodyGain.gain.setValueAtTime(0.9 * v, t);
-    bodyGain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
-    // F15: Waveshaper saturation for punch character
-    const sat = this.makeShaper(8);
-    body.connect(bodyGain); bodyGain.connect(sat); sat.connect(this.kickBus);
-    body.start(t); body.stop(t + 0.24);
-
-    // Transient: short noise burst through highpass for click definition
+    // 1. TRANSIENT — sharp click (3ms)
     if (this.noiseBuf) {
       const click = this.ctx.createBufferSource(); click.buffer = this.noiseBuf;
-      const clickHp = this.ctx.createBiquadFilter(); clickHp.type = 'highpass'; clickHp.frequency.value = 4000;
+      const clickHp = this.ctx.createBiquadFilter(); clickHp.type = 'highpass'; clickHp.frequency.value = 5000;
       const clickGain = this.ctx.createGain();
-      clickGain.gain.setValueAtTime(0.3 * v, t);
-      clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.015);
+      clickGain.gain.setValueAtTime(0.4 * v, t);
+      clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.003);
       click.connect(clickHp); clickHp.connect(clickGain); clickGain.connect(this.kickBus);
-      click.start(t); click.stop(t + 0.02);
+      click.start(t); click.stop(t + 0.005);
     }
+
+    // 2. PITCH-DROP BODY — 180→50Hz in 30ms, 120ms decay
+    const body = this.ctx.createOscillator(); body.type = 'sine';
+    body.frequency.setValueAtTime(180, t);
+    body.frequency.exponentialRampToValueAtTime(50, t + 0.03);
+    const bodyGain = this.ctx.createGain();
+    bodyGain.gain.setValueAtTime(0, t);
+    bodyGain.gain.linearRampToValueAtTime(0.9 * v, t + 0.001); // 1ms attack
+    bodyGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12); // 120ms decay
+    const bodySat = this.makeShaper(6);
+    body.connect(bodyGain); bodyGain.connect(bodySat); bodySat.connect(this.kickBus);
+    body.start(t); body.stop(t + 0.13);
+
+    // 3. SUB BODY — 50Hz weight (150ms controlled tail)
+    const sub = this.ctx.createOscillator(); sub.type = 'sine';
+    sub.frequency.setValueAtTime(50, t);
+    const subGain = this.ctx.createGain();
+    subGain.gain.setValueAtTime(0, t);
+    subGain.gain.linearRampToValueAtTime(0.7 * v, t + 0.002);
+    subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+    sub.connect(subGain); subGain.connect(this.kickBus);
+    sub.start(t); sub.stop(t + 0.16);
   }
 
   private hat(t: number, lvl: number, open = false): void {
@@ -558,37 +557,48 @@ export class PsyLive {
     const resonance = recipe?.filterResonance ?? v.bassQ;
     const satAmount = recipe?.saturationAmount ?? 0.4;
 
-    // F15: Layered bass — sub sine (weight) + mid saw (character) → saturation
-    // Sub layer: pure sine at fundamental for sub-bass presence
+    // F22: Layered bass — sub + mid (harmonic pluck) + character (transient)
+    // KEY FIX: 80ms decay (was 350ms) — clean separation between rolling events
+    // 1. SUB — mono fundamental
     const sub = this.ctx.createOscillator();
     sub.type = 'sine';
     sub.frequency.value = freq;
     const subGain = this.ctx.createGain();
     subGain.gain.setValueAtTime(0.0001, t);
-    subGain.gain.exponentialRampToValueAtTime(0.5 * vel, t + 0.008);
-    subGain.gain.exponentialRampToValueAtTime(0.25 * vel, t + 0.12);
-    subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    subGain.gain.exponentialRampToValueAtTime(0.6 * vel, t + 0.002); // 2ms attack
+    subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08); // 80ms decay
     sub.connect(subGain); subGain.connect(this.bassBus);
-    sub.start(t); sub.stop(t + 0.37);
+    sub.start(t); sub.stop(t + 0.09);
 
-    // Mid layer: F22 P0-F uses recipe oscType + filter + saturation
+    // 2. MID — harmonic oscillator through rapidly closing LPF (the pluck)
     const mid = this.ctx.createOscillator(); mid.type = oscType; mid.frequency.value = freq;
     const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.Q.value = resonance;
-    // F15: Filter sweeps from open to closed — rolling psytrance bass character
-    const fStart = Math.max(300, cutoff);
-    const fEnd = Math.max(120, cutoff * 0.4);
+    // Filter starts open, closes fast — creates the psy bass pluck character
+    const fStart = Math.max(800, cutoff);
+    const fEnd = Math.max(150, cutoff * 0.3);
     filter.frequency.setValueAtTime(fStart, t);
-    filter.frequency.exponentialRampToValueAtTime(fEnd, t + 0.1);
+    filter.frequency.exponentialRampToValueAtTime(fEnd, t + 0.04); // 40ms filter close
     const midGain = this.ctx.createGain();
     midGain.gain.setValueAtTime(0.0001, t);
-    midGain.gain.exponentialRampToValueAtTime(0.5 * vel, t + 0.006);
-    midGain.gain.exponentialRampToValueAtTime(0.2 * vel, t + 0.15);
-    midGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
-    // F22 P0-F: Saturation amount from recipe (was hardcoded k=4)
+    midGain.gain.exponentialRampToValueAtTime(0.4 * vel, t + 0.002); // 2ms attack
+    midGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08); // 80ms decay
     const sat = this.makeShaper(Math.round(satAmount * 10));
     mid.connect(filter); filter.connect(midGain); midGain.connect(sat); sat.connect(this.bassBus);
+
+    // 3. CHARACTER — short noise transient for attack definition
+    if (this.noiseBuf) {
+      const char = this.ctx.createBufferSource(); char.buffer = this.noiseBuf;
+      const charBp = this.ctx.createBiquadFilter(); charBp.type = 'bandpass';
+      charBp.frequency.value = freq * 4; charBp.Q.value = 2;
+      const charGain = this.ctx.createGain();
+      charGain.gain.setValueAtTime(0.15 * vel, t);
+      charGain.gain.exponentialRampToValueAtTime(0.001, t + 0.01); // 10ms transient
+      char.connect(charBp); charBp.connect(charGain); charGain.connect(this.bassBus);
+      char.start(t); char.stop(t + 0.012);
+    }
+
     if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.06; midGain.connect(send); send.connect(this.delaySend); }
-    mid.start(t); mid.stop(t + 0.37);
+    mid.start(t); mid.stop(t + 0.09);
   }
 
   private lead(t: number, freq: number, v: Variant, accent: boolean): void {

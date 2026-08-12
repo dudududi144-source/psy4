@@ -1,24 +1,24 @@
 {
   "featuresA": {
-    "peak": 0.7641658782958984,
-    "rms": 0.1308095129723736,
-    "crestFactor": 5.841821905240844,
-    "zeroCrossingRate": 0.01087760637860646,
-    "transientStrength": 37.814431998313474,
-    "attackTime": 0.01526077097505669,
+    "peak": 0.7639114856719971,
+    "rms": 0.13080785266739628,
+    "crestFactor": 5.839951272760257,
+    "zeroCrossingRate": 0.011261199550647999,
+    "transientStrength": 37.81120014065501,
+    "attackTime": 0.015238095238095238,
     "decayTime": 0.002290249433106576,
-    "sustainLevel": 0.21583992254593473,
+    "sustainLevel": 0.21583983650950256,
     "releaseTime": 0.0003854875283446712,
     "duration": 1.6551927437641722,
-    "spectralCentroid": 932.8903921511138,
-    "spectralSpread": 2804.4993207143543,
+    "spectralCentroid": 956.5837874328653,
+    "spectralSpread": 2830.9457168519825,
     "spectralRolloff": 538.330078125,
-    "spectralFlatness": 0.061389265415520256,
-    "spectralFlux": 0.40414455444042324,
-    "lowEnergy": 0.39184126083852094,
-    "midEnergy": 0.5404499438377537,
-    "highEnergy": 0.06770879532372338,
-    "subRatio": 0.39184126083852094
+    "spectralFlatness": 0.061113774046970416,
+    "spectralFlux": 0.40148120359840683,
+    "lowEnergy": 0.3909141247599564,
+    "midEnergy": 0.5391820193004502,
+    "highEnergy": 0.06990385593959571,
+    "subRatio": 0.3909141247599564
   },
   "featuresB": {
     "peak": 0.919891357421875,
@@ -42,20 +42,20 @@
     "subRatio": 0.7757028649463029
   },
   "differences": {
-    "centroidDiff": 835.7965686466522,
+    "centroidDiff": 859.4899639284037,
     "decayDiff": 0.00013605442176870767,
-    "lowDiff": 0.383861604107782
+    "lowDiff": 0.3847887401863465
   },
   "results": [
     {
       "test": "Low-end presence",
       "pass": true,
-      "evidence": "39.2%"
+      "evidence": "39.1%"
     },
     {
       "test": "No clipping",
       "pass": true,
-      "evidence": "peak=0.7642"
+      "evidence": "peak=0.7639"
     },
     {
       "test": "Transient presence",
@@ -65,7 +65,7 @@
     {
       "test": "Spectral balance",
       "pass": true,
-      "evidence": "low=39.2%, high=6.8%"
+      "evidence": "low=39.1%, high=7.0%"
     },
     {
       "test": "Dynamic range",
@@ -75,7 +75,7 @@
     {
       "test": "SoundDNA A/B → different rendered audio",
       "pass": true,
-      "evidence": "centroid diff=835.8Hz, decay diff=0.0001s"
+      "evidence": "centroid diff=859.5Hz, decay diff=0.0001s"
     }
   ],
   "verdict": "PASS"
