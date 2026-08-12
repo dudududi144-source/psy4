@@ -40,6 +40,9 @@ export interface MusicalContextSnapshot {
   // Confidence
   readonly confidence: number;      // 0-1 (how confident we are in the context)
   readonly source: 'radio' | 'internal' | 'preset';
+
+  // F6: Radio occupancy (for role selection)
+  readonly radioRoles: { kick: number; bass: number; lead: number; hats: number };
 }
 
 // 64-bar composition arc (RULE 7)
@@ -77,6 +80,9 @@ export class MusicalContext {
   private confidence: number = 0.3;
   private source: 'radio' | 'internal' | 'preset' = 'preset';
 
+  // F6: Radio occupancy for role selection
+  private radioRoles = { kick: 0, bass: 0, lead: 0, hats: 0 };
+
   // Energy history for slope detection
   private energyHistory: number[] = [];
 
@@ -109,6 +115,9 @@ export class MusicalContext {
 
     // Density from energy
     this.density = 0.3 + this.energy * 0.5;
+
+    // F6: Save radio occupancy for role selection
+    this.radioRoles = { ...data.occupancy };
 
     // Syncopation from occupancy patterns
     if (data.occupancy.hats > 0.5 && data.occupancy.kick > 0.5) {
@@ -194,6 +203,7 @@ export class MusicalContext {
       novelty: this.novelty,
       confidence: this.confidence,
       source: this.source,
+      radioRoles: { ...this.radioRoles },
     }) as MusicalContextSnapshot;
   }
 

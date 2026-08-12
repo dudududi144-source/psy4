@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T16:11:20.457Z",
+  "runAt": "2026-08-12T16:38:14.309Z",
   "totalTests": 56,
   "totalPassed": 56,
   "totalFailed": 0,
@@ -213,10 +213,10 @@
       "name": "BeatPLL stable under ±5ms timing jitter",
       "category": "BeatPLL",
       "passed": true,
-      "evidence": "finalBpm=145.00 bpmErr=0.003 locked=true",
+      "evidence": "finalBpm=145.10 bpmErr=0.103 locked=true",
       "metrics": {
-        "finalBpm": 145.00310199006887,
-        "bpmErr": 0.003101990068870464,
+        "finalBpm": 145.10348985552787,
+        "bpmErr": 0.10348985552786871,
         "locked": 1,
         "jitterMs": 5
       }
@@ -356,9 +356,9 @@
       "name": "spectralFlatness: noise→high, tone→low (R2 fix: melodic band + realistic fixture)",
       "category": "MelodyObserver",
       "passed": true,
-      "evidence": "flatnessNoise=0.999 flatnessTone=0.133",
+      "evidence": "flatnessNoise=0.998 flatnessTone=0.133",
       "metrics": {
-        "flatnessNoise": 0.9986129619002748,
+        "flatnessNoise": 0.998066966111465,
         "flatnessTone": 0.1334657973006324
       }
     },
@@ -367,14 +367,14 @@
       "name": "PatternMutator runs 200 cycles; mutation rate + constraint violations",
       "category": "PatternMutator",
       "passed": true,
-      "evidence": "mutations=191/200 (95.5%); violations=0; duplicates=0; meanDensityDelta=0.019",
+      "evidence": "mutations=192/200 (96.0%); violations=0; duplicates=0; meanDensityDelta=0.018",
       "metrics": {
         "cycles": 200,
-        "mutations": 191,
-        "mutationRate": 0.955,
+        "mutations": 192,
+        "mutationRate": 0.96,
         "constraintViolations": 0,
         "duplicates": 0,
-        "meanDensityDelta": 0.018651832460732983
+        "meanDensityDelta": 0.018147786458333332
       }
     },
     {
