@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T17:53:48.124Z",
+  "runAt": "2026-08-12T18:08:57.632Z",
   "totalTests": 56,
   "totalPassed": 56,
   "totalFailed": 0,
@@ -213,10 +213,10 @@
       "name": "BeatPLL stable under ±5ms timing jitter",
       "category": "BeatPLL",
       "passed": true,
-      "evidence": "finalBpm=144.94 bpmErr=0.057 locked=true",
+      "evidence": "finalBpm=145.01 bpmErr=0.011 locked=true",
       "metrics": {
-        "finalBpm": 144.94311529952353,
-        "bpmErr": 0.05688470047647343,
+        "finalBpm": 145.011226167277,
+        "bpmErr": 0.011226167276987553,
         "locked": 1,
         "jitterMs": 5
       }
@@ -358,7 +358,7 @@
       "passed": true,
       "evidence": "flatnessNoise=0.998 flatnessTone=0.133",
       "metrics": {
-        "flatnessNoise": 0.9984695328545584,
+        "flatnessNoise": 0.9983570649910185,
         "flatnessTone": 0.1334657973006324
       }
     },
@@ -367,14 +367,14 @@
       "name": "PatternMutator runs 200 cycles; mutation rate + constraint violations",
       "category": "PatternMutator",
       "passed": true,
-      "evidence": "mutations=190/200 (95.0%); violations=0; duplicates=0; meanDensityDelta=0.017",
+      "evidence": "mutations=186/200 (93.0%); violations=0; duplicates=0; meanDensityDelta=0.018",
       "metrics": {
         "cycles": 200,
-        "mutations": 190,
-        "mutationRate": 0.95,
+        "mutations": 186,
+        "mutationRate": 0.93,
         "constraintViolations": 0,
         "duplicates": 0,
-        "meanDensityDelta": 0.016529605263157894
+        "meanDensityDelta": 0.017809139784946238
       }
     },
     {

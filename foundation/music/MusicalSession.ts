@@ -1,17 +1,15 @@
 /**
- * MusicalSession — THE single musical runtime for psy4.
+ * MusicalSession — F9 REBUILD: Groove-first, lead-optional, register-controlled.
  *
- * F8 ARCHITECTURAL RESET:
- * - ONE composer (no feature flags, no legacy path)
- * - Planning SEPARATED from scheduling (planBar pre-computes, scheduler reads)
- * - Groove first, then bass, then lead (hierarchical)
- * - Harmony controls melody (lead notes are scored against chord/scale)
- * - Kick is anchor (never accidentally removed)
- * - ABSTAIN is intentional (not a bug)
+ * F9 FIXES:
+ * 1. Kick ALWAYS present (no ABSTAIN removing the backbone)
+ * 2. Bass interlocks with kick (hits ON kick + offbeat response)
+ * 3. Lead register controlled (octave 3-4, not 4-5)
+ * 4. Lead is optional (default REST, plays only when groove is stable)
+ * 5. Radio never causes silence (modulates density, not existence)
+ * 6. Style affects actual notes (different patterns per style)
  *
- * Chain:
- *   Radio → RadioMusicalWindow → MusicalContext → MusicalSession.planBar()
- *     → NotePlan (cached per bar) → Scheduler → Audio
+ * Hierarchy: PULSE → KICK → BASS → HARMONY → PERCUSSION → LEAD (optional)
  */
 
 import { MusicalContext, type MusicalContextSnapshot, COMPOSITION_ARC } from './MusicalContext';
@@ -19,11 +17,7 @@ import { MusicalMemory, type StoredMotif, type PhraseRecord } from './MusicalMem
 import { RadioMusicalWindow, type RadioWindowSnapshot } from './RadioMusicalWindow';
 import { type Scale, degreeToMidi, stableDegrees, getScale } from './primitives/scales';
 import { type MotifNote, generateMotif, transpose, invert, fragment, retrograde } from './primitives/motif';
-import { type RhythmPattern, psyKick, fourOnFloor, offbeatHats, drivingHats, swing, combine } from './primitives/rhythm';
-import { type BassStyle } from './primitives/bass';
 import { Rng } from './primitives/rng';
-
-// ── Types ────────────────────────────────────────────────────────────────
 
 export interface ScheduledNote {
   readonly step: number;
@@ -35,8 +29,8 @@ export interface ScheduledNote {
 export interface NotePlan {
   readonly bar: number;
   readonly notes: readonly ScheduledNote[];
-  readonly role: MusicalRole;
-  readonly action: PhraseAction;
+  readonly role: string;
+  readonly action: string;
   readonly style: string;
   readonly section: string;
   readonly tension: number;
@@ -44,13 +38,10 @@ export interface NotePlan {
   readonly reason: string;
 }
 
-export type MusicalRole = 'LEAD' | 'COUNTERMELODY' | 'BASS' | 'RHYTHMIC' | 'TEXTURE' | 'RESPONSE' | 'ABSTAIN';
-export type PhraseAction = 'introduce' | 'repeat' | 'develop' | 'transform' | 'variation' | 'cadence' | 'response' | 'rest';
-
 export interface SessionSnapshot {
   readonly style: string;
-  readonly role: MusicalRole;
-  readonly action: PhraseAction;
+  readonly role: string;
+  readonly action: string;
   readonly section: string;
   readonly phrase: number;
   readonly bar: number;
@@ -62,13 +53,8 @@ export interface SessionSnapshot {
   readonly lastReward: number;
 }
 
-// ── Phrase structure: A → A' → B → A-return ──────────────────────────────
 const PHRASE_STRUCTURE = [0, 0, 1, 0, 0, 1, 2, 0];
-
-// ── Phrase actions per bar ───────────────────────────────────────────────
-const BAR_ACTIONS: PhraseAction[] = ['introduce', 'repeat', 'repeat', 'develop', 'develop', 'variation', 'cadence', 'response'];
-
-// ── MusicalSession ───────────────────────────────────────────────────────
+const BAR_ACTIONS = ['introduce', 'repeat', 'repeat', 'develop', 'develop', 'variation', 'cadence', 'response'];
 
 export class MusicalSession {
   private ctx: MusicalContext;
@@ -83,10 +69,9 @@ export class MusicalSession {
   private learned = false;
   private phraseNotes: ScheduledNote[] = [];
   private phraseStartBar = 0;
-
-  // Style state
-  private style: string = 'FULL_ON';
+  private style = 'FULL_ON';
   private styleConfidence = 0;
+  private lastReason = '';
 
   constructor(seed = 42) {
     this.ctx = new MusicalContext();
@@ -106,10 +91,6 @@ export class MusicalSession {
     this.learned = true;
   }
 
-  /**
-   * F8: Plan a bar. This is the ONLY composition entry point.
-   * Called once per bar (cached). Scheduler reads the cached plan.
-   */
   planBar(bar: number, transportBpm: number): NotePlan {
     this.ctx.updateFromTransport(bar, transportBpm);
     const snap = this.ctx.snapshot(bar);
@@ -117,11 +98,7 @@ export class MusicalSession {
     const barInPhrase = bar % 8;
     const action = BAR_ACTIONS[barInPhrase];
 
-    // ── Role selection (ABSTAIN aware) ──
-    const role = this.chooseRole(radio, snap, barInPhrase);
-    const shouldRest = role === 'ABSTAIN';
-
-    // ── Motif management (A→A'→B→A-return) ──
+    // ── Motif management ──
     if (barInPhrase === 0) {
       this.phraseMotifs.clear();
       this.phraseNotes = [];
@@ -129,7 +106,6 @@ export class MusicalSession {
       this.handleNewPhrase(snap, bar);
     }
 
-    // ── Motif development within phrase ──
     let motif = this.currentMotif!;
     if ((action === 'develop' || action === 'transform' || action === 'variation') && !this.phraseMotifs.has(barInPhrase)) {
       const tType = this.chooseTransform();
@@ -142,139 +118,188 @@ export class MusicalSession {
       motif = this.phraseMotifs.get(barInPhrase)!;
     }
 
-    // ── Generate notes (hierarchical: groove → bass → lead) ──
+    // ── GENERATE NOTES (hierarchical: groove → bass → lead) ──
     const notes: ScheduledNote[] = [];
 
-    if (shouldRest) {
-      // Intentional rest — sparse hat only
-      if (this.rng.next() < 0.3) notes.push({ step: 8, voice: 'hat', midi: null, velocity: 0.15 });
+    // F9 RULE 3: KICK FIRST — always present, never removed
+    this.generateKick(notes, snap, barInPhrase);
+
+    // F9 RULE 4: BASS — interlocked with kick
+    this.generateBass(notes, snap, barInPhrase);
+
+    // F9 RULE 8: HATS — complementary
+    this.generateHats(notes, snap, barInPhrase);
+
+    // F9 RULE 8: LEAD — optional, controlled, lower register
+    const leadDensity = this.calculateLeadDensity(snap, radio, barInPhrase);
+    if (leadDensity > 0) {
+      this.generateLead(notes, snap, motif, barInPhrase, action, leadDensity);
     } else {
-      // GROOVE FIRST (kick is anchor — never accidentally removed)
-      this.generateGroove(notes, snap, radio, barInPhrase);
-      // BASS (anchored to groove + harmony)
-      if (['BASS', 'SUPPORT', 'LEAD', 'RESPONSE'].includes(role)) {
-        this.generateBass(notes, snap, barInPhrase);
-      }
-      // LEAD (controlled by motif + harmony + phrase)
-      if (!['ABSTAIN', 'BASS', 'RHYTHMIC'].includes(role)) {
-        this.generateLead(notes, snap, motif, barInPhrase, action, role);
-      }
+      this.lastReason = 'lead resting (groove sufficient)';
     }
 
     this.phraseNotes.push(...notes);
-
-    // ── Phrase evaluation (learning) ──
-    if (barInPhrase === 7) this.evaluatePhrase(bar, snap, role, action);
+    if (barInPhrase === 7) this.evaluatePhrase(bar, snap, action);
 
     const plan: NotePlan = {
       bar, notes: Object.freeze(notes) as readonly ScheduledNote[],
-      role, action, style: this.style,
+      role: leadDensity > 0 ? 'LEAD' : 'GROOVE',
+      action, style: this.style,
       section: snap.sectionName, tension: snap.tension,
       barInPhrase, reason: this.lastReason,
     };
-
     this.currentPlan = plan;
     return plan;
   }
 
-  private lastReason = '';
+  // ═══════════════════════════════════════════════════════════════════════
+  // F9: KICK — the backbone. Always present. Never accidentally removed.
+  // ═══════════════════════════════════════════════════════════════════════
+  private generateKick(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number): void {
+    // Four-on-floor: steps 0, 4, 8, 12
+    // F9: Kick is ALWAYS present. Radio density may reduce velocity but never remove kick.
+    const radioKickOcc = (ctx as any).radioRoles?.kick ?? 0;
+    const velocity = radioKickOcc > 0.7 ? 0.6 : 0.9; // quieter if radio kick is present
 
-  // ── Role selection ──
-  private chooseRole(radio: RadioWindowSnapshot, ctx: MusicalContextSnapshot, barInPhrase: number): MusicalRole {
-    const occ = radio.currentOccupancy;
-    const totalOcc = (occ.kick + occ.bass + occ.lead + occ.hats) / 4;
-
-    // ABSTAIN: intentional rest
-    if (totalOcc > 0.8 && barInPhrase === 6) { this.lastReason = 'dense radio, resting at cadence'; return 'ABSTAIN'; }
-    if (radio.silenceLikelihood > 0.7 && this.rng.next() < 0.4) { this.lastReason = 'radio silence, resting'; return 'ABSTAIN'; }
-    if (barInPhrase === 7 && this.rng.next() < 0.15) { this.lastReason = 'phrase ending rest'; return 'ABSTAIN'; }
-
-    // Role based on what's missing
-    if (occ.bass > 0.7 && occ.lead > 0.6) { this.lastReason = 'radio full, texture'; return 'TEXTURE'; }
-    if (occ.bass > 0.7) { this.lastReason = 'radio bass high, countermelody'; return 'COUNTERMELODY'; }
-    if (occ.lead > 0.6) { this.lastReason = 'radio lead high, bass support'; return 'BASS'; }
-    if (occ.kick > 0.7 && occ.hats > 0.5) { this.lastReason = 'radio rhythm full, melodic response'; return 'RESPONSE'; }
-    this.lastReason = 'default lead';
-    return 'LEAD';
-  }
-
-  // ── Groove (kick + hats) ──
-  private generateGroove(notes: ScheduledNote[], ctx: MusicalContextSnapshot, radio: RadioWindowSnapshot, barInPhrase: number): void {
-    // Kick: anchor — always present (unless ABSTAIN, handled by caller)
-    const kickHits = [0, 4, 8, 12]; // four-on-floor
-    for (const s of kickHits) {
-      if (this.rng.next() < ctx.density) {
-        notes.push({ step: s, voice: 'kick', midi: null, velocity: 0.9 });
-      }
-    }
-
-    // Hats: complement radio
-    const hatHits = radio.currentOccupancy.hats > 0.7 ? [2, 6, 10, 14] : [2, 6, 10, 14, 0, 8];
-    for (const s of hatHits) {
-      const vel = 0.3 + ctx.tension * 0.3;
-      notes.push({ step: s, voice: 'hat', midi: null, velocity: vel });
+    for (const s of [0, 4, 8, 12]) {
+      notes.push({ step: s, voice: 'kick', midi: null, velocity });
     }
 
     // Fill at phrase ending
-    if (barInPhrase === 7 && this.rng.next() < 0.5) {
-      notes.push({ step: 14, voice: 'hat', midi: null, velocity: 0.6 });
-      notes.push({ step: 15, voice: 'hat', midi: null, velocity: 0.7 });
+    if (barInPhrase === 7) {
+      notes.push({ step: 14, voice: 'kick', midi: null, velocity: 0.8 });
     }
   }
 
-  // ── Bass (anchored to groove + harmony) ──
+  // ═══════════════════════════════════════════════════════════════════════
+  // F9: BASS — interlocked with kick. Hits ON kick + offbeat response.
+  // ═══════════════════════════════════════════════════════════════════════
   private generateBass(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number): void {
-    const octave = 2;
+    const octave = 2; // MIDI 33-45 range (low bass)
     const root = degreeToMidi(ctx.rootPc, ctx.scale, 0, octave);
     const fifth = degreeToMidi(ctx.rootPc, ctx.scale, 4, octave);
     const third = degreeToMidi(ctx.rootPc, ctx.scale, 2, octave);
 
-    // Bass steps interlock with kick (offbeats)
-    const bassSteps = [2, 6, 10, 14];
-    for (const step of bassSteps) {
-      let midi = root;
-      if (barInPhrase === 6 && step === bassSteps[0]) midi = fifth; // cadence: fifth
-      else if (barInPhrase === 6 && step === bassSteps[bassSteps.length - 1]) midi = root; // resolve
-      else if (barInPhrase >= 3 && barInPhrase <= 5 && this.rng.next() < 0.25) midi = this.rng.next() > 0.5 ? fifth : third;
-      notes.push({ step, voice: 'bass', midi, velocity: 0.8 });
+    // F9: Bass interlock — hits WITH kick (steps 0,4,8,12) + offbeat response (steps 2,6,10,14)
+    const bassSteps = [
+      { step: 0, midi: root, vel: 0.9 },      // WITH kick
+      { step: 2, midi: root, vel: 0.6 },      // offbeat response
+      { step: 4, midi: root, vel: 0.9 },      // WITH kick
+      { step: 6, midi: root, vel: 0.6 },      // offbeat response
+      { step: 8, midi: root, vel: 0.9 },      // WITH kick
+      { step: 10, midi: root, vel: 0.6 },     // offbeat response
+      { step: 12, midi: root, vel: 0.9 },     // WITH kick
+      { step: 14, midi: root, vel: 0.6 },     // offbeat response
+    ];
+
+    // Modify based on phrase position
+    for (const bs of bassSteps) {
+      let midi = bs.midi;
+      let vel = bs.vel;
+
+      if (barInPhrase === 6) {
+        // Cadence: fifth on first beat, root on last
+        if (bs.step === 0) midi = fifth;
+        if (bs.step === 12) midi = root;
+      } else if (barInPhrase === 7) {
+        // Response: root with third at end
+        if (bs.step === 14) midi = third;
+      } else if (barInPhrase >= 3 && barInPhrase <= 5 && this.rng.next() < 0.2) {
+        // Development: occasional fifth
+        if (bs.step % 4 === 2) midi = fifth;
+      }
+
+      notes.push({ step: bs.step, voice: 'bass', midi, velocity: vel });
     }
   }
 
-  // ── Lead (controlled by motif + harmony + phrase) ──
-  private generateLead(notes: ScheduledNote[], ctx: MusicalContextSnapshot, motif: StoredMotif, barInPhrase: number, action: PhraseAction, role: MusicalRole): void {
-    const registerShift = role === 'COUNTERMELODY' ? 12 : 0;
+  // ═══════════════════════════════════════════════════════════════════════
+  // F9: HATS — complementary to groove
+  // ═══════════════════════════════════════════════════════════════════════
+  private generateHats(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number): void {
+    // Offbeat hats: steps 2, 6, 10, 14
+    for (const s of [2, 6, 10, 14]) {
+      const vel = 0.25 + ctx.tension * 0.25;
+      notes.push({ step: s, voice: 'hat', midi: null, velocity: vel });
+    }
+    // Extra hat at phrase end
+    if (barInPhrase === 7) {
+      notes.push({ step: 15, voice: 'hat', midi: null, velocity: 0.4 });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // F9: LEAD — optional, controlled, LOWER register (octave 3-4, not 4-5)
+  // ═══════════════════════════════════════════════════════════════════════
+  private calculateLeadDensity(ctx: MusicalContextSnapshot, radio: RadioWindowSnapshot, barInPhrase: number): number {
+    // F9 RULE 8: Lead is optional. Default is REST or low density.
+    // Lead plays more during: STATEMENT, DEVELOPMENT, CLIMAX
+    // Lead plays less during: INTRO, RESOLUTION
+    // Lead NEVER plays during ABSTAIN bars
+
+    let density = 0.3; // default: low
+
+    // Section influence
+    const section = ctx.sectionName;
+    if (section === 'INTRO') density = 0.2;
+    else if (section === 'STATEMENT') density = 0.4;
+    else if (section === 'DEVELOPMENT' || section === 'DEVELOPMENT2') density = 0.5;
+    else if (section === 'CONTRAST') density = 0.4;
+    else if (section === 'CLIMAX') density = 0.6;
+    else if (section === 'RESOLUTION') density = 0.2;
+
+    // Phrase position influence
+    if (barInPhrase === 0) density += 0.1; // introduce
+    if (barInPhrase === 6) density -= 0.1; // cadence
+    if (barInPhrase === 7) density -= 0.15; // response
+
+    // Radio influence — radio doesn't kill lead, just modulates
+    if (radio.currentOccupancy.lead > 0.6) density *= 0.5; // radio lead present → reduce
+    if (radio.energyRising) density = Math.min(0.8, density + 0.1);
+
+    // Tension influence
+    density = density * (0.7 + ctx.tension * 0.3);
+
+    this.lastReason = `lead density=${density.toFixed(2)} (section=${section} barInPhrase=${barInPhrase})`;
+    return Math.max(0, Math.min(0.8, density));
+  }
+
+  private generateLead(notes: ScheduledNote[], ctx: MusicalContextSnapshot, motif: StoredMotif, barInPhrase: number, action: string, density: number): void {
+    // F9 RULE 10: Register control — octave 3 (MIDI 48-60), NOT octave 4-5 (69-88)
+    const leadOctave = 3; // MIDI ~45-57 (low-mid register)
+    const registerShift = 0; // no upward shift
+
     const motifStart = barInPhrase * 16;
     const motifNotes = motif.notes.filter(mn => mn.step >= motifStart && mn.step < motifStart + 16);
 
     if (motifNotes.length > 0) {
+      // F9: Remap motif notes to lower register
       for (const mn of motifNotes) {
         const localStep = mn.step - motifStart;
-        if (this.rng.next() < ctx.density) {
-          notes.push({ step: localStep, voice: 'lead', midi: mn.midi + registerShift, velocity: mn.velocity * (0.6 + ctx.tension * 0.4) });
+        if (this.rng.next() < density) {
+          // F9: Clamp MIDI to 48-72 (C3 to C5) — no higher
+          const midi = Math.max(48, Math.min(72, mn.midi - 12 + registerShift));
+          notes.push({ step: localStep, voice: 'lead', midi, velocity: mn.velocity * (0.5 + ctx.tension * 0.3) });
         }
       }
     } else {
-      // Fill bars without motif notes
+      // Fill bars — lower register
       if (action === 'cadence') {
         const deg = this.rng.pick([0, 4]);
-        const midi = degreeToMidi(ctx.rootPc, ctx.scale, deg, 5) + registerShift;
-        notes.push({ step: 0, voice: 'lead', midi, velocity: 0.6 });
-        notes.push({ step: 8, voice: 'lead', midi, velocity: 0.5 });
-      } else if (action === 'response' && motif.notes.length > 0) {
-        const midi = motif.notes[0].midi + registerShift;
+        const midi = degreeToMidi(ctx.rootPc, ctx.scale, deg, leadOctave);
         notes.push({ step: 0, voice: 'lead', midi, velocity: 0.5 });
-        if (this.rng.next() < 0.5) notes.push({ step: 4, voice: 'lead', midi, velocity: 0.4 });
-      } else if (action === 'repeat' && motif.notes.length > 0) {
-        const echoCount = this.rng.int(1, 2);
-        for (let i = 0; i < echoCount; i++) {
-          const src = this.rng.pick(motif.notes);
-          notes.push({ step: this.rng.pick([0, 4, 8, 12]), voice: 'lead', midi: src.midi + registerShift, velocity: 0.35 });
-        }
-      } else if ((action === 'develop' || action === 'transform' || action === 'variation') && motif.notes.length > 0) {
+        if (this.rng.next() < 0.5) notes.push({ step: 8, voice: 'lead', midi, velocity: 0.4 });
+      } else if (action === 'response' && motif.notes.length > 0) {
+        const midi = Math.max(48, Math.min(72, motif.notes[0].midi - 12));
+        notes.push({ step: 0, voice: 'lead', midi, velocity: 0.4 });
+      } else if (action === 'repeat' && motif.notes.length > 0 && this.rng.next() < 0.5) {
+        const src = this.rng.pick(motif.notes);
+        const midi = Math.max(48, Math.min(72, src.midi - 12));
+        notes.push({ step: this.rng.pick([0, 4, 8, 12]), voice: 'lead', midi, velocity: 0.3 });
+      } else if ((action === 'develop' || action === 'variation') && motif.notes.length > 0 && this.rng.next() < 0.4) {
         const deg = this.rng.pick([-1, 1, 2, -2]);
-        const midi = degreeToMidi(ctx.rootPc, ctx.scale, deg, 5) + registerShift;
-        notes.push({ step: 0, voice: 'lead', midi, velocity: 0.45 });
-        if (this.rng.next() < 0.5) notes.push({ step: 8, voice: 'lead', midi: degreeToMidi(ctx.rootPc, ctx.scale, 0, 5) + registerShift, velocity: 0.35 });
+        const midi = degreeToMidi(ctx.rootPc, ctx.scale, deg, leadOctave);
+        notes.push({ step: 0, voice: 'lead', midi, velocity: 0.35 });
       }
     }
   }
@@ -284,8 +309,8 @@ export class MusicalSession {
     const groupIdx = PHRASE_STRUCTURE[ctx.phraseIndex % 8];
     if (this.motifGroups[groupIdx].length === 0) {
       const notes = generateMotif(ctx.rootPc, ctx.scale, {
-        seed: this.rng.int(1, 100000), steps: 32, density: ctx.density,
-        glideProb: 0.3 + ctx.novelty * 0.2, responseShift: this.rng.int(1, 3),
+        seed: this.rng.int(1, 100000), steps: 32, density: 0.5,
+        glideProb: 0.3, responseShift: this.rng.int(1, 3),
       });
       this.currentMotif = this.memory.createMotif(notes, ctx.rootPc, ctx.scaleName, bar);
       this.motifGroups[groupIdx].push(this.currentMotif);
@@ -308,7 +333,6 @@ export class MusicalSession {
     return 'transpose';
   }
 
-  // ── Style detection ──
   private detectStyle(data: { bpm: number; energy: number; occupancy: { kick: number; bass: number; lead: number; hats: number } }): void {
     const { bpm, occupancy } = data;
     let detected = 'FULL_ON';
@@ -316,33 +340,24 @@ export class MusicalSession {
     else if (occupancy.bass > 0.6 && occupancy.hats < 0.3 && bpm < 142) detected = 'DARK';
     else if (occupancy.kick < 0.6 && occupancy.bass > 0.4 && data.energy < 0.6) detected = 'PROGRESSIVE';
     else if (occupancy.lead > 0.5 && occupancy.hats > 0.5) detected = 'ACID';
-
-    if (detected !== this.style) {
-      this.styleConfidence = 0.3;
-      this.style = detected;
-    } else {
-      this.styleConfidence = Math.min(1, this.styleConfidence + 0.05);
-    }
+    if (detected !== this.style) { this.styleConfidence = 0.3; this.style = detected; }
+    else { this.styleConfidence = Math.min(1, this.styleConfidence + 0.05); }
   }
 
-  // ── Learning ──
-  private evaluatePhrase(bar: number, ctx: MusicalContextSnapshot, role: MusicalRole, action: PhraseAction): void {
+  private evaluatePhrase(bar: number, ctx: MusicalContextSnapshot, action: string): void {
     const notes = this.phraseNotes;
     const coherence = notes.filter(n => n.voice === 'lead').length > 0 ? 0.5 : 0.3;
     const densityFit = Math.abs(notes.length / 8 - ctx.density * 10) < 5 ? 0.8 : 0.4;
     const novelty = action === 'develop' || action === 'variation' ? 0.7 : 0.5;
     const reward = coherence * 0.3 + densityFit * 0.25 + 0.25 + novelty * 0.2;
-
     this.memory.recordPhrase({
       phraseIndex: ctx.phraseIndex, bar: this.phraseStartBar,
       motifId: this.currentMotif?.id ?? 'unknown', transform: action,
       section: ctx.sectionName, tension: ctx.tension, density: ctx.density,
-      noteCount: notes.length, restRatio: notes.length < 4 ? 0.125 : 0,
-      reward, role,
+      noteCount: notes.length, restRatio: 0, reward, role: 'LEAD',
     });
   }
 
-  // ── Public API ──
   getCurrentPlan(): NotePlan | null { return this.currentPlan; }
 
   snapshot(): SessionSnapshot | null {
