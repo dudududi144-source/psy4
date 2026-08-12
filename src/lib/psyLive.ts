@@ -15,6 +15,7 @@
 import { type LearningData, type Composition, loadLearning, saveLearning, recordKick, recordBassNote, recordRadioBands, recordEnergy, deriveInsights, getInsights, generateComposition } from './learning';
 import { SOUND_BANK, getById, autoSelect, type SoundPreset } from './soundBank';
 import { BeatPLL } from './beatPLL';
+import { mutatePattern, type Pattern } from './patternMutator';
 
 const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -211,6 +212,10 @@ export class PsyLive {
 
   // Beat PLL (phase-locked loop for beat sync)
   private pll: BeatPLL = new BeatPLL();
+
+  // Pattern mutation (evolves every 8 bars)
+  private livePattern: Pattern | null = null;
+  private barCount = 0;
 
   // Scheduler (like psy — 25ms lookahead, 150ms schedule ahead)
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -428,7 +433,8 @@ export class PsyLive {
 
   setPreset(id: string): void {
     this.presetId = id;
-    // CRITICAL: change BPM and root like psy does
+    this.livePattern = null; // reset mutation when preset changes
+    this.barCount = 0;
     const p = this.getPreset();
     this.engineBpm = p.bpm;
     this.updateDelayTime();
@@ -506,18 +512,31 @@ export class PsyLive {
     const p = this.getPreset();
     const v = this.getVariant();
     const s16 = step % 16;
-    const pat = p.patterns;
+
+    // ── PATTERN MUTATION: evolve every 8 bars ──
+    if (s16 === 0) {
+      this.barCount++;
+      if (this.barCount % 8 === 0) {
+        // Time to mutate!
+        const basePattern = this.livePattern || p.patterns;
+        const mutated = mutatePattern(basePattern, this.occupancy, this.musicState.density);
+        if (mutated) {
+          this.livePattern = mutated;
+          console.log('[MUTATE] pattern evolved, bar', this.barCount);
+        }
+      }
+    }
+
+    // Use live pattern if available, else preset pattern
+    const pat = this.livePattern || p.patterns;
 
     // Use detected root if locked, else preset root
     const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
 
-    // ── ARRANGER: decide what to play based on MusicState ──
-    // If radio kick is strong → skip engine kick (occupancy-based, not mode-based)
+    // ── ARRANGER: decide what to play based on occupancy ──
     const kickAvailable = this.occupancy.kick < 0.7;
     const bassAvailable = this.occupancy.bass < 0.75;
     const leadAvailable = this.occupancy.lead < 0.85;
-
-    // Density control: if radio energy rising, play less
     const density = this.musicState.density;
 
     // Kick: only if role is available AND density allows
