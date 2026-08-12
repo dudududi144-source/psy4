@@ -1,16 +1,99 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { PsyLive, LiveState, STREAMS } from '@/lib/psyLive';
+import { PsyLive, LiveState, STREAMS, SyncStatus } from '@/lib/psyLive';
+import { Button } from '@/components/ui/button';
+import { Slider } from '@/components/ui/slider';
+import { Card } from '@/components/ui/card';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
+import { Play, Square, Radio, Volume2, Lock, Unlock, Waves } from 'lucide-react';
 
 const STYLES = ['FULL_ON', 'DARK', 'PROGRESSIVE', 'ACID'] as const;
-const SYNC_META: Record<string, { color: string; label: string }> = {
-  idle: { color: '#6b7280', label: 'IDLE' },
-  connecting: { color: '#3b82f6', label: 'CONNECTING' },
-  no_signal: { color: '#ef4444', label: 'NO SIGNAL' },
-  listening: { color: '#f59e0b', label: 'LISTENING' },
-  following: { color: '#10b981', label: 'FOLLOWING' },
+type MusicalStyle = typeof STYLES[number];
+
+const SYNC_META: Record<SyncStatus, { label: string; color: string; bg: string }> = {
+  idle:        { label: 'IDLE',        color: '#94a3b8', bg: 'rgba(148,163,184,0.15)' },
+  connecting:  { label: 'CONNECTING',  color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
+  no_signal:   { label: 'NO SIGNAL',   color: '#ef4444', bg: 'rgba(239,68,68,0.15)' },
+  listening:   { label: 'LISTENING',   color: '#f59e0b', bg: 'rgba(245,158,11,0.2)' },
+  following:   { label: 'FOLLOWING',   color: '#10b981', bg: 'rgba(16,185,129,0.2)' },
+  holdover:    { label: 'HOLDOVER',    color: '#a855f7', bg: 'rgba(168,85,247,0.2)' },
+  error:       { label: 'ERROR',       color: '#ef4444', bg: 'rgba(239,68,68,0.25)' },
 };
+
+function Metric({ label, value, color }: { label: string; value: string | number; color?: string }) {
+  return (
+    <div className="flex flex-col items-center min-w-[60px]">
+      <span className="text-[9px] uppercase tracking-wider text-slate-400 font-medium">{label}</span>
+      <span className="text-sm font-bold tabular-nums" style={{ color: color || '#e2e8f0' }}>{value}</span>
+    </div>
+  );
+}
+
+function ChannelStrip({
+  label, value, onChange, onMute, onSolo, muted, soloed, color,
+}: {
+  label: string; value: number; onChange: (v: number) => void;
+  onMute: () => void; onSolo: () => void; muted: boolean; soloed: boolean; color: string;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-2 p-2 rounded-lg" style={{ background: 'rgba(255,255,255,0.03)' }}>
+      <span className="text-[10px] uppercase tracking-wider font-semibold" style={{ color }}>{label}</span>
+      <Slider
+        orientation="vertical"
+        value={[value]}
+        onValueChange={(v) => onChange(v[0])}
+        min={0} max={1} step={0.01}
+        className="h-24"
+        style={{ '--slider-color': color } as React.CSSProperties}
+      />
+      <span className="text-[9px] tabular-nums text-slate-400">{Math.round(value * 100)}%</span>
+      <div className="flex gap-1">
+        <button
+          onClick={onMute}
+          className={`w-6 h-6 rounded text-[9px] font-bold transition-colors ${muted ? 'bg-red-500/80 text-white' : 'bg-white/5 text-slate-400 hover:bg-white/10'}`}
+        >M</button>
+        <button
+          onClick={onSolo}
+          className={`w-6 h-6 rounded text-[9px] font-bold transition-colors ${soloed ? 'bg-yellow-500/80 text-black' : 'bg-white/5 text-slate-400 hover:bg-white/10'}`}
+        >S</button>
+      </div>
+    </div>
+  );
+}
+
+function MusicalSlider({
+  label, value, onChange, onLockToggle, locked, color,
+}: {
+  label: string; value: number; onChange: (v: number) => void;
+  onLockToggle: () => void; locked: boolean; color: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-300">{label}</span>
+        <button
+          onClick={onLockToggle}
+          className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded transition-colors"
+          style={{ background: locked ? `${color}30` : 'rgba(255,255,255,0.05)', color: locked ? color : '#94a3b8' }}
+        >
+          {locked ? <Lock className="w-2.5 h-2.5" /> : <Unlock className="w-2.5 h-2.5" />}
+          {locked ? 'LOCKED' : 'AUTO'}
+        </button>
+      </div>
+      <Slider
+        value={[value]}
+        onValueChange={(v) => onChange(v[0])}
+        min={0} max={1} step={0.01}
+        style={{ '--slider-color': color } as React.CSSProperties}
+      />
+      <span className="text-[9px] tabular-nums text-slate-500 text-right">{Math.round(value * 100)}%</span>
+    </div>
+  );
+}
 
 export default function Page() {
   const engineRef = useRef<PsyLive | null>(null);
@@ -26,265 +109,337 @@ export default function Page() {
     radioObservationState: 'NO_SIGNAL',
     radioConfidence: 0,
   });
+
   const [streamId, setStreamId] = useState('psyndora');
   const [radioVol, setRadioVol] = useState(0.5);
   const [vol, setVol] = useState(0.9);
-  const [style, setStyle] = useState<string>('FULL_ON');
+  const [style, setStyle] = useState<MusicalStyle>('FULL_ON');
   const [channelVols, setChannelVols] = useState({ kick: 0.95, bass: 0.85, lead: 0.5, hat: 0.55 });
+  const [muteState, setMuteState] = useState({ kick: false, bass: false, lead: false, hat: false });
+  const [soloState, setSoloState] = useState<string | null>(null);
   const [delayAmt, setDelayAmt] = useState(1.0);
   const [delayFb, setDelayFb] = useState(0.34);
   const [reverbSend, setReverbSend] = useState(0.15);
   const [energy, setEnergy] = useState(0.5);
   const [density, setDensity] = useState(0.6);
   const [tension, setTension] = useState(0.3);
+  const [locks, setLocks] = useState({ energy: false, density: false, tension: false, style: false });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
-  const [sessionSnap, setSessionSnap] = useState<any>(null);
 
   const init = useCallback(async () => {
     if (engineRef.current) return;
     const e = new PsyLive();
     e.onState = setS;
     engineRef.current = e;
-    if (typeof window !== 'undefined') {
-      (window as any).__psy4TransportDebug = () => engineRef.current?.getTransportDebug();
-    }
   }, []);
 
   useEffect(() => { init(); }, [init]);
 
-  // F11: Poll session state for UI display (every 200ms, not every frame)
-  useEffect(() => {
-    if (!s.playing) return;
-    const interval = setInterval(() => {
-      const snap = engineRef.current?.getTransportDebug();
-      if (snap) setSessionSnap(snap);
-    }, 200);
-    return () => clearInterval(interval);
-  }, [s.playing]);
-
-  const play = useCallback(async () => { await init(); engineRef.current?.play(); }, [init]);
-  const stop = useCallback(() => engineRef.current?.stop(), []);
-
-  const connectRadio = useCallback(async () => {
-    await init();
-    const engine = engineRef.current;
-    if (!engine) return;
-    const stream = engine.getStreams().find(x => x.id === streamId);
-    if (stream) await engine.connectRadio(stream);
-  }, [streamId, init]);
-
-  const disconnectRadio = useCallback(() => engineRef.current?.disconnectRadio(), []);
-  useEffect(() => () => { engineRef.current?.stop(); engineRef.current?.disconnectRadio(); }, []);
-
   // Visualizer
   useEffect(() => {
-    if (!s.playing && !s.radioOn) return;
-    const c = canvasRef.current; if (!c) return;
-    const ctx = c.getContext('2d'); if (!ctx) return;
-    const rAn = engineRef.current?.radioAnalyserNode;
-    const eAn = engineRef.current?.analyserNode;
-    const rd = rAn ? new Uint8Array(rAn.frequencyBinCount) : null;
-    const ed = eAn ? new Uint8Array(eAn.frequencyBinCount) : null;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
     const draw = () => {
-      const w = c.width = c.offsetWidth, h = c.height = c.offsetHeight;
-      ctx.fillStyle = '#070312'; ctx.fillRect(0, 0, w, h);
-      const bars = 64, barW = w / bars;
-      if (eAn && ed) {
-        eAn.getByteFrequencyData(ed);
-        for (let i = 0; i < bars; i++) {
-          const val = ed[Math.floor((i / bars) * ed.length * 0.7)] / 255;
-          const bh = val * h * 0.9, hue = 280 - val * 120;
-          ctx.fillStyle = `hsl(${hue},100%,${40 + val * 30}%)`;
-          ctx.fillRect(i * barW + 1, h - bh, barW - 2, bh);
-        }
+      const engine = engineRef.current;
+      const analyser = engine?.analyserNode;
+      const radioAnalyser = engine?.radioAnalyserNode;
+      if (!analyser || !ctx) { rafRef.current = requestAnimationFrame(draw); return; }
+
+      const W = canvas.width = canvas.offsetWidth;
+      const H = canvas.height = canvas.offsetHeight;
+      ctx.fillStyle = 'rgba(7,3,18,0.4)';
+      ctx.fillRect(0, 0, W, H);
+
+      const buf = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(buf);
+      const bars = 64;
+      const bw = W / bars;
+      for (let i = 0; i < bars; i++) {
+        const v = buf[Math.floor(i * buf.length / bars)] / 255;
+        const h = v * H * 0.9;
+        const hue = 180 - i * 2;
+        ctx.fillStyle = `hsl(${hue}, 80%, ${30 + v * 40}%)`;
+        ctx.fillRect(i * bw + 1, H - h, bw - 2, h);
       }
-      if (rAn && rd) {
-        rAn.getByteFrequencyData(rd);
+
+      if (radioAnalyser) {
+        const rbuf = new Uint8Array(radioAnalyser.frequencyBinCount);
+        radioAnalyser.getByteFrequencyData(rbuf);
+        ctx.strokeStyle = 'rgba(245,158,11,0.6)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
         for (let i = 0; i < bars; i++) {
-          const val = rd[Math.floor((i / bars) * rd.length * 0.7)] / 255;
-          ctx.fillStyle = `rgba(245,158,11,${0.3 + val * 0.4})`;
-          ctx.fillRect(i * barW + 1, h - val * h * 0.5, barW - 2, 2);
+          const v = rbuf[Math.floor(i * rbuf.length / bars)] / 255;
+          const h = v * H * 0.9;
+          if (i === 0) ctx.moveTo(i * bw + bw / 2, H - h);
+          else ctx.lineTo(i * bw + bw / 2, H - h);
         }
+        ctx.stroke();
       }
       rafRef.current = requestAnimationFrame(draw);
     };
-    draw();
+    rafRef.current = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [s.playing, s.radioOn]);
+  }, []);
 
-  const syncM = SYNC_META[s.syncStatus] || SYNC_META.idle;
-  const sectionName = sessionSnap?.sessionSection ?? '—';
-  const phraseNum = sessionSnap?.sessionPhrase ?? 0;
-  const roleName = sessionSnap?.sessionRole ?? '—';
-  const tensionVal = sessionSnap?.sessionTension ?? 0;
-  const motifCount = sessionSnap?.sessionMotifCount ?? 0;
-  const styleName = sessionSnap?.sessionStyle ?? style;
-
-  // Role activity bars
-  const roleBars = {
-    KICK: channelVols.kick,
-    BASS: channelVols.bass,
-    PERC: channelVols.hat,
-    LEAD: channelVols.lead,
-    FX: delayAmt * 0.5 + reverbSend * 0.5,
+  const togglePlay = () => {
+    const e = engineRef.current;
+    if (!e) return;
+    if (s.playing) { e.stop(); }
+    else {
+      e.setStyle(style);
+      e.setEnergy(energy); e.setDensity(density); e.setTension(tension);
+      e.play();
+    }
   };
 
+  const connectRadio = async () => {
+    const e = engineRef.current;
+    if (!e) return;
+    const stream = STREAMS.find(x => x.id === streamId) || STREAMS[0];
+    await e.connectRadio(stream);
+  };
+
+  const disconnectRadio = () => { engineRef.current?.disconnectRadio(); };
+
+  const handleStyle = (st: MusicalStyle) => {
+    setStyle(st);
+    setLocks(p => ({ ...p, style: true }));
+    engineRef.current?.setStyle(st);
+  };
+
+  const handleVol = (v: number) => { setVol(v); engineRef.current?.setVolume(v); };
+  const handleRadioVol = (v: number) => { setRadioVol(v); engineRef.current?.setRadioVolume(v); };
+  const handleChannelVol = (ch: 'kick' | 'bass' | 'lead' | 'hat', v: number) => {
+    setChannelVols(p => ({ ...p, [ch]: v }));
+    engineRef.current?.setChannelVolume(ch, v);
+  };
+  const handleMute = (ch: 'kick' | 'bass' | 'lead' | 'hat') => {
+    const newMuted = !muteState[ch];
+    setMuteState(p => ({ ...p, [ch]: newMuted }));
+    engineRef.current?.setChannelMute(ch, newMuted);
+  };
+  const handleSolo = (ch: 'kick' | 'bass' | 'lead' | 'hat') => {
+    const newSolo = soloState === ch ? null : ch;
+    setSoloState(newSolo);
+    engineRef.current?.setChannelSolo(newSolo as any);
+  };
+  const handleDelay = (v: number) => { setDelayAmt(v); engineRef.current?.setDelayAmount(v); };
+  const handleFb = (v: number) => { setDelayFb(v); engineRef.current?.setDelayFeedback(v); };
+  const handleReverb = (v: number) => { setReverbSend(v); engineRef.current?.setReverbSend(v); };
+
+  const handleEnergy = (v: number) => { setEnergy(v); if (!locks.energy) { setLocks(p => ({ ...p, energy: true })); } engineRef.current?.setEnergy(v); };
+  const handleDensity = (v: number) => { setDensity(v); if (!locks.density) { setLocks(p => ({ ...p, density: true })); } engineRef.current?.setDensity(v); };
+  const handleTension = (v: number) => { setTension(v); if (!locks.tension) { setLocks(p => ({ ...p, tension: true })); } engineRef.current?.setTension(v); };
+
+  const toggleLock = (prop: 'energy' | 'density' | 'tension' | 'style') => {
+    const newLocked = !locks[prop];
+    setLocks(p => ({ ...p, [prop]: newLocked }));
+    if (!newLocked) {
+      if (prop === 'energy') engineRef.current?.unlockEnergy();
+      else if (prop === 'density') engineRef.current?.unlockDensity();
+      else if (prop === 'tension') engineRef.current?.unlockTension();
+      else if (prop === 'style') engineRef.current?.unlockStyle();
+    }
+  };
+
+  const syncMeta = SYNC_META[s.syncStatus] || SYNC_META.idle;
+
   return (
-    <div style={{ minHeight: '100dvh', background: '#070312', color: '#efe9fb', fontFamily: 'system-ui', display: 'flex', flexDirection: 'column' }}>
+    <div className="min-h-screen flex flex-col" style={{ background: '#070312', color: '#e2e8f0' }}>
       {/* HEADER */}
-      <header style={{ borderBottom: '1px solid rgba(150,90,255,0.15)', padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-        <h1 style={{ fontSize: 18, fontWeight: 900, background: 'linear-gradient(90deg,#00ffc8,#b967ff,#ff2e88)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>PSY4</h1>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Metric label="BPM" value={s.engineBpm} color="#00ffc8" />
+      <header className="flex items-center gap-3 sm:gap-6 p-3 sm:p-4 border-b border-white/10 flex-wrap">
+        <h1 className="text-xl sm:text-2xl font-black tracking-tight"
+          style={{ background: 'linear-gradient(90deg,#00ffc8,#b967ff,#ff2e88)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+          PSY4
+        </h1>
+        <div className="flex items-center gap-3 sm:gap-5 flex-wrap">
+          <Metric label="BPM" value={Math.round(s.engineBpm)} color="#00ffc8" />
           <Metric label="KEY" value={s.bassNote} color="#b967ff" />
-          <Metric label="SECTION" value={sectionName} color="#ff2e88" />
-          <Metric label="PHRASE" value={phraseNum} color="#f59e0b" />
-          <div style={{ padding: '4px 10px', borderRadius: 8, fontSize: 10, fontWeight: 'bold', fontFamily: 'monospace', background: syncM.color + '18', color: syncM.color, border: `1px solid ${syncM.color}50` }}>{syncM.label}</div>
+          <Metric label="KICKS" value={s.kickCount} color="#ff2e88" />
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <Badge variant="outline" className="font-bold tabular-nums"
+            style={{ color: syncMeta.color, background: syncMeta.bg, borderColor: `${syncMeta.color}40` }}>
+            {syncMeta.label}
+          </Badge>
         </div>
       </header>
 
-      <main style={{ flex: 1, maxWidth: 960, width: '100%', margin: '0 auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* MAIN */}
+      <main className="flex-1 max-w-5xl w-full mx-auto p-3 sm:p-4 space-y-3 sm:space-y-4">
 
         {/* TRANSPORT + VISUALIZER */}
-        <div style={{ background: 'rgba(20,10,40,0.72)', border: '1px solid rgba(150,90,255,0.25)', borderRadius: 14, padding: 16, display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center' }}>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-            {!s.playing ? (
-              <button onClick={play} style={{ fontSize: 16, padding: '12px 40px', borderRadius: 999, cursor: 'pointer', background: 'linear-gradient(90deg,#00ffc8,#b967ff)', color: '#0a0518', border: 'none', fontWeight: 700 }}>▶ Play</button>
-            ) : (
-              <button onClick={stop} style={{ fontSize: 16, padding: '12px 40px', borderRadius: 999, cursor: 'pointer', background: 'linear-gradient(90deg,#ff2e88,#b967ff)', color: '#0a0518', border: 'none', fontWeight: 700 }}>■ Stop</button>
-            )}
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontSize: 9, color: '#9d8fc0', fontFamily: 'monospace' }}>VOL</span>
-              <input type="range" min="0" max="1" step="0.05" value={vol} onChange={e => { setVol(parseFloat(e.target.value)); engineRef.current?.setVolume(parseFloat(e.target.value)); }} style={{ width: 100 }} />
+        <Card className="p-4 bg-white/[0.03] border-white/10">
+          <div className="flex items-center gap-4 flex-wrap">
+            <Button
+              onClick={togglePlay}
+              size="lg"
+              className="min-w-[100px] h-12 text-base font-bold rounded-full"
+              style={{
+                background: s.playing
+                  ? 'linear-gradient(135deg,#ff2e88,#b967ff)'
+                  : 'linear-gradient(135deg,#00ffc8,#10b981)',
+                color: s.playing ? '#fff' : '#070312',
+              }}
+            >
+              {s.playing ? <><Square className="w-4 h-4 mr-2" /> STOP</> : <><Play className="w-4 h-4 mr-2" /> PLAY</>}
+            </Button>
+            <div className="flex-1 min-w-[150px]">
+              <div className="flex items-center gap-2 mb-1">
+                <Volume2 className="w-3.5 h-3.5 text-slate-400" />
+                <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Master</span>
+                <span className="text-[10px] tabular-nums text-slate-500 ml-auto">{Math.round(vol * 100)}%</span>
+              </div>
+              <Slider value={[vol]} onValueChange={(v) => handleVol(v[0])} min={0} max={1} step={0.01}
+                style={{ '--slider-color': '#00ffc8' } as React.CSSProperties} />
             </div>
           </div>
-          {(s.playing || s.radioOn) && (
-            <canvas ref={canvasRef} style={{ width: '100%', maxWidth: 600, height: 80, borderRadius: 10, border: '1px solid rgba(150,90,255,0.2)', background: '#070312' }} />
-          )}
-          {/* Role activity bars */}
-          <div style={{ display: 'flex', gap: 8, fontSize: 9, fontFamily: 'monospace', color: '#9d8fc0' }}>
-            {Object.entries(roleBars).map(([k, v]) => (
-              <div key={k} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                <span>{k}</span>
-                <div style={{ width: 40, height: 6, background: '#1a0e30', borderRadius: 3, overflow: 'hidden' }}>
-                  <div style={{ width: `${v * 100}%`, height: '100%', background: k === 'KICK' ? '#00ffc8' : k === 'BASS' ? '#f59e0b' : k === 'LEAD' ? '#b967ff' : '#ff2e88', borderRadius: 3 }} />
+          <div className="mt-3 h-20 sm:h-24 rounded-lg overflow-hidden border border-white/5">
+            <canvas ref={canvasRef} className="w-full h-full block" />
+          </div>
+        </Card>
+
+        {/* MUSIC DIRECTOR */}
+        <Card className="p-4 bg-white/[0.03] border-white/10">
+          <h2 className="text-xs uppercase tracking-widest text-slate-400 font-bold mb-3">Music Director</h2>
+          <div className="flex gap-1.5 mb-4 flex-wrap">
+            {STYLES.map(st => (
+              <button
+                key={st}
+                onClick={() => handleStyle(st)}
+                className="px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all min-h-[36px]"
+                style={{
+                  background: style === st && locks.style ? 'linear-gradient(135deg,#b967ff,#ff2e88)' : 'rgba(255,255,255,0.05)',
+                  color: style === st && locks.style ? '#fff' : '#94a3b8',
+                  border: style === st ? '1px solid rgba(185,103,255,0.4)' : '1px solid transparent',
+                }}
+              >
+                {st.replace('_', ' ')}
+              </button>
+            ))}
+            <button
+              onClick={() => toggleLock('style')}
+              className="px-2 py-1.5 rounded-lg text-[10px] font-bold transition-colors min-h-[36px]"
+              style={{ background: locks.style ? 'rgba(185,103,255,0.2)' : 'rgba(255,255,255,0.05)', color: locks.style ? '#b967ff' : '#64748b' }}
+            >
+              {locks.style ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
+            </button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <MusicalSlider label="Energy" value={energy} onChange={handleEnergy} onLockToggle={() => toggleLock('energy')} locked={locks.energy} color="#00ffc8" />
+            <MusicalSlider label="Density" value={density} onChange={handleDensity} onLockToggle={() => toggleLock('density')} locked={locks.density} color="#10b981" />
+            <MusicalSlider label="Tension" value={tension} onChange={handleTension} onLockToggle={() => toggleLock('tension')} locked={locks.tension} color="#ff2e88" />
+          </div>
+        </Card>
+
+        {/* RADIO */}
+        <Card className="p-4 bg-white/[0.03] border-white/10">
+          <h2 className="text-xs uppercase tracking-widest text-slate-400 font-bold mb-3 flex items-center gap-2">
+            <Radio className="w-3.5 h-3.5" /> Radio
+          </h2>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Select value={streamId} onValueChange={setStreamId} disabled={s.radioOn}>
+              <SelectTrigger className="w-[200px] bg-white/5 border-white/10 h-9">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STREAMS.map(st => (
+                  <SelectItem key={st.id} value={st.id}>{st.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {!s.radioOn ? (
+              <Button onClick={connectRadio} size="sm" className="h-9 bg-emerald-600 hover:bg-emerald-500">Connect</Button>
+            ) : (
+              <Button onClick={disconnectRadio} size="sm" variant="destructive" className="h-9">Disconnect</Button>
+            )}
+            <div className="flex-1 min-w-[120px]">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Radio Vol</span>
+                <span className="text-[10px] tabular-nums text-slate-500 ml-auto">{Math.round(radioVol * 100)}%</span>
+              </div>
+              <Slider value={[radioVol]} onValueChange={(v) => handleRadioVol(v[0])} min={0} max={1} step={0.01}
+                style={{ '--slider-color': '#f59e0b' } as React.CSSProperties} />
+            </div>
+          </div>
+          {/* Radio bands */}
+          <div className="mt-3 flex gap-3 text-[10px]">
+            {(['low', 'mid', 'high'] as const).map(band => (
+              <div key={band} className="flex-1">
+                <div className="flex justify-between mb-0.5">
+                  <span className="uppercase text-slate-500">{band}</span>
+                  <span className="tabular-nums text-slate-400">{Math.round((s.radioBands[band] || 0) * 100)}%</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+                  <div className="h-full rounded-full transition-all"
+                    style={{ width: `${(s.radioBands[band] || 0) * 100}%`, background: '#f59e0b' }} />
                 </div>
               </div>
             ))}
           </div>
-        </div>
+        </Card>
 
-        {/* MUSIC CONTROLS */}
-        <div style={{ background: 'rgba(20,10,40,0.72)', border: '1px solid rgba(150,90,255,0.25)', borderRadius: 14, padding: 16 }}>
-          <h2 style={{ fontSize: 12, letterSpacing: '0.08em', marginBottom: 12, color: '#00ffc8', textTransform: 'uppercase' }}>Music</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}>
-            {/* Style selector */}
-            <div>
-              <label style={{ fontSize: 9, color: '#9d8fc0', fontFamily: 'monospace' }}>STYLE</label>
-              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-                {STYLES.map(st => (
-                  <button key={st} onClick={() => { setStyle(st); engineRef.current?.setStyle(st); }} style={{
-                    padding: '6px 10px', borderRadius: 6, fontSize: 10, cursor: 'pointer',
-                    background: styleName === st ? '#b967ff' : '#0d0620',
-                    color: styleName === st ? '#0a0518' : '#9d8fc0',
-                    border: styleName === st ? 'none' : '1px solid rgba(150,90,255,0.2)',
-                    fontWeight: 600,
-                  }}>{st.replace('_', ' ')}</button>
-                ))}
-              </div>
-            </div>
-            {/* Energy */}
-            <SliderControl label="ENERGY" value={energy} onChange={v => { setEnergy(v); engineRef.current?.setEnergy(v); }} color="#f59e0b" />
-            {/* Density */}
-            <SliderControl label="DENSITY" value={density} onChange={v => { setDensity(v); engineRef.current?.setDensity(v); }} color="#00ffc8" />
-            {/* Tension */}
-            <SliderControl label="TENSION" value={tension} onChange={v => { setTension(v); engineRef.current?.setTension(v); }} color="#ff2e88" />
+        {/* MIX */}
+        <Card className="p-4 bg-white/[0.03] border-white/10">
+          <h2 className="text-xs uppercase tracking-widest text-slate-400 font-bold mb-3 flex items-center gap-2">
+            <Waves className="w-3.5 h-3.5" /> Mix
+          </h2>
+          <div className="grid grid-cols-4 gap-2">
+            <ChannelStrip label="KICK" value={channelVols.kick} onChange={(v) => handleChannelVol('kick', v)} onMute={() => handleMute('kick')} onSolo={() => handleSolo('kick')} muted={muteState.kick} soloed={soloState === 'kick'} color="#00ffc8" />
+            <ChannelStrip label="BASS" value={channelVols.bass} onChange={(v) => handleChannelVol('bass', v)} onMute={() => handleMute('bass')} onSolo={() => handleSolo('bass')} muted={muteState.bass} soloed={soloState === 'bass'} color="#10b981" />
+            <ChannelStrip label="LEAD" value={channelVols.lead} onChange={(v) => handleChannelVol('lead', v)} onMute={() => handleMute('lead')} onSolo={() => handleSolo('lead')} muted={muteState.lead} soloed={soloState === 'lead'} color="#ff2e88" />
+            <ChannelStrip label="HATS" value={channelVols.hat} onChange={(v) => handleChannelVol('hat', v)} onMute={() => handleMute('hat')} onSolo={() => handleSolo('hat')} muted={muteState.hat} soloed={soloState === 'hat'} color="#f59e0b" />
           </div>
-          <div style={{ marginTop: 8, display: 'flex', gap: 16, fontSize: 10, fontFamily: 'monospace', color: '#9d8fc0' }}>
-            <span>ROLE: <b style={{ color: '#b967ff' }}>{roleName}</b></span>
-            <span>MOTIFS: <b style={{ color: '#3dffa8' }}>{motifCount}</b></span>
-            <span>TENSION: <b style={{ color: '#ff2e88' }}>{(tensionVal * 100).toFixed(0)}%</b></span>
-          </div>
-        </div>
-
-        {/* MIXER */}
-        <div style={{ background: 'rgba(20,10,40,0.72)', border: '1px solid rgba(150,90,255,0.25)', borderRadius: 14, padding: 16 }}>
-          <h2 style={{ fontSize: 12, letterSpacing: '0.08em', marginBottom: 12, color: '#00ffc8', textTransform: 'uppercase' }}>Mix</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
-            <SliderControl label="KICK" value={channelVols.kick} onChange={v => { setChannelVols(p => ({ ...p, kick: v })); engineRef.current?.setChannelVolume('kick', v); }} color="#00ffc8" />
-            <SliderControl label="BASS" value={channelVols.bass} onChange={v => { setChannelVols(p => ({ ...p, bass: v })); engineRef.current?.setChannelVolume('bass', v); }} color="#f59e0b" />
-            <SliderControl label="LEAD" value={channelVols.lead} onChange={v => { setChannelVols(p => ({ ...p, lead: v })); engineRef.current?.setChannelVolume('lead', v); }} color="#b967ff" />
-            <SliderControl label="HATS" value={channelVols.hat} onChange={v => { setChannelVols(p => ({ ...p, hat: v })); engineRef.current?.setChannelVolume('hat', v); }} color="#ff2e88" />
-          </div>
-        </div>
+        </Card>
 
         {/* FX */}
-        <div style={{ background: 'rgba(20,10,40,0.72)', border: '1px solid rgba(150,90,255,0.25)', borderRadius: 14, padding: 16 }}>
-          <h2 style={{ fontSize: 12, letterSpacing: '0.08em', marginBottom: 12, color: '#00ffc8', textTransform: 'uppercase' }}>FX</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-            <SliderControl label="DELAY" value={delayAmt} onChange={v => { setDelayAmt(v); engineRef.current?.setDelayAmount(v); }} color="#3b82f6" />
-            <SliderControl label="FEEDBACK" value={delayFb} onChange={v => { setDelayFb(v); engineRef.current?.setDelayFeedback(v); }} color="#8b5cf6" />
-            <SliderControl label="REVERB" value={reverbSend} onChange={v => { setReverbSend(v); engineRef.current?.setReverbSend(v); }} color="#06b6d4" />
-          </div>
-        </div>
-
-        {/* RADIO */}
-        <div style={{ background: 'rgba(20,10,40,0.72)', border: '1px solid rgba(150,90,255,0.25)', borderRadius: 14, padding: 16 }}>
-          <h2 style={{ fontSize: 12, letterSpacing: '0.08em', marginBottom: 12, color: '#00ffc8', textTransform: 'uppercase' }}>Radio</h2>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
-            <select value={streamId} onChange={e => setStreamId(e.target.value)} disabled={s.radioOn} style={{ background: '#0d0620', border: '1px solid rgba(150,90,255,0.25)', borderRadius: 6, padding: '6px 10px', color: '#efe9fb', fontSize: 12, flex: 1, minWidth: 140 }}>
-              {STREAMS.map(st => <option key={st.id} value={st.id}>{st.name}</option>)}
-            </select>
-            {!s.radioOn ? (
-              <button onClick={connectRadio} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#f59e0b', color: '#000', fontWeight: 'bold', cursor: 'pointer', fontSize: 12 }}>CONNECT</button>
-            ) : (
-              <button onClick={disconnectRadio} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#ff4d6d', color: '#000', fontWeight: 'bold', cursor: 'pointer', fontSize: 12 }}>DISCONNECT</button>
-            )}
-          </div>
-          {s.radioOn && (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: 9, color: '#9d8fc0', fontFamily: 'monospace' }}>VOL</span>
-                <input type="range" min="0" max="1" step="0.05" value={radioVol} onChange={e => { setRadioVol(parseFloat(e.target.value)); engineRef.current?.setRadioVolume(parseFloat(e.target.value)); }} style={{ flex: 1 }} />
+        <Card className="p-4 bg-white/[0.03] border-white/10">
+          <h2 className="text-xs uppercase tracking-widest text-slate-400 font-bold mb-3">FX</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <div className="flex justify-between mb-1">
+                <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-300">Delay</span>
+                <span className="text-[10px] tabular-nums text-slate-500">{Math.round(delayAmt * 100)}%</span>
               </div>
-              <div style={{ display: 'flex', gap: 12, fontSize: 9, fontFamily: 'monospace', color: '#9d8fc0' }}>
-                <span>LOW: {Math.round(s.radioBands.low * 100)}%</span>
-                <span>MID: {Math.round(s.radioBands.mid * 100)}%</span>
-                <span>HIGH: {Math.round(s.radioBands.high * 100)}%</span>
-                <span>KICKS: {s.kickCount}</span>
+              <Slider value={[delayAmt]} onValueChange={(v) => handleDelay(v[0])} min={0} max={1} step={0.01} style={{ '--slider-color': '#f59e0b' } as React.CSSProperties} />
+            </div>
+            <div>
+              <div className="flex justify-between mb-1">
+                <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-300">Feedback</span>
+                <span className="text-[10px] tabular-nums text-slate-500">{Math.round(delayFb * 100)}%</span>
               </div>
-            </>
-          )}
-        </div>
-
+              <Slider value={[delayFb]} onValueChange={(v) => handleFb(v[0])} min={0} max={0.85} step={0.01} style={{ '--slider-color': '#a855f7' } as React.CSSProperties} />
+            </div>
+            <div>
+              <div className="flex justify-between mb-1">
+                <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-300">Reverb</span>
+                <span className="text-[10px] tabular-nums text-slate-500">{Math.round(reverbSend * 100)}%</span>
+              </div>
+              <Slider value={[reverbSend]} onValueChange={(v) => handleReverb(v[0])} min={0} max={1} step={0.01} style={{ '--slider-color': '#06b6d4' } as React.CSSProperties} />
+            </div>
+          </div>
+        </Card>
       </main>
 
-      <footer style={{ borderTop: '1px solid rgba(150,90,255,0.15)', padding: '8px 16px', fontSize: 9, color: '#9d8fc0', fontFamily: 'monospace', display: 'flex', justifyContent: 'space-between', marginTop: 'auto' }}>
+      {/* FOOTER */}
+      <footer className="mt-auto p-3 border-t border-white/10 flex items-center justify-between text-[10px] text-slate-500">
         <span>PSY4 · Musical Device</span>
-        <span>{s.radioOn ? '● RADIO' : '○ NO RADIO'} · {s.playing ? '● PLAYING' : '○ IDLE'} · {styleName}</span>
+        <span className="tabular-nums">
+          {s.playing ? 'PLAYING' : 'STOPPED'} · {s.radioOn ? 'RADIO ON' : 'RADIO OFF'} · {style}
+        </span>
       </footer>
-    </div>
-  );
-}
 
-function Metric({ label, value, color }: { label: string; value: any; color: string }) {
-  return (
-    <div style={{ textAlign: 'center' }}>
-      <div style={{ fontSize: 7, color: '#9d8fc0', textTransform: 'uppercase', fontFamily: 'monospace' }}>{label}</div>
-      <div style={{ fontSize: 14, fontWeight: 'bold', fontFamily: 'monospace', color }}>{value}</div>
-    </div>
-  );
-}
-
-function SliderControl({ label, value, onChange, color }: { label: string; value: number; onChange: (v: number) => void; color: string }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontSize: 9, color: '#9d8fc0', fontFamily: 'monospace' }}>{label}</span>
-        <span style={{ fontSize: 9, color, fontFamily: 'monospace' }}>{Math.round(value * 100)}%</span>
-      </div>
-      <input type="range" min="0" max="1" step="0.01" value={value} onChange={e => onChange(parseFloat(e.target.value))} style={{ width: '100%', accentColor: color }} />
+      <style>{`
+        [data-radix-slider-orientation="vertical"] { height: 100%; }
+        .slider-track { background: rgba(255,255,255,0.1); }
+        .slider-range { background: var(--slider-color, #00ffc8); }
+        .slider-thumb { background: var(--slider-color, #00ffc8); border: 2px solid #070312; }
+      `}</style>
     </div>
   );
 }
