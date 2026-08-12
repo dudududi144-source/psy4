@@ -407,10 +407,10 @@ export class PsyLive {
 
     // ── PER-ROLE BUSES (from architecture review) ──
     // Each voice connects to its role bus → engineBus → gentle comp → master
-    this.kickBus = this.ctx.createGain(); this.kickBus.gain.value = 0.9;
+    this.kickBus = this.ctx.createGain(); this.kickBus.gain.value = 0.95; // F10: slightly louder kick
     this.bassBus = this.ctx.createGain(); this.bassBus.gain.value = 0.85;
-    this.leadBus = this.ctx.createGain(); this.leadBus.gain.value = 0.7;
-    this.hatBus = this.ctx.createGain(); this.hatBus.gain.value = 0.6;
+    this.leadBus = this.ctx.createGain(); this.leadBus.gain.value = 0.5;  // F10: quieter lead (was 0.7)
+    this.hatBus = this.ctx.createGain(); this.hatBus.gain.value = 0.55;   // F10: slightly quieter hats
     
     this.engineBus = this.ctx.createGain();
     this.engineBus.gain.value = 0.8;
@@ -435,14 +435,26 @@ export class PsyLive {
   // ── Voices — connect to role buses (not master directly) ──
   private kick(t: number): void {
     if (!this.ctx || !this.kickBus) return;
+    // F10: Kick with punch — sine body + noise click for transient presence
     const osc = this.ctx.createOscillator(), gain = this.ctx.createGain();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(150, t);
+    osc.frequency.setValueAtTime(180, t); // F10: higher attack pitch for punch
     osc.frequency.exponentialRampToValueAtTime(44, t + 0.09);
     gain.gain.setValueAtTime(1.0, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5); // F10: longer decay
     osc.connect(gain); gain.connect(this.kickBus);
-    osc.start(t); osc.stop(t + 0.32);
+    osc.start(t); osc.stop(t + 0.52);
+
+    // F10: Add noise click for transient definition
+    if (this.noiseBuf) {
+      const click = this.ctx.createBufferSource(); click.buffer = this.noiseBuf;
+      const clickHp = this.ctx.createBiquadFilter(); clickHp.type = 'highpass'; clickHp.frequency.value = 3000;
+      const clickGain = this.ctx.createGain();
+      clickGain.gain.setValueAtTime(0.4, t);
+      clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.02);
+      click.connect(clickHp); clickHp.connect(clickGain); clickGain.connect(this.kickBus);
+      click.start(t); click.stop(t + 0.03);
+    }
   }
 
   private hat(t: number, lvl: number): void {
@@ -460,35 +472,44 @@ export class PsyLive {
     if (!this.ctx || !this.bassBus) return;
     const osc = this.ctx.createOscillator(); osc.type = v.bassWave; osc.frequency.value = freq;
     const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.Q.value = v.bassQ;
-    const fStart = Math.max(60, v.bassCut), fEnd = Math.max(80, v.bassCut * 0.35);
+    // F10: Gentler filter sweep — keep more body, less plucky
+    const fStart = Math.max(200, v.bassCut), fEnd = Math.max(150, v.bassCut * 0.5);
     filter.frequency.setValueAtTime(fStart, t);
-    filter.frequency.exponentialRampToValueAtTime(fEnd, t + 0.16);
+    filter.frequency.exponentialRampToValueAtTime(fEnd, t + 0.25);
     const gain = this.ctx.createGain();
     gain.gain.setValueAtTime(0.0001, t);
     gain.gain.exponentialRampToValueAtTime(0.85, t + 0.006);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    gain.gain.exponentialRampToValueAtTime(0.3, t + 0.15); // F10: sustain instead of full decay
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35); // F10: longer decay
     osc.connect(filter); filter.connect(gain); gain.connect(this.bassBus);
-    if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.12; gain.connect(send); send.connect(this.delaySend); }
-    osc.start(t); osc.stop(t + 0.22);
+    if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.08; gain.connect(send); send.connect(this.delaySend); }
+    osc.start(t); osc.stop(t + 0.37);
   }
 
   private lead(t: number, freq: number, v: Variant, accent: boolean): void {
     if (!this.ctx || !this.leadBus) return;
-    const peakCut = Math.max(200, v.leadCut * (accent ? 1.25 : 1));
+    // F10: Lead timbre fix — softer wave, lower Q, less delay, lower gain
+    // This addresses the "high-pitched lead" complaint: the problem was TIMBRE
+    // (sawtooth + high Q + heavy delay), not pitch (MIDI was already corrected in F9)
+    const peakCut = Math.max(200, v.leadCut * (accent ? 1.15 : 1));
     const o1 = this.ctx.createOscillator(), o2 = this.ctx.createOscillator();
-    o1.type = v.leadWave; o2.type = v.leadWave;
-    o1.frequency.value = freq; o2.frequency.value = freq * Math.pow(2, 9 / 1200);
-    const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.Q.value = v.leadQ;
-    filter.frequency.setValueAtTime(180, t);
+    // F10: Use triangle instead of sawtooth — softer, fewer harmonics
+    o1.type = 'triangle'; o2.type = 'triangle';
+    o1.frequency.value = freq; o2.frequency.value = freq * Math.pow(2, 7 / 1200); // F10: less detune (7 cents vs 9)
+    const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass';
+    filter.Q.value = Math.min(5, v.leadQ * 0.5); // F10: halve Q to reduce whistling
+    filter.frequency.setValueAtTime(200, t);
     filter.frequency.exponentialRampToValueAtTime(peakCut, t + 0.02);
-    filter.frequency.exponentialRampToValueAtTime(240, t + 0.22);
+    filter.frequency.exponentialRampToValueAtTime(300, t + 0.22);
     const gain = this.ctx.createGain();
-    const peak = Math.max(0.05, v.leadLvl * (accent ? 1 : 0.7));
+    // F10: Lower gain — lead should sit BELOW kick and bass in the mix
+    const peak = Math.max(0.03, v.leadLvl * 0.6 * (accent ? 1 : 0.7));
     gain.gain.setValueAtTime(0.0001, t);
-    gain.gain.exponentialRampToValueAtTime(peak, t + 0.008);
+    gain.gain.exponentialRampToValueAtTime(peak, t + 0.01);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
     o1.connect(filter); o2.connect(filter); filter.connect(gain); gain.connect(this.leadBus);
-    if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.3; gain.connect(send); send.connect(this.delaySend); }
+    // F10: Reduce delay send from 0.3 to 0.12 — less echo reinforcement
+    if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.12; gain.connect(send); send.connect(this.delaySend); }
     o1.start(t); o2.start(t); o1.stop(t + 0.26); o2.stop(t + 0.26);
   }
 
@@ -674,7 +695,8 @@ export class PsyLive {
       // Radio → radioGain → master (so volume slider affects radio too)
       this.radioSource.connect(this.radioGain);
       this.radioGain.connect(this.radioAnalyser);
-      this.radioAnalyser.connect(this.master!);
+      // F10: Route radio through engineBus (not master) so compressor applies
+      this.radioAnalyser.connect(this.engineBus!);
 
       // R3: RadioStateGate — mark connecting BEFORE play()
       this.radioGate.reset();
