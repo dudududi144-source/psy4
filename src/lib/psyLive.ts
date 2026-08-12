@@ -13,21 +13,14 @@
  */
 
 import { type LearningData, type Composition, loadLearning, saveLearning, recordKick, recordBassNote, recordRadioBands, recordEnergy, deriveInsights, getInsights, generateComposition } from './learning';
-// R4 PRESET DECISION: Option B — SoundBank is valid data (142 presets verified)
-// but is NOT connected to the live runtime. The engine uses 4 hardcoded presets
-// with inline Web Audio synthesis. SoundBank is marked as FUTURE MATERIAL
-// LIBRARY — to be wired in a future iteration after the runtime engine is
-// fully verified. The import is removed to honestly reflect the disconnection.
-// See audit-reports/PSY4_REALITY_REPAIR.md for details.
-import { BeatPLL } from './beatPLL';
-import { mutatePattern, type Pattern } from './patternMutator';
-import { MelodyObserver, type MelodyObservation } from './melodyObserver';
-import { RadioStateGate, type RadioState } from './radioStateGate';
 import { MusicalTransport } from '../../foundation/transport/MusicalTransport';
-import { TransportAdapter } from '../../foundation/transport/TransportAdapter';
 import { RadioObservationLayer } from '../../foundation/radio/RadioObservationLayer';
 import { DEFAULT_RADIO_CONFIG } from '../../foundation/radio/RadioObservationTypes';
 import { MusicalSession, type NotePlan } from '../../foundation/music/MusicalSession';
+
+// F13/R1: Removed dead imports — BeatPLL, PatternMutator, MelodyObserver,
+// RadioStateGate, TransportAdapter. The LIVE instances live inside
+// RadioObservationLayer. Single radio state machine now.
 
 const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -39,7 +32,7 @@ const freqToNote = (f: number) => {
 const freqToMidi = (f: number) => Math.round(12 * Math.log2(f / 440) + 69);
 
 // ─── Presets (EXACTLY like psy — 4 distinct styles) ────────────────────────
-interface Pattern { kick: number[]; bass: (number|null)[]; lead: (number|null)[]; hat: number[]; }
+interface PresetPattern { kick: number[]; bass: (number|null)[]; lead: (number|null)[]; hat: number[]; }
 interface Variant {
   bassWave: OscillatorType; bassCut: number; bassQ: number;
   leadWave: OscillatorType; leadCut: number; leadQ: number;
@@ -47,18 +40,18 @@ interface Variant {
 }
 interface Preset {
   id: string; name: string; tag: string; bpm: number; root: number;
-  desc: string; patterns: Pattern; variants: { A: Variant; B: Variant };
+  desc: string; patterns: PresetPattern; variants: { A: Variant; B: Variant };
 }
 interface Stream { id: string; name: string; url: string; genre: string; bitrate: number; }
 
-// ─── Streams (HTTPS-only — HTTP blocked by mixed content) ─────────────────
+// ─── Streams (HTTPS-only — F13/R1B: 3 dead URLs removed) ──────────────────
+// Audit verified via curl -I: psyndora-prog (port 9110 refused),
+// psyndora-chill (TLS EOF), radiocaprice-psy (DNS dead). Only live,
+// CORS-enabled stations remain.
 export const STREAMS: Stream[] = [
   { id: 'psyndora', name: 'Psyndora', url: 'https://cast.magicstreams.gr:9111/stream/1/', genre: 'Psytrance · Full-On · Goa', bitrate: 128 },
   { id: 'babaganousha', name: 'Babaganousha', url: 'https://babaganousha.net:8443/stream/1/', genre: 'Psychedelic · Goa', bitrate: 128 },
   { id: 'spaceunicorn', name: 'Space Unicorn', url: 'https://spaceunicorn.radio/stream', genre: 'Trance · PsyTrance', bitrate: 192 },
-  { id: 'psyndora-prog', name: 'Psyndora Progressive', url: 'https://cast.magicstreams.gr:9110/stream/1/', genre: 'Progressive Psy', bitrate: 128 },
-  { id: 'psyndora-chill', name: 'Psyndora Chill', url: 'https://cast.magicstreams.gr:9112/stream/1/', genre: 'PsyChill · Ambient', bitrate: 128 },
-  { id: 'radiocaprice-psy', name: 'Radio Caprice Psytrance', url: 'https://radcap.net/psytrance.pls', genre: 'Psytrance', bitrate: 128 },
 ];
 
 // 4 DISTINCT presets — each with unique BPM, root, patterns, and variants
@@ -123,10 +116,10 @@ export const PRESETS: Preset[] = [
 
 // ─── State ─────────────────────────────────────────────────────────────────
 export type MixMode = 'solo' | 'glue' | 'reinforce';
-// R3 REALITY REPAIR: SyncStatus now reflects actual signal state.
-// 'listening' is ONLY set when the RadioStateGate verifies non-zero samples.
-// 'following' is ONLY set when PLL is locked AND signal is verified.
-export type SyncStatus = 'idle' | 'connecting' | 'no_signal' | 'listening' | 'following';
+// R3/F13: SyncStatus reflects actual RadioObservationLayer state.
+// 'listening' = signal present, PLL acquiring.
+// 'following' = PLL locked, Transport following radio tempo.
+export type SyncStatus = 'idle' | 'connecting' | 'no_signal' | 'listening' | 'following' | 'holdover' | 'error';
 
 export interface LiveState {
   playing: boolean;
@@ -147,12 +140,12 @@ export interface LiveState {
   radioRms: number;
   radioBands: { low: number; mid: number; high: number };
   compositionMode: boolean;
-  // Occupancy (from architecture review)
+  // Occupancy (from RadioObservationLayer)
   occupancy: { kick: number; bass: number; lead: number; hats: number };
-  // R3: Explicit radio signal state (from RadioStateGate)
-  radioState: RadioState;
-  radioSignalRms: number;
-  radioNonZeroRatio: number;
+  // F13/R1: Single radio state machine — from RadioObservationLayer
+  radioSignalState: string;   // DISCONNECTED|CONNECTING|NO_SIGNAL|WEAK_SIGNAL|SIGNAL_PRESENT|STABLE_SIGNAL|LOST|DEGRADED|ERROR
+  radioObservationState: string; // NO_SIGNAL|SIGNAL_PRESENT|LOCKING|FOLLOWING|DEGRADED|LOST
+  radioConfidence: number;   // 0-1, from beat observation
 }
 
 // ─── MusicState (from architecture review) ────────────────────────────────
@@ -209,19 +202,25 @@ export class PsyLive {
   private compositionMode = false;
   private composition: Composition | null = null;
 
-  // ── OCCUPANCY (the key insight from architecture review) ──
-  // Instead of "radio loud/quiet", we track WHICH ROLES the radio fills
+  // ── OCCUPANCY (from RadioObservationLayer) ──
   private occupancy = { kick: 0, bass: 0, lead: 0, hats: 0 };
-  // Per-role buses (so we can control each independently)
+  // Per-role buses — USER owns these (mixer sliders). Final = bus × duck.
   private kickBus: GainNode | null = null;
   private bassBus: GainNode | null = null;
   private leadBus: GainNode | null = null;
   private hatBus: GainNode | null = null;
+  // F13/R3: Duck gain nodes — RADIO ducking owns these. Separated from user mix.
+  private kickDuck: GainNode | null = null;
+  private bassDuck: GainNode | null = null;
+  private leadDuck: GainNode | null = null;
+  private hatDuck: GainNode | null = null;
   private engineBus: GainNode | null = null;
   // Energy history for relative energy (not absolute)
   private energyHistory: number[] = [];
   // Compressor reduction monitoring
   private comp: DynamicsCompressorNode | null = null;
+  // F13/R1: Time-domain buffer for radio analysis (inlined, was melodyObserver)
+  private radioTdBuf: Float32Array | null = null;
 
   // MusicState (from architecture review)
   private musicState: MusicState = {
@@ -234,29 +233,17 @@ export class PsyLive {
   private currentStyle: Style = 'fullOn';
 
   // Beat PLL (phase-locked loop for beat sync) — OBSERVER only
-  // F1.18: PLL feeds observations to Transport. Scheduler reads Transport.
-  private pll: BeatPLL = new BeatPLL();
-
   // F1.18: MusicalTransport is the SINGLE source of truth for musical time.
   // All beat/bar/phase/bpm reads come from transport.snapshot().
-  // The PLL is an observer; Transport is the time model.
+  // The PLL is an observer inside RadioObservationLayer; Transport is the time model.
   private transport: MusicalTransport | null = null;
-  private transportAdapter: TransportAdapter | null = null;
 
-  // Pattern mutation (evolves every 8 bars)
-  // F1.18: barCount is derived from transport.snapshot().bar, not independently tracked
-  private livePattern: Pattern | null = null;
-  private lastMutatedBar = -1; // track last bar we mutated at (for 8-bar cycle)
-
-  // Melody observation (learns melodies from radio)
-  private melodyObserver: MelodyObserver = new MelodyObserver();
-  private detectTickCount = 0;
-
-  // R3: Radio signal reality gate
-  private radioGate: RadioStateGate = new RadioStateGate();
+  // F13/R1: Removed dead fields — pll, melodyObserver, radioGate, transportAdapter,
+  // livePattern, lastMutatedBar, detectTickCount. Single radio state machine
+  // lives inside RadioObservationLayer. Single composer is MusicalSession.
 
   // F2.5: RadioObservationLayer — the SINGLE entry point for radio analysis
-  // Replaces inline detect()/onKick() with a timestamped, deterministic layer
+  // Contains: BeatObservationEngine → BeatPLL (beat tracking), MelodyObserver (pitch)
   private radioLayer: RadioObservationLayer | null = null;
 
   // F8: MusicalSession — THE single musical runtime (no feature flags, no legacy)
@@ -319,6 +306,7 @@ export class PsyLive {
     const learned = this.learningData ? getInsights(this.learningData) : null;
     // F1.18: BPM comes from Transport — single source of truth
     const transportBpm = this.transport ? this.transport.snapshot().bpm : 145;
+    const radioSnap = this.radioLayer?.getSnapshot();
     this.onState?.({
       playing: this.playing, radioOn: this.radioOn,
       radioBpm: transportBpm, engineBpm: transportBpm,
@@ -329,7 +317,7 @@ export class PsyLive {
       presetId: this.presetId, variant: this.variant,
       learned: learned ? {
         bpm: learned.topBpm, key: learned.topKey,
-        confidence: learned.tempoStats?.confidence || 0,
+        confidence: learned.tempo?.confidence || 0,
         scale: learned.scale?.name || null,
       } : null,
       sidechainActive: false,
@@ -338,10 +326,10 @@ export class PsyLive {
       radioBands: this.radioBands,
       compositionMode: this.compositionMode,
       occupancy: this.occupancy,
-      // R3: Radio signal reality state
-      radioState: this.radioGate.getState(),
-      radioSignalRms: this.radioGate.getSnapshot()?.rms ?? 0,
-      radioNonZeroRatio: this.radioGate.getSnapshot()?.nonZeroRatio ?? 0,
+      // F13/R1: Single radio state machine — from RadioObservationLayer
+      radioSignalState: radioSnap?.signal.state ?? 'DISCONNECTED',
+      radioObservationState: radioSnap?.signal.observationState ?? 'NO_SIGNAL',
+      radioConfidence: radioSnap?.beat?.confidence ?? 0,
     });
   }
 
@@ -403,7 +391,7 @@ export class PsyLive {
     this.transport = new MusicalTransport(() => this.ctx!.currentTime, {
       initialBpm: PRESETS[0].bpm,
     });
-    this.transportAdapter = new TransportAdapter(this.transport);
+    // F13/R1: TransportAdapter removed — was instantiated but 0 methods ever called.
 
     // F2.5 — Initialize RadioObservationLayer
     // The SINGLE entry point for radio analysis. Produces timestamped
@@ -427,7 +415,19 @@ export class PsyLive {
     this.engineBus = this.ctx.createGain();
     this.engineBus.gain.value = 0.8;
 
-    // Gentle compressor on engine bus only (not on radio)
+    // F13/R3: Duck gain nodes — inserted between mute and engineBus.
+    // Chain: role bus (USER volume) → mute (USER mute/solo) → duck (RADIO ducking) → engineBus
+    // USER owns bus.gain + mute.gain. RADIO ducking owns duck.gain. No clobbering.
+    this.kickMute = this.ctx.createGain(); this.kickMute.gain.value = 1.0;
+    this.bassMute = this.ctx.createGain(); this.bassMute.gain.value = 1.0;
+    this.leadMute = this.ctx.createGain(); this.leadMute.gain.value = 1.0;
+    this.hatMute  = this.ctx.createGain(); this.hatMute.gain.value  = 1.0;
+    this.kickDuck = this.ctx.createGain(); this.kickDuck.gain.value = 1.0;
+    this.bassDuck = this.ctx.createGain(); this.bassDuck.gain.value = 1.0;
+    this.leadDuck = this.ctx.createGain(); this.leadDuck.gain.value = 1.0;
+    this.hatDuck  = this.ctx.createGain(); this.hatDuck.gain.value  = 1.0;
+
+    // Gentle compressor on engine bus (applies to engine + radio via F10 routing)
     this.comp = this.ctx.createDynamicsCompressor();
     this.comp.threshold.value = -18;
     this.comp.knee.value = 18;
@@ -435,11 +435,11 @@ export class PsyLive {
     this.comp.attack.value = 0.015;
     this.comp.release.value = 0.12;
 
-    // Connect: role buses → engineBus → comp → master
-    this.kickBus.connect(this.engineBus);
-    this.bassBus.connect(this.engineBus);
-    this.leadBus.connect(this.engineBus);
-    this.hatBus.connect(this.engineBus);
+    // Connect: role bus → mute → duck → engineBus → comp → master
+    this.kickBus.connect(this.kickMute); this.kickMute.connect(this.kickDuck); this.kickDuck.connect(this.engineBus);
+    this.bassBus.connect(this.bassMute); this.bassMute.connect(this.bassDuck); this.bassDuck.connect(this.engineBus);
+    this.leadBus.connect(this.leadMute); this.leadMute.connect(this.leadDuck); this.leadDuck.connect(this.engineBus);
+    this.hatBus.connect(this.hatMute);   this.hatMute.connect(this.hatDuck);   this.hatDuck.connect(this.engineBus);
     this.engineBus.connect(this.comp);
     this.comp.connect(this.master);
   }
@@ -500,29 +500,24 @@ export class PsyLive {
 
   private lead(t: number, freq: number, v: Variant, accent: boolean): void {
     if (!this.ctx || !this.leadBus) return;
-    // F10: Lead timbre fix — softer wave, lower Q, less delay, lower gain
-    // This addresses the "high-pitched lead" complaint: the problem was TIMBRE
-    // (sawtooth + high Q + heavy delay), not pitch (MIDI was already corrected in F9)
+    // F13/R8: Lead timbre — now respects Variant.leadWave (was hardcoded triangle).
+    // F10 kept the softer defaults but now the preset's leadWave is honored.
     const peakCut = Math.max(200, v.leadCut * (accent ? 1.15 : 1));
     const o1 = this.ctx.createOscillator(), o2 = this.ctx.createOscillator();
-    // F10: Use triangle instead of sawtooth — softer, fewer harmonics
-    o1.type = 'triangle'; o2.type = 'triangle';
-    o1.frequency.value = freq; o2.frequency.value = freq * Math.pow(2, 7 / 1200); // F10: less detune (7 cents vs 9)
+    o1.type = v.leadWave; o2.type = v.leadWave;
+    o1.frequency.value = freq; o2.frequency.value = freq * Math.pow(2, 7 / 1200); // 7 cents detune
     const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass';
-    filter.Q.value = Math.min(5, v.leadQ * 0.5); // F10: halve Q to reduce whistling
+    filter.Q.value = Math.min(5, v.leadQ * 0.5);
     filter.frequency.setValueAtTime(200, t);
     filter.frequency.exponentialRampToValueAtTime(peakCut, t + 0.02);
     filter.frequency.exponentialRampToValueAtTime(300, t + 0.22);
     const gain = this.ctx.createGain();
-    // F10: Lower gain — lead should sit BELOW kick and bass in the mix
     const peak = Math.max(0.03, v.leadLvl * 0.6 * (accent ? 1 : 0.7));
     gain.gain.setValueAtTime(0.0001, t);
     gain.gain.exponentialRampToValueAtTime(peak, t + 0.01);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
     o1.connect(filter); o2.connect(filter); filter.connect(gain); gain.connect(this.leadBus);
-    // F10: Reduce delay send from 0.3 to 0.12 — less echo reinforcement
     if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.12; gain.connect(send); send.connect(this.delaySend); }
-    // F11: Add reverb send to lead
     if (this.reverbSend) { const rs = this.ctx.createGain(); rs.gain.value = 0.15; gain.connect(rs); rs.connect(this.reverbSend); }
     o1.start(t); o2.start(t); o1.stop(t + 0.26); o2.stop(t + 0.26);
   }
@@ -553,8 +548,7 @@ export class PsyLive {
 
   setPreset(id: string): void {
     this.presetId = id;
-    this.livePattern = null; // reset mutation when preset changes
-    this.lastMutatedBar = -1;
+    // F13/R1: livePattern/lastMutatedBar removed (dead pattern mutator fields)
     const p = this.getPreset();
     // F1.18: setTempo via Transport — single source of truth for BPM
     this.transport!.setTempo(p.bpm, 'internal');
@@ -584,33 +578,41 @@ export class PsyLive {
   }
 
   setDelayFeedback(v: number): void {
-    if (this.delayFb && this.ctx) this.delayFb.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+    // F13/R8: Clamp feedback to 0.85 max — prevents infinite howl at 100%.
+    const clamped = Math.max(0, Math.min(0.85, v));
+    if (this.delayFb && this.ctx) this.delayFb.gain.setTargetAtTime(clamped, this.ctx.currentTime, 0.05);
   }
 
   setReverbSend(v: number): void {
     if (this.reverbSend && this.ctx) this.reverbSend.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
   }
 
-  // F11: Style control — actually affects MusicalSession
+  // F11/F13: Style control — sets session style and locks it (radio won't overwrite)
   setStyle(style: string): void {
-    if (this.session) {
-      (this.session as any).style = style;
-      (this.session as any).styleConfidence = 1.0;
-    }
+    this.session?.setStyle(style);
   }
 
-  // F11: Musical controls
+  // F13/R2: Musical controls — delegate to MusicalSession public API (fixed)
+  // Before this fix, these called (session.getContext() as any) which threw
+  // TypeError because MusicalSession had no getContext() method.
   setEnergy(v: number): void {
-    if (this.session) (this.session.getContext() as any).energy = v;
+    this.session?.setEnergy(v);
   }
 
   setDensity(v: number): void {
-    if (this.session) (this.session.getContext() as any).density = v;
+    this.session?.setDensity(v);
   }
 
   setTension(v: number): void {
-    if (this.session) (this.session.getContext() as any).tension = v;
+    this.session?.setTension(v);
   }
+
+  // F13/R2B: Unlock methods — return to AUTO mode
+  unlockStyle(): void { this.session?.unlockStyle(); }
+  unlockEnergy(): void { this.session?.unlockEnergy(); }
+  unlockDensity(): void { this.session?.unlockDensity(); }
+  unlockTension(): void { this.session?.unlockTension(); }
+  unlockKey(): void { this.session?.unlockKey(); }
 
   private updateDelayTime(): void {
     if (this.delay) this.delay.delayTime.value = this.stepDur() * 3;
@@ -682,21 +684,26 @@ export class PsyLive {
       this.currentNotePlan = this.session.planBar(currentBar, snap.bpm);
     }
 
-    // Read notes from the cached plan and schedule them
+    // Read notes from the cached plan and schedule them.
+    // F13/R3: Scheduler plays what the composer plans — NO occupancy gating here.
+    // The composer (MusicalSession) decides WHETHER to emit a note via ABSTAIN
+    // and calculateLeadDensity. Radio ducking is handled by the duck gain nodes
+    // in the audio graph, not by skipping notes. This fixes the "mixer clobbered"
+    // problem at its root: the scheduler no longer second-guesses the composer.
     const notes = this.currentNotePlan.notes.filter(n => n.step === s16);
     for (const note of notes) {
       switch (note.voice) {
         case 'kick':
-          if (this.occupancy.kick < 0.7) this.kick(time);
+          this.kick(time);
           break;
         case 'hat':
           this.hat(time, (v.hatLvl || 0.1) * note.velocity);
           break;
         case 'bass':
-          if (this.occupancy.bass < 0.75 && note.midi !== null) this.bass(time, mtof(note.midi), v);
+          if (note.midi !== null) this.bass(time, mtof(note.midi), v);
           break;
         case 'lead':
-          if (this.occupancy.lead < 0.85 && note.midi !== null) this.lead(time, mtof(note.midi), v, s16 % 4 === 0);
+          if (note.midi !== null) this.lead(time, mtof(note.midi), v, s16 % 4 === 0);
           break;
       }
     }
@@ -745,20 +752,25 @@ export class PsyLive {
         this.radioAnalyser.fftSize = 512;
         this.radioAnalyser.smoothingTimeConstant = 0.2;
       }
-      // Radio → radioGain → master (so volume slider affects radio too)
-      this.radioSource.connect(this.radioGain);
-      this.radioGain.connect(this.radioAnalyser);
-      // F10: Route radio through engineBus (not master) so compressor applies
-      this.radioAnalyser.connect(this.engineBus!);
+      // Radio → radioGain → radioAnalyser → engineBus (F10: comp applies)
+      this.radioSource.connect(this.radioGain!);
+      this.radioGain!.connect(this.radioAnalyser!);
+      this.radioAnalyser!.connect(this.engineBus!);
 
-      // R3: RadioStateGate — mark connecting BEFORE play()
-      this.radioGate.reset();
-      this.radioGate.markConnecting();
-      this.radioGate.markConnected(this.ctx.sampleRate);
-      this.syncStatus = 'connecting'; // NOT 'listening' — signal not verified yet
+      // F13/R1 — THE CRITICAL FIX: wire RadioObservationLayer state machine.
+      // Before this fix, signalState was stuck at 'DISCONNECTED' (constructor
+      // default) because markConnected() was never called. This killed the
+      // entire beat-detection / pitch-observation / PLL pipeline.
+      // Now: CONNECTING → (play succeeds) → markConnected → NO_SIGNAL →
+      //   (signal arrives) → SIGNAL_PRESENT → STABLE_SIGNAL → FOLLOWING.
+      this.radioLayer!.markConnecting();
+      this.syncStatus = 'connecting';
 
       try { await this.radioEl.play(); } catch {}
       this.radioOn = true;
+      // Transition to NO_SIGNAL so updateSignalState() can promote it to
+      // SIGNAL_PRESENT when real audio arrives.
+      this.radioLayer!.markConnected();
       this.updateMixMode();
       this.startDetection();
       this.emit();
@@ -772,21 +784,62 @@ export class PsyLive {
     this.radioOn = false;
     // F1.18: Transport enters holdover (no hard reset of BPM)
     this.transport!.loseSource();
-    // F2.5: Reset radio observation layer
+    // F2.5: Reset radio observation layer (the SINGLE radio state machine)
     this.radioLayer?.reset();
-    this.syncStatus = 'idle';
+    this.syncStatus = 'holdover';
     this.harmonicLocked = false;
     this.harmonicRoot = 0;
     this.kickIntervals = [];
     this.subBassHistory = [];
     if (this.detectTimer) { clearInterval(this.detectTimer); this.detectTimer = null; }
-    this.pll.reset();
-    this.radioGate.reset();
+    // F13/R1: Reset session on disconnect so learned motifs/style/phrase state
+    // don't leak across reconnects.
+    this.session?.reset();
     this.updateMixMode();
     this.emit();
   }
 
-  setRadioVolume(v: number): void { if (this.radioGain) this.radioGain.gain.value = v; }
+  setRadioVolume(v: number): void {
+    // F13/R8: Smoothed to prevent clicks on rapid drag (was .value = immediate)
+    if (this.radioGain && this.ctx) this.radioGain.gain.setTargetAtTime(v, this.ctx.currentTime, 0.03);
+  }
+
+  // F13/R3: Mute/Solo — user mixer controls. Mute writes to a separate muteGain
+  // node (not bus.gain), so it composes with ducking. Solo mutes all other buses.
+  private channelMuted = { kick: false, bass: false, lead: false, hat: false };
+  private channelSolo: 'kick' | 'bass' | 'lead' | 'hat' | null = null;
+  // muteGain nodes (between bus and duck — bus × mute × duck → engineBus)
+  private kickMute: GainNode | null = null;
+  private bassMute: GainNode | null = null;
+  private leadMute: GainNode | null = null;
+  private hatMute: GainNode | null = null;
+
+  setChannelMute(channel: 'kick' | 'bass' | 'lead' | 'hat', muted: boolean): void {
+    this.channelMuted[channel] = muted;
+    this.applyMuteSolo();
+  }
+
+  setChannelSolo(channel: 'kick' | 'bass' | 'lead' | 'hat' | null): void {
+    this.channelSolo = channel;
+    this.applyMuteSolo();
+  }
+
+  private applyMuteSolo(): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const buses: Array<{name: 'kick'|'bass'|'lead'|'hat', mute: GainNode|null}> = [
+      { name: 'kick', mute: this.kickMute },
+      { name: 'bass', mute: this.bassMute },
+      { name: 'lead', mute: this.leadMute },
+      { name: 'hat',  mute: this.hatMute },
+    ];
+    for (const b of buses) {
+      if (!b.mute) continue;
+      // Solo logic: if any channel is soloed, mute all others
+      const isMuted = this.channelSolo ? (b.name !== this.channelSolo) : this.channelMuted[b.name];
+      b.mute.gain.setTargetAtTime(isMuted ? 0 : 1, now, 0.02);
+    }
+  }
 
   // ── Detection (200ms tick) ──
   private startDetection(): void {
@@ -800,11 +853,16 @@ export class PsyLive {
       this.radioFreqBuf = new Uint8Array(this.radioAnalyser.frequencyBinCount);
     }
     const fd = this.radioFreqBuf;
-    this.radioAnalyser.getByteFrequencyData(fd);
+    // F13: cast to avoid TS lib mismatch on ArrayBufferLike vs ArrayBuffer
+    this.radioAnalyser.getByteFrequencyData(fd as Uint8Array<ArrayBuffer>);
 
-    // F2.5 — Get time-domain data for RadioObservationLayer
-    const tdBuf = this.melodyObserver.ensureTimeDomainBuf(this.radioAnalyser);
-    this.radioAnalyser.getFloatTimeDomainData(tdBuf);
+    // F13/R1: Inline time-domain buffer (was melodyObserver.ensureTimeDomainBuf)
+    if (!this.radioTdBuf || this.radioTdBuf.length !== this.radioAnalyser.fftSize) {
+      this.radioTdBuf = new Float32Array(this.radioAnalyser.fftSize);
+    }
+    const tdBuf = this.radioTdBuf;
+    // F13: cast to avoid TS lib mismatch on ArrayBufferLike vs ArrayBuffer
+    this.radioAnalyser.getFloatTimeDomainData(tdBuf as Float32Array<ArrayBuffer>);
 
     // F2.5 — Process through RadioObservationLayer (the SINGLE entry point)
     // This replaces: RadioStateGate, inline beat detection, inline pitch observation
@@ -823,21 +881,30 @@ export class PsyLive {
         source: 'radio',
       });
       this.kickCount++;
+      // F13/R5: Wire bassFreq from pitch observation for key detection.
+      // radioSnap.pitch is produced by RadioObservationLayer's internal
+      // MelodyObserver (now that signalState actually transitions).
+      if (radioSnap.pitch && radioSnap.pitch.confidence > 0.5) {
+        this.bassFreq = radioSnap.pitch.frequency;
+      }
     }
 
-    // F2.5 — Update syncStatus from observation state (not loudness)
+    // F13/R1 — Update syncStatus from RadioObservationLayer (single source)
     if (this.radioOn) {
+      const sigState = radioSnap.signal.state;
       const obsState = radioSnap.signal.observationState;
-      if (obsState === 'FOLLOWING') {
+      if (sigState === 'DISCONNECTED' || sigState === 'CONNECTING') {
+        this.syncStatus = 'connecting';
+      } else if (sigState === 'ERROR') {
+        this.syncStatus = 'error';
+      } else if (obsState === 'FOLLOWING') {
         this.syncStatus = 'following';
-      } else if (obsState === 'LOCKING') {
-        this.syncStatus = 'listening';
-      } else if (obsState === 'SIGNAL_PRESENT') {
+      } else if (obsState === 'LOCKING' || obsState === 'SIGNAL_PRESENT') {
         this.syncStatus = 'listening';
       } else if (obsState === 'DEGRADED') {
-        this.syncStatus = 'listening'; // still listening, but degraded
+        this.syncStatus = 'listening';
       } else if (obsState === 'LOST' || obsState === 'NO_SIGNAL') {
-        this.syncStatus = 'no_signal';
+        this.syncStatus = sigState === 'LOST' ? 'holdover' : 'no_signal';
       }
     }
 
@@ -864,16 +931,21 @@ export class PsyLive {
       high: radioSnap.occupancy.hats,
     };
 
-    // ── ROLE DUCKING (based on occupancy from radio layer) ──
-    if (this.kickBus && this.bassBus && this.leadBus && this.hatBus && this.ctx) {
+    // ── F13/R3: MIXER OWNERSHIP FIX ──
+    // Role ducking NO LONGER clobbers bus.gain. Instead, we write to
+    // separate duckGain nodes (set in ensureAudio). User mixer sliders
+    // write to bus.gain directly. Final level = bus.gain × duckGain.
+    // Radio detection changes ducking only — user mix stays stable.
+    if (this.kickDuck && this.bassDuck && this.leadDuck && this.hatDuck && this.ctx) {
       const now = this.ctx.currentTime;
-      const kickGain = this.occupancy.kick > 0.7 ? 0.05 : 0.9;
-      this.kickBus.gain.setTargetAtTime(kickGain, now, 0.03);
-      const bassGain = this.occupancy.bass > 0.75 ? 0.35 : 0.85;
-      this.bassBus.gain.setTargetAtTime(bassGain, now, 0.05);
-      const leadGain = this.occupancy.lead > 0.85 ? 0.55 : 0.7;
-      this.leadBus.gain.setTargetAtTime(leadGain, now, 0.08);
-      this.hatBus.gain.setTargetAtTime(0.6, now, 0.08);
+      const kickDuck = this.occupancy.kick > 0.7 ? 0.1 : 1.0;
+      this.kickDuck.gain.setTargetAtTime(kickDuck, now, 0.05);
+      const bassDuck = this.occupancy.bass > 0.75 ? 0.4 : 1.0;
+      this.bassDuck.gain.setTargetAtTime(bassDuck, now, 0.08);
+      const leadDuck = this.occupancy.lead > 0.85 ? 0.5 : 1.0;
+      this.leadDuck.gain.setTargetAtTime(leadDuck, now, 0.1);
+      const hatDuck = 1.0; // F13: no longer force hatBus to 0.6 — user owns it
+      this.hatDuck.gain.setTargetAtTime(hatDuck, now, 0.1);
     }
 
     // ── ENERGY HISTORY (for relative energy, not absolute) ──
@@ -982,14 +1054,9 @@ export class PsyLive {
     return { ...this.musicState };
   }
 
-  // ── Get melody observations (learned from radio) ──
-  getMelodyObservations(): MelodyObservation[] {
-    return this.melodyObserver.getObservations();
-  }
-
-  getRecentMelody(bars: number): MelodyObservation[] {
-    return this.melodyObserver.getRecentObservations(bars);
-  }
+  // F13/R1: getMelodyObservations/getRecentMelody removed — the live
+  // MelodyObserver is inside RadioObservationLayer, not a separate field.
+  // These methods returned empty arrays anyway (observe() was never called).
 
   // F11: Generate reverb impulse response
   private mkIR(ctx: AudioContext): AudioBuffer {

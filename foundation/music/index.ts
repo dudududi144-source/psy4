@@ -13,7 +13,7 @@
  */
 
 export { MusicalSession } from './MusicalSession';
-export type { ScheduledNote, NotePlan, SessionSnapshot, MusicalRole, PhraseAction } from './MusicalSession';
+export type { ScheduledNote, NotePlan, SessionSnapshot } from './MusicalSession';
 export { MusicalContext, COMPOSITION_ARC } from './MusicalContext';
 export type { MusicalContextSnapshot, SectionArc } from './MusicalContext';
 export { MusicalMemory } from './MusicalMemory';

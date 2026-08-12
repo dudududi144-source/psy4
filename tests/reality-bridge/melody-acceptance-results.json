@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T19:06:08.244Z",
+  "runAt": "2026-08-12T19:30:46.246Z",
   "totalTests": 13,
   "passed": 13,
   "failed": 0,
@@ -102,8 +102,8 @@
       "id": "FL-noise",
       "name": "White noise spectrum (should be noisy, flatness > 0.5)",
       "passed": true,
-      "flatness": 0.998,
-      "evidence": "flatness=0.998 → noisy (expected noisy)"
+      "flatness": 0.999,
+      "evidence": "flatness=0.999 → noisy (expected noisy)"
     },
     {
       "id": "MO-observer-440",

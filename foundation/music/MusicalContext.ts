@@ -86,9 +86,52 @@ export class MusicalContext {
   // Energy history for slope detection
   private energyHistory: number[] = [];
 
+  // F13/R2B: User locks — when true, updateFromRadio skips the property.
+  // User-set values must survive radio adaptation.
+  private userLocked = {
+    style: false,
+    energy: false,
+    density: false,
+    tension: false,
+    key: false,
+  };
+
+  /**
+   * F13/R2 — Public musical control API.
+   * These are the ONLY way the UI should set musical direction.
+   * Setting a value locks it (radio adaptation won't overwrite).
+   */
+  setEnergy(v: number): void {
+    this.energy = Math.max(0, Math.min(1, v));
+    this.userLocked.energy = true;
+  }
+  setDensity(v: number): void {
+    this.density = Math.max(0, Math.min(1, v));
+    this.userLocked.density = true;
+  }
+  setTension(v: number): void {
+    this.tension = Math.max(0, Math.min(1, v));
+    this.targetTension = this.tension; // F13: user tension overrides arc target
+    this.userLocked.tension = true;
+  }
+  setKey(rootPc: number, scaleName: string): void {
+    this.rootPc = ((Math.round(rootPc) % 12) + 12) % 12;
+    this.scaleName = scaleName;
+    this.userLocked.key = true;
+  }
+  unlockEnergy(): void { this.userLocked.energy = false; }
+  unlockDensity(): void { this.userLocked.density = false; }
+  unlockTension(): void { this.userLocked.tension = false; }
+  unlockKey(): void { this.userLocked.key = false; }
+  isEnergyLocked(): boolean { return this.userLocked.energy; }
+  isDensityLocked(): boolean { return this.userLocked.density; }
+  isTensionLocked(): boolean { return this.userLocked.tension; }
+  isKeyLocked(): boolean { return this.userLocked.key; }
+
   /**
    * Update from radio observation data.
    * Called by LiveComposer when radio observations arrive.
+   * F13/R2B: Respects user locks — does NOT overwrite locked properties.
    */
   updateFromRadio(data: {
     bpm: number;
@@ -97,24 +140,28 @@ export class MusicalContext {
     bassFreq?: number;
     confidence: number;
   }): void {
-    // BPM — smooth update
+    // BPM — smooth update (BPM is never user-locked; Transport owns it)
     if (data.bpm > 60 && data.bpm < 200) {
       this.bpm += (data.bpm - this.bpm) * 0.1;
     }
 
-    // Energy tracking
-    this.energyHistory.push(data.energy);
-    if (this.energyHistory.length > 16) this.energyHistory.shift();
+    // Energy tracking (radio-derived) — skip if user locked
+    if (!this.userLocked.energy) {
+      this.energyHistory.push(data.energy);
+      if (this.energyHistory.length > 16) this.energyHistory.shift();
 
-    if (this.energyHistory.length >= 4) {
-      const recent = this.energyHistory.slice(-4).reduce((a, b) => a + b, 0) / 4;
-      const older = this.energyHistory.slice(-8, -4).reduce((a, b) => a + b, 0) / Math.min(4, this.energyHistory.length - 4);
-      this.energy = recent;
-      this.energySlope = recent - older;
+      if (this.energyHistory.length >= 4) {
+        const recent = this.energyHistory.slice(-4).reduce((a, b) => a + b, 0) / 4;
+        const older = this.energyHistory.slice(-8, -4).reduce((a, b) => a + b, 0) / Math.min(4, this.energyHistory.length - 4);
+        this.energy = recent;
+        this.energySlope = recent - older;
+      }
     }
 
-    // Density from energy
-    this.density = 0.3 + this.energy * 0.5;
+    // Density from energy — skip if user locked
+    if (!this.userLocked.density) {
+      this.density = 0.3 + this.energy * 0.5;
+    }
 
     // F6: Save radio occupancy for role selection
     this.radioRoles = { ...data.occupancy };
@@ -126,8 +173,8 @@ export class MusicalContext {
       this.syncopation = 0.2;
     }
 
-    // Key/scale inference from bass frequency
-    if (data.bassFreq && data.bassFreq > 50) {
+    // Key/scale inference from bass frequency — skip if user locked
+    if (!this.userLocked.key && data.bassFreq && data.bassFreq > 50) {
       const midi = Math.round(69 + 12 * Math.log2(data.bassFreq / 440));
       const newRootPc = ((midi % 12) + 12) % 12;
       // Only change root if it's different enough (avoid jitter)
@@ -151,12 +198,17 @@ export class MusicalContext {
     const sectionIdx = Math.floor((bar % 64) / 8);
     const section = COMPOSITION_ARC[sectionIdx];
     if (section) {
-      this.targetTension = section.tension;
+      // F13/R2B: Only set arc targetTension if user hasn't locked tension
+      if (!this.userLocked.tension) {
+        this.targetTension = section.tension;
+      }
       this.novelty = section.novelty;
     }
 
-    // Smooth tension toward target
-    this.tension += (this.targetTension - this.tension) * 0.05;
+    // Smooth tension toward target — skip if user locked
+    if (!this.userLocked.tension) {
+      this.tension += (this.targetTension - this.tension) * 0.05;
+    }
 
     // BPM from Transport (authoritative)
     if (bpm > 60 && bpm < 200) {
@@ -220,5 +272,6 @@ export class MusicalContext {
     this.confidence = 0.2;
     this.source = 'preset';
     this.energyHistory = [];
+    this.userLocked = { style: false, energy: false, density: false, tension: false, key: false };
   }
 }

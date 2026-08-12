@@ -22,9 +22,9 @@ export default function Page() {
     radioRms: 0, radioBands: { low: 0, mid: 0, high: 0 },
     compositionMode: false,
     occupancy: { kick: 0, bass: 0, lead: 0, hats: 0 },
-    radioState: 'DISCONNECTED' as any,
-    radioSignalRms: 0,
-    radioNonZeroRatio: 0,
+    radioSignalState: 'DISCONNECTED',
+    radioObservationState: 'NO_SIGNAL',
+    radioConfidence: 0,
   });
   const [streamId, setStreamId] = useState('psyndora');
   const [radioVol, setRadioVol] = useState(0.5);

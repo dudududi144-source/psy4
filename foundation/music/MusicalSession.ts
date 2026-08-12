@@ -71,7 +71,10 @@ export class MusicalSession {
   private phraseStartBar = 0;
   private style = 'FULL_ON';
   private styleConfidence = 0;
+  private userStyleLocked = false; // F13/R2B: user-set style resists auto-detection
   private lastReason = '';
+  // F13/R4-C: Track whether learning has influenced selection (for proof)
+  private learningInfluencedCount = 0;
 
   constructor(seed = 42) {
     this.ctx = new MusicalContext();
@@ -79,6 +82,31 @@ export class MusicalSession {
     this.memory = new MusicalMemory(seed);
     this.rng = new Rng(seed + 1);
   }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // F13/R2 — PUBLIC MUSICAL CONTROL API
+  // The UI calls these. They delegate to MusicalContext (single state owner).
+  // Setting a value locks it (radio adaptation won't overwrite).
+  // ═══════════════════════════════════════════════════════════════════════
+  setEnergy(v: number): void { this.ctx.setEnergy(v); }
+  setDensity(v: number): void { this.ctx.setDensity(v); }
+  setTension(v: number): void { this.ctx.setTension(v); }
+  setKey(rootPc: number, scaleName: string): void { this.ctx.setKey(rootPc, scaleName); }
+  setStyle(style: string): void {
+    this.style = style;
+    this.styleConfidence = 1.0;
+    this.userStyleLocked = true; // F13/R2B: user choice resists auto-detection
+  }
+  unlockStyle(): void { this.userStyleLocked = false; }
+  unlockEnergy(): void { this.ctx.unlockEnergy(); }
+  unlockDensity(): void { this.ctx.unlockDensity(); }
+  unlockTension(): void { this.ctx.unlockTension(); }
+  unlockKey(): void { this.ctx.unlockKey(); }
+  isStyleLocked(): boolean { return this.userStyleLocked; }
+  isEnergyLocked(): boolean { return this.ctx.isEnergyLocked(); }
+  isDensityLocked(): boolean { return this.ctx.isDensityLocked(); }
+  isTensionLocked(): boolean { return this.ctx.isTensionLocked(); }
+  isKeyLocked(): boolean { return this.ctx.isKeyLocked(); }
 
   observeRadio(data: {
     bpm: number; energy: number;
@@ -153,44 +181,72 @@ export class MusicalSession {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // F9: KICK — the backbone. Always present. Never accidentally removed.
+  // F13/R4-D: KICK — style affects kick grammar
+  // FULL_ON: 4-on-floor + fill. DARK: sparser, half-time feel. PROGRESSIVE: 4-on-floor, no fill. ACID: 4-on-floor + extra syncopation.
   // ═══════════════════════════════════════════════════════════════════════
   private generateKick(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number): void {
-    // Four-on-floor: steps 0, 4, 8, 12
-    // F9: Kick is ALWAYS present. Radio density may reduce velocity but never remove kick.
     const radioKickOcc = (ctx as any).radioRoles?.kick ?? 0;
-    const velocity = radioKickOcc > 0.7 ? 0.6 : 0.9; // quieter if radio kick is present
+    const velocity = radioKickOcc > 0.7 ? 0.6 : 0.9;
+    const style = this.style;
 
-    for (const s of [0, 4, 8, 12]) {
+    // Base: 4-on-floor (steps 0,4,8,12)
+    const kickSteps = [0, 4, 8, 12];
+
+    // DARK: half-time feel — skip kicks at steps 8 and 12 every other bar
+    if (style === 'DARK' && barInPhrase % 2 === 1) {
+      kickSteps.splice(2, 2); // remove steps 8,12
+    }
+    // PROGRESSIVE: no fill at phrase end (cleaner)
+    // ACID: add syncopated kick at step 14 occasionally
+    if (style === 'ACID' && this.rng.next() < 0.3) {
+      kickSteps.push(14);
+    }
+
+    for (const s of kickSteps) {
       notes.push({ step: s, voice: 'kick', midi: null, velocity });
     }
 
-    // Fill at phrase ending
-    if (barInPhrase === 7) {
+    // Fill at phrase ending (except PROGRESSIVE which stays clean)
+    if (barInPhrase === 7 && style !== 'PROGRESSIVE') {
       notes.push({ step: 14, voice: 'kick', midi: null, velocity: 0.8 });
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // F9: BASS — interlocked with kick. Hits ON kick + offbeat response.
+  // F13/R4-D: BASS — style affects bass pattern
+  // FULL_ON: 8 notes, rolling. DARK: sparser, lower. PROGRESSIVE: smooth, fewer offbeats. ACID: syncopated, higher octave.
   // ═══════════════════════════════════════════════════════════════════════
   private generateBass(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number): void {
-    const octave = 2; // MIDI 33-45 range (low bass)
+    const octave = this.style === 'ACID' ? 2 : 2; // MIDI 33-45 range (low bass)
     const root = degreeToMidi(ctx.rootPc, ctx.scale, 0, octave);
     const fifth = degreeToMidi(ctx.rootPc, ctx.scale, 4, octave);
     const third = degreeToMidi(ctx.rootPc, ctx.scale, 2, octave);
 
-    // F9: Bass interlock — hits WITH kick (steps 0,4,8,12) + offbeat response (steps 2,6,10,14)
-    const bassSteps = [
-      { step: 0, midi: root, vel: 0.9 },      // WITH kick
-      { step: 2, midi: root, vel: 0.6 },      // offbeat response
-      { step: 4, midi: root, vel: 0.9 },      // WITH kick
-      { step: 6, midi: root, vel: 0.6 },      // offbeat response
-      { step: 8, midi: root, vel: 0.9 },      // WITH kick
-      { step: 10, midi: root, vel: 0.6 },     // offbeat response
-      { step: 12, midi: root, vel: 0.9 },     // WITH kick
-      { step: 14, midi: root, vel: 0.6 },     // offbeat response
+    // Base: bass interlock — hits WITH kick + offbeat response
+    let bassSteps = [
+      { step: 0, midi: root, vel: 0.9 },
+      { step: 2, midi: root, vel: 0.6 },
+      { step: 4, midi: root, vel: 0.9 },
+      { step: 6, midi: root, vel: 0.6 },
+      { step: 8, midi: root, vel: 0.9 },
+      { step: 10, midi: root, vel: 0.6 },
+      { step: 12, midi: root, vel: 0.9 },
+      { step: 14, midi: root, vel: 0.6 },
     ];
+
+    // DARK: remove offbeat responses (sparser, hypnotic)
+    if (this.style === 'DARK') {
+      bassSteps = bassSteps.filter(bs => bs.step % 4 === 0);
+    }
+    // PROGRESSIVE: remove every other offbeat (smoother)
+    if (this.style === 'PROGRESSIVE') {
+      bassSteps = bassSteps.filter(bs => bs.step % 4 === 0 || bs.step === 6 || bs.step === 14);
+    }
+    // ACID: add 16th-note syncopation
+    if (this.style === 'ACID') {
+      bassSteps.push({ step: 1, midi: root, vel: 0.4 });
+      bassSteps.push({ step: 9, midi: fifth, vel: 0.4 });
+    }
 
     // Modify based on phrase position
     for (const bs of bassSteps) {
@@ -198,14 +254,11 @@ export class MusicalSession {
       let vel = bs.vel;
 
       if (barInPhrase === 6) {
-        // Cadence: fifth on first beat, root on last
         if (bs.step === 0) midi = fifth;
         if (bs.step === 12) midi = root;
       } else if (barInPhrase === 7) {
-        // Response: root with third at end
         if (bs.step === 14) midi = third;
       } else if (barInPhrase >= 3 && barInPhrase <= 5 && this.rng.next() < 0.2) {
-        // Development: occasional fifth
         if (bs.step % 4 === 2) midi = fifth;
       }
 
@@ -214,16 +267,33 @@ export class MusicalSession {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // F9: HATS — complementary to groove
+  // F13/R4-D: HATS — style affects hat pattern
+  // FULL_ON: offbeat + fill. DARK: sparse, slow. PROGRESSIVE: steady. ACID: busy, 16ths.
   // ═══════════════════════════════════════════════════════════════════════
   private generateHats(notes: ScheduledNote[], ctx: MusicalContextSnapshot, barInPhrase: number): void {
-    // Offbeat hats: steps 2, 6, 10, 14
-    for (const s of [2, 6, 10, 14]) {
-      const vel = 0.25 + ctx.tension * 0.25;
+    const style = this.style;
+    const vel = 0.25 + ctx.tension * 0.25;
+
+    // Base: offbeat hats (steps 2,6,10,14)
+    const hatSteps = [2, 6, 10, 14];
+
+    // DARK: sparse — only steps 6 and 14
+    if (style === 'DARK') {
+      hatSteps.length = 0;
+      hatSteps.push(6, 14);
+    }
+    // ACID: add 16th-note busy hats
+    if (style === 'ACID') {
+      for (let s = 0; s < 16; s += 2) {
+        if (!hatSteps.includes(s)) hatSteps.push(s);
+      }
+    }
+
+    for (const s of hatSteps) {
       notes.push({ step: s, voice: 'hat', midi: null, velocity: vel });
     }
-    // Extra hat at phrase end
-    if (barInPhrase === 7) {
+    // Extra hat at phrase end (except PROGRESSIVE)
+    if (barInPhrase === 7 && style !== 'PROGRESSIVE') {
       notes.push({ step: 15, voice: 'hat', midi: null, velocity: 0.4 });
     }
   }
@@ -232,21 +302,40 @@ export class MusicalSession {
   // F9: LEAD — optional, controlled, LOWER register (octave 3-4, not 4-5)
   // ═══════════════════════════════════════════════════════════════════════
   private calculateLeadDensity(ctx: MusicalContextSnapshot, radio: RadioWindowSnapshot, barInPhrase: number): number {
-    // F9 RULE 8: Lead is optional. Default is REST or low density.
-    // Lead plays more during: STATEMENT, DEVELOPMENT, CLIMAX
-    // Lead plays less during: INTRO, RESOLUTION
-    // Lead NEVER plays during ABSTAIN bars
+    // F13/R4-A STARTUP SEQUENCE: Lead does NOT play during INTRO (bars 0-7).
+    // The groove (kick + bass + hats) must establish first. Lead enters at
+    // STATEMENT (bar 8). This fixes the "high-pitched lead on bar 0" complaint
+    // at its root — the lead was entering immediately because density was 0.2,
+    // not 0.
+    if (ctx.sectionName === 'INTRO') {
+      this.lastReason = 'lead RESTING (INTRO — groove establishing)';
+      return 0;
+    }
+
+    // F13/R4-B ABSTAIN: If radio is dense in the lead/mid band, the engine
+    // should ABSTAIN from lead to avoid clashing with the radio's melody.
+    // This is a real REST decision, not just a density reduction.
+    if (radio.currentOccupancy.lead > 0.7 && ctx.sectionName !== 'CLIMAX') {
+      this.lastReason = 'lead ABSTAIN (radio melody present, avoiding clash)';
+      return 0;
+    }
 
     let density = 0.3; // default: low
 
     // Section influence
     const section = ctx.sectionName;
-    if (section === 'INTRO') density = 0.2;
-    else if (section === 'STATEMENT') density = 0.4;
+    if (section === 'STATEMENT') density = 0.4;
     else if (section === 'DEVELOPMENT' || section === 'DEVELOPMENT2') density = 0.5;
     else if (section === 'CONTRAST') density = 0.4;
     else if (section === 'CLIMAX') density = 0.6;
     else if (section === 'RESOLUTION') density = 0.2;
+
+    // F13/R4-D STYLE → MUSIC: style affects lead density
+    // FULL_ON: more lead (peak-time). DARK: sparse, eerie. PROGRESSIVE: gradual. ACID: squelchy, dense.
+    if (this.style === 'FULL_ON') density *= 1.1;
+    else if (this.style === 'DARK') density *= 0.6;
+    else if (this.style === 'PROGRESSIVE') density *= 0.8;
+    else if (this.style === 'ACID') density *= 1.2;
 
     // Phrase position influence
     if (barInPhrase === 0) density += 0.1; // introduce
@@ -260,7 +349,7 @@ export class MusicalSession {
     // Tension influence
     density = density * (0.7 + ctx.tension * 0.3);
 
-    this.lastReason = `lead density=${density.toFixed(2)} (section=${section} barInPhrase=${barInPhrase})`;
+    this.lastReason = `lead density=${density.toFixed(2)} (section=${section} style=${this.style} barInPhrase=${barInPhrase})`;
     return Math.max(0, Math.min(0.8, density));
   }
 
@@ -308,6 +397,7 @@ export class MusicalSession {
   private handleNewPhrase(ctx: MusicalContextSnapshot, bar: number): void {
     const groupIdx = PHRASE_STRUCTURE[ctx.phraseIndex % 8];
     if (this.motifGroups[groupIdx].length === 0) {
+      // First time this group is used — generate a new motif
       const notes = generateMotif(ctx.rootPc, ctx.scale, {
         seed: this.rng.int(1, 100000), steps: 32, density: 0.5,
         glideProb: 0.3, responseShift: this.rng.int(1, 3),
@@ -316,13 +406,37 @@ export class MusicalSession {
       this.motifGroups[groupIdx].push(this.currentMotif);
     } else {
       if (ctx.phraseIndex % 8 === 1 || ctx.phraseIndex % 8 === 4) {
-        this.currentMotif = this.memory.transformMotif(this.motifGroups[groupIdx][0], 'transpose', ctx.rootPc, ctx.scale, bar);
+        // F13/R4-C: LEARNING WIRED. Use reward-weighted pickMotif when memory
+        // has enough motifs. Falls back to transform of group's first motif
+        // when memory is sparse (first few phrases).
+        const candidate = this.memory.pickMotif(bar, false, ctx.novelty);
+        if (candidate && this.memory.snapshot().mediumTermMotifCount >= 3) {
+          // Learning influences selection: pick a reward-weighted motif and
+          // transform it to fit the current key/scale.
+          this.currentMotif = this.memory.transformMotif(candidate, 'transpose', ctx.rootPc, ctx.scale, bar);
+          this.learningInfluencedCount++;
+        } else {
+          // Not enough learned motifs yet — transform the group's first motif
+          this.currentMotif = this.memory.transformMotif(this.motifGroups[groupIdx][0], 'transpose', ctx.rootPc, ctx.scale, bar);
+        }
         this.motifGroups[groupIdx].push(this.currentMotif);
       } else {
-        this.currentMotif = this.motifGroups[groupIdx][0];
+        // F13/R4-C: For non-transform phrases, also try pickMotif if we have
+        // enough learned material. This makes learning affect WHICH motif is
+        // reused, not just whether a transform happens.
+        const candidate = this.memory.pickMotif(bar, true, ctx.novelty);
+        if (candidate && this.memory.snapshot().mediumTermMotifCount >= 5 && this.rng.next() < 0.4) {
+          this.currentMotif = candidate;
+          this.learningInfluencedCount++;
+        } else {
+          this.currentMotif = this.motifGroups[groupIdx][0];
+        }
       }
     }
   }
+
+  // F13/R4-C: Public accessor for proving learning influenced selection
+  getLearningInfluencedCount(): number { return this.learningInfluencedCount; }
 
   private chooseTransform(): string {
     const r = this.rng.next();
@@ -334,6 +448,8 @@ export class MusicalSession {
   }
 
   private detectStyle(data: { bpm: number; energy: number; occupancy: { kick: number; bass: number; lead: number; hats: number } }): void {
+    // F13/R2B: If user locked style, do NOT overwrite with auto-detection.
+    if (this.userStyleLocked) return;
     const { bpm, occupancy } = data;
     let detected = 'FULL_ON';
     if (occupancy.kick > 0.7 && occupancy.bass > 0.6 && occupancy.hats > 0.5 && bpm > 143) detected = 'FULL_ON';
@@ -381,5 +497,8 @@ export class MusicalSession {
     this.phraseMotifs.clear(); this.motifGroups = [[], [], []];
     this.phraseNotes = []; this.learned = false;
     this.rng = new Rng(43); this.style = 'FULL_ON'; this.styleConfidence = 0;
+    this.userStyleLocked = false;
+    this.learningInfluencedCount = 0;
+    this.lastReason = '';
   }
 }

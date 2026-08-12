@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T19:06:07.978Z",
+  "runAt": "2026-08-12T19:30:45.358Z",
   "totalTests": 12,
   "passed": 12,
   "failed": 0,
@@ -38,7 +38,7 @@
       "id": "INT-F-Noise",
       "name": "White noise — no false FOLLOWING (no lock or low confidence)",
       "passed": true,
-      "evidence": "locked=false conf=0.30 observationCount=7"
+      "evidence": "locked=false conf=0.41 observationCount=11"
     },
     {
       "id": "INT-G-HalfTime",
@@ -56,7 +56,7 @@
       "id": "INT-I-Jitter",
       "name": "±10ms jitter — stable, no crash",
       "passed": true,
-      "evidence": "bpm=145.00 observationCount=4"
+      "evidence": "bpm=145.01 observationCount=4"
     },
     {
       "id": "INT-J-OutOfOrder",
