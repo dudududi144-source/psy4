@@ -459,17 +459,48 @@ export class PsyLive {
     else this.mixMode = 'glue';
   }
 
-  // ── Scheduler (EXACTLY like psy) ──
+  // ── Scheduler — beat-synced via PLL ──
+  // When PLL is locked: schedule steps on predicted radio beats
+  // When PLL not locked (solo/no radio): use own clock like psy
   private scheduler(): void {
     if (!this.ctx) return;
     try {
-      while (this.nextNoteTime < this.ctx.currentTime + this.scheduleAheadTime) {
-        this.scheduleStep(this.step, this.nextNoteTime);
-        this.nextNoteTime += this.stepDur();
-        this.step = (this.step + 1) % this.totalSteps;
+      const now = this.ctx.currentTime;
+
+      // If PLL is locked, sync to radio beats
+      if (this.pll.isLocked() && this.radioOn) {
+        // Get predicted beats for the next 200ms
+        const beats = this.pll.predictBeats(now, 0.2);
+        const period = 60 / this.pll.getBpm();
+        const stepDur = period / 4; // 16th notes
+
+        for (const beatTime of beats) {
+          // Schedule 4 sixteenth notes per beat
+          for (let s = 0; s < 4; s++) {
+            const stepTime = beatTime + s * stepDur;
+            if (stepTime > now && stepTime < now + this.scheduleAheadTime) {
+              // Only schedule if we haven't already scheduled this step
+              const stepKey = Math.round(stepTime * 1000);
+              if (stepKey > this.lastScheduledStepKey) {
+                this.scheduleStep(this.step % 16, stepTime);
+                this.lastScheduledStepKey = stepKey;
+                this.step = (this.step + 1) % this.totalSteps;
+              }
+            }
+          }
+        }
+      } else {
+        // No PLL lock — use own clock (like psy)
+        while (this.nextNoteTime < now + this.scheduleAheadTime) {
+          this.scheduleStep(this.step, this.nextNoteTime);
+          this.nextNoteTime += this.stepDur();
+          this.step = (this.step + 1) % this.totalSteps;
+        }
       }
     } catch (e) {}
   }
+
+  private lastScheduledStepKey = 0;
 
   private scheduleStep(step: number, time: number): void {
     const p = this.getPreset();
