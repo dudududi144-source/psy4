@@ -1,0 +1,80 @@
+{
+  "runAt": "2026-08-12T14:16:33.646Z",
+  "totalTests": 12,
+  "passed": 12,
+  "failed": 0,
+  "results": [
+    {
+      "id": "INT-A-120BPM",
+      "name": "120 BPM radio → Transport converges near 120",
+      "passed": true,
+      "evidence": "transportBpm=124.73 observationCount=22"
+    },
+    {
+      "id": "INT-B-145BPM",
+      "name": "145 BPM radio → Transport converges near 145",
+      "passed": true,
+      "evidence": "transportBpm=144.99 observationCount=4"
+    },
+    {
+      "id": "INT-C-TempoChange",
+      "name": "Tempo change 120→150 — beat continues, no phase reset",
+      "passed": true,
+      "evidence": "beat: 19 → 68 bpm=149.62"
+    },
+    {
+      "id": "INT-D-Dropout",
+      "name": "Radio dropout → Transport enters holdover (source=internal, confidence drops)",
+      "passed": true,
+      "evidence": "source=internal conf: 0.08 → 0.04"
+    },
+    {
+      "id": "INT-E-Recovery",
+      "name": "Radio recovery — observations resume, Transport re-locks",
+      "passed": true,
+      "evidence": "observationCount=1 radioState=STABLE_SIGNAL bpm=145.00"
+    },
+    {
+      "id": "INT-F-Noise",
+      "name": "White noise — no false FOLLOWING (no lock or low confidence)",
+      "passed": true,
+      "evidence": "locked=false conf=0.30 observationCount=7"
+    },
+    {
+      "id": "INT-G-HalfTime",
+      "name": "Half-time (75 BPM) — no false certainty",
+      "passed": true,
+      "evidence": "bpm=149.33 locked=false conf=0.49"
+    },
+    {
+      "id": "INT-H-DoubleTime",
+      "name": "Double-time (290 BPM) — no false certainty",
+      "passed": true,
+      "evidence": "bpm=144.22 locked=false"
+    },
+    {
+      "id": "INT-I-Jitter",
+      "name": "±10ms jitter — stable, no crash",
+      "passed": true,
+      "evidence": "bpm=145.00 observationCount=4"
+    },
+    {
+      "id": "INT-J-OutOfOrder",
+      "name": "Out-of-order observations — rejected, no crash",
+      "passed": true,
+      "evidence": "bpm=145.00 observationCount=2"
+    },
+    {
+      "id": "INT-K-Duplicates",
+      "name": "Duplicate observations — do not double-advance beat",
+      "passed": true,
+      "evidence": "beat: 9 → 9 (delta=0)"
+    },
+    {
+      "id": "INT-L-ContinuousPlayback",
+      "name": "Scheduler continues continuous playback (30s, >200 steps)",
+      "passed": true,
+      "evidence": "schedulerTicks=1200 stepsScheduled=291 bpm=145.00"
+    }
+  ]
+}

@@ -25,6 +25,8 @@ import { MelodyObserver, type MelodyObservation } from './melodyObserver';
 import { RadioStateGate, type RadioState } from './radioStateGate';
 import { MusicalTransport } from '../../foundation/transport/MusicalTransport';
 import { TransportAdapter } from '../../foundation/transport/TransportAdapter';
+import { RadioObservationLayer } from '../../foundation/radio/RadioObservationLayer';
+import { DEFAULT_RADIO_CONFIG } from '../../foundation/radio/RadioObservationTypes';
 
 const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -249,6 +251,10 @@ export class PsyLive {
   // R3: Radio signal reality gate
   private radioGate: RadioStateGate = new RadioStateGate();
 
+  // F2.5: RadioObservationLayer — the SINGLE entry point for radio analysis
+  // Replaces inline detect()/onKick() with a timestamped, deterministic layer
+  private radioLayer: RadioObservationLayer | null = null;
+
   // R6: Master safety limiter
   private safetyLimiter: DynamicsCompressorNode | null = null;
   private safetyReduction: number = 0;
@@ -381,6 +387,15 @@ export class PsyLive {
       initialBpm: PRESETS[0].bpm,
     });
     this.transportAdapter = new TransportAdapter(this.transport);
+
+    // F2.5 — Initialize RadioObservationLayer
+    // The SINGLE entry point for radio analysis. Produces timestamped
+    // RadioBeatObservation that feeds Transport.observeBeat().
+    this.radioLayer = new RadioObservationLayer({
+      ...DEFAULT_RADIO_CONFIG,
+      sampleRate: this.ctx.sampleRate,
+      fftSize: this.radioAnalyser?.fftSize ?? 512,
+    });
 
     // ── PER-ROLE BUSES (from architecture review) ──
     // Each voice connects to its role bus → engineBus → gentle comp → master
@@ -696,6 +711,8 @@ export class PsyLive {
     this.radioOn = false;
     // F1.18: Transport enters holdover (no hard reset of BPM)
     this.transport!.loseSource();
+    // F2.5: Reset radio observation layer
+    this.radioLayer?.reset();
     this.syncStatus = 'idle';
     this.harmonicLocked = false;
     this.harmonicRoot = 0;
@@ -703,7 +720,7 @@ export class PsyLive {
     this.subBassHistory = [];
     if (this.detectTimer) { clearInterval(this.detectTimer); this.detectTimer = null; }
     this.pll.reset();
-    this.radioGate.reset(); // R3: reset signal gate
+    this.radioGate.reset();
     this.updateMixMode();
     this.emit();
   }
@@ -717,119 +734,79 @@ export class PsyLive {
   }
 
   private detect(): void {
-    if (!this.radioAnalyser || !this.ctx) return;
+    if (!this.radioAnalyser || !this.ctx || !this.radioLayer) return;
     if (!this.radioFreqBuf || this.radioFreqBuf.length !== this.radioAnalyser.frequencyBinCount) {
       this.radioFreqBuf = new Uint8Array(this.radioAnalyser.frequencyBinCount);
     }
     const fd = this.radioFreqBuf;
     this.radioAnalyser.getByteFrequencyData(fd);
 
-    // ── R3: RadioStateGate — feed time-domain + frequency data to verify signal ──
-    const tdBufForGate = this.melodyObserver.ensureTimeDomainBuf(this.radioAnalyser);
-    this.radioAnalyser.getFloatTimeDomainData(tdBufForGate);
-    const radioSnapshot = this.radioGate.observe(tdBufForGate, fd, this.ctx.sampleRate);
+    // F2.5 — Get time-domain data for RadioObservationLayer
+    const tdBuf = this.melodyObserver.ensureTimeDomainBuf(this.radioAnalyser);
+    this.radioAnalyser.getFloatTimeDomainData(tdBuf);
 
-    // Update syncStatus based on ACTUAL signal state (not play() promise)
+    // F2.5 — Process through RadioObservationLayer (the SINGLE entry point)
+    // This replaces: RadioStateGate, inline beat detection, inline pitch observation
+    const audioTime = this.ctx.currentTime;
+    const radioSnap = this.radioLayer.process(tdBuf, fd, audioTime);
+
+    // F2.5 — Feed beat observations to Transport (the ONLY crossing point)
+    // RadioObservationLayer produces timestamped RadioBeatObservation.
+    // Only { time, confidence, source } crosses into Transport.
+    if (radioSnap.beat) {
+      this.transport!.observeBeat({
+        time: radioSnap.beat.timestamp.observedAt,
+        confidence: radioSnap.beat.confidence,
+        source: 'radio',
+      });
+      this.kickCount++;
+    }
+
+    // F2.5 — Update syncStatus from observation state (not loudness)
     if (this.radioOn) {
-      if (radioSnapshot.state === 'PLAYING_SIGNAL') {
-        // Signal verified — now check PLL lock
-        this.syncStatus = this.pll.isLocked() ? 'following' : 'listening';
-      } else if (radioSnapshot.state === 'CONNECTED_SIGNAL') {
-        this.syncStatus = 'listening'; // weak signal, but present
-      } else if (radioSnapshot.state === 'CONNECTED_NO_SIGNAL') {
-        this.syncStatus = 'no_signal'; // connected but no audio
-      } else if (radioSnapshot.state === 'BUFFERING') {
-        this.syncStatus = 'connecting';
-      } else if (radioSnapshot.state === 'ERROR') {
-        this.syncStatus = 'idle';
+      const obsState = radioSnap.signal.observationState;
+      if (obsState === 'FOLLOWING') {
+        this.syncStatus = 'following';
+      } else if (obsState === 'LOCKING') {
+        this.syncStatus = 'listening';
+      } else if (obsState === 'SIGNAL_PRESENT') {
+        this.syncStatus = 'listening';
+      } else if (obsState === 'DEGRADED') {
+        this.syncStatus = 'listening'; // still listening, but degraded
+      } else if (obsState === 'LOST' || obsState === 'NO_SIGNAL') {
+        this.syncStatus = 'no_signal';
       }
-      // 'connecting' stays until signal is verified
     }
 
-    // ── MELODY OBSERVATION (every 4th detect tick — less CPU) ──
-    // Only observe when signal is actually present (R3: don't observe silence)
-    if (this.detectTickCount % 4 === 0 && radioSnapshot.state === 'PLAYING_SIGNAL') {
-      const clock = this.pll.getClock(this.ctx.currentTime);
-      this.melodyObserver.observe(
-        fd, tdBufForGate, this.ctx.sampleRate, this.radioAnalyser.fftSize,
-        this.ctx.currentTime, clock.beatIndex, clock.barIndex,
-        this.occupancy
-      );
-    }
-    this.detectTickCount++;
+    // F2.5 — Update occupancy from radio layer (for arranger decisions)
+    this.occupancy = radioSnap.occupancy;
 
-    let sub = 0;
-    for (let i = 0; i < 10; i++) sub += fd[i];
-    sub /= (10 * 255);
-
-    let total = 0, cnt = 0;
-    for (let i = 0; i < fd.length; i += 4) { total += fd[i]; cnt++; }
-    total /= (cnt * 255);
-    this.radioLevel = total;
-    this.radioRms = this.radioRms * 0.85 + total * 0.15;
-
-    const binHz = this.ctx.sampleRate / this.radioAnalyser.fftSize;
-    const lowEnd = Math.floor(250 / binHz);
-    const midEnd = Math.floor(2500 / binHz);
-    let lo = 0, mi = 0, hi = 0, loN = 0, miN = 0, hiN = 0;
-    for (let i = 0; i < lowEnd; i += 2) { lo += fd[i]; loN++; }
-    for (let i = lowEnd; i < midEnd; i += 4) { mi += fd[i]; miN++; }
-    for (let i = midEnd; i < fd.length; i += 8) { hi += fd[i]; hiN++; }
+    // Update radio level for UI
+    this.radioLevel = radioSnap.signal.spectralEnergy;
+    this.radioRms = this.radioRms * 0.85 + radioSnap.signal.rms * 0.15;
     this.radioBands = {
-      low: lo / (Math.max(1, loN) * 255),
-      mid: mi / (Math.max(1, miN) * 255),
-      high: hi / (Math.max(1, hiN) * 255),
+      low: radioSnap.occupancy.kick,
+      mid: radioSnap.occupancy.lead,
+      high: radioSnap.occupancy.hats,
     };
 
-    // ── OCCUPANCY ANALYSIS (the key insight) ──
-    // Instead of "radio loud/quiet", track WHICH ROLES the radio fills
-    // Kick: sub-bass energy + transient strength
-    // Bass: bass-band energy + stability
-    // Lead: mid-band energy + spectral prominence
-    // Hats: high-band energy
-    const subEnergy = sub;
-    const bassEnergy = lo / (Math.max(1, loN) * 255);
-    const midEnergy = mi / (Math.max(1, miN) * 255);
-    const highEnergy = hi / (Math.max(1, hiN) * 255);
-
-    // Smooth occupancy (attack fast, release slow)
-    const kickTarget = subEnergy > 0.5 ? subEnergy : subEnergy * 0.3;
-    const bassTarget = bassEnergy > 0.5 ? bassEnergy : bassEnergy * 0.3;
-    const leadTarget = midEnergy > 0.4 ? midEnergy * 0.8 : midEnergy * 0.2;
-    const hatsTarget = highEnergy > 0.3 ? highEnergy * 0.7 : highEnergy * 0.2;
-
-    // Fast attack, slow release
-    this.occupancy.kick += (kickTarget - this.occupancy.kick) * (kickTarget > this.occupancy.kick ? 0.5 : 0.05);
-    this.occupancy.bass += (bassTarget - this.occupancy.bass) * (bassTarget > this.occupancy.bass ? 0.3 : 0.05);
-    this.occupancy.lead += (leadTarget - this.occupancy.lead) * (leadTarget > this.occupancy.lead ? 0.3 : 0.05);
-    this.occupancy.hats += (hatsTarget - this.occupancy.hats) * (hatsTarget > this.occupancy.hats ? 0.3 : 0.05);
-
-    // ── ROLE DUCKING (not sidechain — per-role gain) ──
-    // If radio kick is strong → mute engine kick, reduce bass
-    // If radio bass is strong → reduce engine bass
-    // If radio lead is strong → reduce engine lead
+    // ── ROLE DUCKING (based on occupancy from radio layer) ──
     if (this.kickBus && this.bassBus && this.leadBus && this.hatBus && this.ctx) {
       const now = this.ctx.currentTime;
-      // Kick: if radio kick > 0.7, mute engine kick
       const kickGain = this.occupancy.kick > 0.7 ? 0.05 : 0.9;
       this.kickBus.gain.setTargetAtTime(kickGain, now, 0.03);
-      // Bass: if radio bass > 0.75, reduce engine bass
       const bassGain = this.occupancy.bass > 0.75 ? 0.35 : 0.85;
       this.bassBus.gain.setTargetAtTime(bassGain, now, 0.05);
-      // Lead: if radio mid > 0.85, reduce engine lead
       const leadGain = this.occupancy.lead > 0.85 ? 0.55 : 0.7;
       this.leadBus.gain.setTargetAtTime(leadGain, now, 0.08);
-      // Hats: if radio high > 0.9, reduce engine hats
-      const hatGain = this.occupancy.hats > 0.9 ? 0.6 : 0.6;
-      this.hatBus.gain.setTargetAtTime(hatGain, now, 0.08);
+      this.hatBus.gain.setTargetAtTime(0.6, now, 0.08);
     }
 
     // ── ENERGY HISTORY (for relative energy, not absolute) ──
-    this.energyHistory.push(total);
+    this.energyHistory.push(radioSnap.signal.spectralEnergy);
     if (this.energyHistory.length > 32) this.energyHistory.shift();
 
     // ── MUSIC STATE UPDATE ──
-    // Energy slope (rising/falling/stable)
     if (this.energyHistory.length >= 8) {
       const recent = this.energyHistory.slice(-4).reduce((a, b) => a + b, 0) / 4;
       const older = this.energyHistory.slice(-8, -4).reduce((a, b) => a + b, 0) / 4;
@@ -837,13 +814,10 @@ export class PsyLive {
       this.musicState.energySlope = recent - older;
     }
 
-    // Update radio roles in music state
     this.musicState.radioRoles = { ...this.occupancy };
-    // F1.18: BPM comes from Transport — single source of truth
     this.musicState.bpm = this.transport ? this.transport.snapshot().bpm : 145;
 
-    // ── STYLE DETECTION (with hysteresis) ──
-    // F1.18: use AudioContext.currentTime (NOT Date.now) for musical hysteresis
+    // ── STYLE DETECTION (with hysteresis, using AudioContext time) ──
     const detectedStyle = this.classifyStyle();
     if (detectedStyle) {
       const audioNow = this.ctx.currentTime;
@@ -851,64 +825,34 @@ export class PsyLive {
         this.styleCandidate = detectedStyle;
         this.styleCandidateSince = audioNow;
       }
-      // Only switch style after 8 seconds of consistent detection
       if (this.styleCandidate && audioNow - this.styleCandidateSince > 8) {
         if (this.styleCandidate !== this.currentStyle) {
           this.currentStyle = this.styleCandidate;
-          console.log('[STYLE] switched to:', this.currentStyle);
         }
       }
     }
     this.musicState.style = this.currentStyle;
 
     // ── COMPETITIVE DENSITY CONTROL ──
-    // If radio energy is rising, reduce engine density
     const delta = this.musicState.energySlope;
     if (delta > 0.18) {
       this.musicState.density = Math.max(0.3, this.musicState.density * 0.75);
     } else if (delta < -0.18) {
-      // Radio energy falling — engine can fill more
       this.musicState.density = Math.min(0.9, this.musicState.density * 1.15);
     } else {
-      // Stable — drift toward 0.7
       this.musicState.density += (0.7 - this.musicState.density) * 0.05;
     }
 
-    // Kick detection
-    this.subBassHistory.push(sub);
-    if (this.subBassHistory.length > 50) this.subBassHistory.shift();
-    if (this.subBassHistory.length >= 10) {
-      const startIdx = Math.max(0, this.subBassHistory.length - 20);
-      let sum = 0, max = 0, count = 0;
-      for (let i = startIdx; i < this.subBassHistory.length; i++) {
-        const v = this.subBassHistory[i];
-        sum += v; if (v > max) max = v; count++;
+    // ── LEARNING (record kicks when locked) ──
+    const transportSnap = this.transport!.snapshot();
+    if (transportSnap.locked && radioSnap.beat) {
+      if (this.learningData) {
+        this.learningData = recordKick(this.learningData, Math.round(transportSnap.bpm));
+        this.learningData = deriveInsights(this.learningData);
+        saveLearning(this.learningData);
       }
-      const avg = sum / count;
-      const threshold = avg + (max - avg) * 0.55;
-      const prev = this.subBassHistory[this.subBassHistory.length - 2] || 0;
-      if (sub > threshold && prev <= threshold) this.onKick();
-    }
-
-    // Bass freq detection
-    if (this.kickCount > 0 && this.kickCount % 8 === 0) {
-      const minBin = Math.floor(40 / binHz);
-      const maxBin = Math.floor(2000 / binHz);
-      let pk = 0, pv = 0;
-      for (let i = minBin; i <= maxBin && i < fd.length; i++) {
-        if (fd[i] > pv) { pv = fd[i]; pk = i; }
-      }
-      if (pv > 50) {
-        this.bassFreq = pk * binHz;
-        if (this.learningData) {
-          this.learningData = recordBassNote(this.learningData, this.bassFreq);
-          this.learningData = deriveInsights(this.learningData);
-          saveLearning(this.learningData);
-        }
-        const midi = freqToMidi(this.bassFreq);
-        this.harmonicRoot = midi - 12;
-        this.harmonicLocked = true;
-      }
+      this.updateDelayTime();
+      this.updateMixMode();
     }
 
     // Engine level
@@ -922,36 +866,8 @@ export class PsyLive {
     this.emit();
   }
 
-  private onKick(): void {
-    const now = this.ctx!.currentTime;
-    if (this.lastKickTime > 0 && now - this.lastKickTime < 0.25) return;
-    this.kickCount++;
-
-    // ── FEED BEAT OBSERVATION TO PLL (observer) ──
-    const confidence = Math.min(1, this.radioBands.low * 2);
-    this.pll.update({ time: now, confidence });
-
-    // F1.18: Feed observation to Transport (the time model)
-    // Transport uses the PLL's estimate internally but is the SINGLE source of truth
-    this.transport!.observeBeat({ time: now, confidence, source: 'radio' });
-
-    // F1.18: Read tempo + lock state from Transport (NOT from PLL directly)
-    const snap = this.transport!.snapshot();
-    if (snap.locked) {
-      this.updateDelayTime();
-      this.syncStatus = 'following';
-      this.updateMixMode();
-
-      if (this.learningData) {
-        this.learningData = recordKick(this.learningData, Math.round(snap.bpm));
-        this.learningData = deriveInsights(this.learningData);
-        saveLearning(this.learningData);
-      }
-    }
-
-    this.lastKickTime = now;
-    this.emit();
-  }
+  // F2.5: onKick() REMOVED — RadioObservationLayer handles beat detection internally.
+  // Beat observations flow: radioLayer.process() → radioSnap.beat → transport.observeBeat()
 
   // ── UI timer (2fps) ──
   private startUITimer(): void {
@@ -1002,26 +918,33 @@ export class PsyLive {
   }
 
   // ── F1.18 RULE 9: Browser proof debug surface ──
-  // DEBUG ONLY: Exposes Transport state for browser verification.
-  // Proves schedulerBeat === transportBeat, schedulerBar === transportBar.
-  // This method is for testing/verification only and may be removed
-  // after ownership is proven. It does NOT modify Transport state.
+  // DEBUG ONLY: Exposes Transport + Radio state for browser verification.
   getTransportDebug() {
     if (!this.transport) return null;
     const snap = this.transport.snapshot();
+    const radioSnap = this.radioLayer?.getSnapshot();
     return {
+      // Transport state
       transportBpm: snap.bpm,
       transportBeat: snap.beatIndex,
       transportBar: snap.bar,
       transportPhase: snap.phase,
       transportEpoch: snap.epoch,
+      transportConfidence: snap.confidence,
       transportLocked: snap.locked,
       transportSource: snap.source,
-      // The scheduler reads Transport — so these should always match
+      // Scheduler reads Transport — these must always match
       schedulerBeat: snap.beatIndex,
       schedulerBar: snap.bar,
       schedulerEpoch: snap.epoch,
-      schedulerLastScheduledBeatIndex: this.lastScheduledBeatIndex,
+      schedulerLastScheduledStepIndex: this.lastScheduledBeatIndex,
+      // F2.5: Radio observation state
+      radioState: radioSnap?.signal.state ?? 'DISCONNECTED',
+      radioObservationState: radioSnap?.signal.observationState ?? 'NO_SIGNAL',
+      observationCount: radioSnap?.beat?.observationCount ?? 0,
+      lastObservationTime: radioSnap?.beat?.timestamp.observedAt ?? 0,
+      radioRms: radioSnap?.signal.rms ?? 0,
+      radioConfidence: radioSnap?.beat?.confidence ?? 0,
     };
   }
 
