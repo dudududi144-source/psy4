@@ -1,0 +1,243 @@
+{
+  "runAt": "2026-08-12T15:37:58.699Z",
+  "totalTests": 28,
+  "passed": 28,
+  "failed": 0,
+  "results": [
+    {
+      "id": "F3-R4-60BPM",
+      "name": "414ms regression: 60 BPM (beatDur=1.000s > lookahead=0.15s) produces continuous 16ths",
+      "passed": true,
+      "evidence": "scheduled=20 expected≈20 avgInterval=0.2500s expected=0.2500s",
+      "metrics": {
+        "bpm": 60,
+        "beatDuration": 1,
+        "scheduleAheadTime": 0.15,
+        "scheduled": 20,
+        "expected": 20,
+        "avgInterval": 0.25,
+        "expectedInterval": 0.25
+      }
+    },
+    {
+      "id": "F3-R4-120BPM",
+      "name": "414ms regression: 120 BPM (beatDur=0.500s > lookahead=0.15s) produces continuous 16ths",
+      "passed": true,
+      "evidence": "scheduled=40 expected≈40 avgInterval=0.1250s expected=0.1250s",
+      "metrics": {
+        "bpm": 120,
+        "beatDuration": 0.5,
+        "scheduleAheadTime": 0.15,
+        "scheduled": 40,
+        "expected": 40,
+        "avgInterval": 0.125,
+        "expectedInterval": 0.125
+      }
+    },
+    {
+      "id": "F3-R4-145BPM",
+      "name": "414ms regression: 145 BPM (beatDur=0.414s > lookahead=0.15s) produces continuous 16ths",
+      "passed": true,
+      "evidence": "scheduled=49 expected≈48 avgInterval=0.1034s expected=0.1034s",
+      "metrics": {
+        "bpm": 145,
+        "beatDuration": 0.41379310344827586,
+        "scheduleAheadTime": 0.15,
+        "scheduled": 49,
+        "expected": 48,
+        "avgInterval": 0.1034482758620688,
+        "expectedInterval": 0.10344827586206896
+      }
+    },
+    {
+      "id": "F3-R4-150BPM",
+      "name": "414ms regression: 150 BPM (beatDur=0.400s > lookahead=0.15s) produces continuous 16ths",
+      "passed": true,
+      "evidence": "scheduled=51 expected≈50 avgInterval=0.1000s expected=0.1000s",
+      "metrics": {
+        "bpm": 150,
+        "beatDuration": 0.4,
+        "scheduleAheadTime": 0.15,
+        "scheduled": 51,
+        "expected": 50,
+        "avgInterval": 0.1,
+        "expectedInterval": 0.1
+      }
+    },
+    {
+      "id": "F3-R4-180BPM",
+      "name": "414ms regression: 180 BPM (beatDur=0.333s > lookahead=0.15s) produces continuous 16ths",
+      "passed": true,
+      "evidence": "scheduled=61 expected≈60 avgInterval=0.0833s expected=0.0833s",
+      "metrics": {
+        "bpm": 180,
+        "beatDuration": 0.3333333333333333,
+        "scheduleAheadTime": 0.15,
+        "scheduled": 61,
+        "expected": 60,
+        "avgInterval": 0.08333333333333333,
+        "expectedInterval": 0.08333333333333333
+      }
+    },
+    {
+      "id": "F3-R7-10min",
+      "name": "10-minute drift simulation — drift < 4966ms (sampling gap), no NaN",
+      "passed": true,
+      "evidence": "10min: beatDrift=0 (max=12) timeDrift=0ms nan=0 dupes=0 bpm=145.00",
+      "metrics": {
+        "durationMin": 10,
+        "bpm": 145,
+        "expectedBeat": 1450,
+        "actualBeat": 1450,
+        "beatDrift": 0,
+        "timeDriftMs": 0,
+        "maxAllowedDriftMs": 4965.517241379311,
+        "nanCount": 0,
+        "duplicateBeats": 0
+      }
+    },
+    {
+      "id": "F3-R7-30min",
+      "name": "30-minute drift simulation — drift < 4966ms (sampling gap), no NaN",
+      "passed": true,
+      "evidence": "30min: beatDrift=1 (max=12) timeDrift=414ms nan=0 dupes=0 bpm=145.00",
+      "metrics": {
+        "durationMin": 30,
+        "bpm": 145,
+        "expectedBeat": 4350,
+        "actualBeat": 4349,
+        "beatDrift": 1,
+        "timeDriftMs": 413.7931034482759,
+        "maxAllowedDriftMs": 4965.517241379311,
+        "nanCount": 0,
+        "duplicateBeats": 0
+      }
+    },
+    {
+      "id": "F3-R8-NaN",
+      "name": "NaN timestamp — no crash, no NaN in state",
+      "passed": true,
+      "evidence": "crashed=false bpm=145.00 valid=true"
+    },
+    {
+      "id": "F3-R8-Infinity",
+      "name": "Infinity timestamp — no crash",
+      "passed": true,
+      "evidence": "crashed=false"
+    },
+    {
+      "id": "F3-R8-Negative",
+      "name": "Negative timestamp — no crash",
+      "passed": true,
+      "evidence": "crashed=false"
+    },
+    {
+      "id": "F3-R8-LargeTs",
+      "name": "Extremely large timestamp (1e15) — no crash",
+      "passed": true,
+      "evidence": "crashed=false"
+    },
+    {
+      "id": "F3-R8-Jitter1ms",
+      "name": "±1ms jitter — P95 phase error < 5ms",
+      "passed": true,
+      "evidence": "P95=2.928ms"
+    },
+    {
+      "id": "F3-R8-TempoJump",
+      "name": "Tempo jump 120→180→90 — no crash, BPM in valid range",
+      "passed": true,
+      "evidence": "bpm=167.69 valid=true"
+    },
+    {
+      "id": "F3-R8-500Dupes",
+      "name": "500 duplicate observations — no crash, beat not over-advanced",
+      "passed": true,
+      "evidence": "beat: 0 → 0"
+    },
+    {
+      "id": "F3-R8-100Bursts",
+      "name": "100 random burst observations — no crash",
+      "passed": true,
+      "evidence": "crashed=false"
+    },
+    {
+      "id": "F3-R10-Seek",
+      "name": "Seek: beat 0→32→4, epoch increments each seek",
+      "passed": true,
+      "evidence": "seek1: beat=32 epoch=2, seek2: beat=4 epoch=3"
+    },
+    {
+      "id": "F3-R10-TempoChange",
+      "name": "Tempo change 120→145 — beat continues, epoch increments",
+      "passed": true,
+      "evidence": "beat before=9 after=9 epoch=2 bpm=145.00"
+    },
+    {
+      "id": "F3-R11-Stall0.1s",
+      "name": "Tab stall 0.1s — position correct via anchor",
+      "passed": true,
+      "evidence": "stall=0.1s advanced=1 expected=0"
+    },
+    {
+      "id": "F3-R11-Stall0.5s",
+      "name": "Tab stall 0.5s — position correct via anchor",
+      "passed": true,
+      "evidence": "stall=0.5s advanced=2 expected=1"
+    },
+    {
+      "id": "F3-R11-Stall1s",
+      "name": "Tab stall 1s — position correct via anchor",
+      "passed": true,
+      "evidence": "stall=1s advanced=3 expected=2"
+    },
+    {
+      "id": "F3-R11-Stall5s",
+      "name": "Tab stall 5s — position correct via anchor",
+      "passed": true,
+      "evidence": "stall=5s advanced=13 expected=12"
+    },
+    {
+      "id": "F3-R15-Create",
+      "name": "Consumer can create Transport",
+      "passed": true,
+      "evidence": "transport created, isRunning=false"
+    },
+    {
+      "id": "F3-R15-Immutable",
+      "name": "Snapshot is immutable (Object.freeze)",
+      "passed": true,
+      "evidence": "bpm after mutation attempt: 120"
+    },
+    {
+      "id": "F3-R15-Observe",
+      "name": "Consumer can observe beats",
+      "passed": true,
+      "evidence": "observationCount=N/A beatIndex=0"
+    },
+    {
+      "id": "F3-R15-Subscribe",
+      "name": "Consumer can subscribe/unsubscribe",
+      "passed": true,
+      "evidence": "beforeUnsub=1 afterUnsub=1 (should be equal)"
+    },
+    {
+      "id": "F3-R15-SeekEpoch",
+      "name": "Seek increments epoch (consumer can detect disruption)",
+      "passed": true,
+      "evidence": "epoch: 1 → 2"
+    },
+    {
+      "id": "F3-R15-SetTempo",
+      "name": "Consumer can change tempo",
+      "passed": true,
+      "evidence": "bpm=145"
+    },
+    {
+      "id": "F3-R15-Resume",
+      "name": "Consumer can trigger resume (epoch increments)",
+      "passed": true,
+      "evidence": "epoch: 1 → 2"
+    }
+  ]
+}

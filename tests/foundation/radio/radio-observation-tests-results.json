@@ -1,5 +1,5 @@
 {
-  "runAt": "2026-08-12T15:15:32.889Z",
+  "runAt": "2026-08-12T15:37:58.262Z",
   "totalTests": 20,
   "passed": 20,
   "failed": 0,
@@ -20,13 +20,13 @@
       "id": "C-Jitter10ms",
       "name": "±10ms jitter — degrades gracefully, no false lock",
       "passed": true,
-      "evidence": "p95=19.83ms locked=true"
+      "evidence": "p95=20.97ms locked=true"
     },
     {
       "id": "D-Jitter50ms",
       "name": "±50ms jitter — degrades gracefully without false lock",
       "passed": true,
-      "evidence": "p95=86.39ms locked=true"
+      "evidence": "p95=92.33ms locked=true"
     },
     {
       "id": "E-TempoDrift",
@@ -44,7 +44,7 @@
       "id": "G-MissingBeats",
       "name": "25% missing beats — still locks",
       "passed": true,
-      "evidence": "observations=58 locked=true"
+      "evidence": "observations=52 locked=true"
     },
     {
       "id": "H-DoubleTempo",
@@ -80,7 +80,7 @@
       "id": "M-FalseBeats",
       "name": "20% false beats — still tracks true tempo",
       "passed": true,
-      "evidence": "finalBpm=151.77 observations=90"
+      "evidence": "finalBpm=153.18 observations=90"
     },
     {
       "id": "N-OutOfOrder",
