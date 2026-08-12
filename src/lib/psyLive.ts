@@ -16,6 +16,7 @@ import { type LearningData, type Composition, loadLearning, saveLearning, record
 import { SOUND_BANK, getById, autoSelect, type SoundPreset } from './soundBank';
 import { BeatPLL } from './beatPLL';
 import { mutatePattern, type Pattern } from './patternMutator';
+import { MelodyObserver, type MelodyObservation } from './melodyObserver';
 
 const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -216,6 +217,10 @@ export class PsyLive {
   // Pattern mutation (evolves every 8 bars)
   private livePattern: Pattern | null = null;
   private barCount = 0;
+
+  // Melody observation (learns melodies from radio)
+  private melodyObserver: MelodyObserver = new MelodyObserver();
+  private detectTickCount = 0;
 
   // Scheduler (like psy — 25ms lookahead, 150ms schedule ahead)
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -647,6 +652,19 @@ export class PsyLive {
     const fd = this.radioFreqBuf;
     this.radioAnalyser.getByteFrequencyData(fd);
 
+    // ── MELODY OBSERVATION (every 4th detect tick — less CPU) ──
+    if (this.detectTickCount % 4 === 0) {
+      const tdBuf = this.melodyObserver.ensureTimeDomainBuf(this.radioAnalyser);
+      this.radioAnalyser.getByteTimeDomainData(tdBuf);
+      const clock = this.pll.getClock(this.ctx.currentTime);
+      this.melodyObserver.observe(
+        fd, tdBuf, this.ctx.sampleRate, this.radioAnalyser.fftSize,
+        this.ctx.currentTime, clock.beatIndex, clock.barIndex,
+        this.occupancy
+      );
+    }
+    this.detectTickCount++;
+
     let sub = 0;
     for (let i = 0; i < 10; i++) sub += fd[i];
     sub /= (10 * 255);
@@ -875,5 +893,14 @@ export class PsyLive {
   // ── Get current MusicState (for arranger) ──
   getMusicState(): MusicState {
     return { ...this.musicState };
+  }
+
+  // ── Get melody observations (learned from radio) ──
+  getMelodyObservations(): MelodyObservation[] {
+    return this.melodyObserver.getObservations();
+  }
+
+  getRecentMelody(bars: number): MelodyObservation[] {
+    return this.melodyObserver.getRecentObservations(bars);
   }
 }
