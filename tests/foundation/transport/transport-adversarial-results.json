@@ -1,0 +1,78 @@
+{
+  "runAt": "2026-08-12T07:10:18.286Z",
+  "totalTests": 6,
+  "passed": 6,
+  "failed": 0,
+  "results": [
+    {
+      "id": "ADV-1-Burst",
+      "name": "10 observations in 100ms — transport rejects burst, stays stable",
+      "passed": true,
+      "metrics": {
+        "bpmBefore": 144.99999999999994,
+        "bpmAfter": 145,
+        "bpmChange": 5.684341886080802e-14,
+        "finalBpm": 145
+      },
+      "evidence": "bpm: 145.00 → 145.00 (Δ=0.00)"
+    },
+    {
+      "id": "ADV-2-OutOfOrder",
+      "name": "Out-of-order observation — rejected, no backward time travel",
+      "passed": true,
+      "metrics": {
+        "beatIndexBefore": 18,
+        "beatIndexAfter": 18,
+        "epochBefore": 1,
+        "epochAfter": 1
+      },
+      "evidence": "beatIndex: 18 → 18 epoch: 1 → 1"
+    },
+    {
+      "id": "ADV-3-LateObs",
+      "name": "Late observations (500ms) — transport still converges",
+      "passed": true,
+      "metrics": {
+        "bpm": 145,
+        "finalBpm": 144.99999999999994,
+        "bpmError": 5.684341886080802e-14,
+        "lateDelayMs": 500
+      },
+      "evidence": "finalBpm=145.00 bpmErr=0.00 lateDelay=500ms"
+    },
+    {
+      "id": "ADV-4-Noise",
+      "name": "Random noise observations (conf 0.2-0.4) — transport stays stable",
+      "passed": true,
+      "metrics": {
+        "finalBpm": 142.3448286940174,
+        "bpmError": 2.6551713059826056,
+        "locked": 0,
+        "confidence": 0.2683423736278715
+      },
+      "evidence": "finalBpm=142.34 bpmErr=2.66 locked=false conf=0.27"
+    },
+    {
+      "id": "ADV-5-TempoJump",
+      "name": "Tempo jump 120→180→100 — transport survives, stays in range",
+      "passed": true,
+      "metrics": {
+        "finalBpm": 128.21321550897034,
+        "locked": 1,
+        "confidence": 0.865116422023937
+      },
+      "evidence": "finalBpm=128.21 locked=true conf=0.87"
+    },
+    {
+      "id": "ADV-6-DuplicateKicks",
+      "name": "Duplicate kicks (same time, different conf) — handled gracefully",
+      "passed": true,
+      "metrics": {
+        "finalBpm": 144.99999999999994,
+        "bpmError": 5.684341886080802e-14,
+        "locked": 1
+      },
+      "evidence": "finalBpm=145.00 bpmErr=0.00 locked=true"
+    }
+  ]
+}

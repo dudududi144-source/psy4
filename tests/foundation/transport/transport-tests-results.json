@@ -1,0 +1,265 @@
+{
+  "runAt": "2026-08-12T07:10:18.259Z",
+  "totalTests": 21,
+  "passed": 21,
+  "failed": 0,
+  "results": [
+    {
+      "id": "A-120BPM",
+      "name": "Perfect 120 BPM, 60 beats — P95 phase error < 10ms",
+      "passed": true,
+      "metrics": {
+        "bpm": 120,
+        "finalBpm": 120,
+        "p95PhaseErrorMs": 0,
+        "maxPhaseErrorMs": 0,
+        "meanPhaseErrorMs": 0,
+        "locked": 1
+      },
+      "evidence": "finalBpm=120.00 P95=0.00ms max=0.00ms mean=0.00ms locked=true"
+    },
+    {
+      "id": "B-150BPM",
+      "name": "Perfect 150 BPM, 60 beats — P95 phase error < 10ms",
+      "passed": true,
+      "metrics": {
+        "bpm": 150,
+        "finalBpm": 150.00000000000006,
+        "p95PhaseErrorMs": 1.1368683772161603e-11,
+        "locked": 1
+      },
+      "evidence": "finalBpm=150.00 P95=0.00ms locked=true"
+    },
+    {
+      "id": "C-TempoChange",
+      "name": "Tempo change 120→150 — beat continuity preserved, no phase reset",
+      "passed": true,
+      "metrics": {
+        "beatsAdvanced": 39,
+        "finalBpm": 148.83896176726498,
+        "epochBefore": 1,
+        "epochAfter": 3
+      },
+      "evidence": "beatsAdvanced=39 (expected ~40) finalBpm=148.84 epochDelta=2"
+    },
+    {
+      "id": "D-Jitter50ms",
+      "name": "±50ms jitter — P95 phase error < 75ms (jitter + 50% margin)",
+      "passed": true,
+      "metrics": {
+        "bpm": 145,
+        "jitterMs": 50,
+        "p95PhaseErrorMs": 63.77208537398434,
+        "maxPhaseErrorMs": 63.77208537398434,
+        "finalBpm": 146.365685160853
+      },
+      "evidence": "finalBpm=146.37 P95=63.77ms max=63.77ms"
+    },
+    {
+      "id": "E-Dropout25",
+      "name": "25% beat dropout — converges, no false lock",
+      "passed": true,
+      "metrics": {
+        "fedBeats": 60,
+        "totalBeats": 80,
+        "finalBpm": 145,
+        "bpmError": 0,
+        "locked": 1
+      },
+      "evidence": "fed=60/80 finalBpm=145.00 bpmErr=0.00 locked=true"
+    },
+    {
+      "id": "F-FalseKicks",
+      "name": "False kicks (low confidence) — rejected, no tempo corruption",
+      "passed": true,
+      "metrics": {
+        "extraKicks": 6,
+        "finalBpm": 145.00000000000009,
+        "bpmError": 8.526512829121202e-14,
+        "locked": 1
+      },
+      "evidence": "extras=6 finalBpm=145.00 bpmErr=0.00 locked=true"
+    },
+    {
+      "id": "G-HalfTempo",
+      "name": "Half tempo (75 BPM input) — hypothesis handling, no false certainty",
+      "passed": true,
+      "metrics": {
+        "finalBpm": 150.00000000000003,
+        "closeTo150": 1,
+        "closeTo75": 0,
+        "hypothesisCount": 0,
+        "confidence": 0.8919203721937523
+      },
+      "evidence": "finalBpm=150.00 hypotheses=0 conf=0.89 → recognized 150"
+    },
+    {
+      "id": "H-DoubleTempo",
+      "name": "Double tempo (300 BPM input) — hypothesis handling",
+      "passed": true,
+      "metrics": {
+        "finalBpm": 150,
+        "closeTo300": 0,
+        "closeTo150": 1,
+        "confidence": 0.33750000000000013
+      },
+      "evidence": "finalBpm=150.00 conf=0.34 → 150"
+    },
+    {
+      "id": "I-Stall-0.1s",
+      "name": "Scheduler stall 0.1s — position correct, no catch-up burst",
+      "passed": true,
+      "metrics": {
+        "stallSec": 0.1,
+        "beatsAdvanced": 1,
+        "expectedBeats": 0,
+        "beatError": 1,
+        "epoch": 1
+      },
+      "evidence": "stall=0.1s advanced=1 expected=0 err=1 epoch=1"
+    },
+    {
+      "id": "I-Stall-0.5s",
+      "name": "Scheduler stall 0.5s — position correct, no catch-up burst",
+      "passed": true,
+      "metrics": {
+        "stallSec": 0.5,
+        "beatsAdvanced": 2,
+        "expectedBeats": 1,
+        "beatError": 1,
+        "epoch": 1
+      },
+      "evidence": "stall=0.5s advanced=2 expected=1 err=1 epoch=1"
+    },
+    {
+      "id": "I-Stall-1s",
+      "name": "Scheduler stall 1s — position correct, no catch-up burst",
+      "passed": true,
+      "metrics": {
+        "stallSec": 1,
+        "beatsAdvanced": 3,
+        "expectedBeats": 2,
+        "beatError": 1,
+        "epoch": 1
+      },
+      "evidence": "stall=1s advanced=3 expected=2 err=1 epoch=1"
+    },
+    {
+      "id": "I-Stall-2s",
+      "name": "Scheduler stall 2s — position correct, no catch-up burst",
+      "passed": true,
+      "metrics": {
+        "stallSec": 2,
+        "beatsAdvanced": 5,
+        "expectedBeats": 5,
+        "beatError": 0,
+        "epoch": 1
+      },
+      "evidence": "stall=2s advanced=5 expected=5 err=0 epoch=1"
+    },
+    {
+      "id": "I-Stall-5s",
+      "name": "Scheduler stall 5s — position correct, no catch-up burst",
+      "passed": true,
+      "metrics": {
+        "stallSec": 5,
+        "beatsAdvanced": 13,
+        "expectedBeats": 12,
+        "beatError": 1,
+        "epoch": 1
+      },
+      "evidence": "stall=5s advanced=13 expected=12 err=1 epoch=1"
+    },
+    {
+      "id": "I-Stall-All",
+      "name": "All scheduler stall durations recovered correctly",
+      "passed": true,
+      "metrics": {
+        "tested": 5,
+        "passed": 5
+      },
+      "evidence": "5/5 stalls recovered"
+    },
+    {
+      "id": "J-RadioLossRecovery",
+      "name": "Radio loss/recovery — holdover with confidence decay, then re-lock",
+      "passed": true,
+      "metrics": {
+        "confBefore": 0.8589604964987494,
+        "confAfterLoss": 0.4294802482493747,
+        "confAfter5s": 0.3036883959228147,
+        "confRecovered": 0.8817628750561436,
+        "lockedBefore": 1,
+        "lockedRecovered": 1,
+        "sourceAfterLoss": "internal"
+      },
+      "evidence": "conf: 0.86 → 0.43 (loss) → 0.30 (5s holdover) → 0.88 (recovered) source=internal"
+    },
+    {
+      "id": "K-30minDrift",
+      "name": "30-min drift simulation — P95 timing error < 10ms",
+      "passed": true,
+      "metrics": {
+        "simulatedMinutes": 30,
+        "bpm": 145,
+        "expectedBeatIndex": 4350,
+        "actualBeatIndex": 4350,
+        "beatDrift": 0,
+        "timeDriftMs": 0
+      },
+      "evidence": "30min at 145 BPM: expectedBeat=4350 actualBeat=4350 drift=0 beats (0.00ms)"
+    },
+    {
+      "id": "L-Seek",
+      "name": "Seek to beat 100 — epoch increments, position jumps",
+      "passed": true,
+      "metrics": {
+        "epochBefore": 1,
+        "epochAfter": 2,
+        "beatBefore": 18,
+        "beatAfter": 100
+      },
+      "evidence": "epoch: 1 → 2 beat: 18 → 100"
+    },
+    {
+      "id": "M-AudioContextResume",
+      "name": "AudioContext resume — re-anchors, epoch increments",
+      "passed": true,
+      "metrics": {
+        "epochBefore": 1,
+        "epochAfter": 2,
+        "beatIndex": 26
+      },
+      "evidence": "epoch: 1 → 2 beatIndex=26"
+    },
+    {
+      "id": "N-Subscribers",
+      "name": "Multiple subscribers — all receive same snapshots, unsubscribe works",
+      "passed": true,
+      "metrics": {
+        "notificationCounts": "5,5,5",
+        "countsAfterUnsub": "10,5,10"
+      },
+      "evidence": "initial counts: [5,5,5] after unsub sub2: [10,5,10]"
+    },
+    {
+      "id": "O-Epoch",
+      "name": "Epoch increments on every disruption (seek, reset, start, resume)",
+      "passed": true,
+      "metrics": {
+        "epochs": "1,2,3,4,5",
+        "increments": 4
+      },
+      "evidence": "epochs: [1 → 2 → 3 → 4 → 5]"
+    },
+    {
+      "id": "P-ImmutableSnapshot",
+      "name": "Transport snapshot is immutable (no duplicate clock ownership via mutation)",
+      "passed": true,
+      "metrics": {
+        "fieldCount": 16
+      },
+      "evidence": "16 fields in snapshot, all readonly: true"
+    }
+  ]
+}

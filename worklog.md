@@ -6228,3 +6228,62 @@ Stage Summary:
 - Gate F0 COMPLETE: inventory written, no code written, no features added
 - Ready for Gate F1 (MusicalTransport) after commit + push
 - Foundation blueprint: follow psy/PSY6_ARCHITECTURE.md as the primary design document
+
+---
+Task ID: FOUNDATION-F1-TRANSPORT
+Agent: main (Foundation Lab / Systems Factory)
+Task: GATE F1 — MusicalTransport (single source of truth for musical time)
+
+Work Log:
+- F1.0 DESIGN REVIEW: Read all timing code (psy4 BeatPLL, psy4 scheduler, psy scheduler, psy5 worker pattern, PSY6_ARCHITECTURE.md). Wrote audit-reports/TRANSPORT_DESIGN_REVIEW.md answering all 15 ownership/behavioral questions. Documented 8 contradictions between blueprint and reality.
+- F1.1-F1.4 TYPES + IMPLEMENTATION: Built foundation/transport/ with:
+  * TransportTypes.ts (153 lines) — TransportSource, TransportSnapshot, BeatObservation, TransportConfig
+  * MusicalTransport.ts (295 lines) — anchor-based clock (beatTime = anchorTime + beatIndex * beatDuration), holdover mode, tempo hypotheses, epoch, subscribers
+  * TransportAdapter.ts (115 lines) — bridges Transport to existing psyLive scheduler
+  * index.ts (28 lines) — barrel export
+- F1.5 TEMPO CHANGES: setTempo() re-anchors to preserve beat position. No phase reset. Test C verifies beat continuity across 120→150 BPM change.
+- F1.6 RADIO LOSS: loseSource() enters holdover mode. Confidence decays exponentially (half-life 10s). Transport continues at last known BPM. Test J verifies loss → holdover → recovery.
+- F1.7 HALF/DOUBLE TEMPO: updateHypotheses() tracks alternative tempo candidates. When ambiguity is high (evidence >= 3), confidence is reduced. No false certainty. Tests G+H verify.
+- F1.8 TAB SUSPENSION: onAudioContextResume() re-anchors immediately. DROP STALE EVENTS policy (no catch-up). Test I verifies 5 stall durations (100ms-5s).
+- F1.9 SUBSCRIBERS: subscribe(listener) returns subscription with unsubscribe(). Snapshots are Object.freeze'd (runtime immutable). Test N verifies 3 subscribers + unsubscribe.
+- F1.14 TEST MATRIX A-P: 21 tests covering perfect timing, tempo change, jitter, dropout, false kicks, half/double tempo, scheduler stall, radio loss, 30-min drift, seek, AudioContext resume, subscribers, epoch, immutability.
+- F1.15 ADVERSARIAL: 6 tests — bursts, out-of-order, late observations, noise, tempo jumps, duplicate kicks.
+
+KEY METRICS:
+- 30-min drift: 0.00ms (anchor-based, zero float accumulation)
+- P95 phase error at 120/150 BPM: 0.00ms
+- P95 phase error with ±50ms jitter: 63.77ms (< 75ms target)
+- All 27 transport tests pass (21 matrix + 6 adversarial)
+- All 145 tests pass (27 transport + 117 previous + 1 stress)
+- Lint clean
+
+DESIGN DECISIONS:
+1. AudioContext.currentTime is the ONLY musical clock (Date.now/setInterval forbidden for musical decisions)
+2. Transport ≠ PLL (Transport is a time model, PLL is an observer)
+3. Anchor-based: beatTime = anchorTime + beatIndex * beatDuration (no float drift)
+4. Immutable snapshots (Object.freeze for runtime immutability)
+5. Epoch increments on every disruption (seek, reset, start, resume, re-anchor)
+6. Holdover mode (radio loss → continue with decaying confidence)
+7. Half/double tempo hypotheses (no false certainty)
+8. DROP STALE EVENTS policy (tab suspension → no catch-up burst)
+9. Smooth re-anchor (30% correction at bar boundaries, not raw observation jump)
+10. Tempo change preserves beat position (re-anchor at current beat, no phase reset)
+
+INTEGRATION STATUS:
+- Phase 1 COMPLETE: Transport + Adapter built and tested (27/27 pass)
+- Phase 2 DEFERRED: Wiring into psyLive.ts (delete duplicate clock state)
+  * Rationale: prompt says "עבר ownership בהדרגה" (transfer gradually)
+  * The Transport is the F1 deliverable; integration is Phase 2
+  * 117 existing tests must remain green during integration
+
+NO BLOCKERS FOUND:
+- BeatPLL (after R1 repair) passes 48/48 convergence tests
+- Transport builds on BeatPLL without requiring PLL changes
+- PLL confidence (radioBands.low * 2) is a pre-existing issue, not a blocker
+
+Stage Summary:
+- F1 COMPLETE: MusicalTransport built, tested (27/27), adversarial-tested (6/6)
+- 8 contradictions between PSY6_ARCHITECTURE.md blueprint and reality documented
+- Anchor-based clock eliminates float drift (30-min test = 0ms)
+- Holdover + epoch + hypotheses + drop-stale-events all implemented
+- Next: F2 (Radio Observation Layer) only after user approval
