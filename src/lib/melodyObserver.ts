@@ -1,15 +1,33 @@
 /**
  * MelodyObserver — extracts pitch candidates from radio with confidence gates.
  *
- * From architecture review:
- * - Don't try to transcribe full mix blindly
- * - Isolate melodic region (250-2000Hz)
- * - Gate by confidence (salience, spectral flatness, kick activity)
- * - Only record observations when signal is clean enough
- * - Quantize to musical time (beat/bar)
+ * REALITY REPAIR R2 — Forensic root-cause fix.
+ *
+ * ROOT CAUSE (2 bugs in original):
+ *
+ * Bug 1 — Normalized ACF octave ambiguity (CRITICAL):
+ *   Original estimatePitch() used normalized autocorrelation. For a pure
+ *   sine, ACF has equal peaks at ALL integer multiples of the true lag
+ *   (lag=100, 200, 300, 400 for 440 Hz). The function picked the global
+ *   max, which due to numerical effects could be a sub-harmonic
+ *   (lag=401 → 110 Hz, a -2 octave error).
+ *
+ *   FIX: Replaced with YIN algorithm. YIN uses the difference function
+ *   and takes the FIRST dip below a threshold (smallest τ = highest
+ *   frequency), explicitly avoiding octave-down errors.
+ *
+ * Bug 2 — spectralFlatness computed on full spectrum with bad clamp:
+ *   Original computed flatness over 0-Nyquist with Math.max(1, ...).
+ *   A tone with noise floor 5/255 gave flatness ≈ 0.85, tripping the
+ *   >0.5 rejection gate. Pure tones were classified as noise.
+ *
+ *   FIX: Compute flatness only on the melodic band (250-2000 Hz) where
+ *   tonal signals are expected. Change clamp to Math.max(1e-6, ...) for
+ *   proper dynamic range (zero bins now contribute -13.8 to logSum,
+ *   dragging geometric mean toward 0 for tonal signals).
  *
  * Pipeline:
- *   Radio FFT → melodic band isolation → pitch detection (autocorrelation)
+ *   Radio FFT → melodic band isolation → YIN pitch detection
  *   → confidence gating → MelodyObservation → MotifLearner
  */
 
@@ -26,75 +44,155 @@ export interface MelodyObservation {
 }
 
 /**
- * Estimate pitch using normalized autocorrelation.
- * Better than naive autocorrelation — less octave errors.
+ * YIN pitch detection algorithm.
+ *
+ * Steps:
+ *   1. Compute the difference function: d(τ) = Σ(x[i] - x[i+τ])²
+ *   2. Compute the cumulative mean normalized difference: d'(τ)
+ *   3. Find the first τ where d'(τ) < threshold (the fundamental period)
+ *   4. Parabolic interpolation for sub-sample accuracy
+ *
+ * The key insight: YIN finds the FIRST dip (smallest τ = highest frequency),
+ * which avoids octave-down errors that plague ACF.
+ *
+ * @param samples  Time-domain audio samples (Float32Array)
+ * @param sampleRate  Sample rate in Hz
+ * @param minHz  Minimum frequency to detect (default 80)
+ * @param maxHz  Maximum frequency to detect (default 2000)
+ * @returns { frequency: number, confidence: number }
  */
 export function estimatePitch(
   samples: Float32Array,
   sampleRate: number,
-  minHz = 100,
-  maxHz = 1800,
+  minHz: number = 80,
+  maxHz: number = 2000,
 ): { frequency: number; confidence: number } {
+  const N = samples.length;
   const minLag = Math.floor(sampleRate / maxHz);
-  const maxLag = Math.floor(sampleRate / minHz);
+  const maxLag = Math.min(Math.floor(sampleRate / minHz), N / 2);
 
   // Energy check — skip silence
   let energy = 0;
-  for (let i = 0; i < samples.length; i++) {
-    energy += samples[i] * samples[i];
-  }
+  for (let i = 0; i < N; i++) energy += samples[i] * samples[i];
   if (energy < 1e-5) {
     return { frequency: 0, confidence: 0 };
   }
 
-  let bestLag = -1;
-  let bestCorr = 0;
-
-  for (let lag = minLag; lag <= maxLag; lag++) {
-    let num = 0;
-    let denA = 0;
-    let denB = 0;
-
-    for (let i = 0; i + lag < samples.length; i++) {
-      const a = samples[i];
-      const b = samples[i + lag];
-      num += a * b;
-      denA += a * a;
-      denB += b * b;
+  // Step 1: Compute the difference function d(τ) = Σ(x[i] - x[i+τ])²
+  // Only compute for τ in [minLag, maxLag]
+  const diff = new Float32Array(maxLag + 1);
+  for (let tau = minLag; tau <= maxLag; tau++) {
+    let sum = 0;
+    for (let i = 0; i < N - tau; i++) {
+      const delta = samples[i] - samples[i + tau];
+      sum += delta * delta;
     }
+    diff[tau] = sum;
+  }
 
-    const corr = num / Math.sqrt(Math.max(1e-9, denA * denB));
+  // Step 2: Compute the cumulative mean normalized difference d'(τ)
+  // d'(0) = 1
+  // d'(τ) = d(τ) / ((1/τ) * Σ_{j=1}^{τ} d(j))
+  const cmndf = new Float32Array(maxLag + 1);
+  cmndf[0] = 1;
+  let runningSum = 0;
+  for (let tau = 1; tau <= maxLag; tau++) {
+    runningSum += diff[tau];
+    cmndf[tau] = runningSum === 0 ? 1 : (diff[tau] * tau) / runningSum;
+  }
 
-    if (corr > bestCorr) {
-      bestCorr = corr;
-      bestLag = lag;
+  // Step 3: Find the FIRST dip below the threshold
+  // This is the key difference from ACF: we take the first dip, not the
+  // global minimum. The first dip corresponds to the fundamental period
+  // (smallest τ = highest frequency), avoiding octave-down errors.
+  const threshold = 0.15;
+  let bestTau = -1;
+
+  for (let tau = minLag; tau <= maxLag; tau++) {
+    if (cmndf[tau] < threshold) {
+      // Found a dip — now find the LOCAL minimum (the dip bottom)
+      // by continuing while cmndf is decreasing
+      let localMinTau = tau;
+      while (localMinTau + 1 <= maxLag && cmndf[localMinTau + 1] < cmndf[localMinTau]) {
+        localMinTau++;
+      }
+      bestTau = localMinTau;
+      break;
     }
   }
 
-  // Confidence gate — don't report low-confidence pitches
-  if (bestLag < 0 || bestCorr < 0.65) {
-    return { frequency: 0, confidence: 0 };
+  // If no dip below threshold, find the global minimum in [minLag, maxLag]
+  if (bestTau < 0) {
+    let minVal = Infinity;
+    for (let tau = minLag; tau <= maxLag; tau++) {
+      if (cmndf[tau] < minVal) {
+        minVal = cmndf[tau];
+        bestTau = tau;
+      }
+    }
+    // If even the global minimum is too high, the signal is not periodic enough
+    if (minVal > 0.5) {
+      return { frequency: 0, confidence: 0 };
+    }
   }
 
-  return {
-    frequency: sampleRate / bestLag,
-    confidence: Math.min(1, (bestCorr - 0.65) / 0.3),
-  };
+  // Step 4: Parabolic interpolation for sub-sample accuracy
+  // Fit a parabola to (bestTau-1, cmndf[bestTau-1]), (bestTau, cmndf[bestTau]),
+  // (bestTau+1, cmndf[bestTau+1]) and find the minimum.
+  let refinedTau = bestTau;
+  if (bestTau > 0 && bestTau < maxLag) {
+    const s0 = cmndf[bestTau - 1];
+    const s1 = cmndf[bestTau];
+    const s2 = cmndf[bestTau + 1];
+    const denom = 2 * (2 * s1 - s2 - s0);
+    if (denom !== 0) {
+      const shift = (s2 - s0) / denom;
+      if (Math.abs(shift) <= 1) {
+        refinedTau = bestTau + shift;
+      }
+    }
+  }
+
+  const frequency = sampleRate / refinedTau;
+
+  // Confidence: 1 - cmndf[bestTau] (lower CMNDF = higher confidence)
+  const confidence = Math.max(0, Math.min(1, 1 - cmndf[bestTau]));
+
+  return { frequency, confidence };
 }
 
 /**
  * Calculate spectral flatness — high = noise-like, low = tonal.
  * We want tonal signal for pitch detection.
+ *
+ * FIX: Compute only on the melodic band (250-2000 Hz) and use a smaller
+ * clamp (1e-6 instead of 1) for proper dynamic range.
  */
-export function spectralFlatness(magnitudes: Uint8Array): number {
+export function spectralFlatness(
+  magnitudes: Uint8Array,
+  sampleRate?: number,
+  fftSize?: number,
+): number {
   if (magnitudes.length === 0) return 1;
+
+  // Determine the melodic band [250, 2000] Hz
+  let startBin = 0;
+  let endBin = magnitudes.length;
+  if (sampleRate && fftSize) {
+    const binHz = sampleRate / fftSize;
+    startBin = Math.floor(250 / binHz);
+    endBin = Math.min(magnitudes.length, Math.floor(2000 / binHz));
+  }
+
+  if (endBin <= startBin) return 1;
 
   let sum = 0;
   let logSum = 0;
   let count = 0;
 
-  for (let i = 0; i < magnitudes.length; i++) {
-    const v = Math.max(1, magnitudes[i]);
+  for (let i = startBin; i < endBin; i++) {
+    // FIX: use 1e-6 clamp (was 1) so zero bins contribute -13.8 to logSum
+    const v = Math.max(1e-6, magnitudes[i]);
     sum += v;
     logSum += Math.log(v);
     count++;
@@ -144,13 +242,6 @@ export function extractMelodicBand(
 
 /**
  * MelodyObserver — collects pitch observations with confidence gates.
- *
- * Usage:
- *   const observer = new MelodyObserver();
- *   // In detect loop:
- *   observer.observe(freqData, timeDomainData, ctx, pll, occupancy);
- *   // Get observations:
- *   const obs = observer.getObservations();
  */
 export class MelodyObserver {
   private observations: MelodyObservation[] = [];
@@ -187,7 +278,8 @@ export class MelodyObserver {
     }
 
     // 3. Check spectral flatness (want tonal, not noise)
-    const flatness = spectralFlatness(freqData);
+    // FIX: compute on melodic band only
+    const flatness = spectralFlatness(freqData, sampleRate, fftSize);
     if (flatness > 0.5) {
       this.finishLastNote(currentTime, beatIndex, barIndex);
       return;
@@ -199,9 +291,8 @@ export class MelodyObserver {
       return;
     }
 
-    // ── PITCH DETECTION ──
-    // Use time-domain data for autocorrelation
-    const pitch = estimatePitch(timeDomainData, sampleRate, 100, 1800);
+    // ── PITCH DETECTION (YIN) ──
+    const pitch = estimatePitch(timeDomainData, sampleRate, 80, 2000);
 
     if (pitch.frequency === 0 || pitch.confidence < 0.3) {
       this.finishLastNote(currentTime, beatIndex, barIndex);
@@ -236,7 +327,7 @@ export class MelodyObserver {
       confidence,
       beat: beatIndex,
       bar: barIndex,
-      durationBeats: 0, // filled when note ends
+      durationBeats: 0,
       spectralEnergy: melodic.energy,
       salience,
     };
@@ -244,7 +335,6 @@ export class MelodyObserver {
     // If same pitch as last, extend duration
     if (this.lastObservation && Math.abs(this.lastObservation.midi - midi) <= 1) {
       // Same note — don't create new observation, just update duration
-      // Duration will be calculated when note ends
     } else {
       // New note — finish previous, start new
       this.finishLastNote(currentTime, beatIndex, barIndex);
@@ -258,12 +348,10 @@ export class MelodyObserver {
   private finishLastNote(currentTime: number, beatIndex: number, barIndex: number): void {
     if (!this.lastObservation) return;
 
-    // Calculate duration in beats
     const timeDiff = currentTime - this.lastObservation.time;
-    const beatDuration = 0.4; // approx, will be refined with PLL
+    const beatDuration = 0.4;
     this.lastObservation.durationBeats = Math.max(0.25, timeDiff / beatDuration);
 
-    // Only store if note lasted at least 1/16th
     if (this.lastObservation.durationBeats >= 0.25) {
       this.observations.push(this.lastObservation);
       if (this.observations.length > 200) this.observations.shift();
@@ -272,25 +360,16 @@ export class MelodyObserver {
     this.lastObservation = null;
   }
 
-  /**
-   * Get all collected observations.
-   */
   getObservations(): MelodyObservation[] {
     return [...this.observations];
   }
 
-  /**
-   * Get observations from the last N bars.
-   */
   getRecentObservations(bars: number): MelodyObservation[] {
     if (this.observations.length === 0) return [];
     const lastBar = this.observations[this.observations.length - 1].bar;
     return this.observations.filter(o => o.bar >= lastBar - bars);
   }
 
-  /**
-   * Clear old observations (keep last 100).
-   */
   prune(): void {
     if (this.observations.length > 100) {
       this.observations = this.observations.slice(-100);
@@ -298,8 +377,14 @@ export class MelodyObserver {
   }
 
   /**
-   * Ensure time-domain buffer is allocated.
+   * Flush the current pending observation (commit it to the observations array).
+   * Call this when the stream ends or when querying observations to ensure
+   * the most recent note is included.
    */
+  flush(currentTime: number, beatIndex: number, barIndex: number): void {
+    this.finishLastNote(currentTime, beatIndex, barIndex);
+  }
+
   ensureTimeDomainBuf(analyser: AnalyserNode): Float32Array {
     if (!this.timeDomainBuf || this.timeDomainBuf.length !== analyser.fftSize) {
       this.timeDomainBuf = new Float32Array(analyser.fftSize);

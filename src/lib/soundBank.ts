@@ -1,10 +1,21 @@
 /**
- * PSY SOUND BANK — Professional instrument library
+ * PSY SOUND BANK — Preset Library (FUTURE MATERIAL — R4/R7 classification)
+ *
+ * STATUS: VERIFIED DATA — NOT CONNECTED TO RUNTIME
+ *
+ * Contains 142 valid presets (0 NaN, 0 missing fields, verified by SB-6A test).
+ * However, these presets are NOT used by the live runtime engine (psyLive.ts).
+ * The runtime uses 4 hardcoded presets with inline Web Audio synthesis.
+ *
+ * CLASSIFICATION: FUTURE MATERIAL LIBRARY
+ *   - Data is valid and well-formed
+ *   - Not connected to runtime (getById/autoSelect not called)
+ *   - To be wired in a future iteration after runtime verification
  *
  * ARCHITECTURE:
  *   - 8 categories: drum, bass, lead, pad, pluck, arp, fx, texture
  *   - 6 genres: PSYTRANCE, TECHNO, TRANCE, PROGRESSIVE, DARK-PSY, GOA
- *   - 150+ presets total (each with full parameter spec)
+ *   - 142 presets total (each with full parameter spec)
  *   - Unified parameter schema (works with PooledEngine)
  *
  * Each preset defines:

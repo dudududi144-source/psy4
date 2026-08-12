@@ -13,10 +13,16 @@
  */
 
 import { type LearningData, type Composition, loadLearning, saveLearning, recordKick, recordBassNote, recordRadioBands, recordEnergy, deriveInsights, getInsights, generateComposition } from './learning';
-import { SOUND_BANK, getById, autoSelect, type SoundPreset } from './soundBank';
+// R4 PRESET DECISION: Option B — SoundBank is valid data (142 presets verified)
+// but is NOT connected to the live runtime. The engine uses 4 hardcoded presets
+// with inline Web Audio synthesis. SoundBank is marked as FUTURE MATERIAL
+// LIBRARY — to be wired in a future iteration after the runtime engine is
+// fully verified. The import is removed to honestly reflect the disconnection.
+// See audit-reports/PSY4_REALITY_REPAIR.md for details.
 import { BeatPLL } from './beatPLL';
 import { mutatePattern, type Pattern } from './patternMutator';
 import { MelodyObserver, type MelodyObservation } from './melodyObserver';
+import { RadioStateGate, type RadioState } from './radioStateGate';
 
 const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -112,7 +118,10 @@ export const PRESETS: Preset[] = [
 
 // ─── State ─────────────────────────────────────────────────────────────────
 export type MixMode = 'solo' | 'glue' | 'reinforce';
-export type SyncStatus = 'idle' | 'listening' | 'following';
+// R3 REALITY REPAIR: SyncStatus now reflects actual signal state.
+// 'listening' is ONLY set when the RadioStateGate verifies non-zero samples.
+// 'following' is ONLY set when PLL is locked AND signal is verified.
+export type SyncStatus = 'idle' | 'connecting' | 'no_signal' | 'listening' | 'following';
 
 export interface LiveState {
   playing: boolean;
@@ -135,6 +144,10 @@ export interface LiveState {
   compositionMode: boolean;
   // Occupancy (from architecture review)
   occupancy: { kick: number; bass: number; lead: number; hats: number };
+  // R3: Explicit radio signal state (from RadioStateGate)
+  radioState: RadioState;
+  radioSignalRms: number;
+  radioNonZeroRatio: number;
 }
 
 // ─── MusicState (from architecture review) ────────────────────────────────
@@ -222,6 +235,13 @@ export class PsyLive {
   private melodyObserver: MelodyObserver = new MelodyObserver();
   private detectTickCount = 0;
 
+  // R3: Radio signal reality gate
+  private radioGate: RadioStateGate = new RadioStateGate();
+
+  // R6: Master safety limiter
+  private safetyLimiter: DynamicsCompressorNode | null = null;
+  private safetyReduction: number = 0;
+
   // Scheduler (like psy — 25ms lookahead, 150ms schedule ahead)
   private timer: ReturnType<typeof setInterval> | null = null;
   private step = 0;
@@ -292,6 +312,10 @@ export class PsyLive {
       radioBands: this.radioBands,
       compositionMode: this.compositionMode,
       occupancy: this.occupancy,
+      // R3: Radio signal reality state
+      radioState: this.radioGate.getState(),
+      radioSignalRms: this.radioGate.getSnapshot()?.rms ?? 0,
+      radioNonZeroRatio: this.radioGate.getSnapshot()?.nonZeroRatio ?? 0,
     });
   }
 
@@ -300,13 +324,22 @@ export class PsyLive {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
     this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
 
-    // Simple chain: voices → master → analyser → destination
+    // Simple chain: voices → master → safetyLimiter → analyser → destination
+    // R6: Safety limiter added to prevent clipping (engine + radio sum)
     this.master = this.ctx.createGain();
     this.master.gain.value = 0.9;
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 512;
     this.analyser.smoothingTimeConstant = 0.7;
-    this.master.connect(this.analyser);
+    // R6: Safety limiter — brickwall-style, only activates on peaks near 0dBFS
+    this.safetyLimiter = this.ctx.createDynamicsCompressor();
+    this.safetyLimiter.threshold.value = -1.0;   // only catches peaks above -1dB
+    this.safetyLimiter.knee.value = 0;            // hard knee
+    this.safetyLimiter.ratio.value = 20;          // 20:1 = brickwall-ish
+    this.safetyLimiter.attack.value = 0.003;      // 3ms (fast)
+    this.safetyLimiter.release.value = 0.05;      // 50ms
+    this.master.connect(this.safetyLimiter);
+    this.safetyLimiter.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
 
     // Delay (like psy)
@@ -610,9 +643,15 @@ export class PsyLive {
       this.radioSource.connect(this.radioGain);
       this.radioGain.connect(this.radioAnalyser);
       this.radioAnalyser.connect(this.master!);
+
+      // R3: RadioStateGate — mark connecting BEFORE play()
+      this.radioGate.reset();
+      this.radioGate.markConnecting();
+      this.radioGate.markConnected(this.ctx.sampleRate);
+      this.syncStatus = 'connecting'; // NOT 'listening' — signal not verified yet
+
       try { await this.radioEl.play(); } catch {}
       this.radioOn = true;
-      this.syncStatus = 'listening';
       this.updateMixMode();
       this.startDetection();
       this.emit();
@@ -632,6 +671,7 @@ export class PsyLive {
     this.subBassHistory = [];
     if (this.detectTimer) { clearInterval(this.detectTimer); this.detectTimer = null; }
     this.pll.reset();
+    this.radioGate.reset(); // R3: reset signal gate
     this.updateMixMode();
     this.emit();
   }
@@ -652,13 +692,34 @@ export class PsyLive {
     const fd = this.radioFreqBuf;
     this.radioAnalyser.getByteFrequencyData(fd);
 
+    // ── R3: RadioStateGate — feed time-domain + frequency data to verify signal ──
+    const tdBufForGate = this.melodyObserver.ensureTimeDomainBuf(this.radioAnalyser);
+    this.radioAnalyser.getFloatTimeDomainData(tdBufForGate);
+    const radioSnapshot = this.radioGate.observe(tdBufForGate, fd, this.ctx.sampleRate);
+
+    // Update syncStatus based on ACTUAL signal state (not play() promise)
+    if (this.radioOn) {
+      if (radioSnapshot.state === 'PLAYING_SIGNAL') {
+        // Signal verified — now check PLL lock
+        this.syncStatus = this.pll.isLocked() ? 'following' : 'listening';
+      } else if (radioSnapshot.state === 'CONNECTED_SIGNAL') {
+        this.syncStatus = 'listening'; // weak signal, but present
+      } else if (radioSnapshot.state === 'CONNECTED_NO_SIGNAL') {
+        this.syncStatus = 'no_signal'; // connected but no audio
+      } else if (radioSnapshot.state === 'BUFFERING') {
+        this.syncStatus = 'connecting';
+      } else if (radioSnapshot.state === 'ERROR') {
+        this.syncStatus = 'idle';
+      }
+      // 'connecting' stays until signal is verified
+    }
+
     // ── MELODY OBSERVATION (every 4th detect tick — less CPU) ──
-    if (this.detectTickCount % 4 === 0) {
-      const tdBuf = this.melodyObserver.ensureTimeDomainBuf(this.radioAnalyser);
-      this.radioAnalyser.getFloatTimeDomainData(tdBuf);
+    // Only observe when signal is actually present (R3: don't observe silence)
+    if (this.detectTickCount % 4 === 0 && radioSnapshot.state === 'PLAYING_SIGNAL') {
       const clock = this.pll.getClock(this.ctx.currentTime);
       this.melodyObserver.observe(
-        fd, tdBuf, this.ctx.sampleRate, this.radioAnalyser.fftSize,
+        fd, tdBufForGate, this.ctx.sampleRate, this.radioAnalyser.fftSize,
         this.ctx.currentTime, clock.beatIndex, clock.barIndex,
         this.occupancy
       );

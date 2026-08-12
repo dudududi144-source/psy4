@@ -1,0 +1,123 @@
+{
+  "runAt": "2026-08-12T05:36:29.154Z",
+  "totalTests": 13,
+  "passed": 13,
+  "failed": 0,
+  "results": [
+    {
+      "id": "MO-A4",
+      "name": "A4 = 440 Hz",
+      "passed": true,
+      "detectedFreq": 440.0171342047116,
+      "expectedFreq": 440,
+      "centsErr": 0.1,
+      "octaveErr": 0,
+      "confidence": 1,
+      "evidence": "freq=440.02Hz (expected 440) centsErr=0.1 octaveErr=0 conf=1.000"
+    },
+    {
+      "id": "MO-A3",
+      "name": "A3 = 220 Hz (bass)",
+      "passed": true,
+      "detectedFreq": 220.0009358503497,
+      "expectedFreq": 220,
+      "centsErr": 0,
+      "octaveErr": 0,
+      "confidence": 1,
+      "evidence": "freq=220.00Hz (expected 220) centsErr=0.0 octaveErr=0 conf=1.000"
+    },
+    {
+      "id": "MO-C5",
+      "name": "C5 = 523.25 Hz",
+      "passed": true,
+      "detectedFreq": 523.2776129285814,
+      "expectedFreq": 523.25,
+      "centsErr": 0.1,
+      "octaveErr": 0,
+      "confidence": 1,
+      "evidence": "freq=523.28Hz (expected 523.25) centsErr=0.1 octaveErr=0 conf=1.000"
+    },
+    {
+      "id": "MO-E5",
+      "name": "E5 = 659.25 Hz",
+      "passed": true,
+      "detectedFreq": 659.3160685907055,
+      "expectedFreq": 659.25,
+      "centsErr": 0.2,
+      "octaveErr": 0,
+      "confidence": 1,
+      "evidence": "freq=659.32Hz (expected 659.25) centsErr=0.2 octaveErr=0 conf=1.000"
+    },
+    {
+      "id": "MO-100",
+      "name": "100 Hz sub-bass",
+      "passed": true,
+      "detectedFreq": 100.00016118165072,
+      "expectedFreq": 100,
+      "centsErr": 0,
+      "octaveErr": 0,
+      "confidence": 1,
+      "evidence": "freq=100.00Hz (expected 100) centsErr=0.0 octaveErr=0 conf=1.000"
+    },
+    {
+      "id": "MO-noise",
+      "name": "White noise (should reject)",
+      "passed": true,
+      "detectedFreq": 0,
+      "confidence": 0,
+      "evidence": "freq=0.00Hz conf=0.000 (max allowed: 0.3)"
+    },
+    {
+      "id": "MO-silence",
+      "name": "Silence (should reject)",
+      "passed": true,
+      "detectedFreq": 0,
+      "confidence": 0,
+      "evidence": "freq=0.00Hz conf=0.000 (max allowed: 0)"
+    },
+    {
+      "id": "MO-kick",
+      "name": "Kick transient (should NOT produce melodic observation)",
+      "passed": true,
+      "detectedFreq": 0,
+      "confidence": 0,
+      "evidence": "kick: freq=0.00Hz conf=0.000 → correctly rejected or non-melodic"
+    },
+    {
+      "id": "MO-mix",
+      "name": "Polyphonic mix (kick+bass+noise at 145 BPM)",
+      "passed": true,
+      "detectedFreq": 0,
+      "confidence": 0,
+      "evidence": "mix: freq=0.00Hz conf=0.000 → low confidence (acceptable)"
+    },
+    {
+      "id": "FL-tone",
+      "name": "Pure tone with realistic noise floor (should be tonal, flatness < 0.5)",
+      "passed": true,
+      "flatness": 0.096,
+      "evidence": "flatness=0.096 → tonal (expected tonal)"
+    },
+    {
+      "id": "FL-noise",
+      "name": "White noise spectrum (should be noisy, flatness > 0.5)",
+      "passed": true,
+      "flatness": 0.998,
+      "evidence": "flatness=0.998 → noisy (expected noisy)"
+    },
+    {
+      "id": "MO-observer-440",
+      "name": "Full observer: 440 Hz with harmonics produces observations",
+      "passed": true,
+      "observationCount": 1,
+      "evidence": "observations=1 → last MIDI=69 conf=0.86"
+    },
+    {
+      "id": "MO-observer-kick-gate",
+      "name": "Full observer: kick>0.8 suppresses observations",
+      "passed": true,
+      "observationCount": 0,
+      "evidence": "observations=0 (should be 0)"
+    }
+  ]
+}

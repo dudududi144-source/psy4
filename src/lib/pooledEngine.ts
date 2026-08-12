@@ -1,14 +1,32 @@
 /**
- * PooledEngine — plays sound bank presets with zero allocation.
+ * PooledEngine — EXPERIMENTAL BACKEND (R5 classification)
+ *
+ * STATUS: EXPERIMENTAL — NOT CONNECTED TO RUNTIME
+ *
+ * This module is a pre-allocated voice pool engine that passes its own
+ * stress tests (5800 notes, 0 crashes, no node leak, voice reuse confirmed).
+ * However, it is NOT imported or used by the live runtime engine (psyLive.ts).
+ * The runtime uses inline createOscillator() calls per note instead.
+ *
+ * The "No GC Dropouts" claim that was previously associated with this module
+ * is NOT PROVEN for the runtime, because:
+ *   1. This module is dead code (not connected)
+ *   2. GC pause measurement requires a real browser audio callback
+ *   3. The runtime's inline allocation pattern is what PooledEngine was
+ *      designed to prevent
+ *
+ * DECISION: RETAINED AS EXPERIMENTAL BACKEND
+ *   - Not deleted (passes own tests, may be wired in future)
+ *   - Not claimed as runtime (honestly classified)
+ *   - Integration cost: would require refactoring psyLive.ts voice functions
+ *     (kick/bass/lead/hat) to use triggerSynth/triggerDrum instead of
+ *     inline createOscillator
  *
  * ARCHITECTURE:
  *   - Pre-allocated voice pools (SynthVoice + DrumVoice)
  *   - Round-robin allocation (no create/destroy per note)
  *   - Full ADSR + filter envelope + LFO per voice
  *   - Effects sends (delay + reverb)
- *
- * This replaces the old pre-rendered buffer approach with REAL synthesis
- * from the 142-preset sound bank.
  */
 import { type SoundPreset } from './soundBank';
 

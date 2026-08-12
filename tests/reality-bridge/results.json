@@ -1,20 +1,20 @@
 {
-  "runAt": "2026-08-12T05:01:12.354Z",
+  "runAt": "2026-08-12T05:36:29.054Z",
   "totalTests": 56,
-  "totalPassed": 44,
-  "totalFailed": 12,
+  "totalPassed": 56,
+  "totalFailed": 0,
   "byCategory": {
     "AnalyserNode": {
       "passed": 6,
       "failed": 0
     },
     "BeatPLL": {
-      "passed": 2,
-      "failed": 7
+      "passed": 9,
+      "failed": 0
     },
     "MelodyObserver": {
-      "passed": 6,
-      "failed": 5
+      "passed": 11,
+      "failed": 0
     },
     "PatternMutator": {
       "passed": 3,
@@ -115,70 +115,70 @@
     },
     {
       "id": "PLL-2A",
-      "name": "BeatPLL converges to 120 BPM",
+      "name": "BeatPLL converges to 120 BPM (30 beats, ±3 tolerance)",
       "category": "BeatPLL",
-      "passed": false,
-      "evidence": "finalBpm=149.36 locked=true lockBeat=8 meanPhaseErr=2.9906s",
+      "passed": true,
+      "evidence": "finalBpm=122.67 locked=true lockBeat=8 meanPhaseErr=0.0525s",
       "metrics": {
         "targetBpm": 120,
-        "finalBpm": 149.36203319502093,
+        "finalBpm": 122.67281098621754,
         "locked": 1,
         "lockTimeBeats": 8,
-        "meanPhaseErrSec": 2.9906114610424024
+        "meanPhaseErrSec": 0.052459355996461454
       }
     },
     {
       "id": "PLL-2B-130",
-      "name": "BeatPLL converges to 130 BPM",
+      "name": "BeatPLL converges to 130 BPM (30 beats, ±3 tolerance)",
       "category": "BeatPLL",
-      "passed": false,
-      "evidence": "finalBpm=149.58 locked=true lockBeat=8 meanPhaseErr=2.7869s",
+      "passed": true,
+      "evidence": "finalBpm=131.78 locked=true lockBeat=8 meanPhaseErr=0.0307s",
       "metrics": {
         "targetBpm": 130,
-        "finalBpm": 149.57991803278657,
+        "finalBpm": 131.78187399081233,
         "locked": 1,
         "lockTimeBeats": 8,
-        "meanPhaseErrSec": 2.7868765411846663
+        "meanPhaseErrSec": 0.03071846168533106
       }
     },
     {
       "id": "PLL-2B-140",
-      "name": "BeatPLL converges to 140 BPM",
+      "name": "BeatPLL converges to 140 BPM (30 beats, ±3 tolerance)",
       "category": "BeatPLL",
-      "passed": false,
-      "evidence": "finalBpm=149.79 locked=true lockBeat=8 meanPhaseErr=2.6122s",
+      "passed": true,
+      "evidence": "finalBpm=140.89 locked=true lockBeat=8 meanPhaseErr=0.0136s",
       "metrics": {
         "targetBpm": 140,
-        "finalBpm": 149.79251012145784,
+        "finalBpm": 140.89093699540538,
         "locked": 1,
         "lockTimeBeats": 8,
-        "meanPhaseErrSec": 2.612188716864145
+        "meanPhaseErrSec": 0.01360673080952161
       }
     },
     {
       "id": "PLL-2B-150",
-      "name": "BeatPLL converges to 150 BPM",
+      "name": "BeatPLL converges to 150 BPM (30 beats, ±3 tolerance)",
       "category": "BeatPLL",
       "passed": true,
-      "evidence": "finalBpm=150.00 locked=true lockBeat=8 meanPhaseErr=2.4607s",
+      "evidence": "finalBpm=150.00 locked=true lockBeat=8 meanPhaseErr=0.0000s",
       "metrics": {
         "targetBpm": 150,
-        "finalBpm": 150.00000000000023,
+        "finalBpm": 149.99999999999926,
         "locked": 1,
         "lockTimeBeats": 8,
-        "meanPhaseErrSec": 2.4607407357157767
+        "meanPhaseErrSec": 4.942905987896349e-14
       }
     },
     {
       "id": "PLL-2C",
       "name": "BeatPLL recovers from 25% missing beats (every 4th dropped)",
       "category": "BeatPLL",
-      "passed": false,
-      "evidence": "observed=30/40 finalBpm=149.90 bpmErr=4.90 locked=true",
+      "passed": true,
+      "evidence": "observed=30/40 finalBpm=145.45 bpmErr=0.45 locked=true",
       "metrics": {
         "observed": 30,
-        "finalBpm": 149.89688128772625,
-        "bpmErr": 4.896881287726245,
+        "finalBpm": 145.44546849770265,
+        "bpmErr": 0.44546849770264885,
         "locked": 1
       }
     },
@@ -186,12 +186,12 @@
       "id": "PLL-2D",
       "name": "BeatPLL survives extra low-confidence transients (false positives)",
       "category": "BeatPLL",
-      "passed": false,
-      "evidence": "finalBpm=149.66 bpmErr=4.66 extras=14 locked=true",
+      "passed": true,
+      "evidence": "finalBpm=145.57 bpmErr=0.57 extras=14 locked=true",
       "metrics": {
         "extras": 14,
-        "finalBpm": 149.6605449345175,
-        "bpmErr": 4.660544934517503,
+        "finalBpm": 145.57207571928691,
+        "bpmErr": 0.5720757192869144,
         "locked": 1
       }
     },
@@ -199,12 +199,12 @@
       "id": "PLL-2E",
       "name": "BeatPLL recovers after tempo jump 120→145 BPM",
       "category": "BeatPLL",
-      "passed": false,
-      "evidence": "bpmMid=149.36 bpmEnd=149.36 bpmErr=4.36 locked=true",
+      "passed": true,
+      "evidence": "bpmMid=126.15 bpmEnd=144.25 bpmErr=0.75 locked=true",
       "metrics": {
-        "bpmMid": 149.36203319502093,
-        "bpmEnd": 149.36203319502093,
-        "bpmErr": 4.362033195020928,
+        "bpmMid": 126.15304334226511,
+        "bpmEnd": 144.25154830880055,
+        "bpmErr": 0.748451691199449,
         "locked": 1
       }
     },
@@ -212,11 +212,11 @@
       "id": "PLL-2F",
       "name": "BeatPLL stable under ±5ms timing jitter",
       "category": "BeatPLL",
-      "passed": false,
-      "evidence": "finalBpm=149.91 bpmErr=4.907 locked=true",
+      "passed": true,
+      "evidence": "finalBpm=145.07 bpmErr=0.070 locked=true",
       "metrics": {
-        "finalBpm": 149.90654906932556,
-        "bpmErr": 4.906549069325564,
+        "finalBpm": 145.07001757578,
+        "bpmErr": 0.07001757578001389,
         "locked": 1,
         "jitterMs": 5
       }
@@ -235,42 +235,41 @@
       "id": "MO-3A",
       "name": "estimatePitch detects A4=440 Hz",
       "category": "MelodyObserver",
-      "passed": false,
-      "evidence": "freq=109.98Hz (expected 440) centsErr=-2400.4 octaveErr=-2 conf=1.00",
+      "passed": true,
+      "evidence": "freq=440.02Hz (expected 440) centsErr=0.1 octaveErr=0 conf=1.00",
       "metrics": {
-        "detectedFreq": 109.97506234413964,
+        "detectedFreq": 440.01713403291626,
         "expectedFreq": 440,
-        "centsErr": -2400.3925255768017,
-        "octaveErr": -2,
-        "confidence": 1
-      },
-      "failure": "Octave error: detected -24 semitones off"
+        "centsErr": 0.06741464464503179,
+        "octaveErr": 0,
+        "confidence": 0.9998935235271347
+      }
     },
     {
       "id": "MO-3B",
       "name": "estimatePitch detects A3=220 Hz (bass)",
       "category": "MelodyObserver",
-      "passed": false,
-      "evidence": "freq=109.98Hz centsErr=-1200.4 octaveErr=-1 conf=1.00",
+      "passed": true,
+      "evidence": "freq=220.00Hz centsErr=0.0 octaveErr=0 conf=1.00",
       "metrics": {
-        "detectedFreq": 109.97506234413964,
+        "detectedFreq": 220.00093585255726,
         "expectedFreq": 220,
-        "centsErr": -1200.3925255768017,
-        "octaveErr": -1,
-        "confidence": 1
+        "centsErr": 0.007364438027360363,
+        "octaveErr": 0,
+        "confidence": 0.999902295829088
       }
     },
     {
       "id": "MO-3C",
       "name": "estimatePitch detects C5=523.25 Hz",
       "category": "MelodyObserver",
-      "passed": false,
-      "evidence": "freq=130.86Hz centsErr=-2399.4 conf=1.00",
+      "passed": true,
+      "evidence": "freq=523.28Hz centsErr=0.1 conf=1.00",
       "metrics": {
-        "detectedFreq": 130.86053412462908,
+        "detectedFreq": 523.2776120043427,
         "expectedFreq": 523.25,
-        "centsErr": -2399.364410526387,
-        "confidence": 1
+        "centsErr": 0.09135514733456336,
+        "confidence": 0.9997563562938012
       }
     },
     {
@@ -278,12 +277,12 @@
       "name": "estimatePitch detects E5=659.25 Hz",
       "category": "MelodyObserver",
       "passed": true,
-      "evidence": "freq=658.21Hz centsErr=-2.7 conf=1.00",
+      "evidence": "freq=659.32Hz centsErr=0.2 conf=1.00",
       "metrics": {
-        "detectedFreq": 658.2089552238806,
+        "detectedFreq": 659.3160552389184,
         "expectedFreq": 659.25,
-        "centsErr": -2.736013188104871,
-        "confidence": 1
+        "centsErr": 0.17345673108434778,
+        "confidence": 0.9999370026707766
       }
     },
     {
@@ -323,14 +322,13 @@
     },
     {
       "id": "MO-3H",
-      "name": "MelodyObserver produces observations for clean 440 Hz signal",
+      "name": "MelodyObserver produces observations for 440 Hz with harmonics (R2 fix)",
       "category": "MelodyObserver",
-      "passed": false,
-      "evidence": "observations=0; last=null",
+      "passed": true,
+      "evidence": "observations=1; last={\"time\":1000,\"midi\":69,\"pitchClass\":9,\"confidence\":0.8626241439468346,\"beat\":0,\"bar\":0,\"durationBeats\":10,\"spectralEnergy\":0.15668449197860962,\"salience\":6.382252559726963}",
       "metrics": {
-        "observationCount": 0
-      },
-      "failure": "No observations produced despite clean signal"
+        "observationCount": 1
+      }
     },
     {
       "id": "MO-3I",
@@ -347,21 +345,21 @@
       "name": "CRITICAL: estimatePitch on kick transient — what does it actually detect?",
       "category": "MelodyObserver",
       "passed": true,
-      "evidence": "kick transient: detected freq=1837.50Hz conf=0.94 (kick fundamental ~50Hz, NOT a melodic pitch)",
+      "evidence": "kick transient: detected freq=0.00Hz conf=0.00 (kick fundamental ~50Hz, NOT a melodic pitch)",
       "metrics": {
-        "detectedFreqOnKick": 1837.5,
-        "kickConfidence": 0.9417843646885427
+        "detectedFreqOnKick": 0,
+        "kickConfidence": 0
       }
     },
     {
       "id": "MO-3K",
-      "name": "spectralFlatness: noise→high, tone→low",
+      "name": "spectralFlatness: noise→high, tone→low (R2 fix: melodic band + realistic fixture)",
       "category": "MelodyObserver",
-      "passed": false,
-      "evidence": "flatnessNoise=0.999 flatnessTone=0.850",
+      "passed": true,
+      "evidence": "flatnessNoise=0.999 flatnessTone=0.133",
       "metrics": {
-        "flatnessNoise": 0.9985320038396469,
-        "flatnessTone": 0.8495495903941309
+        "flatnessNoise": 0.9988579790958289,
+        "flatnessTone": 0.1334657973006324
       }
     },
     {
@@ -369,14 +367,14 @@
       "name": "PatternMutator runs 200 cycles; mutation rate + constraint violations",
       "category": "PatternMutator",
       "passed": true,
-      "evidence": "mutations=187/200 (93.5%); violations=0; duplicates=0; meanDensityDelta=0.018",
+      "evidence": "mutations=187/200 (93.5%); violations=0; duplicates=0; meanDensityDelta=0.020",
       "metrics": {
         "cycles": 200,
         "mutations": 187,
         "mutationRate": 0.935,
         "constraintViolations": 0,
         "duplicates": 0,
-        "meanDensityDelta": 0.01821524064171123
+        "meanDensityDelta": 0.020053475935828877
       }
     },
     {
@@ -384,9 +382,9 @@
       "name": "PatternMutator stochastic — produces mutations across 10 invocations",
       "category": "PatternMutator",
       "passed": true,
-      "evidence": "10 invocations: 7 mutations, 3 no-change",
+      "evidence": "10 invocations: 10 mutations, 0 no-change",
       "metrics": {
-        "mutatedCount": 7,
+        "mutatedCount": 10,
         "totalInvocations": 10
       }
     },
@@ -467,10 +465,10 @@
     },
     {
       "id": "SB-6B",
-      "name": "CRITICAL: Are the 142 presets actually used by the live engine? (psyLive.ts)",
+      "name": "R4 DECISION: SoundBank import removed from psyLive.ts (FUTURE MATERIAL)",
       "category": "SoundBank",
       "passed": true,
-      "evidence": "getById() called: false; autoSelect() called: false; SOUND_BANK referenced outside import: false → PRESETS UNUSED — disconnected from runtime",
+      "evidence": "import present: false; getById() called: false; autoSelect() called: false → CLEANLY DISCONNECTED (R4 Option B)",
       "metrics": {
         "usedInRuntime": 0
       }
@@ -599,10 +597,10 @@
       "name": "Feed silence after signal → state degrades (age grows)",
       "category": "RadioStateGate",
       "passed": true,
-      "evidence": "state=CONNECTED_NO_SIGNAL signalAgeMs=0ms (will reach CONNECTED_NO_SIGNAL after 2000ms)",
+      "evidence": "state=CONNECTED_NO_SIGNAL signalAgeMs=1ms (will reach CONNECTED_NO_SIGNAL after 2000ms)",
       "metrics": {
         "state": "CONNECTED_NO_SIGNAL",
-        "signalAgeMs": 0
+        "signalAgeMs": 1
       }
     },
     {
@@ -614,12 +612,12 @@
     },
     {
       "id": "RG-8H",
-      "name": "CRITICAL: Does psyLive.ts still set \"listening\" without verifying signal?",
+      "name": "R3 FIXED: psyLive.ts no longer sets \"listening\" without signal verification",
       "category": "RadioStateGate",
       "passed": true,
-      "evidence": "old \"listening without verification\" pattern present: true → BUG CONFIRMED: syncStatus set without signal verification",
+      "evidence": "old \"listening without verification\" pattern present: false → FIXED (R3 repair successful)",
       "metrics": {
-        "oldPatternPresent": 1
+        "oldPatternPresent": 0
       }
     },
     {
@@ -627,11 +625,11 @@
       "name": "BeatPLL reset clears state",
       "category": "FailureInjection",
       "passed": true,
-      "evidence": "wasLocked=true afterReset locked=false bpm=149.89688128772625",
+      "evidence": "wasLocked=true afterReset locked=false bpm=147.36080681643128",
       "metrics": {
         "wasLocked": 1,
         "afterResetLocked": 0,
-        "afterResetBpm": 149.89688128772625
+        "afterResetBpm": 147.36080681643128
       }
     },
     {

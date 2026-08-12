@@ -4,9 +4,11 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { PsyLive, LiveState, STREAMS, PRESETS } from '@/lib/psyLive';
 
 const SYNC_META: Record<string, { color: string; label: string }> = {
-  idle:      { color: '#6b7280', label: 'IDLE' },
-  listening: { color: '#f59e0b', label: 'LISTENING' },
-  following: { color: '#10b981', label: 'FOLLOWING' },
+  idle:       { color: '#6b7280', label: 'IDLE' },
+  connecting: { color: '#3b82f6', label: 'CONNECTING' },
+  no_signal:  { color: '#ef4444', label: 'NO SIGNAL' },
+  listening:  { color: '#f59e0b', label: 'LISTENING' },
+  following:  { color: '#10b981', label: 'FOLLOWING' },
 };
 
 const MIX_META: Record<string, { color: string; label: string; desc: string }> = {
@@ -25,6 +27,9 @@ export default function Page() {
     radioRms: 0, radioBands: { low: 0, mid: 0, high: 0 },
     compositionMode: false,
     occupancy: { kick: 0, bass: 0, lead: 0, hats: 0 },
+    radioState: 'DISCONNECTED' as any,
+    radioSignalRms: 0,
+    radioNonZeroRatio: 0,
   });
   const [streamId, setStreamId] = useState('psyndora');
   const [radioVol, setRadioVol] = useState(0.5);

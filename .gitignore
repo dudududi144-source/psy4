@@ -26,6 +26,23 @@ yarn-error.log*
 # env files
 .env
 .env*.local
+.env.production
+.env.staging
+
+# credentials & secrets — NEVER commit these
+*.secret
+*.secrets
+*credentials*
+*api_key*
+*apikey*
+*turso*.txt
+*turso*.json
+*cloudflare*.txt
+*supabase*.txt
+*github_token*
+*gh_token*
+**/secrets/**
+**/credentials/**
 
 # typescript
 next-env.d.ts
