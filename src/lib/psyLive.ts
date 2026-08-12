@@ -134,6 +134,20 @@ export interface LiveState {
   occupancy: { kick: number; bass: number; lead: number; hats: number };
 }
 
+// ─── MusicState (from architecture review) ────────────────────────────────
+export interface MusicState {
+  bpm: number;
+  key: number;           // 0-11 (pitch class)
+  scale: string;
+  energy: number;        // 0-1
+  energySlope: number;   // -1 to 1 (rising/falling)
+  style: Style;
+  density: number;       // 0-1 (how much engine should play)
+  radioRoles: { kick: number; bass: number; lead: number; hats: number };
+}
+
+export type Style = 'fullOn' | 'dark' | 'progressive' | 'acid';
+
 // ─── Engine (EXACTLY like psy — simple, direct, working) ──────────────────
 export class PsyLive {
   // Audio — simple chain like psy
@@ -183,6 +197,16 @@ export class PsyLive {
   private energyHistory: number[] = [];
   // Compressor reduction monitoring
   private comp: DynamicsCompressorNode | null = null;
+
+  // MusicState (from architecture review)
+  private musicState: MusicState = {
+    bpm: 145, key: 0, scale: 'minor', energy: 0.5, energySlope: 0,
+    style: 'fullOn', density: 0.7,
+    radioRoles: { kick: 0, bass: 0, lead: 0, hats: 0 },
+  };
+  private styleCandidate: Style | null = null;
+  private styleCandidateSince = 0;
+  private currentStyle: Style = 'fullOn';
 
   // Scheduler (like psy — 25ms lookahead, 150ms schedule ahead)
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -452,17 +476,33 @@ export class PsyLive {
     // Use detected root if locked, else preset root
     const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
 
-    // CRITICAL: in reinforce mode, skip kick (radio has its own)
-    if (this.mixMode !== 'reinforce') {
-      if (pat.kick && pat.kick[s16]) this.kick(time);
+    // ── ARRANGER: decide what to play based on MusicState ──
+    // If radio kick is strong → skip engine kick (occupancy-based, not mode-based)
+    const kickAvailable = this.occupancy.kick < 0.7;
+    const bassAvailable = this.occupancy.bass < 0.75;
+    const leadAvailable = this.occupancy.lead < 0.85;
+
+    // Density control: if radio energy rising, play less
+    const density = this.musicState.density;
+
+    // Kick: only if role is available AND density allows
+    if (kickAvailable && pat.kick && pat.kick[s16] && Math.random() < density) {
+      this.kick(time);
     }
+    // Hats: always available (fills high end)
     if (pat.hat && pat.hat[s16]) this.hat(time, v.hatLvl || 0.1);
 
-    const bn = pat.bass ? pat.bass[s16] : null;
-    if (bn !== null && bn !== undefined) this.bass(time, mtof(root + bn), v);
+    // Bass: only if role is available
+    if (bassAvailable) {
+      const bn = pat.bass ? pat.bass[s16] : null;
+      if (bn !== null && bn !== undefined) this.bass(time, mtof(root + bn), v);
+    }
 
-    const ln = pat.lead ? pat.lead[s16] : null;
-    if (ln !== null && ln !== undefined) this.lead(time, mtof(root + 24 + ln), v, s16 % 4 === 0);
+    // Lead: only if role is available AND density is high enough
+    if (leadAvailable && density > 0.4) {
+      const ln = pat.lead ? pat.lead[s16] : null;
+      if (ln !== null && ln !== undefined) this.lead(time, mtof(root + 24 + ln), v, s16 % 4 === 0);
+    }
   }
 
   // ── Composition mode ──
@@ -622,6 +662,49 @@ export class PsyLive {
     this.energyHistory.push(total);
     if (this.energyHistory.length > 32) this.energyHistory.shift();
 
+    // ── MUSIC STATE UPDATE ──
+    // Energy slope (rising/falling/stable)
+    if (this.energyHistory.length >= 8) {
+      const recent = this.energyHistory.slice(-4).reduce((a, b) => a + b, 0) / 4;
+      const older = this.energyHistory.slice(-8, -4).reduce((a, b) => a + b, 0) / 4;
+      this.musicState.energy = recent;
+      this.musicState.energySlope = recent - older;
+    }
+
+    // Update radio roles in music state
+    this.musicState.radioRoles = { ...this.occupancy };
+    this.musicState.bpm = this.radioBpm || this.engineBpm;
+
+    // ── STYLE DETECTION (with hysteresis) ──
+    const detectedStyle = this.classifyStyle();
+    if (detectedStyle) {
+      if (detectedStyle !== this.styleCandidate) {
+        this.styleCandidate = detectedStyle;
+        this.styleCandidateSince = Date.now();
+      }
+      // Only switch style after 8 seconds of consistent detection
+      if (this.styleCandidate && Date.now() - this.styleCandidateSince > 8000) {
+        if (this.styleCandidate !== this.currentStyle) {
+          this.currentStyle = this.styleCandidate;
+          console.log('[STYLE] switched to:', this.currentStyle);
+        }
+      }
+    }
+    this.musicState.style = this.currentStyle;
+
+    // ── COMPETITIVE DENSITY CONTROL ──
+    // If radio energy is rising, reduce engine density
+    const delta = this.musicState.energySlope;
+    if (delta > 0.18) {
+      this.musicState.density = Math.max(0.3, this.musicState.density * 0.75);
+    } else if (delta < -0.18) {
+      // Radio energy falling — engine can fill more
+      this.musicState.density = Math.min(0.9, this.musicState.density * 1.15);
+    } else {
+      // Stable — drift toward 0.7
+      this.musicState.density += (0.7 - this.musicState.density) * 0.05;
+    }
+
     // Kick detection
     this.subBassHistory.push(sub);
     if (this.subBassHistory.length > 50) this.subBassHistory.shift();
@@ -715,5 +798,34 @@ export class PsyLive {
   }
   private stopUITimer(): void {
     if (this.uiTimer) { clearInterval(this.uiTimer); this.uiTimer = null; }
+  }
+
+  // ── Style classifier (from architecture review) ──
+  private classifyStyle(): Style | null {
+    const o = this.occupancy;
+    const bpm = this.radioBpm || this.engineBpm;
+
+    // Full On: high kick + high bass + high highs + fast
+    if (o.kick > 0.7 && o.bass > 0.6 && o.hats > 0.4 && bpm > 143) {
+      return 'fullOn';
+    }
+    // Dark: high bass + low highs + slow
+    if (o.bass > 0.6 && o.hats < 0.3 && bpm < 142) {
+      return 'dark';
+    }
+    // Progressive: moderate everything + stable energy
+    if (o.kick < 0.6 && o.bass > 0.4 && this.musicState.energySlope < 0.1) {
+      return 'progressive';
+    }
+    // Acid: mid-heavy + high energy
+    if (o.lead > 0.6 && this.musicState.energy > 0.5) {
+      return 'acid';
+    }
+    return null;
+  }
+
+  // ── Get current MusicState (for arranger) ──
+  getMusicState(): MusicState {
+    return { ...this.musicState };
   }
 }
