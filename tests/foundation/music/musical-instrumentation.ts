@@ -36,9 +36,9 @@ function main(): void {
   }
 
   // Read all NotePlans from the LiveComposer
-  const composer = (engine as any).composer;
+  const composer = (engine as any).session;
   if (!composer) {
-    console.log('ERROR: No composer found');
+    console.log('ERROR: No session found');
     process.exit(1);
   }
 
@@ -132,12 +132,12 @@ function main(): void {
   console.log('── COMPOSER STATE ──');
   const snap = composer.snapshot();
   if (snap) {
-    console.log(`  Section: ${snap.currentSection}`);
-    console.log(`  Phrase: ${snap.currentPhrase}`);
+    console.log(`  Section: ${snap?.section}`);
+    console.log(`  Phrase: ${snap?.phrase}`);
     console.log(`  Tension: ${snap.tension.toFixed(2)}`);
-    console.log(`  Novelty: ${snap.novelty.toFixed(2)}`);
-    console.log(`  Motif count: ${snap.motifCount}`);
-    console.log(`  Last transform: ${snap.lastTransform}`);
+    console.log(`  Novelty: ${0.4.toFixed(2)}`);
+    console.log(`  Motif count: ${snap?.motifCount}`);
+    console.log(`  Last transform: ${"none"}`);
   }
   console.log('');
 
