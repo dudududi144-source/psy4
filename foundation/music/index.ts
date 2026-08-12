@@ -24,7 +24,5 @@ export type { RadioWindowSnapshot } from './RadioMusicalWindow';
 // Primitives
 export * from './primitives/scales';
 export * from './primitives/motif';
-export * from './primitives/rhythm';
-export * from './primitives/bass';
-export * from './primitives/chords';
+// F14/R9: Removed dead primitives (bass, chords, rhythm) — never imported.
 export { Rng } from './primitives/rng';
