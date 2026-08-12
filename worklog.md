@@ -6043,3 +6043,94 @@ HONEST ASSESSMENT:
 - 12 min stability is real improvement (was 2-4 min)
 - Sound quality: better (offbeat bass, no kick clash)
 - Still not 20 min, but significant progress
+
+---
+Task ID: REALITY-BRIDGE-FREEZE
+Agent: main (Principal Audio Systems Engineer)
+Task: PSY4 FULL SYSTEM REALITY BRIDGE — Forensic Verification
+
+FREEZE STATE:
+- HEAD SHA: b6fb3a78559440aa12838000c38a02917799b541
+- REMOTE SHA: b6fb3a78559440aa12838000c38a02917799b541
+- LOCAL == REMOTE: TRUE (verified via `git ls-remote origin main`)
+- BRANCH: main
+- WORKTREE: clean (no uncommitted changes)
+- LAST 20 COMMITS: confirmed (BeatPLL ccb22bb → scheduler 4aab398 → pattern mutation cfb9e8b → MelodyObserver 325432c → Float32 fix b6fb3a7)
+- PACKAGE MANAGER: bun
+- BUILD: next build
+- TEST COMMAND: none configured (only lint)
+- TYPECHECK: via lint
+
+RULE: CODE ≠ CAPABILITY. Distinguishing IMPLEMENTED / CONNECTED / EXECUTED / OBSERVED / VERIFIED.
+
+Work Log:
+- Recorded HEAD SHA + remote SHA (match)
+- Read all 8 main subsystem files (psyLive 906 lines, pooledEngine 490, learning 482, melodyObserver 309, patternMutator 260, beatPLL 152, soundBank 687, page.tsx 226)
+- Identified ANALYTIC RED FLAGS from source review:
+  * psyLive.ts:615 sets syncStatus='listening' immediately after play(), with NO verification that audio samples are actually flowing
+  * psyLive.ts:482 scheduler uses PLL predictions when isLocked() && radioOn — but locking only requires 8 observations of any confidence > 0.45 (kick confidence derived from radioBands.low*2, which can be nonzero even with silent decode)
+  * Pattern mutation: only mutates if mutated pattern scores higher than current (line 254). Can stall on local maxima.
+  * MusicState style transitions: triggered by 8s hysteresis only, not actual musical structure
+  * continuousTrainer / selfAnalyzer / learningMemory modules in src/lib/studio/engine/reference/ exist but NOT imported by psyLive.ts
+  * Page.tsx imports from psyLive only — studio/engine/* modules are DEAD CODE from prior architecture
+
+Stage Summary:
+- Repo is frozen at b6fb3a7 (verified)
+- All major subsystems have been READ (level: IMPLEMENTED)
+- Connection graph traced: imports form a chain soundBank + learning + beatPLL + patternMutator + melodyObserver → psyLive → page.tsx (level: CONNECTED for live engine)
+- Multiple "studio/engine/*" modules exist but are NOT connected to the live runtime
+- Need: synthetic-audio fixtures + Node-runnable tests to lift EXECUTED → OBSERVED → VERIFIED
+
+---
+Task ID: REALITY-BRIDGE-EXECUTE
+Agent: main (Principal Audio Systems Engineer)
+Task: Execute REALITY BRIDGE audit — synthetic fixtures, regression tests, 3 reports
+
+Work Log:
+- Built tests/reality-bridge/audioShim.ts — AudioContext shim with routing graph + analyser injection
+- Built tests/reality-bridge/synthFixtures.ts — 9 synthetic audio fixtures (100Hz, 220Hz, 440Hz, 523Hz, 659Hz, kick transient, white noise, full mix, silence)
+- Built tests/reality-bridge-setup.ts — global shims for window/localStorage/AudioContext
+- Built tests/reality-bridge/run-all.ts — 56 regression tests across 11 categories
+- Built src/lib/radioStateGate.ts — explicit radio state machine (DISCONNECTED/CONNECTING/CONNECTED_NO_SIGNAL/CONNECTED_SIGNAL/PLAYING_SIGNAL/BUFFERING/ERROR)
+- Ran 56 tests: 44 pass, 12 fail (all 12 failures are REAL engine bugs, not test bugs)
+- Built tests/reality-bridge/stress-test.ts — 5800 notes (10-min equivalent), 0 crashes, no node leak
+- Verified live page in browser via agent-browser: page renders, Play works, radio CONNECT works, status went LISTENING→FOLLOWING after ~30s, 29 kicks detected, MUTATE events every 8 bars
+- Confirmed runtime smoking gun: engineBpm=150, radioBpm=150 (PLL locked to default, not actual radio tempo)
+- Wrote audit-reports/PSY4_SIGNAL_TRACE.md (end-to-end routing map)
+- Wrote audit-reports/PSY4_CAPABILITY_MATRIX.json (20 subsystems, level 0-5 classification)
+- Wrote audit-reports/PSY4_REALITY_BRIDGE.md (final report with verdict)
+
+CRITICAL FINDINGS (12 test failures = 12 real bugs):
+- BeatPLL: 7 failures — cannot converge to any tempo ≠ 150 BPM (tempoGain too small + observedPeriod guard rejects corrected periods)
+- MelodyObserver: 5 failures — estimatePitch returns -2 octave errors (440Hz→110Hz); spectralFlatness returns 0.85 for pure tone (gate threshold=0.5); clean 440Hz signal produces ZERO observations
+- RadioStateGate: 8/8 pass (NEW module, NOT yet wired into psyLive.ts)
+- PatternMutator: 3/3 pass + 200-cycle stress (Level 5 verified)
+- PooledEngine: 6/6 pass but is DEAD CODE (not imported by psyLive.ts runtime)
+- SoundBank: 142/142 valid presets but DISCONNECTED from runtime (imported but never called)
+
+CLAIMS FALSIFIED (10):
+1. REAL-TIME RADIO FOLLOWER (PLL broken)
+2. MELODY FOLLOWER (pitch detection broken)
+3. LEARNING ENGINE / REINFORCE (no reward/policy/update)
+4. Song structure INTRO→BUILD→PEAK→BREAK→OUTRO (code does not exist at HEAD)
+5. Self-recovery / health monitor (code does not exist at HEAD)
+6. 142 professional presets used (disconnected)
+7. PooledEngine no GC dropouts (dead code)
+8. "LISTENING" without signal verification (RG-8H confirmed)
+9. Continuous learning (statistical bookkeeping only)
+10. 12-min stability of a "follower" (following a phantom 150 BPM)
+
+FINAL VERDICT: PARTIALLY VERIFIED
+- 8 subsystems at Level 4 (measured/verified)
+- 1 subsystem at Level 5 (PatternMutator — adversarial+long-run)
+- 3 subsystems at Level 1 (code exists, disconnected: PooledEngine, SoundBank, studio/engine/*)
+- 2 subsystems at Level 0 (CLAIM ONLY: song structure, self-recovery)
+- 2 subsystems at Level 2 (CONNECTED but broken: BeatPLL, MelodyObserver)
+
+DO NOT START P2 (MotifLearner). 7 required fixes listed in PSY4_REALITY_BRIDGE.md before P2 can be considered.
+
+Stage Summary:
+- 3 audit reports written and ready to push
+- RadioStateGate corrective gate implemented (passes 8/8 tests) but NOT yet wired into psyLive.ts (applying wire-up is beyond "no new features" audit boundary)
+- 56-test regression suite committed for future CI
+- Runtime smoking gun captured via agent-browser (engineBpm=150=radioBpm=150, FOLLOWING status, 29 kicks — PLL locked to default not actual tempo)

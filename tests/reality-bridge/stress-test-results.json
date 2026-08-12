@@ -1,0 +1,19 @@
+{
+  "runAt": "2026-08-12T04:56:17.010Z",
+  "durationSec": 600,
+  "totalNotes": 5800,
+  "elapsedMs": 175,
+  "crashed": false,
+  "crashError": null,
+  "maxActiveCount": 28,
+  "maxActiveObserved": 28,
+  "poolSize": 28,
+  "poolExhausted": false,
+  "nodeCountMin": 330,
+  "nodeCountMax": 330,
+  "nodeGrowth": 0,
+  "gcDropoutsClaimProven": false,
+  "gcDropoutsClaimReason": "Cannot measure browser GC pauses in headless shim; no real audio callback to overrun. Also: PooledEngine is DEAD CODE — not connected to psyLive runtime.",
+  "voiceReuseWorking": true,
+  "killAllRecoveryWorks": true
+}

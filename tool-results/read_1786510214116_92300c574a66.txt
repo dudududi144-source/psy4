@@ -1,0 +1,907 @@
+     1→/**
+     2→ * PSY LIVE v2 — Built from psy's proven approach.
+     3→ * 
+     4→ * WHY psy works and we didn't:
+     5→ * - psy uses createOscillator directly (no PooledEngine, no pre-rendered buffers)
+     6→ * - psy has simple chain: voices → master gain → analyser → destination
+     7→ * - psy has no limiter, no compressor, no sidechain, no EQ
+     8→ * - psy changes BPM and root when preset changes
+     9→ * - psy's variant A/B changes actual synth params (cutoff, Q, wave)
+    10→ * 
+    11→ * This file rebuilds the engine using psy's proven approach,
+    12→ * but with our sound bank (142 presets) and learning system.
+    13→ */
+    14→
+    15→import { type LearningData, type Composition, loadLearning, saveLearning, recordKick, recordBassNote, recordRadioBands, recordEnergy, deriveInsights, getInsights, generateComposition } from './learning';
+    16→import { SOUND_BANK, getById, autoSelect, type SoundPreset } from './soundBank';
+    17→import { BeatPLL } from './beatPLL';
+    18→import { mutatePattern, type Pattern } from './patternMutator';
+    19→import { MelodyObserver, type MelodyObservation } from './melodyObserver';
+    20→
+    21→const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
+    22→const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    23→const freqToNote = (f: number) => {
+    24→  if (f <= 0) return '—';
+    25→  const m = Math.round(12 * Math.log2(f / 440) + 69);
+    26→  return NOTE_NAMES[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
+    27→};
+    28→const freqToMidi = (f: number) => Math.round(12 * Math.log2(f / 440) + 69);
+    29→
+    30→// ─── Presets (EXACTLY like psy — 4 distinct styles) ────────────────────────
+    31→interface Pattern { kick: number[]; bass: (number|null)[]; lead: (number|null)[]; hat: number[]; }
+    32→interface Variant {
+    33→  bassWave: OscillatorType; bassCut: number; bassQ: number;
+    34→  leadWave: OscillatorType; leadCut: number; leadQ: number;
+    35→  hatLvl: number; leadLvl: number;
+    36→}
+    37→interface Preset {
+    38→  id: string; name: string; tag: string; bpm: number; root: number;
+    39→  desc: string; patterns: Pattern; variants: { A: Variant; B: Variant };
+    40→}
+    41→interface Stream { id: string; name: string; url: string; genre: string; bitrate: number; }
+    42→
+    43→// ─── Streams (HTTPS-only — HTTP blocked by mixed content) ─────────────────
+    44→export const STREAMS: Stream[] = [
+    45→  { id: 'psyndora', name: 'Psyndora', url: 'https://cast.magicstreams.gr:9111/stream/1/', genre: 'Psytrance · Full-On · Goa', bitrate: 128 },
+    46→  { id: 'babaganousha', name: 'Babaganousha', url: 'https://babaganousha.net:8443/stream/1/', genre: 'Psychedelic · Goa', bitrate: 128 },
+    47→  { id: 'spaceunicorn', name: 'Space Unicorn', url: 'https://spaceunicorn.radio/stream', genre: 'Trance · PsyTrance', bitrate: 192 },
+    48→  { id: 'psyndora-prog', name: 'Psyndora Progressive', url: 'https://cast.magicstreams.gr:9110/stream/1/', genre: 'Progressive Psy', bitrate: 128 },
+    49→  { id: 'psyndora-chill', name: 'Psyndora Chill', url: 'https://cast.magicstreams.gr:9112/stream/1/', genre: 'PsyChill · Ambient', bitrate: 128 },
+    50→  { id: 'radiocaprice-psy', name: 'Radio Caprice Psytrance', url: 'https://radcap.net/psytrance.pls', genre: 'Psytrance', bitrate: 128 },
+    51→];
+    52→
+    53→// 4 DISTINCT presets — each with unique BPM, root, patterns, and variants
+    54→export const PRESETS: Preset[] = [
+    55→  {
+    56→    id: 'rolling_bass', name: 'Rolling Bass', tag: 'full-on', bpm: 145, root: 33,
+    57→    desc: '16th-note rolling bass under four-on-the-floor kick.',
+    58→    patterns: {
+    59→      kick: [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0],
+    60→      bass: [null,0,0,0, null,0,0,0, null,0,0,0, null,0,0,3],
+    61→      lead: [null,null,null,null, null,null,12,null, null,null,null,null, 15,null,12,null],
+    62→      hat:  [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,0,1,1],
+    63→    },
+    64→    variants: {
+    65→      A: { bassWave:'sawtooth', bassCut:700, bassQ:6, leadWave:'sawtooth', leadCut:1800, leadQ:9, hatLvl:0.12, leadLvl:0.45 },
+    66→      B: { bassWave:'square', bassCut:1150, bassQ:11, leadWave:'sawtooth', leadCut:2600, leadQ:14, hatLvl:0.18, leadLvl:0.55 },
+    67→    },
+    68→  },
+    69→  {
+    70→    id: 'acid_lead', name: 'Acid Lead', tag: 'squelchy', bpm: 148, root: 33,
+    71→    desc: 'Resonant acid line over tight groove.',
+    72→    patterns: {
+    73→      kick: [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0],
+    74→      bass: [null,0,null,0, null,0,null,0, null,0,null,0, null,0,5,7],
+    75→      lead: [0,null,3,null, 0,null,7,null, 10,null,7,null, 3,null,2,null],
+    76→      hat:  [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,1,1,0],
+    77→    },
+    78→    variants: {
+    79→      A: { bassWave:'sawtooth', bassCut:600, bassQ:5, leadWave:'sawtooth', leadCut:2200, leadQ:12, hatLvl:0.12, leadLvl:0.55 },
+    80→      B: { bassWave:'sawtooth', bassCut:800, bassQ:8, leadWave:'square', leadCut:3400, leadQ:18, hatLvl:0.16, leadLvl:0.62 },
+    81→    },
+    82→  },
+    83→  {
+    84→    id: 'dark_prog', name: 'Dark Prog', tag: 'hypnotic', bpm: 138, root: 31,
+    85→    desc: 'Darker, slower, hypnotic. Sparse eerie highs.',
+    86→    patterns: {
+    87→      kick: [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0],
+    88→      bass: [null,0,0,0, null,0,0,0, null,0,0,0, null,0,3,0],
+    89→      lead: [null,null,null,12, null,null,null,null, null,null,null,14, null,null,null,null],
+    90→      hat:  [0,0,0,0, 0,0,1,0, 0,0,0,0, 0,0,1,0],
+    91→    },
+    92→    variants: {
+    93→      A: { bassWave:'sawtooth', bassCut:480, bassQ:4, leadWave:'triangle', leadCut:1400, leadQ:6, hatLvl:0.07, leadLvl:0.40 },
+    94→      B: { bassWave:'sawtooth', bassCut:650, bassQ:7, leadWave:'sawtooth', leadCut:1900, leadQ:10, hatLvl:0.11, leadLvl:0.48 },
+    95→    },
+    96→  },
+    97→  {
+    98→    id: 'full_on', name: 'Full On', tag: 'peak-time', bpm: 150, root: 35,
+    99→    desc: 'Busy peak-time: rolling bass, active lead, extra hats.',
+   100→    patterns: {
+   101→      kick: [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0],
+   102→      bass: [null,0,0,0, null,0,0,0, null,0,0,0, null,0,7,10],
+   103→      lead: [0,null,null,3, null,null,7,null, 10,null,null,7, 12,null,7,null],
+   104→      hat:  [0,0,1,0, 0,1,1,0, 0,0,1,0, 0,1,1,1],
+   105→    },
+   106→    variants: {
+   107→      A: { bassWave:'sawtooth', bassCut:900, bassQ:7, leadWave:'sawtooth', leadCut:2400, leadQ:10, hatLvl:0.16, leadLvl:0.50 },
+   108→      B: { bassWave:'square', bassCut:1300, bassQ:12, leadWave:'square', leadCut:3200, leadQ:16, hatLvl:0.22, leadLvl:0.60 },
+   109→    },
+   110→  },
+   111→];
+   112→
+   113→// ─── State ─────────────────────────────────────────────────────────────────
+   114→export type MixMode = 'solo' | 'glue' | 'reinforce';
+   115→export type SyncStatus = 'idle' | 'listening' | 'following';
+   116→
+   117→export interface LiveState {
+   118→  playing: boolean;
+   119→  radioOn: boolean;
+   120→  radioBpm: number;
+   121→  engineBpm: number;
+   122→  syncStatus: SyncStatus;
+   123→  mixMode: MixMode;
+   124→  kickCount: number;
+   125→  bassNote: string;
+   126→  radioLevel: number;
+   127→  engineLevel: number;
+   128→  presetId: string;
+   129→  variant: 'A' | 'B';
+   130→  learned: { bpm: number; key: string; confidence: number; scale: string | null } | null;
+   131→  sidechainActive: boolean;
+   132→  harmonicLocked: boolean;
+   133→  radioRms: number;
+   134→  radioBands: { low: number; mid: number; high: number };
+   135→  compositionMode: boolean;
+   136→  // Occupancy (from architecture review)
+   137→  occupancy: { kick: number; bass: number; lead: number; hats: number };
+   138→}
+   139→
+   140→// ─── MusicState (from architecture review) ────────────────────────────────
+   141→export interface MusicState {
+   142→  bpm: number;
+   143→  key: number;           // 0-11 (pitch class)
+   144→  scale: string;
+   145→  energy: number;        // 0-1
+   146→  energySlope: number;   // -1 to 1 (rising/falling)
+   147→  style: Style;
+   148→  density: number;       // 0-1 (how much engine should play)
+   149→  radioRoles: { kick: number; bass: number; lead: number; hats: number };
+   150→}
+   151→
+   152→export type Style = 'fullOn' | 'dark' | 'progressive' | 'acid';
+   153→
+   154→// ─── Engine (EXACTLY like psy — simple, direct, working) ──────────────────
+   155→export class PsyLive {
+   156→  // Audio — simple chain like psy
+   157→  private ctx: AudioContext | null = null;
+   158→  private master: GainNode | null = null;
+   159→  private analyser: AnalyserNode | null = null;
+   160→  private delaySend: GainNode | null = null;
+   161→  private delay: DelayNode | null = null;
+   162→  private noiseBuf: AudioBuffer | null = null;
+   163→
+   164→  // Radio
+   165→  private radioEl: HTMLAudioElement | null = null;
+   166→  private radioSource: MediaElementAudioSourceNode | null = null;
+   167→  private radioGain: GainNode | null = null;
+   168→  private radioAnalyser: AnalyserNode | null = null;
+   169→
+   170→  // State
+   171→  private playing = false;
+   172→  private radioOn = false;
+   173→  private radioBpm = 0;
+   174→  private engineBpm = 145;
+   175→  private syncStatus: SyncStatus = 'idle';
+   176→  private mixMode: MixMode = 'solo';
+   177→  private kickCount = 0;
+   178→  private bassFreq = 0;
+   179→  private radioLevel = 0;
+   180→  private engineLevel = 0;
+   181→  private radioRms = 0;
+   182→  private radioBands = { low: 0, mid: 0, high: 0 };
+   183→  private presetId = PRESETS[0].id;
+   184→  private variant: 'A' | 'B' = 'A';
+   185→  private harmonicRoot = 0;
+   186→  private harmonicLocked = false;
+   187→  private compositionMode = false;
+   188→  private composition: Composition | null = null;
+   189→
+   190→  // ── OCCUPANCY (the key insight from architecture review) ──
+   191→  // Instead of "radio loud/quiet", we track WHICH ROLES the radio fills
+   192→  private occupancy = { kick: 0, bass: 0, lead: 0, hats: 0 };
+   193→  // Per-role buses (so we can control each independently)
+   194→  private kickBus: GainNode | null = null;
+   195→  private bassBus: GainNode | null = null;
+   196→  private leadBus: GainNode | null = null;
+   197→  private hatBus: GainNode | null = null;
+   198→  private engineBus: GainNode | null = null;
+   199→  // Energy history for relative energy (not absolute)
+   200→  private energyHistory: number[] = [];
+   201→  // Compressor reduction monitoring
+   202→  private comp: DynamicsCompressorNode | null = null;
+   203→
+   204→  // MusicState (from architecture review)
+   205→  private musicState: MusicState = {
+   206→    bpm: 145, key: 0, scale: 'minor', energy: 0.5, energySlope: 0,
+   207→    style: 'fullOn', density: 0.7,
+   208→    radioRoles: { kick: 0, bass: 0, lead: 0, hats: 0 },
+   209→  };
+   210→  private styleCandidate: Style | null = null;
+   211→  private styleCandidateSince = 0;
+   212→  private currentStyle: Style = 'fullOn';
+   213→
+   214→  // Beat PLL (phase-locked loop for beat sync)
+   215→  private pll: BeatPLL = new BeatPLL();
+   216→
+   217→  // Pattern mutation (evolves every 8 bars)
+   218→  private livePattern: Pattern | null = null;
+   219→  private barCount = 0;
+   220→
+   221→  // Melody observation (learns melodies from radio)
+   222→  private melodyObserver: MelodyObserver = new MelodyObserver();
+   223→  private detectTickCount = 0;
+   224→
+   225→  // Scheduler (like psy — 25ms lookahead, 150ms schedule ahead)
+   226→  private timer: ReturnType<typeof setInterval> | null = null;
+   227→  private step = 0;
+   228→  private nextNoteTime = 0;
+   229→  private readonly lookahead = 25;
+   230→  private readonly scheduleAheadTime = 0.15;
+   231→  private readonly totalSteps = 64;
+   232→
+   233→  // Kick detection
+   234→  private detectTimer: ReturnType<typeof setInterval> | null = null;
+   235→  private lastKickTime = 0;
+   236→  private kickIntervals: number[] = [];
+   237→  private subBassHistory: number[] = [];
+   238→  private radioFreqBuf: Uint8Array | null = null;
+   239→
+   240→  // Learning
+   241→  private learningData: LearningData | null = null;
+   242→  private deviceId = '';
+   243→
+   244→  // UI timer
+   245→  private uiTimer: ReturnType<typeof setInterval> | null = null;
+   246→
+   247→  onState: ((s: LiveState) => void) | null = null;
+   248→  get analyserNode() { return this.analyser; }
+   249→  get radioAnalyserNode() { return this.radioAnalyser; }
+   250→  getPresets() { return PRESETS; }
+   251→  getStreams() { return STREAMS; }
+   252→  getPreset() { return PRESETS.find(p => p.id === this.presetId)!; }
+   253→  getVariant() { return this.getPreset().variants[this.variant]; }
+   254→
+   255→  constructor() {
+   256→    this.learningData = loadLearning();
+   257→    this.getDeviceId();
+   258→    setTimeout(() => this.emit(), 0);
+   259→  }
+   260→
+   261→  private getDeviceId(): string {
+   262→    if (this.deviceId) return this.deviceId;
+   263→    try {
+   264→      let id = localStorage.getItem('psy-device-id');
+   265→      if (!id) {
+   266→        id = 'dev-' + Math.random().toString(36).slice(2, 10);
+   267→        localStorage.setItem('psy-device-id', id);
+   268→      }
+   269→      this.deviceId = id;
+   270→      return id;
+   271→    } catch { return 'anon'; }
+   272→  }
+   273→
+   274→  private emit(): void {
+   275→    const learned = this.learningData ? getInsights(this.learningData) : null;
+   276→    this.onState?.({
+   277→      playing: this.playing, radioOn: this.radioOn,
+   278→      radioBpm: this.radioBpm, engineBpm: this.engineBpm,
+   279→      syncStatus: this.syncStatus, mixMode: this.mixMode,
+   280→      kickCount: this.kickCount,
+   281→      bassNote: freqToNote(this.bassFreq),
+   282→      radioLevel: this.radioLevel, engineLevel: this.engineLevel,
+   283→      presetId: this.presetId, variant: this.variant,
+   284→      learned: learned ? {
+   285→        bpm: learned.topBpm, key: learned.topKey,
+   286→        confidence: learned.tempoStats?.confidence || 0,
+   287→        scale: learned.scale?.name || null,
+   288→      } : null,
+   289→      sidechainActive: false,
+   290→      harmonicLocked: this.harmonicLocked,
+   291→      radioRms: this.radioRms,
+   292→      radioBands: this.radioBands,
+   293→      compositionMode: this.compositionMode,
+   294→      occupancy: this.occupancy,
+   295→    });
+   296→  }
+   297→
+   298→  // ── Audio init (EXACTLY like psy) ──
+   299→  private ensureAudio(): void {
+   300→    if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
+   301→    this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+   302→
+   303→    // Simple chain: voices → master → analyser → destination
+   304→    this.master = this.ctx.createGain();
+   305→    this.master.gain.value = 0.9;
+   306→    this.analyser = this.ctx.createAnalyser();
+   307→    this.analyser.fftSize = 512;
+   308→    this.analyser.smoothingTimeConstant = 0.7;
+   309→    this.master.connect(this.analyser);
+   310→    this.analyser.connect(this.ctx.destination);
+   311→
+   312→    // Delay (like psy)
+   313→    this.delaySend = this.ctx.createGain();
+   314→    this.delaySend.gain.value = 1.0;
+   315→    this.delay = this.ctx.createDelay(2.0);
+   316→    this.delay.delayTime.value = 0.3;
+   317→    const wet = this.ctx.createGain(); wet.gain.value = 0.22;
+   318→    const fb = this.ctx.createGain(); fb.gain.value = 0.34;
+   319→    this.delaySend.connect(this.delay);
+   320→    this.delay.connect(wet); wet.connect(this.master);
+   321→    this.delay.connect(fb); fb.connect(this.delay);
+   322→
+   323→    // Noise buffer for hats
+   324→    const len = Math.floor(this.ctx.sampleRate * 0.25);
+   325→    this.noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+   326→    const nd = this.noiseBuf.getChannelData(0);
+   327→    for (let i = 0; i < len; i++) nd[i] = Math.random() * 2 - 1;
+   328→
+   329→    // Load learning
+   330→    this.learningData = loadLearning();
+   331→
+   332→    // ── PER-ROLE BUSES (from architecture review) ──
+   333→    // Each voice connects to its role bus → engineBus → gentle comp → master
+   334→    this.kickBus = this.ctx.createGain(); this.kickBus.gain.value = 0.9;
+   335→    this.bassBus = this.ctx.createGain(); this.bassBus.gain.value = 0.85;
+   336→    this.leadBus = this.ctx.createGain(); this.leadBus.gain.value = 0.7;
+   337→    this.hatBus = this.ctx.createGain(); this.hatBus.gain.value = 0.6;
+   338→    
+   339→    this.engineBus = this.ctx.createGain();
+   340→    this.engineBus.gain.value = 0.8;
+   341→
+   342→    // Gentle compressor on engine bus only (not on radio)
+   343→    this.comp = this.ctx.createDynamicsCompressor();
+   344→    this.comp.threshold.value = -18;
+   345→    this.comp.knee.value = 18;
+   346→    this.comp.ratio.value = 2;
+   347→    this.comp.attack.value = 0.015;
+   348→    this.comp.release.value = 0.12;
+   349→
+   350→    // Connect: role buses → engineBus → comp → master
+   351→    this.kickBus.connect(this.engineBus);
+   352→    this.bassBus.connect(this.engineBus);
+   353→    this.leadBus.connect(this.engineBus);
+   354→    this.hatBus.connect(this.engineBus);
+   355→    this.engineBus.connect(this.comp);
+   356→    this.comp.connect(this.master);
+   357→  }
+   358→
+   359→  // ── Voices — connect to role buses (not master directly) ──
+   360→  private kick(t: number): void {
+   361→    if (!this.ctx || !this.kickBus) return;
+   362→    const osc = this.ctx.createOscillator(), gain = this.ctx.createGain();
+   363→    osc.type = 'sine';
+   364→    osc.frequency.setValueAtTime(150, t);
+   365→    osc.frequency.exponentialRampToValueAtTime(44, t + 0.09);
+   366→    gain.gain.setValueAtTime(1.0, t);
+   367→    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+   368→    osc.connect(gain); gain.connect(this.kickBus);
+   369→    osc.start(t); osc.stop(t + 0.32);
+   370→  }
+   371→
+   372→  private hat(t: number, lvl: number): void {
+   373→    if (!this.ctx || !this.hatBus || !this.noiseBuf) return;
+   374→    const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuf;
+   375→    const hp = this.ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 7000;
+   376→    const gain = this.ctx.createGain();
+   377→    gain.gain.setValueAtTime(Math.max(0.001, lvl), t);
+   378→    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+   379→    src.connect(hp); hp.connect(gain); gain.connect(this.hatBus);
+   380→    src.start(t); src.stop(t + 0.06);
+   381→  }
+   382→
+   383→  private bass(t: number, freq: number, v: Variant): void {
+   384→    if (!this.ctx || !this.bassBus) return;
+   385→    const osc = this.ctx.createOscillator(); osc.type = v.bassWave; osc.frequency.value = freq;
+   386→    const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.Q.value = v.bassQ;
+   387→    const fStart = Math.max(60, v.bassCut), fEnd = Math.max(80, v.bassCut * 0.35);
+   388→    filter.frequency.setValueAtTime(fStart, t);
+   389→    filter.frequency.exponentialRampToValueAtTime(fEnd, t + 0.16);
+   390→    const gain = this.ctx.createGain();
+   391→    gain.gain.setValueAtTime(0.0001, t);
+   392→    gain.gain.exponentialRampToValueAtTime(0.85, t + 0.006);
+   393→    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+   394→    osc.connect(filter); filter.connect(gain); gain.connect(this.bassBus);
+   395→    if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.12; gain.connect(send); send.connect(this.delaySend); }
+   396→    osc.start(t); osc.stop(t + 0.22);
+   397→  }
+   398→
+   399→  private lead(t: number, freq: number, v: Variant, accent: boolean): void {
+   400→    if (!this.ctx || !this.leadBus) return;
+   401→    const peakCut = Math.max(200, v.leadCut * (accent ? 1.25 : 1));
+   402→    const o1 = this.ctx.createOscillator(), o2 = this.ctx.createOscillator();
+   403→    o1.type = v.leadWave; o2.type = v.leadWave;
+   404→    o1.frequency.value = freq; o2.frequency.value = freq * Math.pow(2, 9 / 1200);
+   405→    const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.Q.value = v.leadQ;
+   406→    filter.frequency.setValueAtTime(180, t);
+   407→    filter.frequency.exponentialRampToValueAtTime(peakCut, t + 0.02);
+   408→    filter.frequency.exponentialRampToValueAtTime(240, t + 0.22);
+   409→    const gain = this.ctx.createGain();
+   410→    const peak = Math.max(0.05, v.leadLvl * (accent ? 1 : 0.7));
+   411→    gain.gain.setValueAtTime(0.0001, t);
+   412→    gain.gain.exponentialRampToValueAtTime(peak, t + 0.008);
+   413→    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+   414→    o1.connect(filter); o2.connect(filter); filter.connect(gain); gain.connect(this.leadBus);
+   415→    if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.3; gain.connect(send); send.connect(this.delaySend); }
+   416→    o1.start(t); o2.start(t); o1.stop(t + 0.26); o2.stop(t + 0.26);
+   417→  }
+   418→
+   419→  // ── Play / Stop (like psy) ──
+   420→  play(): void {
+   421→    this.ensureAudio();
+   422→    if (this.playing) return;
+   423→    this.playing = true;
+   424→    this.step = 0;
+   425→    this.nextNoteTime = this.ctx!.currentTime + 0.06;
+   426→    this.updateDelayTime();
+   427→    this.timer = setInterval(() => this.scheduler(), this.lookahead);
+   428→    this.startUITimer();
+   429→    this.emit();
+   430→  }
+   431→
+   432→  stop(): void {
+   433→    this.playing = false;
+   434→    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+   435→    this.stopUITimer();
+   436→    this.emit();
+   437→  }
+   438→
+   439→  setPreset(id: string): void {
+   440→    this.presetId = id;
+   441→    this.livePattern = null; // reset mutation when preset changes
+   442→    this.barCount = 0;
+   443→    const p = this.getPreset();
+   444→    this.engineBpm = p.bpm;
+   445→    this.updateDelayTime();
+   446→    this.emit();
+   447→  }
+   448→
+   449→  setVariant(v: 'A' | 'B'): void {
+   450→    this.variant = v;
+   451→    this.emit();
+   452→  }
+   453→
+   454→  setVolume(v: number): void {
+   455→    // CRITICAL: volume controls master gain directly (like psy)
+   456→    if (this.master && this.ctx)
+   457→      this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+   458→  }
+   459→
+   460→  private updateDelayTime(): void {
+   461→    if (this.delay) this.delay.delayTime.value = this.stepDur() * 3;
+   462→  }
+   463→
+   464→  private stepDur(): number { return 60 / this.engineBpm / 4; }
+   465→
+   466→  private updateMixMode(): void {
+   467→    if (this.compositionMode) { this.mixMode = 'solo'; return; }
+   468→    if (!this.radioOn || !this.playing) this.mixMode = 'solo';
+   469→    else if (this.syncStatus === 'following') this.mixMode = 'reinforce';
+   470→    else this.mixMode = 'glue';
+   471→  }
+   472→
+   473→  // ── Scheduler — beat-synced via PLL ──
+   474→  // When PLL is locked: schedule steps on predicted radio beats
+   475→  // When PLL not locked (solo/no radio): use own clock like psy
+   476→  private scheduler(): void {
+   477→    if (!this.ctx) return;
+   478→    try {
+   479→      const now = this.ctx.currentTime;
+   480→
+   481→      // If PLL is locked, sync to radio beats
+   482→      if (this.pll.isLocked() && this.radioOn) {
+   483→        // Get predicted beats for the next 200ms
+   484→        const beats = this.pll.predictBeats(now, 0.2);
+   485→        const period = 60 / this.pll.getBpm();
+   486→        const stepDur = period / 4; // 16th notes
+   487→
+   488→        for (const beatTime of beats) {
+   489→          // Schedule 4 sixteenth notes per beat
+   490→          for (let s = 0; s < 4; s++) {
+   491→            const stepTime = beatTime + s * stepDur;
+   492→            if (stepTime > now && stepTime < now + this.scheduleAheadTime) {
+   493→              // Only schedule if we haven't already scheduled this step
+   494→              const stepKey = Math.round(stepTime * 1000);
+   495→              if (stepKey > this.lastScheduledStepKey) {
+   496→                this.scheduleStep(this.step % 16, stepTime);
+   497→                this.lastScheduledStepKey = stepKey;
+   498→                this.step = (this.step + 1) % this.totalSteps;
+   499→              }
+   500→            }
+   501→          }
+   502→        }
+   503→      } else {
+   504→        // No PLL lock — use own clock (like psy)
+   505→        while (this.nextNoteTime < now + this.scheduleAheadTime) {
+   506→          this.scheduleStep(this.step, this.nextNoteTime);
+   507→          this.nextNoteTime += this.stepDur();
+   508→          this.step = (this.step + 1) % this.totalSteps;
+   509→        }
+   510→      }
+   511→    } catch (e) {}
+   512→  }
+   513→
+   514→  private lastScheduledStepKey = 0;
+   515→
+   516→  private scheduleStep(step: number, time: number): void {
+   517→    const p = this.getPreset();
+   518→    const v = this.getVariant();
+   519→    const s16 = step % 16;
+   520→
+   521→    // ── PATTERN MUTATION: evolve every 8 bars ──
+   522→    if (s16 === 0) {
+   523→      this.barCount++;
+   524→      if (this.barCount % 8 === 0) {
+   525→        // Time to mutate!
+   526→        const basePattern = this.livePattern || p.patterns;
+   527→        const mutated = mutatePattern(basePattern, this.occupancy, this.musicState.density);
+   528→        if (mutated) {
+   529→          this.livePattern = mutated;
+   530→          console.log('[MUTATE] pattern evolved, bar', this.barCount);
+   531→        }
+   532→      }
+   533→    }
+   534→
+   535→    // Use live pattern if available, else preset pattern
+   536→    const pat = this.livePattern || p.patterns;
+   537→
+   538→    // Use detected root if locked, else preset root
+   539→    const root = this.harmonicLocked && this.harmonicRoot ? this.harmonicRoot : p.root;
+   540→
+   541→    // ── ARRANGER: decide what to play based on occupancy ──
+   542→    const kickAvailable = this.occupancy.kick < 0.7;
+   543→    const bassAvailable = this.occupancy.bass < 0.75;
+   544→    const leadAvailable = this.occupancy.lead < 0.85;
+   545→    const density = this.musicState.density;
+   546→
+   547→    // Kick: only if role is available AND density allows
+   548→    if (kickAvailable && pat.kick && pat.kick[s16] && Math.random() < density) {
+   549→      this.kick(time);
+   550→    }
+   551→    // Hats: always available (fills high end)
+   552→    if (pat.hat && pat.hat[s16]) this.hat(time, v.hatLvl || 0.1);
+   553→
+   554→    // Bass: only if role is available
+   555→    if (bassAvailable) {
+   556→      const bn = pat.bass ? pat.bass[s16] : null;
+   557→      if (bn !== null && bn !== undefined) this.bass(time, mtof(root + bn), v);
+   558→    }
+   559→
+   560→    // Lead: only if role is available AND density is high enough
+   561→    if (leadAvailable && density > 0.4) {
+   562→      const ln = pat.lead ? pat.lead[s16] : null;
+   563→      if (ln !== null && ln !== undefined) this.lead(time, mtof(root + 24 + ln), v, s16 % 4 === 0);
+   564→    }
+   565→  }
+   566→
+   567→  // ── Composition mode ──
+   568→  toggleComposition(): boolean {
+   569→    if (!this.learningData) return false;
+   570→    if (!this.compositionMode) {
+   571→      this.composition = generateComposition(this.learningData);
+   572→      if (!this.composition) return false;
+   573→      this.compositionMode = true;
+   574→      this.engineBpm = this.composition.bpm;
+   575→      this.updateDelayTime();
+   576→    } else {
+   577→      this.compositionMode = false;
+   578→      this.composition = null;
+   579→      this.engineBpm = this.getPreset().bpm;
+   580→      this.updateDelayTime();
+   581→    }
+   582→    this.updateMixMode();
+   583→    this.emit();
+   584→    return this.compositionMode;
+   585→  }
+   586→
+   587→  hasSavedComposition(): boolean {
+   588→    try { return !!localStorage.getItem('psy-best-composition'); } catch { return false; }
+   589→  }
+   590→
+   591→  // ── Radio ──
+   592→  async connectRadio(stream: Stream): Promise<boolean> {
+   593→    this.ensureAudio();
+   594→    if (!this.ctx) return false;
+   595→    try {
+   596→      if (this.radioSource) { try { this.radioSource.disconnect(); } catch {} }
+   597→      if (this.radioEl) { this.radioEl.pause(); this.radioEl.src = ''; }
+   598→      this.radioEl = new Audio();
+   599→      this.radioEl.crossOrigin = 'anonymous';
+   600→      this.radioEl.src = stream.url;
+   601→      this.radioSource = this.ctx.createMediaElementSource(this.radioEl);
+   602→      if (!this.radioGain) {
+   603→        this.radioGain = this.ctx.createGain();
+   604→        this.radioGain.gain.value = 0.5;
+   605→        this.radioAnalyser = this.ctx.createAnalyser();
+   606→        this.radioAnalyser.fftSize = 512;
+   607→        this.radioAnalyser.smoothingTimeConstant = 0.2;
+   608→      }
+   609→      // Radio → radioGain → master (so volume slider affects radio too)
+   610→      this.radioSource.connect(this.radioGain);
+   611→      this.radioGain.connect(this.radioAnalyser);
+   612→      this.radioAnalyser.connect(this.master!);
+   613→      try { await this.radioEl.play(); } catch {}
+   614→      this.radioOn = true;
+   615→      this.syncStatus = 'listening';
+   616→      this.updateMixMode();
+   617→      this.startDetection();
+   618→      this.emit();
+   619→      return true;
+   620→    } catch (e) { console.error(e); return false; }
+   621→  }
+   622→
+   623→  disconnectRadio(): void {
+   624→    if (this.radioEl) { this.radioEl.pause(); this.radioEl.src = ''; }
+   625→    if (this.radioSource) { try { this.radioSource.disconnect(); } catch {} }
+   626→    this.radioOn = false;
+   627→    this.radioBpm = 0;
+   628→    this.syncStatus = 'idle';
+   629→    this.harmonicLocked = false;
+   630→    this.harmonicRoot = 0;
+   631→    this.kickIntervals = [];
+   632→    this.subBassHistory = [];
+   633→    if (this.detectTimer) { clearInterval(this.detectTimer); this.detectTimer = null; }
+   634→    this.pll.reset();
+   635→    this.updateMixMode();
+   636→    this.emit();
+   637→  }
+   638→
+   639→  setRadioVolume(v: number): void { if (this.radioGain) this.radioGain.gain.value = v; }
+   640→
+   641→  // ── Detection (200ms tick) ──
+   642→  private startDetection(): void {
+   643→    if (this.detectTimer) clearInterval(this.detectTimer);
+   644→    this.detectTimer = setInterval(() => this.detect(), 200);
+   645→  }
+   646→
+   647→  private detect(): void {
+   648→    if (!this.radioAnalyser || !this.ctx) return;
+   649→    if (!this.radioFreqBuf || this.radioFreqBuf.length !== this.radioAnalyser.frequencyBinCount) {
+   650→      this.radioFreqBuf = new Uint8Array(this.radioAnalyser.frequencyBinCount);
+   651→    }
+   652→    const fd = this.radioFreqBuf;
+   653→    this.radioAnalyser.getByteFrequencyData(fd);
+   654→
+   655→    // ── MELODY OBSERVATION (every 4th detect tick — less CPU) ──
+   656→    if (this.detectTickCount % 4 === 0) {
+   657→      const tdBuf = this.melodyObserver.ensureTimeDomainBuf(this.radioAnalyser);
+   658→      this.radioAnalyser.getFloatTimeDomainData(tdBuf);
+   659→      const clock = this.pll.getClock(this.ctx.currentTime);
+   660→      this.melodyObserver.observe(
+   661→        fd, tdBuf, this.ctx.sampleRate, this.radioAnalyser.fftSize,
+   662→        this.ctx.currentTime, clock.beatIndex, clock.barIndex,
+   663→        this.occupancy
+   664→      );
+   665→    }
+   666→    this.detectTickCount++;
+   667→
+   668→    let sub = 0;
+   669→    for (let i = 0; i < 10; i++) sub += fd[i];
+   670→    sub /= (10 * 255);
+   671→
+   672→    let total = 0, cnt = 0;
+   673→    for (let i = 0; i < fd.length; i += 4) { total += fd[i]; cnt++; }
+   674→    total /= (cnt * 255);
+   675→    this.radioLevel = total;
+   676→    this.radioRms = this.radioRms * 0.85 + total * 0.15;
+   677→
+   678→    const binHz = this.ctx.sampleRate / this.radioAnalyser.fftSize;
+   679→    const lowEnd = Math.floor(250 / binHz);
+   680→    const midEnd = Math.floor(2500 / binHz);
+   681→    let lo = 0, mi = 0, hi = 0, loN = 0, miN = 0, hiN = 0;
+   682→    for (let i = 0; i < lowEnd; i += 2) { lo += fd[i]; loN++; }
+   683→    for (let i = lowEnd; i < midEnd; i += 4) { mi += fd[i]; miN++; }
+   684→    for (let i = midEnd; i < fd.length; i += 8) { hi += fd[i]; hiN++; }
+   685→    this.radioBands = {
+   686→      low: lo / (Math.max(1, loN) * 255),
+   687→      mid: mi / (Math.max(1, miN) * 255),
+   688→      high: hi / (Math.max(1, hiN) * 255),
+   689→    };
+   690→
+   691→    // ── OCCUPANCY ANALYSIS (the key insight) ──
+   692→    // Instead of "radio loud/quiet", track WHICH ROLES the radio fills
+   693→    // Kick: sub-bass energy + transient strength
+   694→    // Bass: bass-band energy + stability
+   695→    // Lead: mid-band energy + spectral prominence
+   696→    // Hats: high-band energy
+   697→    const subEnergy = sub;
+   698→    const bassEnergy = lo / (Math.max(1, loN) * 255);
+   699→    const midEnergy = mi / (Math.max(1, miN) * 255);
+   700→    const highEnergy = hi / (Math.max(1, hiN) * 255);
+   701→
+   702→    // Smooth occupancy (attack fast, release slow)
+   703→    const kickTarget = subEnergy > 0.5 ? subEnergy : subEnergy * 0.3;
+   704→    const bassTarget = bassEnergy > 0.5 ? bassEnergy : bassEnergy * 0.3;
+   705→    const leadTarget = midEnergy > 0.4 ? midEnergy * 0.8 : midEnergy * 0.2;
+   706→    const hatsTarget = highEnergy > 0.3 ? highEnergy * 0.7 : highEnergy * 0.2;
+   707→
+   708→    // Fast attack, slow release
+   709→    this.occupancy.kick += (kickTarget - this.occupancy.kick) * (kickTarget > this.occupancy.kick ? 0.5 : 0.05);
+   710→    this.occupancy.bass += (bassTarget - this.occupancy.bass) * (bassTarget > this.occupancy.bass ? 0.3 : 0.05);
+   711→    this.occupancy.lead += (leadTarget - this.occupancy.lead) * (leadTarget > this.occupancy.lead ? 0.3 : 0.05);
+   712→    this.occupancy.hats += (hatsTarget - this.occupancy.hats) * (hatsTarget > this.occupancy.hats ? 0.3 : 0.05);
+   713→
+   714→    // ── ROLE DUCKING (not sidechain — per-role gain) ──
+   715→    // If radio kick is strong → mute engine kick, reduce bass
+   716→    // If radio bass is strong → reduce engine bass
+   717→    // If radio lead is strong → reduce engine lead
+   718→    if (this.kickBus && this.bassBus && this.leadBus && this.hatBus && this.ctx) {
+   719→      const now = this.ctx.currentTime;
+   720→      // Kick: if radio kick > 0.7, mute engine kick
+   721→      const kickGain = this.occupancy.kick > 0.7 ? 0.05 : 0.9;
+   722→      this.kickBus.gain.setTargetAtTime(kickGain, now, 0.03);
+   723→      // Bass: if radio bass > 0.75, reduce engine bass
+   724→      const bassGain = this.occupancy.bass > 0.75 ? 0.35 : 0.85;
+   725→      this.bassBus.gain.setTargetAtTime(bassGain, now, 0.05);
+   726→      // Lead: if radio mid > 0.85, reduce engine lead
+   727→      const leadGain = this.occupancy.lead > 0.85 ? 0.55 : 0.7;
+   728→      this.leadBus.gain.setTargetAtTime(leadGain, now, 0.08);
+   729→      // Hats: if radio high > 0.9, reduce engine hats
+   730→      const hatGain = this.occupancy.hats > 0.9 ? 0.6 : 0.6;
+   731→      this.hatBus.gain.setTargetAtTime(hatGain, now, 0.08);
+   732→    }
+   733→
+   734→    // ── ENERGY HISTORY (for relative energy, not absolute) ──
+   735→    this.energyHistory.push(total);
+   736→    if (this.energyHistory.length > 32) this.energyHistory.shift();
+   737→
+   738→    // ── MUSIC STATE UPDATE ──
+   739→    // Energy slope (rising/falling/stable)
+   740→    if (this.energyHistory.length >= 8) {
+   741→      const recent = this.energyHistory.slice(-4).reduce((a, b) => a + b, 0) / 4;
+   742→      const older = this.energyHistory.slice(-8, -4).reduce((a, b) => a + b, 0) / 4;
+   743→      this.musicState.energy = recent;
+   744→      this.musicState.energySlope = recent - older;
+   745→    }
+   746→
+   747→    // Update radio roles in music state
+   748→    this.musicState.radioRoles = { ...this.occupancy };
+   749→    this.musicState.bpm = this.radioBpm || this.engineBpm;
+   750→
+   751→    // ── STYLE DETECTION (with hysteresis) ──
+   752→    const detectedStyle = this.classifyStyle();
+   753→    if (detectedStyle) {
+   754→      if (detectedStyle !== this.styleCandidate) {
+   755→        this.styleCandidate = detectedStyle;
+   756→        this.styleCandidateSince = Date.now();
+   757→      }
+   758→      // Only switch style after 8 seconds of consistent detection
+   759→      if (this.styleCandidate && Date.now() - this.styleCandidateSince > 8000) {
+   760→        if (this.styleCandidate !== this.currentStyle) {
+   761→          this.currentStyle = this.styleCandidate;
+   762→          console.log('[STYLE] switched to:', this.currentStyle);
+   763→        }
+   764→      }
+   765→    }
+   766→    this.musicState.style = this.currentStyle;
+   767→
+   768→    // ── COMPETITIVE DENSITY CONTROL ──
+   769→    // If radio energy is rising, reduce engine density
+   770→    const delta = this.musicState.energySlope;
+   771→    if (delta > 0.18) {
+   772→      this.musicState.density = Math.max(0.3, this.musicState.density * 0.75);
+   773→    } else if (delta < -0.18) {
+   774→      // Radio energy falling — engine can fill more
+   775→      this.musicState.density = Math.min(0.9, this.musicState.density * 1.15);
+   776→    } else {
+   777→      // Stable — drift toward 0.7
+   778→      this.musicState.density += (0.7 - this.musicState.density) * 0.05;
+   779→    }
+   780→
+   781→    // Kick detection
+   782→    this.subBassHistory.push(sub);
+   783→    if (this.subBassHistory.length > 50) this.subBassHistory.shift();
+   784→    if (this.subBassHistory.length >= 10) {
+   785→      const startIdx = Math.max(0, this.subBassHistory.length - 20);
+   786→      let sum = 0, max = 0, count = 0;
+   787→      for (let i = startIdx; i < this.subBassHistory.length; i++) {
+   788→        const v = this.subBassHistory[i];
+   789→        sum += v; if (v > max) max = v; count++;
+   790→      }
+   791→      const avg = sum / count;
+   792→      const threshold = avg + (max - avg) * 0.55;
+   793→      const prev = this.subBassHistory[this.subBassHistory.length - 2] || 0;
+   794→      if (sub > threshold && prev <= threshold) this.onKick();
+   795→    }
+   796→
+   797→    // Bass freq detection
+   798→    if (this.kickCount > 0 && this.kickCount % 8 === 0) {
+   799→      const minBin = Math.floor(40 / binHz);
+   800→      const maxBin = Math.floor(2000 / binHz);
+   801→      let pk = 0, pv = 0;
+   802→      for (let i = minBin; i <= maxBin && i < fd.length; i++) {
+   803→        if (fd[i] > pv) { pv = fd[i]; pk = i; }
+   804→      }
+   805→      if (pv > 50) {
+   806→        this.bassFreq = pk * binHz;
+   807→        if (this.learningData) {
+   808→          this.learningData = recordBassNote(this.learningData, this.bassFreq);
+   809→          this.learningData = deriveInsights(this.learningData);
+   810→          saveLearning(this.learningData);
+   811→        }
+   812→        const midi = freqToMidi(this.bassFreq);
+   813→        this.harmonicRoot = midi - 12;
+   814→        this.harmonicLocked = true;
+   815→      }
+   816→    }
+   817→
+   818→    // Engine level
+   819→    if (this.analyser) {
+   820→      const d = new Uint8Array(this.analyser.frequencyBinCount);
+   821→      this.analyser.getByteFrequencyData(d);
+   822→      let s = 0; for (let i = 0; i < d.length; i++) s += d[i];
+   823→      this.engineLevel = s / (d.length * 255);
+   824→    }
+   825→
+   826→    this.emit();
+   827→  }
+   828→
+   829→  private onKick(): void {
+   830→    const now = this.ctx!.currentTime;
+   831→    if (this.lastKickTime > 0 && now - this.lastKickTime < 0.25) return;
+   832→    this.kickCount++;
+   833→
+   834→    // ── FEED BEAT OBSERVATION TO PLL ──
+   835→    // PLL handles phase + tempo tracking (replaces old median-based BPM)
+   836→    const confidence = Math.min(1, this.radioBands.low * 2);
+   837→    this.pll.update({ time: now, confidence });
+   838→
+   839→    // Sync engine BPM from PLL (smooth, not jumping)
+   840→    if (this.pll.isLocked()) {
+   841→      const pllBpm = this.pll.getBpm();
+   842→      this.radioBpm = Math.round(pllBpm);
+   843→      // Smooth engine BPM toward PLL (not jump)
+   844→      this.engineBpm = this.engineBpm + (pllBpm - this.engineBpm) * 0.3;
+   845→      this.updateDelayTime();
+   846→      this.syncStatus = 'following';
+   847→      this.updateMixMode();
+   848→
+   849→      if (this.learningData) {
+   850→        this.learningData = recordKick(this.learningData, Math.round(pllBpm));
+   851→        this.learningData = deriveInsights(this.learningData);
+   852→        saveLearning(this.learningData);
+   853→      }
+   854→    }
+   855→
+   856→    this.lastKickTime = now;
+   857→    this.emit();
+   858→  }
+   859→
+   860→  // ── UI timer (2fps) ──
+   861→  private startUITimer(): void {
+   862→    if (this.uiTimer) clearInterval(this.uiTimer);
+   863→    this.uiTimer = setInterval(() => this.emit(), 500);
+   864→  }
+   865→  private stopUITimer(): void {
+   866→    if (this.uiTimer) { clearInterval(this.uiTimer); this.uiTimer = null; }
+   867→  }
+   868→
+   869→  // ── Style classifier (from architecture review) ──
+   870→  private classifyStyle(): Style | null {
+   871→    const o = this.occupancy;
+   872→    const bpm = this.radioBpm || this.engineBpm;
+   873→
+   874→    // Full On: high kick + high bass + high highs + fast
+   875→    if (o.kick > 0.7 && o.bass > 0.6 && o.hats > 0.4 && bpm > 143) {
+   876→      return 'fullOn';
+   877→    }
+   878→    // Dark: high bass + low highs + slow
+   879→    if (o.bass > 0.6 && o.hats < 0.3 && bpm < 142) {
+   880→      return 'dark';
+   881→    }
+   882→    // Progressive: moderate everything + stable energy
+   883→    if (o.kick < 0.6 && o.bass > 0.4 && this.musicState.energySlope < 0.1) {
+   884→      return 'progressive';
+   885→    }
+   886→    // Acid: mid-heavy + high energy
+   887→    if (o.lead > 0.6 && this.musicState.energy > 0.5) {
+   888→      return 'acid';
+   889→    }
+   890→    return null;
+   891→  }
+   892→
+   893→  // ── Get current MusicState (for arranger) ──
+   894→  getMusicState(): MusicState {
+   895→    return { ...this.musicState };
+   896→  }
+   897→
+   898→  // ── Get melody observations (learned from radio) ──
+   899→  getMelodyObservations(): MelodyObservation[] {
+   900→    return this.melodyObserver.getObservations();
+   901→  }
+   902→
+   903→  getRecentMelody(bars: number): MelodyObservation[] {
+   904→    return this.melodyObserver.getRecentObservations(bars);
+   905→  }
+   906→}
+   907→
