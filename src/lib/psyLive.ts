@@ -850,10 +850,13 @@ export class PsyLive {
   stop(): void {
     this.playing = false;
     if (this.engineNode) this.engineNode.stop();
+    if (this.engineNode) this.engineNode.panic(); // CRITICAL: clear all events + voices
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    // PERF: only stop UI timer if radio is also off. When radio is still connected,
-    // the UI must keep updating syncStatus/occupancy — startDetection() started the
-    // uiTimer and will own it until disconnectRadio().
+    // CRITICAL FIX: Reset worker compose state so it starts fresh on next play
+    this.lastWorkerComposeBar = -1;
+    if (this.compositionWorker) {
+      this.compositionWorker.postMessage({ type: 'reset' });
+    }
     if (!this.radioOn) this.stopUITimer();
     this.emit();
   }

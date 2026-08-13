@@ -2028,8 +2028,17 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'stop':
         this.playing = false;
+        // CRITICAL FIX: Clear the ENTIRE event ring buffer — was still playing
+        // pre-fetched events (3 bars = ~90 events) after stop was pressed.
+        this.eventCount = 0;
+        this.eventReadIdx = 0;
+        this.eventWriteIdx = 0;
+        // Also clear shared buffer count if present
+        if (this.sharedEventCount) {
+          Atomics.store(this.sharedEventCount, 0, 0);
+        }
         // Deactivate all voices
-        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.fmPool]) {
+        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.fmPool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool]) {
           for (const v of pool) v.active = false;
         }
         break;
