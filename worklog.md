@@ -7273,3 +7273,119 @@ Stage Summary:
 - Next step: human blind listening per locked protocol (45 renders, randomized, hashed filenames, rating sheet, key hidden until ratings complete).
 - After ratings: run validation/listening/analyze-listening.py to compute H5 and H6 human component.
 - Only after all H1-H6 final: proceed to Step 2 (Architectural Interpretation). No automatic approval — every decision about CompositionEvent, VoiceSpecification, performance compiler, acoustic compiler, backend will be separate human decision based on results, effect sizes, complexity cost.
+
+---
+Task ID: RESEARCH-A
+Agent: research sub-agent (general-purpose)
+Task: Research what a "complete psytrance track" actually contains musically, from production literature. Determine whether the current Foundation WHAT-layer (kick/bass/lead/hats/harmonic context/phrases/groove/arrangement) is complete or a skeleton, and specifically whether V1's midrange_density hard-fail (3-4% vs 8-18% target) is a MUSICAL MODEL GAP or a MIXING GAP. NO code changes. Pure research.
+
+Work Log:
+- Read worklog tail (lines 7175-7275): confirmed V1 vertical validation results. midrange_density 3.7-4.1% across all variants B/C/D/E AND variant A (control). masking 0.58-0.62. timbral_movement 0.88-0.97. H1-H4, H6 all FAIL; H5 PENDING (blind listening).
+- Ran 8 web searches via z-ai web_search: production layers, arrangement structure, kick+bass interaction, midrange roles, motif development, breakdowns/negative space, psytrance identity vs techno/trance, percussion/FX roles.
+- Fetched 8 full pages via z-ai page_reader: yourghostproduction.com, melodigging progressive, melodigging minimal, alienchaosmusic arrangement, eclipmusic melodies, myloops EQ tips, wikipedia psychedelic_trance, medium modular composition.
+- Synthesized 17 cited sources into a 9-section report at /home/z/my-project/audit-reports/RESEARCH-A-PSYTRANCE-MUSICAL-MODEL.md.
+
+Key Findings:
+
+1. ROLES BEYOND KICK+BASS+LEAD+HATS (12-14 total across 4 functional groups):
+   - Rhythmic foundation: kick, bass (rolling 1/16 + sidechain), hats, shakers/rides, MID PERCUSSION (claps/snares/rimshots/wood/metal/toms/ghost notes) — currently missing
+   - Midrange melodic: lead, ACID/FM RIFF (distinct from lead), PLUCKS/STABS, COUNTERLINE/call-response, ARPEGGIOS — all currently missing except lead
+   - Sustained harmonic/texture: PADS/DRONES (sustained midrange fill), TEXTURE/spectral/granular (FM/phase-mod/formant/comb-filter) — currently missing
+   - Transitions/glue: FX (risers/sweeps/impacts/downlifters/reverses), EAR-CANDY/glitches — currently missing
+   Foundation currently specifies ~4 of ~14 named roles.
+
+2. V1 MIDRANGE SPARSENESS = MUSICAL MODEL GAP, NOT MIXING GAP.
+   - Critical: V1 effect report shows midrange_density 3-4% across ALL variants INCLUDING variant A (unmodified control psyLive). The renderer is therefore not the cause; the cause is upstream.
+   - The Foundation's WHAT-layer does not emit enough midrange events because it does not name the roles that produce midrange content (acid, plucks/stabs, counterlines, mid percussion, pads/drones, textures, FX).
+   - No mixing change on the current 4-role set can close a 3% → 8-18% gap. The missing mass is multiple missing role categories.
+   - Myloops confirms: "Mids (500 Hz-2 kHz): Vocals and melodic content typically reside here" — and psytrance populates this band with many distinct musical roles, not a single boosted lead.
+   - Honest caveat: a small portion could be recovered by mixing (brighter lead, bass harmonics), but the gap is too large for mixing alone.
+
+3. MINIMUM COMPLETE WHAT-LAYER MUST EXPRESS (7 categories):
+   A. Role set (~12-14 roles across 4 functional groups)
+   B. Kick+bass as coupled engine: timing lock + sidechain envelope (musical param) + pitch co-tuning + continuous-bass constraint
+   C. Arrangement as section model + per-section role-activity mask (this mask IS the musical representation of negative space)
+   D. Phrase model: 4-bar micro-variation unit + 8-bar structural unit + 16-64-bar evolution arc + 4-8 bar layer entry cadence
+   E. Motif development per melodic role: accent type (strong/offbeat/syncopated/dynamic), cycle length (bar-aligned 4/8/16 OR odd-time 3/5/7), variation type (pitch/rhythm/velocity/effect), variation period
+   F. Energy/density profile: section-level energy (macro arc) + role-level density (meso) + phrase-level tension/release (micro); explicit primitives, derived values
+   G. Psytrance identity profile (beyond BPM+scale): tempo band per subgenre, modal minor harmony, constant bass+4/4 kick engine, 4-8 bar layering cadence, 6-10 min multi-section form, micro-variation aesthetic, breakdown-and-release structure, sustained atmospheric content
+
+4. KICK+BASS IS A SYSTEM, NOT TWO ARRAYS.
+   Sources (YGP, melodigging, myloops, image-line forum, audient) unanimously describe kick+bass as a coupled engine with 4 explicit relationships: timing lock, sidechain envelope, pitch co-tuning, energy coupling. Currently Foundation treats them as independent event streams.
+
+5. MOTIF DEVELOPMENT IS A FIRST-CLASS MUSICAL STRUCTURE.
+   E-Clip: accents (strong/offbeat/syncopated/dynamic) + odd-time cycles (3/5/7 against 4/4) + repetition-with-variation (pitch/rhythm/velocity/effect, 4-bar familiar then 1-2 note change). Wikipedia: 8-bar structural change, 4-8 bar layer entry. Agres 2017 (PMC, academic): harmonic repetition is functionally enjoyable in trance.
+
+6. NEGATIVE SPACE = PER-SECTION ROLE-ACTIVITY MASK.
+   Wikipedia: breakdown 30s-1min+ where everything except bass drops, then new pattern rebuilds. Alien Chaos: "well-placed break creates space to breathe." Melodigging minimal: "negative space prized; 6-12 elements at a time." This is purely arrangement-level (which roles are absent per section), not synthesis.
+
+7. PSYTRANCE IDENTITY (beyond BPM+scale): constant pounding bass beat (Wikipedia), 1/16 rolling bassline, sidechain lock, modal minor (Aeolian/Dorian/Phrygian), psychedelic sound-design role (FM/PM/granular/formant), 4-8 bar layering cadence, 6-10 min multi-section form, micro-variation aesthetic, breakdown-and-release, sustained atmospheric content. Distinguished from techno (psy = complex layered journey; techno = one tight loop) and from trance (psy = rhythmic+textural; trance = harmonic+emotional+big vocal moments).
+
+8. DISTINCTION — MUSICAL (Foundation) vs SYNTHESIS (PSY4):
+   - Musical = what plays, when, why, in what relationship (roles, section mask, phrase model, motif params, kick-bass relationships, identity constraints)
+   - Synthesis = how it sounds at sample level (oscillator type, filter algorithm, FM index, reverb algorithm, compressor implementation)
+   Foundation must express the left column; PSY4 must realize the right column from the left.
+
+Honest Qualifications:
+- No single "correct" role taxonomy — sources vary in granularity. 12-14 role count is a synthesis across 8 sources; the GAP (missing midrange material as named roles) is not in dispute.
+- Subgenre matters: progressive = fewer layers + incremental modulation; minimal = 6-12 elements + negative space; full-on = more layers + more energy; dark = denser + aggressive. WHAT-layer must support per-subgenre density profiles.
+- Mixing can recover SOME midrange from existing roles (brighter lead, bass harmonics), but 3% → 8-18% gap is too large for mixing alone.
+- The V1 metric is spectral, not event-count. So the fix is BOTH musical (more midrange events from more roles) AND synthesis (voices that produce midrange energy). Musical gap is upstream and is the necessary first fix.
+
+Artifacts produced:
+- /home/z/my-project/audit-reports/RESEARCH-A-PSYTRANCE-MUSICAL-MODEL.md (full 9-section report with 17 cited sources)
+
+Bottom Line for the orchestrator:
+The current Foundation WHAT-layer is a SKELETON, not a complete musical model. It describes ~4 of ~14 named psytrance roles and treats kick+bass as independent event streams rather than a coupled engine. V1's midrange_density hard-fail (3-4% across ALL variants including control) is a MUSICAL MODEL GAP — the Foundation does not emit enough midrange events because it does not name the roles (acid, plucks/stabs, counterlines, mid percussion, pads/drones, textures, FX) that naturally occupy 200-2500 Hz in psytrance. No mixing change on the current 4-role set can close the gap. Recommended next: extend Foundation's WHAT-layer with (1) the missing role categories, (2) explicit kick+bass coupling relationships, (3) per-section role-activity mask, (4) phrase model with motif development parameters. This is a Foundation extension decision, not a renderer/PSY4 decision, and is deferred to the orchestrator/user per the freeze.
+
+
+---
+Task ID: PSY4-MUSICAL-WHAT-LAYER-DESIGN-AUDIT (orchestrator)
+Agent: z-ai-code (main)
+Task: Design audit ONLY. No code, no Foundation changes, no renderer changes, no rerender, no architecture approval. Answer: what is the minimum but musically complete WHAT-layer for PSY4 to produce convincing full psytrance without Foundation making synthesis/mixing decisions?
+
+Work Log:
+- User instruction: STOP all code/render/remediation. V1 frozen as baseline. Move to DESIGN stage only. Answer one question: what is the minimum but musically complete WHAT-layer required?
+- Dispatched RESEARCH-A subagent to research psytrance production layers from credible sources. RESEARCH-A returned with 490-line report (audit-reports/RESEARCH-A-PSYTRANCE-MUSICAL-MODEL.md) identifying ~12-14 roles across 4 functional groups, confirming V1 midrange sparseness is a MUSICAL MODEL GAP (not mixing gap), and defining 7 categories of minimum WHAT-layer.
+- Independently read Foundation's actual contract types (not relying on previous audits):
+  * MusicalContext (tonic, scaleName, bpm, harmonicContext, tension, density, energy, sectionRole, repetitionPressure, noveltyPressure)
+  * Motif/MotifNote (step, midi, velocity, durationSteps, accent, contour, intervals, pitchClasses, register, rhythmicDensity, accentPattern, transformHistory)
+  * PhrasePlan/PhraseSlot (PhraseRole: INTRO/STATEMENT/DEVELOPMENT/RESPONSE/BUILD/RELEASE/TRANSITION/RESOLUTION)
+  * SectionPlan/SectionSlot (SectionRole: ESTABLISH/REPEAT_VARIATION/DEVELOPMENT/CONTRAST/RETURN/ESCALATION/PEAK/RELEASE)
+  * Material/MaterialMetadata (role as free string, style, tempoRange, keyCompatibility, energy, novelty)
+  * MaterialPayloads: MotifPayload, BassPatternPayload, DrumPatternPayload (tracks as Record<string, RhythmPattern>), RhythmPayload, FillPayload, PhrasePayload, FXGesturePayload, PresetPayload (WRONG OWNER — synthesis), TexturePayload (partially WRONG OWNER)
+  * Protocol events: BeatEvent, SectionEvent, EnergyEvent, DropEvent, NoteEvent, PatternEvent
+- Wrote 12-section design audit at audit-reports/PSY4-MUSICAL-WHAT-LAYER-DESIGN-AUDIT.md:
+
+Section 1 — Executive Diagnosis: Foundation is a SKELETON, not complete model. 10 missing WHAT-layer items identified. V1 findings classified: midrange_density = MUSICAL MODEL GAP (all variants including A control fail); masking = partially model gap (no kick↔bass interaction model); timbral_movement = partially model gap (no texture/atmosphere layer); pitch_correctness/dynamic_range/loudness = HOW gaps. Explicit list of what must NOT be inferred from V1 (no architectural inference from H2, no "renderer needs fixing", no overfitting to V1).
+
+Section 2 — Complete Musical Ontology: 9 entities (Identity, Material, Role, Interaction, Lifecycle, Arrangement, Energy, Development, Transition). Each is WHAT-layer concept, none imply synthesis.
+
+Section 3 — Role Model: Role ≠ Instrument. Proposed Role abstraction with semanticRole (extensible string, not enum), functionalGroup (4 groups), registerIntent (musical register, not EQ), behavior (rhythmicRole, harmonicRole, densityProfile, developmentType). Candidate taxonomy: ~12-14 roles across rhythmic-foundation (KICK, BASS, KICKBASS, HAT, CYMBAL, RIDE, PERCUSSION, SNARE, CLAP, GHOST-PERC), midrange-melodic (LEAD, ACID, PLUCK, STAB, COUNTERLINE, ARPEGGIO), sustained-harmonic (PAD, DRONE, ATMOSPHERE, TEXTURE), transitions-glue (RISER, SWEEP, IMPACT, DOWNLIFTER, REVERSE, GLITCH).
+
+Section 4 — Interaction Model: Kick+bass is ONE system (not two arrays). Proposed RoleInteraction with type (couple/complement/contrast/call-response/mask-avoidance), participants, parameters (timingLock, pitchRelationship, energyCoupling, sidechainIntent as MUSICAL parameter not synth threshold, harmonicComplement, callMotifId/responseMotifId, frequencySeparation, phaseAlignment).
+
+Section 5 — Motif/Development Model: Current Motif has backward transformHistory but no forward-looking schedule. Proposed DevelopmentPlan with variations[] (atBar, operator, parameters, reason), callbacks[] (atBar, sourceMotifId, transform), lineage[] (backward). 14 DevelopmentOperators. Psytrance-specific patterns: micro-variation, slow evolution, call/response, callback/recapitulation.
+
+Section 6 — Arrangement/Energy Model: Current SectionPlan has bar-level SectionRole but no track-level section model (intro/build/drop/breakdown/re-entry/outro). Proposed ArrangementSection with type, barRange, energy/tension/density, roleActivity mask, motifState, developmentStage, transitionIn/Out. Multi-level energy: section-level (macro arc), role-level (meso), phrase-level (tension/release), bar-level (micro).
+
+Section 7 — Negative Space Model: Current density=0 doesn't say WHICH roles are inactive. Proposed RoleActivity with state (absent/entering/sustaining/varying/transforming/thinning/muted/exiting) + intensity. Example: DROP (kick sustaining, atmosphere absent) vs BREAK (kick muted, atmosphere sustaining) — distinguishable via roleActivity mask.
+
+Section 8 — Foundation → RawScore Boundary: Proposed flow Foundation (WHAT) → Musical Score (compiled WHAT) → RawScore (contract PSY4 consumes) → PSY4 (HOW). Each stage's compilation described. Key boundary: Foundation compiles notes/roles/interactions/arrangement/development/energy. Foundation does NOT compile oscillator/cutoff/FM/sample/pan/reverb.
+
+Section 9 — Current Contract Gap Matrix: Independent audit of ~30 existing concepts. Found: 2 WRONG OWNER (PresetPayload=synthesis, TexturePayload=partially synthesis), 4 REWORK (Motif.role/Material.metadata.role/DrumPatternPayload tracks/PatternEvent trackId use free strings instead of semanticRole), 9 MISSING (Role abstraction, role lifecycle, role interactions, arrangement sections, negative space, midrange roles, sustained roles, transition roles, development schedule, style profile, multi-level energy, callback model).
+
+Section 10 — Minimal V2 Contract: 7 top-level entities (identity, roles, events, interactions, sections, development, styleProfile). ~20 fields per event. No synthesis fields. Extensible roles. Explicit interactions. Explicit negative space. Forward-looking development. Full MusicalScore schema proposed.
+
+Section 11 — What Must NOT Be Added: Explicit list of synthesis/mixing/mastering concepts that must NOT enter Foundation (oscillator, cutoff, FM, wavetable, sample, saturation, stereo, EQ, compression, LUFS, PresetPayload, TexturePayload.partials, synth engine names). Rule: "Foundation must not silently acquire synthesis ownership just because PSY4 currently lacks information."
+
+Section 12 — Validation Plan for V2: 7 design-level validation criteria (describe complete track, describe intro→build→drop→breakdown→re-entry→outro, represent multiple simultaneous roles, represent motif development, represent role interactions, represent negative space, PSY4 can consume without synthesis decisions in Foundation). Validation method: paper encoding (no code), completeness check, ownership check, minimal check. V2 validation does NOT include audio rendering/critic/blind listening. Decision after V2 validation: decide whether to implement V2 in Foundation (separate decision), if implemented run V2 vertical proof, compare to V1, decide which abstractions to ratify. No implementation until V2 design validated and approved.
+
+Stage Summary:
+- Design audit document written: audit-reports/PSY4-MUSICAL-WHAT-LAYER-DESIGN-AUDIT.md (~600 lines, 12 sections).
+- No code modified. No Foundation changes. No renderer changes. No rerender. No architecture approval.
+- KEY ANSWER: The WHAT-layer must express 8 things: (1) complete role ontology ~12-14 roles, (2) role lifecycle, (3) role interactions especially kick↔bass coupled engine, (4) arrangement sections with per-role activity masks (negative space), (5) forward-looking development, (6) multi-level energy, (7) psytrance style profile, (8) musical material beyond notes.
+- Current Foundation describes ~4 of 8 (identity, bar-level energy, motif notes, phrase/section bar-level roles). It is a skeleton.
+- V1 midrange sparseness is a MUSICAL MODEL GAP, not a mixing gap — the WHAT-layer doesn't name midrange roles.
+- V2 design validation (paper encoding) is the next step IF user approves — separate decision.
+- HARD STOP observed. Awaiting user review of design audit.
