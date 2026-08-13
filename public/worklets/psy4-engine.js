@@ -48,7 +48,7 @@ const MAX_EVENTS = 256;       // PSY5 proven size (was 1024) — bounded ring bu
 // budget, we drop the lowest-priority active voices to stay RT-safe. Reported
 // to the main thread every 30 blocks (~10 Hz at 128-sample blocks / 44.1 kHz).
 const PROCESS_BUDGET_MS = 3.0;        // PSY5: drop voices if process() > 3ms
-const STATS_REPORT_BLOCKS = 30;       // PSY5: report load every 30 blocks
+const STATS_REPORT_BLOCKS = 100;      // FIX: was 30 (~10Hz), now 100 (~3Hz). Less main-thread postMessage pressure.
 const VOICE_BUDGET_MIN = 8;           // never drop below 8 active voices
 const VOICE_BUDGET_DROP_PER_OVERAGE = 1; // drop 1 voice per 0.5ms overage
 

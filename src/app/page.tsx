@@ -87,7 +87,6 @@ export default function Page() {
     radioSignalState: 'DISCONNECTED', radioObservationState: 'NO_SIGNAL', radioConfidence: 0,
     causalAction: 'NO_CHANGE', causalWhyNow: '', causalTension: 0, causalContrastDebt: 0,
     causalAnticipation: 0, causalGrooveStability: 0, causalExpectation: 0,
-    causalActiveMaterials: [], causalHistory: [],
     audioProcessMs: 0, audioCpuLoad: 0, audioActiveVoices: 0, audioVoiceBudget: 0,
     userEnergy: 0.5, userTension: 0.3, userStyle: 'FULL_ON', forcedSection: null, forcedBarsRemaining: 0,
     samplePalette: 'md',
@@ -165,6 +164,7 @@ export default function Page() {
 
   // Visualizer canvas — RAF loop. Reuses a single Uint8Array buffer (no per-frame alloc).
   // PERF: depends only on s.playing so it isn't torn down on every state update.
+  // FIX: throttle to 30fps + don't resize canvas every frame (was canvas.width = offsetWidth = clear+realloc)
   const visualBufRef = useRef<Uint8Array | null>(null);
   useEffect(() => {
     if (!s.playing) return;
@@ -172,13 +172,20 @@ export default function Page() {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    // Set canvas size ONCE (was every frame — causes clear + realloc = expensive)
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+    const W = canvas.width, H = canvas.height;
     let active = true;
-    const draw = () => {
+    let lastDraw = 0;
+    const draw = (ts: number) => {
       if (!active) return;
+      // Throttle to ~30fps (every 33ms) — visualizer doesn't need 60fps
+      if (ts - lastDraw < 33) { rafRef.current = requestAnimationFrame(draw); return; }
+      lastDraw = ts;
       const engine = engineRef.current;
       const analyser = engine?.analyserNode;
-      if (!analyser || !ctx) { rafRef.current = requestAnimationFrame(draw); return; }
-      const W = canvas.width = canvas.offsetWidth, H = canvas.height = canvas.offsetHeight;
+      if (!analyser) { rafRef.current = requestAnimationFrame(draw); return; }
       ctx.fillStyle = 'rgba(7,3,18,0.4)'; ctx.fillRect(0, 0, W, H);
       if (!visualBufRef.current || visualBufRef.current.length !== analyser.frequencyBinCount) {
         visualBufRef.current = new Uint8Array(analyser.frequencyBinCount);
@@ -369,37 +376,6 @@ export default function Page() {
               </div>
             )}
 
-            {/* ACTIVE MATERIALS */}
-            <div className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              <div className="flex items-center gap-1.5 mb-2">
-                <Layers className="w-3.5 h-3.5 text-slate-400" />
-                <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Active Materials</span>
-                <span className="ml-auto text-[9px] tabular-nums text-slate-600">{s.causalActiveMaterials.length} active</span>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {s.causalActiveMaterials.length === 0 ? (
-                  <span className="text-[10px] text-slate-600">No materials active — engine building groove</span>
-                ) : (
-                  s.causalActiveMaterials.map(m => <MemoMaterialChip key={m} material={m} />)
-                )}
-              </div>
-            </div>
-
-            {/* DECISION HISTORY */}
-            <div className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              <div className="flex items-center gap-1.5 mb-2">
-                <Cpu className="w-3.5 h-3.5 text-slate-400" />
-                <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Decision History</span>
-              </div>
-              <div className="max-h-64 overflow-y-auto space-y-0.5" style={{ scrollbarWidth: 'thin' }}>
-                {s.causalHistory.length === 0 ? (
-                  <span className="text-[10px] text-slate-600">—</span>
-                ) : (
-                  s.causalHistory.slice().reverse().map((h, i) => <MemoHistoryEntry key={i} entry={h} />)
-                )}
-              </div>
-            </div>
-
             {/* MIX — collapsible */}
             <div className="rounded-xl overflow-hidden" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
               <button onClick={() => setShowMix(!showMix)} className="w-full flex items-center justify-between px-3 py-2">
@@ -560,10 +536,6 @@ export default function Page() {
             <span className="font-mono" style={{ color: actionColor }}>{s.causalAction}</span>
           </div>
           <div className="flex items-center gap-2 ml-auto">
-            <span className="font-mono text-slate-500">{s.causalActiveMaterials.length} materials</span>
-            <span className="text-slate-600">·</span>
-            <span className="font-mono text-slate-500">{s.causalHistory.length} decisions</span>
-            <span className="text-slate-600">·</span>
             <span className="font-bold px-1.5 py-0.5 rounded" style={{ color: syncMeta.color, background: `${syncMeta.color}18` }}>{syncMeta.label}</span>
           </div>
         </div>

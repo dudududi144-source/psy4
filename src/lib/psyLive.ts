@@ -176,8 +176,8 @@ export interface LiveState {
   causalAnticipation: number;
   causalGrooveStability: number;
   causalExpectation: number;
-  causalActiveMaterials: string[];
-  causalHistory: Array<{ bar: number; action: string }>;
+  // causalActiveMaterials + causalHistory REMOVED — they caused React re-render
+  // storms every 500ms (Array.from + slice allocations). Not needed for the musical goal.
   // PERF: audio-thread diagnostics (from worklet stats)
   audioProcessMs: number;       // last process() duration in ms (budget = 3.0)
   audioCpuLoad: number;         // 0..1 smoothed
@@ -303,7 +303,7 @@ export class PsyLive {
   private causalEventQueue: CausalNoteEvent[] = [];
   // PERF: preallocated scratch buffer for the scheduler's remaining-queue (avoids [] alloc per tick)
   private _queueScratch: CausalNoteEvent[] = [];
-  private causalHistory: Array<{ bar: number; action: string }> = [];
+  // causalHistory field REMOVED — was only used by the deleted UI panel
   // MATERIAL REALIZER: fallback if worklet fails
   private realizer: MaterialRealizer | null = null;
   // AUDIOWORKLET: the REAL production engine (Moog, PolyBLEP, 64 voices, real samples)
@@ -320,8 +320,8 @@ export class PsyLive {
   // Scheduler — wake-up mechanism only (NOT a musical clock)
   // F1.18: setInterval wakes the scheduler; musical time comes from Transport
   private timer: ReturnType<typeof setInterval> | null = null;
-  private readonly lookahead = 50; // 50ms scheduler (was 25ms — too frequent, chokes main thread)
-  private readonly scheduleAheadTime = 0.2; // 200ms lookahead (was 150ms)
+  private readonly lookahead = 100; // FIX: was 50ms, now 100ms. Halves scheduler runs.
+  private readonly scheduleAheadTime = 0.5; // FIX: was 0.3s, now 0.5s. Larger buffer absorbs main-thread jitter.
   private lastScheduledBeatIndex = -1; // dedup based on Transport beatIndex
 
   // Kick detection
@@ -338,6 +338,8 @@ export class PsyLive {
   private sessionTickCounter = 0;
   // PERF: last worklet stats (CPU load, voice budget, processMs) for diagnostics
   private lastWorkletStats: EngineStats | null = null;
+  // PERF: cached learned display object (recomputed only when insights change)
+  private cachedLearnedDisplay: { bpm: number; key: string; confidence: number; scale: string | null } | null = null;
 
   // Learning
   private learningData: LearningData | null = null;
@@ -399,14 +401,22 @@ export class PsyLive {
     if (this.insightsDirty) {
       this.cachedInsights = this.learningData ? getInsights(this.learningData) : null;
       this.insightsDirty = false;
+      // Also update the cached learned display object
+      const learned = this.cachedInsights;
+      this.cachedLearnedDisplay = learned ? {
+        bpm: learned.topBpm, key: learned.topKey,
+        confidence: learned.tempo?.confidence || 0,
+        scale: learned.scale?.name || null,
+      } : null;
     }
-    const learned = this.cachedInsights;
     const transportBpm = this.transport ? this.transport.snapshot().bpm : 145;
     // PERF: radioLayer.getSnapshot() just returns lastSnapshot (no alloc) — safe to call.
     const radioSnap = this.radioLayer?.getSnapshot();
     // CAUSAL: Extract causal state for UI — reads from lightweight snapshot (5 fields)
     const cs = this.currentCausalBar?.stateAfter as { tensionLevel?: number; contrastDebt?: number; anticipationLevel?: number; grooveStability?: number; expectationLevel?: number } | undefined;
     const cd = this.currentCausalBar?.decision;
+    // PERF: getUserControls called ONCE, result spread inline (no IIFE allocation)
+    const uc = this.causalComposer?.getUserControls();
     this.onState?.({
       playing: this.playing, radioOn: this.radioOn,
       radioBpm: transportBpm, engineBpm: transportBpm,
@@ -415,11 +425,7 @@ export class PsyLive {
       bassNote: freqToNote(this.bassFreq),
       radioLevel: this.radioLevel, engineLevel: this.engineLevel,
       presetId: this.presetId, variant: this.variant,
-      learned: learned ? {
-        bpm: learned.topBpm, key: learned.topKey,
-        confidence: learned.tempo?.confidence || 0,
-        scale: learned.scale?.name || null,
-      } : null,
+      learned: this.cachedLearnedDisplay,
       sidechainActive: false,
       harmonicLocked: this.harmonicLocked,
       radioRms: this.radioRms,
@@ -437,19 +443,17 @@ export class PsyLive {
       causalAnticipation: cs?.anticipationLevel ?? 0,
       causalGrooveStability: cs?.grooveStability ?? 0,
       causalExpectation: cs?.expectationLevel ?? 0,
-      causalActiveMaterials: this.causalComposer?.getActiveVoices() ?? [],
-      causalHistory: this.causalHistory.slice(-12),
       // PERF: audio-thread diagnostics
       audioProcessMs: this.lastWorkletStats?.processMs ?? 0,
       audioCpuLoad: this.lastWorkletStats?.cpuLoad ?? 0,
       audioActiveVoices: this.lastWorkletStats?.activeVoices ?? 0,
       audioVoiceBudget: this.lastWorkletStats?.voiceBudget ?? 0,
-      // STAGE 2: user control state (from CausalComposer)
-      userEnergy: this.causalComposer?.getUserControls().energy ?? 0.5,
-      userTension: this.causalComposer?.getUserControls().tension ?? 0.3,
-      userStyle: this.causalComposer?.getUserControls().style ?? 'FULL_ON',
-      forcedSection: this.causalComposer?.getUserControls().forcedSection ?? null,
-      forcedBarsRemaining: this.causalComposer?.getUserControls().forcedBarsRemaining ?? 0,
+      // STAGE 2: user control state (single getUserControls call)
+      userEnergy: uc?.energy ?? 0.5,
+      userTension: uc?.tension ?? 0.3,
+      userStyle: uc?.style ?? 'FULL_ON',
+      forcedSection: uc?.forcedSection ?? null,
+      forcedBarsRemaining: uc?.forcedBarsRemaining ?? 0,
       // STAGE 5: current sample palette
       samplePalette: this.currentPalette,
     });
@@ -1181,28 +1185,18 @@ export class PsyLive {
       // CAUSAL: On new bar, compose via CausalComposer (NOT session.planBar)
       const currentBar = snap.bar;
       if (!this.currentCausalBar || this.currentCausalBar.bar !== currentBar) {
+        // FIX: measure composeBar time to diagnose stutter. If > 10ms, log it.
+        const __composeStart = performance.now();
         this.currentCausalBar = this.causalComposer.composeBar(currentBar);
-        // Queue all events from this bar for scheduling
-        // CRITICAL: CausalComposer uses bar*4*beatDur as absolute time from bar 0.
-        // We need to offset by the transport's origin audio time so events
-        // align with the actual audio clock.
+        const __composeMs = performance.now() - __composeStart;
+        if (__composeMs > 10) console.warn(`[PSY4] composeBar took ${__composeMs.toFixed(1)}ms (bar ${currentBar})`);
+        // Queue all events for scheduling
         const barOriginAudioTime = snap.beatTime - snap.beat * (60 / snap.bpm);
-        for (const ev of this.currentCausalBar.events) {
-          // ev.at is bar-relative (bar * 4 * beatDur + stepOffset)
-          // Convert to absolute audio time: add the transport's origin
-          this.causalEventQueue.push({
-            ...ev,
-            at: ev.at + barOriginAudioTime,
-          });
+        const evs = this.currentCausalBar.events;
+        for (let i = 0; i < evs.length; i++) {
+          evs[i].at += barOriginAudioTime;
+          this.causalEventQueue.push(evs[i]);
         }
-        // Record decision in history
-        this.causalHistory.push({
-          bar: currentBar,
-          action: this.currentCausalBar.decision.action,
-        });
-        if (this.causalHistory.length > 64) this.causalHistory.shift();
-        // NOTE: emit() is NOT called here — it's called by the UI timer (500ms).
-        // Calling emit() on every bar causes React re-renders that choke the main thread.
       }
 
       // Process event queue: schedule events that are due within the lookahead window
@@ -1730,12 +1724,13 @@ export class PsyLive {
   // F2.5: onKick() REMOVED — RadioObservationLayer handles beat detection internally.
   // Beat observations flow: radioLayer.process() → radioSnap.beat → transport.observeBeat()
 
-  // ── UI timer (2fps) ──
+  // ── UI timer ──
   private startUITimer(): void {
     if (this.uiTimer) clearInterval(this.uiTimer);
-    // FIX: UI updates at 500ms (2Hz) — was 250ms (4Hz). The studio UI doesn't need
-    // 4 updates/second; 2 is enough for live feel and halves React re-render pressure.
-    this.uiTimer = setInterval(() => this.emit(), 500);
+    // FIX: UI updates at 2000ms (0.5Hz) — the audio engine is the priority.
+    // The studio UI only shows BPM/decision/state which change at ~1.6s bar intervals.
+    // 0.5Hz is enough for human perception of "live" updates and minimizes React render cost.
+    this.uiTimer = setInterval(() => this.emit(), 2000);
   }
   private stopUITimer(): void {
     if (this.uiTimer) { clearInterval(this.uiTimer); this.uiTimer = null; }

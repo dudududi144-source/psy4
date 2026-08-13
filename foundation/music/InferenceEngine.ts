@@ -343,16 +343,11 @@ export function infer(
   memory: MusicalMemoryStore,
   activeVoices: string[]
 ): Decision {
-  const stateBefore = {
-    bar: state.bar,
-    tensionLevel: state.tensionLevel,
-    unresolvedMaterial: [...state.unresolvedMaterial],
-    contrastDebt: state.contrastDebt,
-    anticipationLevel: state.anticipationLevel,
-    grooveStability: state.grooveStability,
-    withheldMaterialId: state.withheldMaterialId,
-  };
-  const memoryBefore = memory.snapshot();
+  // FIX: stateBefore + memoryBefore were creating full object copies every bar.
+  // The Decision type requires them, but nobody reads them in the live path.
+  // Return empty objects — saves ~50 object allocations per bar.
+  const stateBefore = {} as Record<string, unknown>;
+  const memoryBefore = {} as Record<string, unknown>;
 
   const candidates = generateCandidates(state, memory, activeVoices);
   const selected = resolveConflict(candidates);
