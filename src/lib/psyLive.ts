@@ -320,8 +320,8 @@ export class PsyLive {
   // Scheduler — wake-up mechanism only (NOT a musical clock)
   // F1.18: setInterval wakes the scheduler; musical time comes from Transport
   private timer: ReturnType<typeof setInterval> | null = null;
-  private readonly lookahead = 50; // FIX: back to 50ms. 100ms was missing bar boundaries.
-  private readonly scheduleAheadTime = 0.8; // FIX: 800ms lookahead = ~half a bar at 145 BPM. Ensures events are always queued before they're needed.
+  private readonly lookahead = 100; // FIX: 100ms scheduler. 50ms was too frequent (20Hz object alloc).
+  private readonly scheduleAheadTime = 3.0; // FIX: 3 seconds ahead = ~2 bars at 145 BPM. Huge buffer.
   private lastScheduledBeatIndex = -1; // dedup based on Transport beatIndex
 
   // Kick detection
@@ -1183,26 +1183,22 @@ export class PsyLive {
       }
 
       // CAUSAL: Compose bars AHEAD of time and PUSH to worklet immediately.
-      // FIX: was queuing events in causalEventQueue then scheduling in scheduler tick.
-      // That caused bursts — events arrived at worklet late and played all at once.
-      // Now we push events directly to worklet as soon as they're composed.
+      // FIX: with 3s lookahead at 145 BPM, we need ~2 bars ahead.
+      // Compose 3 bars ahead to ensure events are always in worklet queue.
       const currentBar = snap.bar;
       const beatDur = 60 / snap.bpm;
       const lastComposedBar = this.currentCausalBar?.bar ?? -1;
-      const targetBar = currentBar + 2; // always keep 2 bars composed ahead
+      const targetBar = currentBar + 3; // compose 3 bars ahead for safety
       if (lastComposedBar < targetBar) {
         const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
         for (let b = lastComposedBar + 1; b <= targetBar; b++) {
           const barResult = this.causalComposer.composeBar(b);
           const evs = barResult.events;
-          // Push each event directly to worklet (immediate scheduling, no queue)
           for (let i = 0; i < evs.length; i++) {
             const ev = evs[i];
             ev.at += barOriginAudioTime;
-            // Track kick count for UI
             if (ev.channel === 'kick') this.kickCount++;
             if (ev.channel === 'bass' && ev.note > 0) this.bassFreq = mtof(ev.note);
-            // Schedule directly to worklet
             if (this.useWorklet && this.engineNode) {
               const voiceId = CHANNEL_TO_VOICE[ev.channel];
               if (voiceId !== undefined) {
@@ -1216,39 +1212,14 @@ export class PsyLive {
           }
           this.currentCausalBar = barResult;
         }
-        // Flush all batched events to worklet NOW
         if (this.useWorklet && this.engineNode) {
           this.engineNode.flushEvents();
         }
       }
-      // Skip the old queue-based scheduling — events are pushed directly above
 
-      // Process event queue: schedule events that are due within the lookahead window
-      // PERF: reuse a preallocated remaining buffer instead of allocating [] every tick (20Hz)
-      const scheduleWindow = now + this.scheduleAheadTime;
-      const remaining = this._queueScratch;
-      remaining.length = 0;
-      for (const ev of this.causalEventQueue) {
-        if (ev.at <= scheduleWindow) {
-          if (ev.at >= now - 0.05) {
-            this.scheduleCausalEvent(ev);
-          }
-          // else: event is too late, drop it (don't add to remaining)
-        } else {
-          remaining.push(ev);
-        }
-      }
-      // Swap: the remaining array becomes the new queue, old queue becomes scratch
-      this._queueScratch = this.causalEventQueue;
-      this.causalEventQueue = remaining;
-      // Safety: if queue grows too large, trim old events
-      if (this.causalEventQueue.length > 200) {
-        this.causalEventQueue.length = 100;
-      }
-      // Flush batched events to AudioWorklet
-      if (this.useWorklet && this.engineNode) {
-        this.engineNode.flushEvents();
-      }
+      // OLD queue-based scheduling REMOVED — events are now pushed directly to worklet
+      // in the compose loop above. No need to process causalEventQueue anymore.
+      // The worklet holds events in its ring buffer and plays them at the correct audio time.
     } catch (e) {}
   }
 
