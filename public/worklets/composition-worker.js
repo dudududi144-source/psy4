@@ -591,9 +591,6 @@ self.onmessage = function(e) {
       const barOriginAudioTime = msg.barOriginAudioTime;
       const beatDur = 60 / composer.opts.bpm;
       const allEvents = [];
-      // FIX: Always compose from lastComposedBar+1 up to targetBar.
-      // If lastComposedBar >= targetBar, we already composed everything —
-      // but still send an empty response so the main thread knows we're alive.
       if (lastComposedBar < msg.targetBar) {
         for (let b = lastComposedBar + 1; b <= msg.targetBar; b++) {
           const result = composer.composeBar(b);
@@ -604,6 +601,13 @@ self.onmessage = function(e) {
           }
           lastComposedBar = b;
         }
+      }
+      // FIX: Always send a response, even if 0 events.
+      // This lets the main thread know we're alive and tracking.
+      if (allEvents.length === 0) {
+        // No new bars to compose — send empty response
+        self.postMessage({ type: 'events', events: new Float64Array(0), count: 0, bar: msg.targetBar });
+        return;
       }
       // Convert to flat Float64Array: [at, note, velocity, duration, channelHash, ...]
       // channelHash: map channel string to voice ID number

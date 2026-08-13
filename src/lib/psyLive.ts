@@ -1265,17 +1265,17 @@ export class PsyLive {
       // The worker composes 3 bars ahead and returns events as a Float64Array (Transferable, zero-copy)
       const currentBar = snap.bar;
       const beatDur = 60 / snap.bpm;
-      const targetBar = currentBar + 3; // compose 3 bars ahead
-      // FIX: Always send compose request when targetBar increases.
-      // The worker tracks its own lastComposedBar and only composes new bars.
-      if (this.lastWorkerComposeBar < targetBar) {
+      const targetBar = currentBar + 3;
+      // FIX: Always send compose request. Worker tracks its own state and
+      // only composes new bars. This prevents starvation when bar doesn't advance.
+      if (this.lastWorkerComposeBar <= targetBar) {
         const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
         this.compositionWorker?.postMessage({
           type: 'compose',
           targetBar,
           barOriginAudioTime,
         });
-        this.lastWorkerComposeBar = targetBar;
+        this.lastWorkerComposeBar = targetBar + 1; // track what we've requested
       }
     } catch (e) {}
   }
