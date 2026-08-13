@@ -7929,3 +7929,68 @@ Stage Summary:
 - 3 open contract gaps: NoteEvent lacks sample-selection context (REQUIRED, needs Foundation approval), MIDI bridge missing (out of scope), offline pipeline stub (separate work).
 - VERDICT: CONDITIONAL GO. 10/12 conditions pass. 2 conditions pending: fix RT violations + establish sample provenance.
 - Next step: await user review. If approved, decide worklet strategy + extend manifest + propose NoteEvent extension, then Phase 1 (minimal headless sampler).
+
+---
+Task ID: PSY-SAMPLER-ARCHITECTURE-GATE (orchestrator)
+Agent: z-ai-code (main)
+Task: Final architecture gate before implementation. NO CODE. Decide whether sample-based device can become first-class PSY family citizen cleanly. Apply 10 decision rules. GO/CONDITIONAL GO/NO-GO.
+
+Work Log:
+- User instruction: system-level architecture gate. Don't start coding. Re-read family. Establish canonical boundary. Classify Foundation gaps properly (frozen unless necessity proven). Protect composition engine. Define minimum family citizen. 10 rules. Adversarial questions. GO/CONDITIONAL GO/NO-GO with exact blockers.
+- Key honest reassessment: my previous integration design OVERCLAIMED two "blockers":
+  1. NoteEvent gap (materialId/motifId/lifecycleState/variationState) — I called it REQUIRED. Re-examined: device can do deterministic selection from existing NoteEvent fields (channel + note + velocity + position-seed). materialId is a realization decision (HOW), not composition (WHAT). motifId is composition context, not needed for realization. lifecycleState inferrable from velocity/duration. variationState is composition info. NONE required for v1. Foundation does NOT need to change.
+  2. 108 real samples provenance gap — I called it a blocker. Re-examined: v1 can use 6 verified PSY3 samples (gold-standard manifest) + procedural generation (multisampleGenerator, deterministic). 108 real samples quarantined — asset work, not architecture blocker.
+- Both "blockers" resolved WITHOUT changing Foundation or fixing psy4-engine.js. v1 uses verified samples + main-thread AudioBufferSourceNode (RT-safe by construction, no custom audio-thread code).
+- Wrote audit-reports/PSY-SAMPLER-ARCHITECTURE-GATE.md with 21 sections:
+
+Section 0 — Executive Decision: VERDICT = GO. Family architecture CAN support sample-based realization device cleanly. Canonical contract sufficient as-is. Foundation does NOT need to change. Device does NOT steal composition. Device does NOT couple to PSY4 internals. Previous "blockers" were overclaimed — resolved without Foundation changes.
+
+Section 1 — Six-Repository Architectural Map: classified every component CANONICAL/REUSABLE/LEGACY/EXPERIMENTAL/BROKEN/OUT OF SCOPE. Foundation contracts = CANONICAL (frozen). sampleBank/multisampleGenerator/psy4-dsp.js/SAMPLE_MANIFEST format = REUSABLE. psy4-engine.js = BROKEN (RT violations, non-determinism). offlineRenderer = BROKEN (stub). 108 real samples = QUARANTINED. Composition engine = OUT OF SCOPE. Dependency graph: one-way (Sampler → Foundation + verified samples), no cycles.
+
+Section 2 — Canonical Contracts (verified from source): PsyDevice (5 methods + 3 optional), NoteEvent (note/velocity/duration/channel/at), DeviceCapabilities, MusicalTransport (beatTime + origin.audioTime = timing authority). Contract is minimal, sufficient, frozen.
+
+Section 3 — Ownership Boundaries: four-layer separation (Composition/Scheduling/Device/Audio realization/Mix-Master). Sampler responsibility boundary table (motif identity=none, event timing=consume, sample asset=own, sample selection=own, genre grammar=none, transport=consume, MIDI=no direct, voice allocation=own, synthesis=not sampler, mix/master=output). Rule 3 enforced.
+
+Section 4 — Sampler Responsibility Boundary (precise): what Sampler knows (bank, voice pool, selection state, capabilities, transport, context), receives (onTransport/onContext/onEvent/onStart/onStop), outputs (audio, diagnostics, failure reports), refuses to decide (why role entered, why counterline exists, what motif means, what next event should be, how to generate missing material), owns vs observes, what remains outside.
+
+Section 5 — Reuse/Adapt/Rewrite/Do Not Use Matrix: PsyDevice/DeviceHost/NoteEvent/rng.ts = USE AS-IS. sampleBank = ADAPT (add dispose, FFT). multisampleGenerator/psy4-dsp.js/SAMPLE_MANIFEST format/sampler-tool = REUSE. psy4-engine.js = DO NOT USE (BROKEN). offlineRenderer = DO NOT USE (BROKEN). 108 real samples = QUARANTINE. SampleVoice/VoicePool = REWRITE (extract clean from broken engine). MIDI = DO NOT BUILD (out of scope). UI = DO NOT USE (separate phase).
+
+Section 6 — Foundation-Gap Analysis: NoteEvent gap reclassified. materialId = Not actually required (realization decision, not composition). motifId = Not actually required (composition context). lifecycleState = Useful but optional (inferrable). variationState = Not actually required. VERDICT: Foundation does NOT need to change for v1. Future NoteEvent extension = separate proposal after v1 evidence. MIDI bridge = product-layer. Offline pipeline = product-layer. Sample provenance = asset work.
+
+Section 7 — Determinism Model: formal definition (same inputs → same outputs). Deterministic inputs (worldSeed, channel, note, velocity, position, section). Deterministic outputs (sample variant, voice, start time, pitch). Randomness permitted: nowhere in realization path. Forbidden: Math.random, Date.now, performance.now as clock, non-deterministic iteration, unreconstructable seeds. Implementation: seeded LCG from Foundation scheduler/rng.ts, round-robin = deterministic counter rebuilt on seek.
+
+Section 8 — Real-Time Safety Model: hard boundary (process() at 128 samples = 2.9ms). Preparation vs audio-thread time table. v1 strategy: main-thread AudioBufferSourceNode (RT-safe by construction, no custom audio-thread code). Future worklet: extract from psy4-dsp.js (gold standard), build clean SampleVoice + VoicePool, all allocation in constructor.
+
+Section 9 — Sample Provenance Model: three categories (VERIFIED/QUARANTINED/REJECTED). Current state: 6 PSY3 samples VERIFIED, 108 real samples QUARANTINED, procedural VERIFIED. v1 strategy: VERIFIED samples only. Manifest format (gold standard fields). Rule 9 enforced.
+
+Section 10 — Timing Model: authoritative clock = AudioContext.currentTime via transport. Forbidden: Date.now, performance.now as musical clock, setInterval/setTimeout. Event scheduling (event.at + 100ms lookahead). Late/early behavior. Transport changes (jump=flush+rebuild, stop=suspend, start=resume). Latency reporting. Offline vs realtime (same logic, same output).
+
+Section 11 — Missing-Material Semantics: 10 failure scenarios with defined behavior (missing sample→report+skip, empty category→report+skip, pitch out of range→clamp+report, bank loading→queue, quarantined→report+skip, voice exhausted→report+drop, early→queue, late→drop if >50ms, stopped→ignore, transport unlocked→continue). Rule 4 enforced: never invent missing material.
+
+Section 12 — Capability Model: capabilities() = {audio:true, midi:false, inputs:0, outputs:1, voices:32, latencyMs:5, roles:[...]}. Capability vs configuration vs runtime state. v1 capabilities: pitched playback, one-shot, velocity, round-robin, keyzones, polyphony, per-channel routing. Not in v1: loop, worklet, multi-output. Rule: declare only what device actually realizes.
+
+Section 13 — MIDI Boundary: preserved separation (MIDI→bridge→MusicalEvent→DeviceHost→Sampler). Device does NOT receive MIDI. No MIDI bridge in family (documented product-layer gap, out of scope).
+
+Section 14 — UI Boundary: headless device works without React/DOM/UI. Architecture: Device→public API→UI(adapter). UI is NOT source of truth. Testable in Node.js + web-audio-api.
+
+Section 15 — Composition Compatibility: how composition info travels (material identity, motif identity, variation, lifecycle, causal state, intent = NOT in NoteEvent v1, not needed for realization). Only realization-relevant subset reaches device (channel, note, velocity, duration, at). All composition info resolved BEFORE device receives event. Device compatible with causal composition model — doesn't see causal layer.
+
+Section 16 — Minimum Family-Citizen Definition: 10 criteria (implements PsyDevice, receives MusicalEvent, loads verified samples, deterministic selection, RT-safe, headless, hosted beside devices, no Foundation changes, no composition logic, testable independently). Rule 10 enforced.
+
+Section 17 — Implementation Phases: Phase 1 (minimal headless sampler — the proof), Phase 2 (VoicePool + performance), Phase 3 (SampleBank + lifecycle), Phase 4 (Integration + DeviceHost), Phase 5 (UI), Phase 6 (Offline/export + worklet). Each phase has objective/inputs/outputs/dependencies/tests/acceptance criteria/non-goals/rollback condition.
+
+Section 18 — Proof Matrix: 12 properties with proof methods (canonical contract, family integration, deterministic selection, RT safety, missing material, timing, sample provenance, headless operation, composition boundary, cross-product portability, offline/realtime consistency, determinism under seek).
+
+Section 19 — Adversarial Review: 10 questions (A: become composition engine? NO. B: two products without PSY4? YES. C: missing sample invents music? NO. D: nondeterminism in selection? NO. E: RT allocations? NO v1. F: Foundation changes avoided? YES. G: different composition engine? YES. H: test without browser? YES. I: reproducible output? YES. J: add another device without redesign? YES). All pass.
+
+Section 20 — GO/CONDITIONAL GO/NO-GO: VERDICT = GO. All 10 decision rules satisfied. Explicit blockers: NONE (previous "blockers" resolved). Explicit non-goals listed. Exact next step: approval to implement Phase 1.
+
+Section 21 — Exact Next Step: what I need from user (approval for Phase 1). What Phase 1 produces (SamplerDevice, sample-store, voice, selection, tests — all headless, no Foundation changes, no PSY4 composition imports, no UI). What Phase 1 does NOT produce. Decision required: GO/NO-GO for Phase 1.
+
+Stage Summary:
+- Architecture gate document written: audit-reports/PSY-SAMPLER-ARCHITECTURE-GATE.md (~850 lines, 21 sections).
+- No code modified. No Foundation changes. No PSY4 changes. No new repository. No V2 schema. No implementation.
+- KEY HONEST REASSESSMENT: previous integration design overclaimed two blockers (NoteEvent gap, provenance gap). Both resolved without Foundation changes: NoteEvent sufficient as-is (device does deterministic selection from existing fields), provenance handled by using verified samples only (108 quarantined).
+- VERDICT: GO. Family architecture CAN support sample-based realization device cleanly. All 10 decision rules satisfied. All 10 adversarial questions pass. No blockers.
+- Minimum path: Phase 1 = minimal headless SamplerDevice implementing PsyDevice, consuming NoteEvent, using 6 verified PSY3 samples + procedural, deterministic LCG selection, main-thread AudioBufferSourceNode (RT-safe by construction), no composition logic, no Foundation changes, headless tests.
+- Awaiting user decision: GO/NO-GO for Phase 1 implementation.
