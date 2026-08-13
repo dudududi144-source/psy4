@@ -870,13 +870,13 @@ export class PsyLive {
     const snap = this.transport!.snapshot();
     const beatDur = 60 / snap.bpm;
     const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
-    this.lastWorkerComposeBar = -1;
+    this.lastWorkerComposeBar = -1;  // FIX: reset so scheduler will send
     this.compositionWorker?.postMessage({
       type: 'compose',
       targetBar: 3,
       barOriginAudioTime,
     });
-    this.lastWorkerComposeBar = 3;
+    this.lastWorkerComposeBar = 3;  // track requested
   }
 
   stop(): void {
@@ -1266,16 +1266,15 @@ export class PsyLive {
       const currentBar = snap.bar;
       const beatDur = 60 / snap.bpm;
       const targetBar = currentBar + 3;
-      // FIX: Always send compose request. Worker tracks its own state and
-      // only composes new bars. This prevents starvation when bar doesn't advance.
-      if (this.lastWorkerComposeBar <= targetBar) {
+      // FIX: Send compose whenever we haven't requested up to targetBar yet
+      if (this.lastWorkerComposeBar < targetBar) {
         const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
         this.compositionWorker?.postMessage({
           type: 'compose',
           targetBar,
           barOriginAudioTime,
         });
-        this.lastWorkerComposeBar = targetBar + 1; // track what we've requested
+        this.lastWorkerComposeBar = targetBar;
       }
     } catch (e) {}
   }
