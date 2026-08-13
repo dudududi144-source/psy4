@@ -542,14 +542,15 @@ class CausalComposerWorker {
       events.push({ at: barStart, note: subRoot, velocity: 0.4, duration: 4 * beatDur, channel: 'sub' });
     }
 
-    if (this.state.grooveStability > 0.4 && this.userEnergy > 0.3) {
-      this.activeVoices.add('snare');
-      const build = phrasePos >= 6 ? 1.2 : 1.0;
-      events.push({ at: barStart + beatDur, note: 38, velocity: Math.min(1, 0.55 * velScale * build), duration: stepDur * 0.5, channel: 'snare' });
-      events.push({ at: barStart + 3 * beatDur, note: 38, velocity: Math.min(1, 0.55 * velScale * build), duration: stepDur * 0.5, channel: 'snare' });
-      events.push({ at: barStart + beatDur, note: 39, velocity: Math.min(1, 0.4 * velScale * build), duration: stepDur * 0.3, channel: 'clap' });
-      events.push({ at: barStart + 3 * beatDur, note: 39, velocity: Math.min(1, 0.4 * velScale * build), duration: stepDur * 0.3, channel: 'clap' });
-    }
+    // SNARE/CLAP BACKBEAT — beats 2 & 4. ALWAYS plays (like kick).
+    // Commercial psytrance ALWAYS has a backbeat. No threshold.
+    this.activeVoices.add('snare');
+    this.activeVoices.add('clap');
+    const build = phrasePos >= 6 ? 1.2 : 1.0;
+    events.push({ at: barStart + beatDur, note: 38, velocity: Math.min(1, 0.55 * velScale * build), duration: stepDur * 0.5, channel: 'snare' });
+    events.push({ at: barStart + 3 * beatDur, note: 38, velocity: Math.min(1, 0.55 * velScale * build), duration: stepDur * 0.5, channel: 'snare' });
+    events.push({ at: barStart + beatDur, note: 39, velocity: Math.min(1, 0.4 * velScale * build), duration: stepDur * 0.3, channel: 'clap' });
+    events.push({ at: barStart + 3 * beatDur, note: 39, velocity: Math.min(1, 0.4 * velScale * build), duration: stepDur * 0.3, channel: 'clap' });
 
     if (this.state.grooveStability > 0.8 && this.userEnergy > 0.6) {
       this.activeVoices.add('ride');
