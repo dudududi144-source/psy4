@@ -6916,3 +6916,43 @@ Stage Summary:
 - No code modified. No engine installed. No tests written.
 - HARD STOP observed — awaiting user decision on revised 9-layer architecture + 3 challenges + MVP-CORE + A/B/C experiment + 8 kill criteria.
 - Key communicated insight: the architecture is feasible IF the user accepts (a) Musical Physics as Layer 2, (b) Sound Genome purely descriptive (no mechanisms), (c) Producer candidates per-phrase, (d) SC deferred, (e) human checkpoint structurally necessary. The smallest proof is MVP-CORE (full pipeline, 4-bar, 3 voices, 10 iterations, ~1500 LoC, 2 weeks). 8 kill criteria are the contract — if any triggers, stop and rethink before building more.
+
+---
+Task ID: PSY4-FOUNDATION-RECONCILIATION-VERTICAL-PROOF (orchestrator)
+Agent: z-ai-code (main)
+Task: Reconcile Foundation RESONANCE (8 layers) with PSY4 MIDI Acoustic Compiler (9 layers). Find minimum viable architecture. Define contract. Design vertical A/B/C/D proof. Verdict: BUILD / REDESIGN / STOP. NO CODE.
+
+Work Log:
+- Read worklog tail for context (post-MIDI-ACOUSTIC-COMPILER-DESIGN-CHALLENGE).
+- Verified Foundation's actual type structure by reading /tmp/psy-foundation/packages/material/src/types.ts: Foundation already has MotifPayload, BassPatternPayload, DrumPatternPayload, RhythmPayload (with velocities + micros arrays), PhrasePayload. The contract maps cleanly: Foundation's PhrasePayload → PSY4's CompositionEvent[].
+- Verified Foundation's music package exports: scales, chords, motif, bass, rhythm, musical-context, phrase-planner, section-planner. Foundation owns composition.
+- Synthesized reconciliation report at audit-reports/PSY4-FOUNDATION-RECONCILIATION-VERTICAL-PROOF.md answering the user's 14 questions:
+  1. Minimal architecture: collapsed 9 layers to 3 stages (VoiceSpecification builder → Render → Critic). Musical Physics is a FUNCTION inside the builder, not a layer. Mixing is a FIELD in VoiceSpec, not a layer. Sound Intelligence is a CODEBOOK LOOKUP, not a layer.
+  2. Contract: 10-field CompositionEvent (time, midi, duration, role, scaleDegree, harmonicRole, voiceGroup, phrasePosition, tension, accent). Every field justified by "why PSY4 can't compute it". Everything else (frequency, velocity, microtiming, articulation, envelope, synth params, sample, mix) computed by PSY4.
+  3. Ownership map: Foundation = WHAT (notes, harmony, phrase, intent, relationships). PSY4 = HOW (realization, synthesis, mix, render, critic). No duplicate authority.
+  4. Musical Physics challenged: NOT an engine. It's a contract field (AcousticTargets) + a pure function (computeAcousticTargets). ~100-150 LoC inside the VoiceSpecification builder. No separate module, no separate pipeline stage.
+  5. Performance Compiler: PSY4 owns realization. Foundation owns intent (tension curve, accent map, density, groove feel). PSY4 realizes to velocity/microtiming/articulation/note length. Pure function, ~200-300 LoC.
+  6. Sound Compiler simplified: VoiceSpecification only. NO 3-stage abstraction (SoundIntent → SynthFamily → SynthesisGraph). The SynthFamily selection is a codebook lookup (if/else rules, ~100-150 LoC) inside the builder. Sound Genome is a descriptor used by the codebook, not a pipeline stage.
+  7. Reference: BOTH target and constraint. Split into 3 identity layers: Musical Identity (Foundation domain — key/scale/harmony/groove), Sonic Identity (PSY4 domain — Sound Genome target), Mix Identity (PSY4 domain — mix targets). Reference teaches characteristics, not source audio to copy.
+  8. Critic permission matrix: Auto-mutate = realization (velocity, microtiming, articulation, duration-within-notation), synthesis (family, params, samples), mix (FX, EQ, sidechain, stereo). NEVER auto-mutate = composition (pitch, scale, note position, harmony, arrangement, notated duration). Hierarchy of fixes for KICK_BASS_OVERLAP: mix/sidechain → synth envelope → frequency allocation → duration → timing → musical rewrite (human only). Critic escalates one level at a time, never jumps to rewriting notes.
+  9. Backend: ONE backend for vertical proof = Web Audio (OfflineAudioContext) + AdvancedSynthVoice (4 modes: classic/fm/supersaw/wavetable) + real samples (130+ in public/samples/real/) + refactored psyLive voice functions. SuperCollider DEFERRED. Forensic engine = critic backend (not synth). Foundation DSP (PolyBLEP/Moog) = needs AudioWorklet, too complex for proof.
+  10. Vertical A/B/C/D experiment: same MIDI/BPM/seed/arrangement/duration. A=current psyLive. B=contract+backend (AdvancedSynthVoice+samples+refactored voices, NO performance compiler, NO acoustic targets). C=B+performance realization. D=C+acoustic compilation (BPM-aware envelopes, masking budgets, kick/bass co-design). Isolates: B-A=contract+backend, C-B=performance, D-C=acoustic. NO optimizer — hand-built configs.
+  11. Metrics: 15 DSP-reliable dims (pitch, scale, kick_clarity, bass_definition, kick_bass_separation, masking, transient, spectral_balance, midrange_density, DR, loudness, stereo, phase_coherence, timbral_movement, reference_similarity) + 5 proxy musical dims (groove, phrase_coherence, harmonic_consistency, rhythmic_accuracy, arrangement_energy) + human listening checkpoint. System CANNOT declare "commercial" just because DSP improved.
+  12. Pass/fail: Contract fails if B≈A. Performance fails if C≈B. Acoustic fails if D≈C. Critic fails if metrics up but ear down. Backend fails if no deterministic fast renderer. Overall pass = B>A on ≥3 DSP by ≥10%, C>B on ≥2 by ≥5%, D>C on ≥2 by ≥5%, ear confirms D significantly better than A.
+  13. Out of scope: CMA-ES, Pareto, SuperCollider, Sound Genome persistence, CompositionEngine changes, UI, Producer mode, big refactor, 9 engines, MusicalPhysicsEngine, Sound Intelligence engine, Mixing Intelligence engine, Reference pipeline, Genre porting, Live integration, Human checkpoint UI.
+  14. Kill criteria: B≈A, C≈B AND D≈C, Critic-ear divergence, AdvancedSynthVoice broken + can't fix in 1 day, Render non-determinism, Proof takes >2 weeks.
+  15. Verdict: BUILD (the vertical proof only). ~800 LoC (not 3500). 1-2 weeks. Clear pass/fail + kill criteria. If proof passes → proceed to full system (Phases 1-6, ~12-14 weeks). If proof fails → stop or redesign.
+
+- Key reconciliations:
+  * Foundation Composition = PSY4 Musical Intelligence → Foundation owns. PSY4 consumes.
+  * Foundation Performance = PSY4 Performance → split: Foundation=INTENT, PSY4=REALIZATION.
+  * Foundation Sound = PSY4 Sound Intelligence → collapse to VoiceSpecification builder (codebook lookup).
+  * Foundation Frequency Architecture = PSY4 Musical Physics → NOT a layer. Contract field + pure function.
+  * Foundation Renderer = PSY4 Synthesis + Mixing → one stage (Render). Mixing is a field in VoiceSpec.
+  * Critic/Mutator/Decision → both have them. Mutator+Decision DEFERRED (no optimizer in proof).
+
+Stage Summary:
+- Reconciliation report written: audit-reports/PSY4-FOUNDATION-RECONCILIATION-VERTICAL-PROOF.md (~900 lines).
+- No code modified. No engine installed. No tests written.
+- HARD STOP observed — awaiting user decision on 10 questions (minimal 3-stage architecture, 10-field contract, ownership map, Musical Physics as function, VoiceSpecification, critic permission matrix, Web Audio backend, A/B/C/D experiment, pass/fail criteria, BUILD verdict).
+- Key communicated insight: the architecture was over-engineered in previous proposals (9 layers). The reconciliation collapses to 3 stages with Musical Physics as a function, Mixing as a field, Sound Intelligence as a codebook lookup. The contract is 10 fields. The proof is ~800 LoC (not 3500). The A/B/C/D experiment isolates contract / performance / acoustic compilation as separate measurable contributions. Verdict: BUILD the vertical proof only, with clear kill criteria that stop development if the architecture doesn't produce measurable improvement.
