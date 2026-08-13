@@ -16,9 +16,8 @@ import { type LearningData, type Composition, loadLearning, saveLearning, record
 import { MusicalTransport } from '../../foundation/transport/MusicalTransport';
 import { RadioObservationLayer } from '../../foundation/radio/RadioObservationLayer';
 import { DEFAULT_RADIO_CONFIG } from '../../foundation/radio/RadioObservationTypes';
-import { MusicalSession, type NotePlan } from '../../foundation/music/MusicalSession';
 import { CausalComposer, type CausalNoteEvent, type CausalBarResult } from '../../foundation/music/CausalComposer';
-import { SamplerBridge, type PsyDevice, type MusicalTransport as BridgeTransport, type MusicalContext as BridgeContext } from './sampler-bridge';
+import { type MusicalTransport as BridgeTransport } from './sampler-bridge'; // type only — SamplerBridge is dead code
 import { MaterialRealizer } from './material-realizer';
 import { Psy4EngineNode, VOICE, type VoiceId, type EngineStats } from './studio/engine/engineWorklet';
 
@@ -295,8 +294,7 @@ export class PsyLive {
   // Contains: BeatObservationEngine → BeatPLL (beat tracking), MelodyObserver (pitch)
   private radioLayer: RadioObservationLayer | null = null;
 
-  // F8: MusicalSession — LEGACY (kept for migration, not live authority)
-  private session: MusicalSession | null = null;
+  // MusicalSession REMOVED — was 1403 lines of dead code. All composition goes through CausalComposer.
   // CAUSAL: The live composition authority
   private causalComposer: CausalComposer | null = null;
   private currentCausalBar: CausalBarResult | null = null;
@@ -310,8 +308,8 @@ export class PsyLive {
   private engineNode: Psy4EngineNode | null = null;
   private useWorklet = false;
   // Optional sampler bridge — if set, composition events are published to registered PsyDevices.
-  private samplerBridge: SamplerBridge | null = null;
-  private currentNotePlan: NotePlan | null = null;
+  // SamplerBridge REMOVED — was 212 lines of dead code, never attached from UI
+  // currentNotePlan REMOVED — was from MusicalSession (dead code)
 
   // R6: Master safety limiter
   private safetyLimiter: DynamicsCompressorNode | null = null;
@@ -549,7 +547,7 @@ export class PsyLive {
     });
 
     // F8 — Initialize MusicalSession (LEGACY — kept for migration, not live authority)
-    this.session = new MusicalSession(42);
+    // MusicalSession instantiation REMOVED — dead code
     // CAUSAL — Initialize CausalComposer (THE live composition authority)
     this.causalComposer = new CausalComposer({
       bpm: 145, rootPc: 4, scaleName: 'phrygian-dominant', seed: 42,
@@ -691,7 +689,7 @@ export class PsyLive {
     // F22 P0-F: SoundDNA reaches audio graph.
     // Voice function reads SynthRecipe from learned timbre, overriding
     // the hardcoded preset variant. If no recipe, falls back to variant.
-    const timbre = this.session?.getLearnedTimbreProfile();
+    const timbre = null; // MusicalSession REMOVED — no timbre profile
     const recipe = timbre ? this.timbreToRecipe(timbre) : null;
     const oscType = recipe?.oscType ?? v.bassWave;
     const layers = recipe?.oscLayers ?? 2;
@@ -747,7 +745,7 @@ export class PsyLive {
   private lead(t: number, freq: number, v: Variant, accent: boolean): void {
     if (!this.ctx || !this.leadBus) return;
     // F22 P0-F: SoundDNA reaches lead audio graph
-    const timbre = this.session?.getLearnedTimbreProfile();
+    const timbre = null; // MusicalSession REMOVED — no timbre profile
     const recipe = timbre ? this.timbreToRecipe(timbre) : null;
     const leadWave = recipe?.oscType ?? v.leadWave;
     const leadCut = recipe?.filterCutoff ?? v.leadCut;
@@ -972,7 +970,7 @@ export class PsyLive {
   // Called from detect() when timbre profile is available.
   // Maps learned spectral characteristics → synth params (wave, cutoff, saturation).
   private applyLearnedTimbre(): void {
-    const timbre = this.session?.getLearnedTimbreProfile();
+    const timbre = null; // MusicalSession REMOVED — no timbre profile
     if (!timbre || !this.ctx) return;
     const params = timbre.synthParams;
     // Apply to active preset variant — modify the variant in-place
@@ -986,8 +984,8 @@ export class PsyLive {
   }
 
   // F18: Check if learning is active (for UI display)
-  hasLearnedFromRadio(): boolean { return this.session?.hasLearnedFromRadio() ?? false; }
-  getLearnedPhraseCount(): number { return this.session?.getLearnedPhraseCount() ?? 0; }
+  hasLearnedFromRadio(): boolean { return false; } // MusicalSession REMOVED
+  getLearnedPhraseCount(): number { return 0; } // MusicalSession REMOVED
 
   private updateDelayTime(): void {
     if (this.delay) this.delay.delayTime.value = this.stepDur() * 3;
@@ -1178,9 +1176,7 @@ export class PsyLive {
       const now = this.ctx.currentTime;
       const snap = this.transport.snapshot();
       // Push transport to sampler bridge (if attached).
-      if (this.samplerBridge) {
-        this.samplerBridge.publishTransport(snap as unknown as BridgeTransport);
-      }
+      // SamplerBridge.publishTransport REMOVED — dead code
 
       // CAUSAL: Compose bars AHEAD of time and PUSH to worklet immediately.
       // FIX: with 3s lookahead at 145 BPM, we need ~2 bars ahead.
@@ -1246,26 +1242,10 @@ export class PsyLive {
       this.realizer.realize(ev);
     }
 
-    // Publish to sampler bridge (if attached)
-    if (this.samplerBridge) {
-      const note = { voice: ev.channel, step: 0, midi: ev.note, velocity: ev.velocity };
-      this.samplerBridge.publishNote(ev.at, note, false, 0.1);
-    }
+    // SamplerBridge.publishNote REMOVED — dead code
   }
 
-  // ── Sampler bridge (optional) ──
-  // Attach a SamplerBridge to route PSY4's composition to external PsyDevices.
-  // The bridge plays IN PARALLEL with PSY4's synth — it does NOT replace it.
-  attachSamplerBridge(bridge: SamplerBridge): void {
-    this.samplerBridge = bridge;
-  }
-
-  // Register a PsyDevice on the sampler bridge (convenience method).
-  attachSamplerDevice<T extends PsyDevice>(device: T): T | null {
-    if (!this.samplerBridge) return null;
-    this.samplerBridge.register(device);
-    return device;
-  }
+  // SamplerBridge methods REMOVED — was 212 lines of dead code, never used from UI
 
   // ── Composition mode ──
   // F1.18: tempo changes go through Transport.setTempo()
@@ -1353,7 +1333,7 @@ export class PsyLive {
     this.stopDetection();
     // F13/R1: Reset session on disconnect so learned motifs/style/phrase state
     // don't leak across reconnects.
-    this.session?.reset();
+    // MusicalSession.reset() REMOVED — dead code
     this.updateMixMode();
     this.emit();
   }
@@ -1788,25 +1768,25 @@ export class PsyLive {
       lastObservationTime: radioSnap?.beat?.timestamp.observedAt ?? 0,
       radioRms: radioSnap?.signal.rms ?? 0,
       radioConfidence: radioSnap?.beat?.confidence ?? 0,
-      // F8: MusicalSession state (THE single composer)
-      sessionStyle: this.session?.snapshot()?.style ?? 'FULL_ON',
-      sessionRole: this.session?.snapshot()?.role ?? 'LEAD',
-      sessionAction: this.session?.snapshot()?.action ?? 'introduce',
-      sessionSection: this.session?.snapshot()?.section ?? 'UNKNOWN',
-      sessionPhrase: this.session?.snapshot()?.phrase ?? 0,
-      sessionTension: this.session?.snapshot()?.tension ?? 0,
-      sessionDensity: this.session?.snapshot()?.density ?? 0,
-      sessionMotifCount: this.session?.snapshot()?.motifCount ?? 0,
-      sessionReason: this.session?.snapshot()?.reason ?? '',
-      sessionHasLearned: this.session?.hasLearned() ?? false,
-      sessionLastReward: this.session?.snapshot()?.lastReward ?? 0,
-      // F17: Learning state
-      learnedFromRadio: this.session?.hasLearnedFromRadio() ?? false,
-      learnedPhraseCount: this.session?.getLearnedPhraseCount() ?? 0,
-      hasBassGrammar: this.session?.getLearnedBassGrammar() != null,
-      hasRhythmGrammar: this.session?.getLearnedRhythmGrammar() != null,
-      hasMelodicGrammar: this.session?.getLearnedMelodicGrammar() != null,
-      hasTimbreProfile: this.session?.getLearnedTimbreProfile() != null,
+      // MusicalSession state REMOVED — all defaults (dead code was 1403 lines)
+      sessionStyle: 'FULL_ON',
+      sessionRole: 'LEAD',
+      sessionAction: 'introduce',
+      sessionSection: 'UNKNOWN',
+      sessionPhrase: 0,
+      sessionTension: 0,
+      sessionDensity: 0,
+      sessionMotifCount: 0,
+      sessionReason: '',
+      sessionHasLearned: false,
+      sessionLastReward: 0,
+      // Learning state (MusicalSession REMOVED — all false)
+      learnedFromRadio: false,
+      learnedPhraseCount: 0,
+      hasBassGrammar: false,
+      hasRhythmGrammar: false,
+      hasMelodicGrammar: false,
+      hasTimbreProfile: false,
     };
   }
 
