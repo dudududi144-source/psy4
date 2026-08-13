@@ -42,7 +42,7 @@
 // 256 saves memory vs 1024 and is bounded (PSY6 RT contract: fixed arrays only).
 const MAX_VOICES = 32;        // was 64 — reduced to match pool size
 const EVENT_SIZE = 6;         // floats per event: [time, voice, note, vel, dur, param]
-const MAX_EVENTS = 256;       // PSY5 proven size (was 1024) — bounded ring buffer
+const MAX_EVENTS = 512;       // FIX: was 256. With 2-bar prefetch at 30 events/bar, need 60+ slots. 512 gives headroom.
 
 // CPU-load monitoring (PSY5 dynamic voice budget). If process() exceeds the
 // budget, we drop the lowest-priority active voices to stay RT-safe. Reported

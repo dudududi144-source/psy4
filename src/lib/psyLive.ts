@@ -320,8 +320,8 @@ export class PsyLive {
   // Scheduler — wake-up mechanism only (NOT a musical clock)
   // F1.18: setInterval wakes the scheduler; musical time comes from Transport
   private timer: ReturnType<typeof setInterval> | null = null;
-  private readonly lookahead = 100; // FIX: was 50ms, now 100ms. Halves scheduler runs.
-  private readonly scheduleAheadTime = 0.5; // FIX: was 0.3s, now 0.5s. Larger buffer absorbs main-thread jitter.
+  private readonly lookahead = 50; // FIX: back to 50ms. 100ms was missing bar boundaries.
+  private readonly scheduleAheadTime = 0.8; // FIX: 800ms lookahead = ~half a bar at 145 BPM. Ensures events are always queued before they're needed.
   private lastScheduledBeatIndex = -1; // dedup based on Transport beatIndex
 
   // Kick detection
@@ -1182,22 +1182,46 @@ export class PsyLive {
         this.samplerBridge.publishTransport(snap as unknown as BridgeTransport);
       }
 
-      // CAUSAL: On new bar, compose via CausalComposer (NOT session.planBar)
+      // CAUSAL: Compose bars AHEAD of time and PUSH to worklet immediately.
+      // FIX: was queuing events in causalEventQueue then scheduling in scheduler tick.
+      // That caused bursts — events arrived at worklet late and played all at once.
+      // Now we push events directly to worklet as soon as they're composed.
       const currentBar = snap.bar;
-      if (!this.currentCausalBar || this.currentCausalBar.bar !== currentBar) {
-        // FIX: measure composeBar time to diagnose stutter. If > 10ms, log it.
-        const __composeStart = performance.now();
-        this.currentCausalBar = this.causalComposer.composeBar(currentBar);
-        const __composeMs = performance.now() - __composeStart;
-        if (__composeMs > 10) console.warn(`[PSY4] composeBar took ${__composeMs.toFixed(1)}ms (bar ${currentBar})`);
-        // Queue all events for scheduling
-        const barOriginAudioTime = snap.beatTime - snap.beat * (60 / snap.bpm);
-        const evs = this.currentCausalBar.events;
-        for (let i = 0; i < evs.length; i++) {
-          evs[i].at += barOriginAudioTime;
-          this.causalEventQueue.push(evs[i]);
+      const beatDur = 60 / snap.bpm;
+      const lastComposedBar = this.currentCausalBar?.bar ?? -1;
+      const targetBar = currentBar + 2; // always keep 2 bars composed ahead
+      if (lastComposedBar < targetBar) {
+        const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
+        for (let b = lastComposedBar + 1; b <= targetBar; b++) {
+          const barResult = this.causalComposer.composeBar(b);
+          const evs = barResult.events;
+          // Push each event directly to worklet (immediate scheduling, no queue)
+          for (let i = 0; i < evs.length; i++) {
+            const ev = evs[i];
+            ev.at += barOriginAudioTime;
+            // Track kick count for UI
+            if (ev.channel === 'kick') this.kickCount++;
+            if (ev.channel === 'bass' && ev.note > 0) this.bassFreq = mtof(ev.note);
+            // Schedule directly to worklet
+            if (this.useWorklet && this.engineNode) {
+              const voiceId = CHANNEL_TO_VOICE[ev.channel];
+              if (voiceId !== undefined) {
+                const note = ev.channel === 'sub' ? ev.note - 12 : ev.note;
+                const finalNote = ev.channel === 'counterline' ? ev.note - 7 : note;
+                this.engineNode.scheduleEvent(ev.at, voiceId, finalNote, ev.velocity, ev.duration, 0);
+              }
+            } else if (this.realizer) {
+              this.realizer.realize(ev);
+            }
+          }
+          this.currentCausalBar = barResult;
+        }
+        // Flush all batched events to worklet NOW
+        if (this.useWorklet && this.engineNode) {
+          this.engineNode.flushEvents();
         }
       }
+      // Skip the old queue-based scheduling — events are pushed directly above
 
       // Process event queue: schedule events that are due within the lookahead window
       // PERF: reuse a preallocated remaining buffer instead of allocating [] every tick (20Hz)
