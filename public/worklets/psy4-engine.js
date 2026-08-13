@@ -355,10 +355,16 @@ class BassVoice {
     // Post-filter state (one-pole HP for cleaning mud)
     this.hpState = 0;
     // PSY3 bass params: subLevel, harmonicLevel, cutoffFloor, cutoffDecay
-    this.subLevel = 0.45;       // sub oscillator level (was hardcoded 0.45)
-    this.harmonicLevel = 0.55;  // harmonic (filtered osc) level (was hardcoded 0.55)
-    this.cutoffFloor = 80;      // minimum cutoff (prevents filter from closing fully)
-    this.cutoffDecay = 0.04;    // cutoff envelope decay time (was hardcoded 0.04)
+    this.subLevel = 0.45;
+    this.harmonicLevel = 0.55;
+    this.cutoffFloor = 80;
+    this.cutoffDecay = 0.04;
+    // PHASE 7a: Filter LFO for rolling psytrance bass — filter REOPENS per note
+    // This is what creates the "rolling" character. Without it, the filter closes
+    // and stays closed, making the bass a static drone.
+    this.lfoPhase = 0;
+    this.lfoRate = 0;  // Hz — set in trigger based on tempo (synced to 16th notes)
+    this.lfoDepth = 0;  // 0..1 — amount of filter modulation
     // PERF-ZERO-ALLOC: preallocated output buffer
     this._out = new Float32Array(2);
   }
@@ -377,7 +383,6 @@ class BassVoice {
     this.saw.reset();
     this.saw.setFreq(freq);
     this.filter.reset();
-    // PSY3 bass params (with defaults for backward compat)
     this.subLevel = params?.subLevel ?? 0.45;
     this.harmonicLevel = params?.harmonicLevel ?? 0.55;
     this.cutoffFloor = params?.cutoffFloor ?? 80;
@@ -387,12 +392,20 @@ class BassVoice {
       this.cutoffEnd = 100;
       this.res = 0.85;
       this.bassDecay = 0.15;
+      // PHASE 7a: Acid bass — strong LFO for squelchy 303 character
+      this.lfoRate = 8;  // 8Hz — fast squelch
+      this.lfoDepth = 0.6;
     } else {
       this.cutoffStart = params?.cutoffStart ?? 800;
       this.cutoffEnd = params?.cutoffEnd ?? 200;
       this.res = Math.min(0.3, (params?.resonance ?? 3) / 20);
       this.bassDecay = 0.12;
+      // PHASE 7a: Rolling bass — moderate LFO synced to note rate
+      // The LFO reopens the filter slightly on each note, creating movement
+      this.lfoRate = 4;  // 4Hz — gentle rolling
+      this.lfoDepth = 0.3;
     }
+    this.lfoPhase = 0;  // reset LFO phase on each note
   }
 
   render(currentTime, sr) {
@@ -405,36 +418,36 @@ class BassVoice {
     const inc = this.freq / sr;
     const osc = this.acid ? this.saw.process(inc) : this.square.process(inc);
 
-    // 1. FILTER: Moog ladder with envelope (this is the tone-shaping stage)
-    //    Uses configurable cutoffDecay (PSY3) instead of hardcoded 0.04
-    //    Floor prevents the filter from fully closing (cutoffFloor)
+    // 1. FILTER: Moog ladder with envelope + LFO (PHASE 7a: rolling psytrance)
+    //    Envelope: closes from cutoffStart → cutoffEnd (per-note pluck)
+    //    LFO: reopens the filter periodically (rolling character)
+    //    Without LFO, filter closes and stays closed = static drone
     const cutoffEnv = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / this.cutoffDecay) + this.cutoffEnd;
-    const cutoff = Math.max(this.cutoffFloor, cutoffEnv);
+    // PHASE 7a: LFO modulates the cutoff UP (reopens filter)
+    this.lfoPhase += 2 * Math.PI * this.lfoRate * dt;
+    const lfoMod = (Math.sin(this.lfoPhase) * 0.5 + 0.5) * this.lfoDepth;  // 0..depth, unipolar
+    const lfoAmount = (this.cutoffStart - this.cutoffEnd) * lfoMod;  // scale to cutoff range
+    const cutoff = Math.max(this.cutoffFloor, cutoffEnv + lfoAmount);
     const drive = this.acid ? 2.5 : 1.3;
     const filtered = this.filter.process(osc, cutoff, this.res, drive, sr);
 
-    // 2. SUB: Clean sine at fundamental (separate from body — provides weight)
-    //    Uses configurable subLevel (PSY3) instead of hardcoded 0.45
+    // 2. SUB: Clean sine at fundamental
     this.phase += 2 * Math.PI * this.freq / sr;
     const sub = Math.sin(this.phase) * this.subLevel;
 
-    // 3. MIX: Body (filtered) + Sub (clean) — body provides character, sub provides weight
-    //    Uses configurable harmonicLevel (PSY3) instead of hardcoded 0.55
+    // 3. MIX: Body (filtered) + Sub (clean)
     let mixed = filtered * this.harmonicLevel + sub * this.subLevel;
 
-    // 4. SATURATION: Post-mix tanh saturation (adds harmonics + warmth — this is what makes
-    //    a bass sound "produced" rather than "raw oscillator")
-    //    Commercial bass always has saturation. Without it, the bass sounds thin and digital.
-    mixed = fastTanh(mixed * 1.8);  // drive=1.8 — moderate, adds warmth without distortion
+    // 4. SATURATION: Post-mix tanh
+    mixed = fastTanh(mixed * 1.8);
 
-    // 5. HP FILTER: Remove subsonic mud below 30Hz (one-pole HP)
-    //    Prevents the bass from interfering with the kick's sub region
-    const hpCutoff = 30;  // Hz
+    // 5. HP FILTER: Remove subsonic mud
+    const hpCutoff = 30;
     const hpA = (1 / sr) * 2 * Math.PI * hpCutoff;
     this.hpState += hpA * (mixed - this.hpState) / (1 + hpA);
-    mixed = mixed - this.hpState * 0.7;  // partial HP — keep some sub but remove mud
+    mixed = mixed - this.hpState * 0.7;
 
-    // 6. AMP ENVELOPE: Fast attack (1ms) + exponential decay
+    // 6. AMP ENVELOPE: Fast attack + exponential decay
     const attackEnv = Math.min(1, this.t / 0.001);
     const decayEnv = Math.exp(-this.t / (this.bassDecay * 0.5));
     const ampEnv = attackEnv * decayEnv;
