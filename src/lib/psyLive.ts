@@ -17,6 +17,7 @@ import { MusicalTransport } from '../../foundation/transport/MusicalTransport';
 import { RadioObservationLayer } from '../../foundation/radio/RadioObservationLayer';
 import { DEFAULT_RADIO_CONFIG } from '../../foundation/radio/RadioObservationTypes';
 import { MusicalSession, type NotePlan } from '../../foundation/music/MusicalSession';
+import { CausalComposer, type CausalNoteEvent, type CausalBarResult } from '../../foundation/music/CausalComposer';
 import { SamplerBridge, type PsyDevice, type MusicalTransport as BridgeTransport, type MusicalContext as BridgeContext } from './sampler-bridge';
 
 // F13/R1: Removed dead imports — BeatPLL, PatternMutator, MelodyObserver,
@@ -147,6 +148,16 @@ export interface LiveState {
   radioSignalState: string;   // DISCONNECTED|CONNECTING|NO_SIGNAL|WEAK_SIGNAL|SIGNAL_PRESENT|STABLE_SIGNAL|LOST|DEGRADED|ERROR
   radioObservationState: string; // NO_SIGNAL|SIGNAL_PRESENT|LOCKING|FOLLOWING|DEGRADED|LOST
   radioConfidence: number;   // 0-1, from beat observation
+  // CAUSAL: Causal composition engine state
+  causalAction: string;
+  causalWhyNow: string;
+  causalTension: number;
+  causalContrastDebt: number;
+  causalAnticipation: number;
+  causalGrooveStability: number;
+  causalExpectation: number;
+  causalActiveMaterials: string[];
+  causalHistory: Array<{ bar: number; action: string }>;
 }
 
 // ─── MusicState (from architecture review) ────────────────────────────────
@@ -251,8 +262,13 @@ export class PsyLive {
   // Contains: BeatObservationEngine → BeatPLL (beat tracking), MelodyObserver (pitch)
   private radioLayer: RadioObservationLayer | null = null;
 
-  // F8: MusicalSession — THE single musical runtime (no feature flags, no legacy)
+  // F8: MusicalSession — LEGACY (kept for migration, not live authority)
   private session: MusicalSession | null = null;
+  // CAUSAL: The live composition authority
+  private causalComposer: CausalComposer | null = null;
+  private currentCausalBar: CausalBarResult | null = null;
+  private causalEventQueue: CausalNoteEvent[] = [];
+  private causalHistory: Array<{ bar: number; action: string }> = [];
   // Optional sampler bridge — if set, composition events are published to registered PsyDevices.
   private samplerBridge: SamplerBridge | null = null;
   private currentNotePlan: NotePlan | null = null;
@@ -311,9 +327,13 @@ export class PsyLive {
 
   private emit(): void {
     const learned = this.learningData ? getInsights(this.learningData) : null;
-    // F1.18: BPM comes from Transport — single source of truth
     const transportBpm = this.transport ? this.transport.snapshot().bpm : 145;
     const radioSnap = this.radioLayer?.getSnapshot();
+    // CAUSAL: Extract causal state for UI
+    const cs = this.currentCausalBar?.stateAfter as Record<string, unknown> | undefined;
+    const cd = this.currentCausalBar?.decision;
+    const materials = cs?.materials as Record<string, { expectationLevel?: number }> | undefined;
+    const motifState = materials?.['motif-A'];
     this.onState?.({
       playing: this.playing, radioOn: this.radioOn,
       radioBpm: transportBpm, engineBpm: transportBpm,
@@ -333,10 +353,19 @@ export class PsyLive {
       radioBands: this.radioBands,
       compositionMode: this.compositionMode,
       occupancy: this.occupancy,
-      // F13/R1: Single radio state machine — from RadioObservationLayer
       radioSignalState: radioSnap?.signal.state ?? 'DISCONNECTED',
       radioObservationState: radioSnap?.signal.observationState ?? 'NO_SIGNAL',
       radioConfidence: radioSnap?.beat?.confidence ?? 0,
+      // CAUSAL state
+      causalAction: cd?.action ?? 'NO_CHANGE',
+      causalWhyNow: cd?.selected.whyNow ?? '',
+      causalTension: (cs?.tensionLevel as number) ?? 0,
+      causalContrastDebt: (cs?.contrastDebt as number) ?? 0,
+      causalAnticipation: (cs?.anticipationLevel as number) ?? 0,
+      causalGrooveStability: (cs?.grooveStability as number) ?? 0,
+      causalExpectation: motifState?.expectationLevel ?? 0,
+      causalActiveMaterials: this.causalComposer?.getActiveVoices() ?? [],
+      causalHistory: this.causalHistory.slice(-12),
     });
   }
 
@@ -429,8 +458,12 @@ export class PsyLive {
       fftSize: this.radioAnalyser?.fftSize ?? 512,
     });
 
-    // F8 — Initialize MusicalSession (THE single musical runtime)
+    // F8 — Initialize MusicalSession (LEGACY — kept for migration, not live authority)
     this.session = new MusicalSession(42);
+    // CAUSAL — Initialize CausalComposer (THE live composition authority)
+    this.causalComposer = new CausalComposer({
+      bpm: 145, rootPc: 4, scaleName: 'phrygian-dominant', seed: 42,
+    });
     // F13/R4-D: Apply pending style if set before play()
     if (this.pendingStyle) {
       this.session.setStyle(this.pendingStyle);
@@ -832,7 +865,7 @@ export class PsyLive {
   //
   // Policy for tab suspension: DROP STALE EVENTS.
   private scheduler(): void {
-    if (!this.ctx || !this.transport) return;
+    if (!this.ctx || !this.transport || !this.causalComposer) return;
     try {
       const now = this.ctx.currentTime;
       const snap = this.transport.snapshot();
@@ -840,82 +873,78 @@ export class PsyLive {
       if (this.samplerBridge) {
         this.samplerBridge.publishTransport(snap as unknown as BridgeTransport);
       }
-      const stepDur = snap.beatDuration / 4; // 16th note duration
 
-      // F22 P0-E: Get groove state for swing + microtiming
-      const groove = this.session?.getGrooveState();
-      const swing = groove?.swing ?? 0;
-      const microTiming = groove?.microTiming ?? new Array(16).fill(0);
-
-      // Compute the next 16th-note step from the Transport's beat grid.
-      const elapsedSinceBeat = now - snap.beatTime;
-      const stepsSinceBeat = Math.floor(elapsedSinceBeat / stepDur);
-
-      // Next 16th note to schedule (one step ahead of current position)
-      let stepTime = snap.beatTime + (stepsSinceBeat + 1) * stepDur;
-      let stepIdx = snap.beatIndex * 4 + stepsSinceBeat + 1;
-
-      // Schedule all 16th notes within the schedule-ahead window
-      while (stepTime < now + this.scheduleAheadTime) {
-        // F22 P0-E: Apply swing + microtiming to step time
-        const stepInBar = stepIdx % 16;
-        const isOffbeat = stepInBar % 2 === 1; // odd 16th = offbeat
-        const swingOffset = isOffbeat ? swing * stepDur * 0.3 : 0; // swing delays offbeats
-        const microOffset = microTiming[stepInBar] ?? 0;
-        const adjustedTime = stepTime + swingOffset + microOffset;
-
-        if (adjustedTime > now && stepIdx > this.lastScheduledBeatIndex) {
-          this.scheduleStep(stepIdx, adjustedTime);
-          this.lastScheduledBeatIndex = stepIdx;
+      // CAUSAL: On new bar, compose via CausalComposer (NOT session.planBar)
+      const currentBar = snap.bar;
+      if (!this.currentCausalBar || this.currentCausalBar.bar !== currentBar) {
+        this.currentCausalBar = this.causalComposer.composeBar(currentBar);
+        // Queue all events from this bar for scheduling
+        for (const ev of this.currentCausalBar.events) {
+          this.causalEventQueue.push(ev);
         }
-        stepIdx++;
-        stepTime += stepDur;
+        // Record decision in history
+        this.causalHistory.push({
+          bar: currentBar,
+          action: this.currentCausalBar.decision.action,
+        });
+        if (this.causalHistory.length > 64) this.causalHistory.shift();
+        // Emit state update with causal info
+        this.emit();
       }
+
+      // Process event queue: schedule events that are due within the lookahead window
+      const scheduleWindow = now + this.scheduleAheadTime;
+      const remaining: CausalNoteEvent[] = [];
+      for (const ev of this.causalEventQueue) {
+        if (ev.at <= scheduleWindow) {
+          if (ev.at >= now - 0.05) {
+            this.scheduleCausalEvent(ev);
+          }
+        } else {
+          remaining.push(ev);
+        }
+      }
+      this.causalEventQueue = remaining;
     } catch (e) {}
   }
 
-  // F8: scheduleStep reads from MusicalSession's cached NotePlan.
-  // The session plans once per bar; the scheduler just reads and plays.
-  // NO composition happens during scheduling — only playback.
-  private scheduleStep(stepIndex: number, time: number): void {
-    if (!this.transport || !this.session) return;
-    const snap = this.transport.snapshot();
-    const s16 = stepIndex % 16;
-    const currentBar = snap.bar;
+  // CAUSAL: Schedule a single causal event for playback via synth voices
+  private scheduleCausalEvent(ev: CausalNoteEvent): void {
+    if (!this.ctx) return;
+    const time = ev.at;
     const v = this.getVariant();
 
-    // F8: Plan the bar if we haven't yet (cached — only runs once per bar)
-    if (!this.currentNotePlan || this.currentNotePlan.bar !== currentBar) {
-      this.currentNotePlan = this.session.planBar(currentBar, snap.bpm);
+    switch (ev.channel) {
+      case 'kick':
+        this.kick(time, ev.velocity);
+        break;
+      case 'bass':
+        this.bass(time, mtof(ev.note), v, ev.velocity);
+        break;
+      case 'lead':
+      case 'counterline':
+        this.lead(time, mtof(ev.note), v, false);
+        break;
+      case 'hat':
+        this.hat(time, (v.hatLvl || 0.12) * ev.velocity * 2.5, false);
+        break;
+      case 'pad':
+        this.lead(time, mtof(ev.note), { ...v, leadLvl: 0.2 }, false);
+        break;
+      case 'percussion':
+        this.hat(time, ev.velocity * 0.3, false);
+        break;
+      case 'impact':
+        this.kick(time, ev.velocity);
+        break;
+      default:
+        break;
     }
 
-    // Read notes from the cached plan and schedule them.
-    // F13/R3: Scheduler plays what the composer plans — NO occupancy gating here.
-    // The composer (MusicalSession) decides WHETHER to emit a note via ABSTAIN
-    // and calculateLeadDensity. Radio ducking is handled by the duck gain nodes
-    // in the audio graph, not by skipping notes. This fixes the "mixer clobbered"
-    // problem at its root: the scheduler no longer second-guesses the composer.
-    const notes = this.currentNotePlan.notes.filter(n => n.step === s16);
-    for (const note of notes) {
-      switch (note.voice) {
-        case 'kick':
-          this.kick(time, note.velocity);
-          break;
-        case 'hat':
-          // F15: Open hat on phrase-end fills, closed otherwise
-          this.hat(time, (v.hatLvl || 0.1) * note.velocity, s16 === 15);
-          break;
-        case 'bass':
-          if (note.midi !== null) this.bass(time, mtof(note.midi), v, note.velocity);
-          break;
-        case 'lead':
-          if (note.midi !== null) this.lead(time, mtof(note.midi), v, s16 % 4 === 0);
-          break;
-      }
-      // Publish to sampler bridge (if attached) — plays in parallel with synth.
-      if (this.samplerBridge) {
-        this.samplerBridge.publishNote(time, note, s16 === 15, snap.beatDuration / 4);
-      }
+    // Publish to sampler bridge (if attached) — plays in parallel with synth.
+    if (this.samplerBridge) {
+      const note = { voice: ev.channel, step: 0, midi: ev.note, velocity: ev.velocity };
+      this.samplerBridge.publishNote(time, note, false, 0.1);
     }
   }
 

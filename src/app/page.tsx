@@ -440,6 +440,76 @@ export default function Page() {
             </div>
           )}
         </section>
+
+        {/* CAUSAL COMPOSITION PANEL */}
+        {s.playing && (
+          <section className="rounded-lg border border-white/10 p-3" style={{ background: 'rgba(10,6,18,0.6)' }}>
+            <h3 className="text-[10px] uppercase font-bold text-slate-400 mb-2">Causal Engine</h3>
+
+            {/* Current Action */}
+            <div className="mb-3 p-2 rounded-md" style={{ background: 'rgba(255,46,136,0.08)', border: '1px solid rgba(255,46,136,0.2)' }}>
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] uppercase font-semibold text-slate-400">Action</span>
+                <span className="text-[11px] font-mono font-bold" style={{ color: s.causalAction === 'NO_CHANGE' ? '#64748b' : '#ff2e88' }}>
+                  {s.causalAction}
+                </span>
+              </div>
+              {s.causalWhyNow && (
+                <div className="mt-1 text-[9px] text-slate-500 font-mono leading-tight">{s.causalWhyNow}</div>
+              )}
+            </div>
+
+            {/* State Variables */}
+            <div className="grid grid-cols-2 gap-1.5 mb-3">
+              {[
+                { label: 'Tension', value: s.causalTension, color: '#ef4444' },
+                { label: 'Contrast', value: s.causalContrastDebt, color: '#f59e0b' },
+                { label: 'Anticip.', value: s.causalAnticipation, color: '#a855f7' },
+                { label: 'Groove', value: s.causalGrooveStability, color: '#00ffc8' },
+                { label: 'Expect.', value: s.causalExpectation, color: '#06b6d4' },
+              ].map(({ label, value, color }) => (
+                <div key={label} className="flex items-center gap-1.5">
+                  <span className="text-[9px] text-slate-400 w-12">{label}</span>
+                  <div className="flex-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
+                    <div className="h-full rounded-full transition-all duration-200" style={{ width: `${Math.round(value * 100)}%`, background: color }} />
+                  </div>
+                  <span className="text-[9px] tabular-nums text-slate-500 w-6 text-right">{value.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Active Materials */}
+            <div className="mb-3">
+              <span className="text-[9px] uppercase font-semibold text-slate-400">Materials</span>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {s.causalActiveMaterials.length === 0 ? (
+                  <span className="text-[9px] text-slate-600">none</span>
+                ) : (
+                  s.causalActiveMaterials.map((m) => (
+                    <span key={m} className="text-[9px] px-1.5 py-0.5 rounded font-mono" style={{ background: 'rgba(0,255,200,0.1)', color: '#00ffc8' }}>{m}</span>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Decision History */}
+            <div>
+              <span className="text-[9px] uppercase font-semibold text-slate-400">History</span>
+              <div className="mt-1 max-h-24 overflow-y-auto space-y-0.5">
+                {s.causalHistory.length === 0 ? (
+                  <span className="text-[9px] text-slate-600">—</span>
+                ) : (
+                  s.causalHistory.slice().reverse().map((h, i) => (
+                    <div key={i} className="flex items-center gap-2 text-[9px] font-mono">
+                      <span className="text-slate-600 w-8">B{h.bar}</span>
+                      <span style={{ color: h.action === 'NO_CHANGE' ? '#64748b' : '#ff2e88' }}>{h.action}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </section>
+        )}
       </main>
 
       {/* MOBILE STICKY TRANSPORT — bottom bar on small screens */}
