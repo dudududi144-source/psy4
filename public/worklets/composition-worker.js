@@ -281,12 +281,23 @@ class CausalComposerWorker {
       this.state.contrastDebt += (this.userTension - 0.5) * 0.05;
     }
 
+    // ARRANGEMENT: Fixed structure like a commercial track
+    // 32 bars total = ~53s at 145 BPM
+    // Bars 0-7:   INTRO (kick + bass + snare only — building groove)
+    // Bars 8-15:  GROOVE (add hats + shaker — full rhythm section)
+    // Bars 16-23: DROP (add lead + percussion — maximum energy)
+    // Bars 24-31: BREAKDOWN + REBUILD (remove lead, add pad, then rebuild)
+    const section = this.getArrangementSection(bar);
+
     const activeVoicesArr = Array.from(this.activeVoices);
     let decision;
     if (this.forcedSection && this.forcedBarsRemaining > 0) {
       decision = this.buildForcedDecision(this.forcedSection, activeVoicesArr);
       this.forcedBarsRemaining--;
       if (this.forcedBarsRemaining === 0) this.forcedSection = null;
+    } else if (section) {
+      // ARRANGEMENT-DRIVEN decision (overrides causal inference)
+      decision = this.buildArrangementDecision(section, bar, activeVoicesArr);
     } else {
       const candidates = generateCandidates(this.state, null, activeVoicesArr);
       const selected = resolveConflict(candidates);
@@ -328,6 +339,59 @@ class CausalComposerWorker {
       anticipationLevel: this.state.anticipationLevel,
       grooveStability: this.state.grooveStability,
       expectationLevel: motifState?.expectationLevel ?? 0,
+    };
+  }
+
+  // ARRANGEMENT: Returns section name based on bar number, or null for free composition
+  getArrangementSection(bar) {
+    const phrasePos = bar % 32;  // 32-bar cycle = ~53s at 145 BPM
+    if (phrasePos === 0) return 'INTRO_START';
+    if (phrasePos === 8) return 'GROOVE_START';
+    if (phrasePos === 16) return 'DROP_START';
+    if (phrasePos === 24) return 'BREAKDOWN_START';
+    if (phrasePos === 28) return 'REBUILD_START';
+    return null;  // free composition within section
+  }
+
+  // ARRANGEMENT: Build decision based on section
+  buildArrangementDecision(section, bar, activeVoices) {
+    let action = 'NO_CHANGE';
+    let whyNow = `ARRANGEMENT: ${section}`;
+
+    if (section === 'INTRO_START') {
+      // INTRO: only kick + bass + snare (no hats, no lead)
+      this.activeVoices.delete('hat-closed');
+      this.activeVoices.delete('hat-open');
+      this.activeVoices.delete('shaker');
+      this.activeVoices.delete('lead');
+      this.activeVoices.delete('percussion');
+      this.activeVoices.delete('counterline');
+      this.activeVoices.delete('acid');
+      this.activeVoices.delete('pad');
+      action = 'NO_CHANGE';
+      whyNow = 'ARRANGEMENT: INTRO — kick + bass + snare only';
+    } else if (section === 'GROOVE_START') {
+      if (!activeVoices.includes('hat-closed')) action = 'INTRODUCE_HATS';
+      else if (!activeVoices.includes('percussion')) action = 'INTRODUCE_PERCUSSION';
+      else action = 'NO_CHANGE';
+      whyNow = 'ARRANGEMENT: GROOVE — add hats + percussion';
+    } else if (section === 'DROP_START') {
+      if (!activeVoices.includes('lead')) action = 'INTRODUCE_LEAD';
+      else if (!activeVoices.includes('acid')) action = 'INTRODUCE_ACID';
+      else action = 'NO_CHANGE';
+      whyNow = 'ARRANGEMENT: DROP — add lead + acid';
+    } else if (section === 'BREAKDOWN_START') {
+      action = 'BREAKDOWN';
+      whyNow = 'ARRANGEMENT: BREAKDOWN — remove layers, add pad';
+    } else if (section === 'REBUILD_START') {
+      action = 'CALLBACK_MOTIF';
+      whyNow = 'ARRANGEMENT: REBUILD — bring back lead + hats';
+    }
+
+    return {
+      action,
+      selected: { action, whyNow, whyNotYet: 'arrangement override', urgency: 1.0, necessity: 'required', enables: [] },
+      candidates: [],
     };
   }
 
