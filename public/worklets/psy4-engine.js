@@ -464,9 +464,9 @@ class LeadVoice {
     this.active = false;
     this.t = 0;
     this.dur = 0.3;
-    this.amp = 0.5;  // was 0.15 — lead was 22x quieter than kick
+    this.amp = 0.5;
     this.saws = [new BLSaw(), new BLSaw(), new BLSaw(), new BLSaw(), new BLSaw()];
-    this.octaveSaws = [new BLSaw(), new BLSaw(), new BLSaw()]; // octave-up layer
+    this.octaveSaws = [new BLSaw(), new BLSaw(), new BLSaw()];
     this.filter = new MoogLadder();
     this.cutoff = 1800;
     this.res = 0.15;
@@ -474,7 +474,14 @@ class LeadVoice {
     this.lfoRate = 0.8;
     this.lfoDepth = 0.3;
     this.detune = 10;
-    this.noise = new PinkNoise(); // air/texture layer
+    this.noise = new PinkNoise();
+    // PHASE 10: FM modulation — adds metallic/psychedelic character
+    // FM: a modulator oscillator modulates the carrier (saw) frequency
+    // This is what makes leads sound "alive" rather than static
+    this.fmPhase = 0;       // modulator phase
+    this.fmRate = 3;        // modulator frequency (Hz)
+    this.fmDepth = 0;       // 0..1 — modulation amount (0 = off)
+    this.fmRatio = 2;       // modulator:carrier ratio (2:1 = classic FM)
     // PERF-ZERO-ALLOC: preallocated output buffer
     this._out = new Float32Array(2);
   }
@@ -491,9 +498,12 @@ class LeadVoice {
     this.lfoRate = params?.lfoRate ?? 0.8;
     this.lfoDepth = params?.lfoDepth ?? 0.3;
     this.lfoPhase = 0;
-    // PSY3 lead: filter envelope amount (how much the envelope opens the filter)
-    // Higher = more dramatic filter sweep on each note
     this.filterEnvAmount = params?.filterEnvAmount ?? 1.0;
+    // PHASE 10: FM params — psychedelia macro controls FM depth
+    this.fmDepth = params?.fmDepth ?? 0;
+    this.fmRate = params?.fmRate ?? 3;
+    this.fmRatio = params?.fmRatio ?? 2;
+    this.fmPhase = 0;
     for (const s of this.saws) { s.reset(); }
     const n = this.saws.length;
     for (let i = 0; i < n; i++) {
@@ -518,23 +528,29 @@ class LeadVoice {
     this.t += dt;
     if (this.t > this.dur + 0.05) { this.active = false; out[0] = 0; return out; }
 
-    // BUG FIX: Use each saw's OWN frequency (set via setFreq in trigger) — NOT the base freq.
-    // Previously used `const inc = this.freq / sr` for all saws, which ignored the detune
-    // and made all saws play the same frequency. This made leadDetune a DEAD parameter.
+    // PHASE 10: FM modulation — modulator oscillator
+    // The modulator frequency = carrier * ratio (e.g., 2:1 = classic FM)
+    // fmDepth scales the modulation (0 = no FM, 1 = extreme metallic)
+    this.fmPhase += 2 * Math.PI * this.freq * this.fmRatio * dt;
+    const fmMod = Math.sin(this.fmPhase) * this.fmDepth * this.freq * 0.15;  // 15% freq deviation max
 
-    // Layer 1: Fundamental — 5 detuned saws
+    // Layer 1: Fundamental — 5 detuned saws with FM modulation applied
     let fundamental = 0;
-    for (const s of this.saws) fundamental += s.process(s.freq / sr);
+    for (const s of this.saws) {
+      // FM: shift the saw frequency by fmMod for each sample
+      const fmInc = (s.freq + fmMod) / sr;
+      fundamental += s.process(fmInc);
+    }
     fundamental /= this.saws.length;
 
-    // Layer 2: Octave-up — 3 detuned saws at 2x freq (adds brightness/air)
+    // Layer 2: Octave-up — 3 detuned saws
     let octaveLayer = 0;
     for (const s of this.octaveSaws) octaveLayer += s.process(s.freq / sr);
     octaveLayer /= this.octaveSaws.length;
 
-    // Layer 3: Air — pink noise through high-pass (adds "breath" and sheen)
+    // Layer 3: Air — pink noise HP
     const noiseSample = this.noise.process();
-    const air = (noiseSample - this.noise.prevOutput || 0) * 0.08; // differentiated = HP
+    const air = (noiseSample - this.noise.prevOutput || 0) * 0.08;
 
     // Mix: fundamental dominant, octave at 30%, air at 8%
     let mix = fundamental * 0.7 + octaveLayer * 0.3 + air * 0.08;
@@ -545,8 +561,6 @@ class LeadVoice {
     const modCutoff = this.cutoff * (1 + this.lfoDepth * (lfo * 2 - 1) * 0.5);
 
     // Filter envelope: open → settle
-    // PSY3: filterEnvAmount controls how much the envelope opens the filter
-    // (was hardcoded to 2x — now configurable for proper supersaw expression)
     const fEnv = this.cutoff * (1 + this.filterEnvAmount) * Math.exp(-this.t / (this.dur * 0.5)) + this.cutoff;
     const cutoff = Math.min(18000, Math.max(100, fEnv * 0.5 + modCutoff * 0.5));
 
@@ -2197,9 +2211,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_LEAD: {
-        // PURE SYNTH LEAD — supersaw through Moog filter with LFO modulation
-        // Removed MachineDrum stabs (drum stabs are NOT leads — they're percussion)
-        // The supersaw + filter + modulation IS the lead sound
+        // PURE SYNTH LEAD — supersaw + FM + Moog filter + LFO modulation
         const v = this.getFreeVoice(this.leadPool);
         if (v) v.trigger(t, note, duration, velocity, sr, {
           cutoff: wp.leadCutoff * (0.7 + mc.brightness * 0.6),
@@ -2207,6 +2219,10 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           resonance: 2 + mc.psychedelia * 3,
           lfoRate: 0.5 + mc.psychedelia * 3,
           lfoDepth: mc.psychedelia * 0.3,
+          // PHASE 10: FM modulation — psychedelia macro controls FM depth
+          fmDepth: mc.psychedelia * 0.8,   // 0..0.8 — more psychedelic = more FM
+          fmRate: 2 + mc.psychedelia * 4,  // 2..6 Hz — modulator frequency
+          fmRatio: 2,                       // 2:1 = classic FM ratio
         });
         break;
       }
