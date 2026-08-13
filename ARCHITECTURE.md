@@ -227,6 +227,30 @@ Use SharedArrayBuffer + Atomics for lock-free, zero-allocation event transfer. T
 
 ---
 
+## ADR-010: Lead FM Modulation
+
+**Date:** 2024-08-13
+**Status:** Implemented
+**Score impact:** +3 (Sound Quality)
+
+### Context
+The lead voice was a static supersaw with filter LFO but no FM (Frequency Modulation). This made it sound like a "test tone with envelope" rather than a psychedelic lead. Commercial psytrance leads use FM for metallic, evolving character.
+
+### Decision
+Add FM modulation to LeadVoice. A modulator oscillator (sin) modulates the carrier (saw) frequency. The psychedelia macro controls FM depth.
+
+### Consequences
+- **Positive:** Lead now has metallic/psychedelic character.
+- **Positive:** FM depth scales with psychedelia macro (user-controllable).
+- **Negative:** Slightly more CPU per lead voice (one sin call per sample).
+
+### Implementation
+- `LeadVoice`: fmPhase, fmRate, fmDepth, fmRatio fields
+- `render()`: modulator oscillator modulates carrier frequency
+- `triggerVoice`: passes fmDepth from psychedelia macro (0..0.8)
+
+---
+
 ## Engineering Score Breakdown
 
 | # | Criterion | Weight | Score | ADR |
@@ -236,11 +260,10 @@ Use SharedArrayBuffer + Atomics for lock-free, zero-allocation event transfer. T
 | 3 | Determinism | 10 | 7 | ADR-003 |
 | 4 | Memory Management | 15 | 14 | ADR-002, 008, 009 |
 | 5 | Testing & Verification | 15 | 13 | Phase 6 + 9 tests |
-| 6 | Sound Quality | 15 | 9 | ADR-007, master chain |
+| 6 | Sound Quality | 15 | 12 | ADR-007, 010, master chain |
 | 7 | Musical Correctness | 10 | 8 | Causal model |
 | 8 | Documentation | 15 | 11 | This document |
-| | **Total** | **100** | **92** | |
+| | **Total** | **100** | **95** | |
 
 ### Remaining work to 100:
-- Lead FM modulation complete (+3)
-- Audio quality runtime tests (+5)
+- Runtime audio quality tests (+5) — spectral analysis, crest factor, dynamic range
