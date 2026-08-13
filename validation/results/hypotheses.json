@@ -217,7 +217,8 @@
         ],
         "passes": false
       }
-    ]
+    ],
+    "note": "C and B produced identical output under the frozen implementation. No measurable incremental effect of the representation-path change was demonstrated. This is a valid experimental result. No architectural inference is drawn about whether CompositionEvent or the contract path is valid or invalid."
   },
   "H3": {
     "name": "performance realization effect (D vs C)",
@@ -431,9 +432,10 @@
     "name": "evaluator/perception agreement",
     "comparison": "human ranking vs DSP ranking, 90 pairs across 9 units",
     "rule": "mean per-unit pairwise agreement >=70% AND >=7/9 units >=60%",
-    "passes": false,
-    "summary": "PENDING: requires blind listening data",
-    "note": "Run validation/listening/analyze-listening.py after blind listening session"
+    "passes": null,
+    "summary": "PENDING: requires blind listening data. Cannot be marked PASS or FAIL before human listening is performed.",
+    "note": "Run validation/listening/analyze-listening.py after blind listening session",
+    "status": "PENDING"
   },
   "H6": {
     "name": "end-to-end outcome (E vs A + human commercial rating)",
@@ -443,8 +445,8 @@
     "required": 6,
     "aggregate_passes": false,
     "human_passes": null,
-    "passes": false,
-    "summary": "0/9 units pass aggregate criterion; human criterion PENDING",
+    "passes": null,
+    "summary": "Objective component: FAIL (0/9 units pass aggregate). Final status: PENDING-FINAL (requires human listening component for completeness). H6 cannot pass because objective component already failed, but human component is still required for the record and for H5.",
     "details": [
       {
         "unit": "comp-1-seed1",
@@ -549,6 +551,9 @@
         "passes": false
       }
     ],
-    "note": "Human criterion requires blind listening data"
+    "note": "Human criterion requires blind listening data",
+    "objective_component_passes": false,
+    "human_component_passes": null,
+    "final_status": "PENDING-FINAL"
   }
 }

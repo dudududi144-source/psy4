@@ -4,23 +4,29 @@
 **Protocol:** `audit-reports/PSY4-PRE-RENDER-SNAPSHOT.md` (FROZEN)
 **Renders:** 45 (9 units × 5 variants A/B/C/D/E)
 **Critic output:** `validation/results/metrics.json`, `validation/results/hypotheses.json`
+**Status:** FROZEN experiment output. No thresholds, metrics, seeds, or decision rules changed. No remediation. No rerender.
 
 **This is STEP 1 — EFFECT REPORT only. No architectural language. No interpretation. No approval decisions. Just raw measurements and decision-rule results.**
 
 ---
 
-## Summary
+## Precise Status of Each Hypothesis
 
-All hypotheses (H1-H4, H6) FAILED. H5 (evaluator/perception agreement) is PENDING (requires blind listening data).
-
-| Hypothesis | Result | Passing units |
+| Hypothesis | Status | Notes |
 |---|---|---|
-| H1 (backend effect, B vs A) | **FAIL** | 0/9 |
-| H2 (representation-path effect, C vs B) | **FAIL** | 0/9 |
-| H3 (performance realization effect, D vs C) | **FAIL** | 0/9 |
-| H4 (acoustic realization effect, E vs D) | **FAIL** | 0/9 |
-| H5 (evaluator/perception agreement) | **PENDING** | requires blind listening |
-| H6 (end-to-end outcome, E vs A) | **FAIL** | 0/9 |
+| H1 (backend effect, B vs A) | **FAIL** | 0/9 units pass. |
+| H2 (representation-path effect, C vs B) | **FAIL / no demonstrated effect** | C and B produced identical output under the frozen implementation. No measurable incremental effect of the representation-path change was demonstrated. |
+| H3 (performance realization effect, D vs C) | **FAIL** | 0/9 units pass. |
+| H4 (acoustic realization effect, E vs D) | **FAIL** | 0/9 units pass. |
+| H5 (evaluator/perception agreement) | **PENDING** | Requires blind listening data. Cannot be marked PASS or FAIL until the human listening session is completed. |
+| H6 (end-to-end outcome, E vs A) — objective component | **FAIL** | 0/9 units pass the aggregate criterion. |
+| H6 — final status | **PENDING-FINAL** | Final status requires the human listening component. Even though the objective component already failed, the final H6 status remains PENDING until the human component is completed. |
+
+### Important clarifications
+
+- **H2**: C ≡ B is a valid experimental result. The only permitted claim is: "Under the frozen implementation, C and B produced identical output, therefore no measurable incremental effect of the representation-path change was demonstrated." **No architectural inference** is drawn from this about whether CompositionEvent or the contract path is valid or invalid. That is a Step 2 decision.
+- **H5**: H5 cannot be marked FALSE before the blind listening is performed. It remains PENDING.
+- **H6**: Even though the objective component (aggregate criterion) already failed, the final H6 status is PENDING-FINAL because the protocol requires both the objective AND human components. The human component must still be completed for the record.
 
 ---
 
@@ -50,11 +56,11 @@ All hypotheses (H1-H4, H6) FAILED. H5 (evaluator/perception agreement) is PENDIN
 | A | 0.556 |
 | B | 0.503 |
 
-B's aggregate is 9.5% LOWER than A.
+B's aggregate is 9.5% lower than A.
 
-### Effect summary
+### Effect summary (factual)
 
-The backend change (current psyLive → refactored voices + AdvancedSynthVoice + real samples) did NOT improve audio quality under the experimental conditions. B regressed on 2-3 quality metrics per unit, violated 3 guardrails consistently (masking, midrange_density, timbral_movement), and the aggregate dropped 9.5%.
+The backend change (current psyLive → refactored voices + AdvancedSynthVoice + real samples) did not meet the decision rule under the experimental conditions. B regressed on 2-3 quality metrics per unit, violated 3 guardrails consistently (masking, midrange_density, timbral_movement), and the aggregate dropped 9.5%.
 
 ---
 
@@ -65,13 +71,13 @@ The backend change (current psyLive → refactored voices + AdvancedSynthVoice +
 
 ### Per-unit results
 
-All 9 units: improved=0, regressed=0. C produced IDENTICAL metrics to B (by design — same builder, same codebook defaults).
+All 9 units: improved=0, regressed=0. C produced identical metrics to B.
 
-### Effect summary
+### Effect summary (factual, no architectural inference)
 
-C ≡ B exactly (same VoiceSpec builder, same codebook defaults). This was expected per protocol — H2 tests whether the CompositionEvent → VoiceSpec path adds overhead. The path adds zero overhead AND zero value: the metrics are identical.
+Under the frozen implementation, C and B produced identical output. Therefore, no measurable incremental effect of the representation-path change was demonstrated.
 
-This means: under these experimental conditions, the CompositionEvent → VoiceSpec transformation does not change the audio. The "contract path" is a pure passthrough at this validation stage.
+**This is a valid experimental result.** It does NOT imply that the CompositionEvent contract or the representation path is invalid. It means only that, under this specific frozen implementation (where C and B use the same codebook defaults and the same builder), the path transformation did not change the audio. Whether the contract path deserves to stay is a Step 2 architectural decision, not a Step 1 inference.
 
 ---
 
@@ -84,9 +90,9 @@ This means: under these experimental conditions, the CompositionEvent → VoiceS
 
 All 9 units: improved=0, regressed=1. D regressed 1 quality metric per unit (loudness, due to velocity scaling reducing overall level).
 
-### Effect summary
+### Effect summary (factual)
 
-Performance realization (velocity scaling by tension, articulation-derived duration) did NOT improve any quality metric and regressed loudness. The velocity scaling reduced overall loudness without improving other dimensions.
+Performance realization (velocity scaling by tension, articulation-derived duration) did not improve any quality metric and regressed loudness under the experimental conditions.
 
 ---
 
@@ -99,28 +105,32 @@ Performance realization (velocity scaling by tension, articulation-derived durat
 
 All 9 units: improved=1, regressed=0. E improved 1 quality metric per unit (not enough — rule requires ≥2). No regressions, but guardrail violations persist.
 
-### Effect summary
+### Effect summary (factual)
 
-Acoustic compilation (BPM-aware envelopes + voiceGroup masking budgets) improved 1 quality metric per unit but did not meet the ≥2 threshold. The BPM-aware envelope changes were too small to produce measurable improvement on multiple metrics.
+Acoustic compilation (BPM-aware envelopes + voiceGroup masking budgets) improved 1 quality metric per unit but did not meet the ≥2 threshold under the experimental conditions.
 
 ---
 
 ## H5 — Evaluator/perception agreement
 
-**Status:** PENDING. Requires blind listening data.
+**Status:** **PENDING.** Requires blind listening data.
 
-H5 cannot be computed until the blind listening session is conducted (45 unlabeled renders, ranked by listener). The H5 script (`validation/listening/analyze-listening.py`) will compute pairwise agreement between DSP ranking and human ranking once the listener ratings are collected.
+H5 cannot be computed until the blind listening session is conducted (45 unlabeled renders, ranked by listener). H5 cannot be marked PASS or FAIL before the human listening is performed.
+
+The H5 analysis script (`validation/listening/analyze-listening.py`) will compute pairwise agreement between DSP ranking and human ranking once the listener ratings are collected.
+
+**Frozen decision rule:** mean per-unit pairwise agreement ≥70% AND ≥7/9 units have per-unit agreement ≥60%.
 
 ---
 
 ## H6 — End-to-end outcome (E vs A)
 
-**Decision rule:** ≥6/9 units: E aggregate > A aggregate by ≥10% AND listener rates E ≥4 "commercial" for ≥2/3 compositions AND no guardrail violation.
-**Result:** 0/9 units pass (aggregate criterion). Human criterion PENDING.
+### Objective component: FAIL
 
-### Per-unit results
+**Decision rule (objective):** ≥6/9 units: E aggregate > A aggregate by ≥10% AND no guardrail violation.
+**Result:** 0/9 units pass the objective aggregate criterion.
 
-| Unit | A aggregate | E aggregate | Improvement % | Passes |
+| Unit | A aggregate | E aggregate | Improvement % | Passes objective |
 |---|---|---|---|---|
 | comp-1-seed1 | 0.539 | 0.508 | -5.79% | ❌ |
 | comp-1-seed2 | 0.554 | 0.508 | -8.33% | ❌ |
@@ -132,9 +142,23 @@ H5 cannot be computed until the blind listening session is conducted (45 unlabel
 | comp-3-seed2 | 0.540 | 0.507 | -6.10% | ❌ |
 | comp-3-seed3 | 0.540 | 0.506 | -6.29% | ❌ |
 
-### Effect summary
+E's aggregate is 5.8-14.5% lower than A across all 9 units.
 
-E is WORSE than A by 5.8-14.5% across all 9 units. The full pipeline (contract + backend + performance + acoustic) produced measurably worse audio than the current psyLive baseline under these experimental conditions.
+### Human component: PENDING
+
+**Decision rule (human):** listener rates E ≥4 ("commercial") for ≥2/3 compositions.
+
+The human component requires the blind listening session. It has not yet been conducted.
+
+### Final H6 status: **PENDING-FINAL**
+
+Even though the objective component already failed, the final H6 status remains PENDING-FINAL because the protocol requires both the objective AND human components to be completed for the record. The human component must still be conducted.
+
+Once the human component is completed:
+- If the human component also fails → H6 final = FAIL.
+- If the human component passes (even though objective failed) → H6 final = FAIL (both components must pass).
+
+In either case, H6 cannot pass because the objective component already failed. But the human component is still required for completeness and for H5.
 
 ---
 
@@ -150,6 +174,8 @@ Every B/C/D/E render violated 2-3 guardrails consistently:
 | timbral_movement | 0.92-0.97 (B/C), 0.88-0.91 (D/E) | 0.3-0.7 | <0.2 or >0.9 | **HARD FAIL** (B/C); borderline (D/E) |
 
 Variant A (current psyLive) also violated timbral_movement (0.97) and midrange_density (~3%) but had lower masking (0.40-0.45).
+
+**No remediation is being performed.** These are the measured values under the frozen protocol.
 
 ---
 
@@ -177,34 +203,60 @@ Variant A (current psyLive) also violated timbral_movement (0.97) and midrange_d
 
 ## What the Numbers Show (factual, no interpretation)
 
-1. **B-E have HIGHER masking than A** (0.58-0.62 vs 0.40-0.45). The hybrid kick (sample + synth sub) creates MORE low-frequency overlap with the bass than A's pure synth kick.
-2. **B-E have HIGHER bass_definition** (0.50 vs 0.22). The 3-layer bass voice produces a better-defined bass centroid.
-3. **B-E have HIGHER kick_bass_separation** (0.50 vs 0.41). The gap RMS between kick and bass is cleaner in B-E.
-4. **B-E have LOWER pitch_correctness** (0.50 vs 0.71). The AdvancedSynthVoice lead's FM modulation produces pitches that deviate from clean semitones.
-5. **B-E have LOWER loudness** (D/E: 0.45 vs A: 0.50). The velocity scaling in D/E reduces overall level.
-6. **dynamic_range is 0.00 for ALL variants**. The crest factor is outside the 6-9 dB target range for all renders (too high — minimal compression).
-7. **timbral_movement is 0.88-0.97 for all variants** (hard-fail >0.9). All renders have excessive spectral flux.
-8. **midrange_density is 3-4% for all variants** (hard-fail <5%). All renders lack midrange energy.
+1. B-E have higher masking than A (0.58-0.62 vs 0.40-0.45).
+2. B-E have higher bass_definition than A (0.50 vs 0.22).
+3. B-E have higher kick_bass_separation than A (0.50 vs 0.41).
+4. B-E have lower pitch_correctness than A (0.50 vs 0.71).
+5. B-E (D/E) have lower loudness than A (0.45 vs 0.50).
+6. dynamic_range is 0.00 for all variants.
+7. timbral_movement is 0.88-0.97 for all variants.
+8. midrange_density is 3-4% for all variants.
 
 ---
 
 ## H5 and H6 Human Component — PENDING
 
-Both H5 (evaluator/perception agreement) and H6 (human "commercial" rating) require blind listening data. The blind listening protocol is defined in `validation/listening/`. The listener session must be conducted before H5 and H6 can be fully evaluated.
+Both H5 (evaluator/perception agreement) and H6 (human "commercial" rating) require blind listening data. The blind listening protocol is set up at `validation/listening/`. The listener session must be conducted before H5 and H6 can be fully evaluated.
 
-**However**, given that H6's aggregate criterion failed in all 9 units (E is 5.8-14.5% WORSE than A), H6 cannot pass even if the human listener rates E favorably — the aggregate criterion is a prerequisite.
+**H6 cannot pass** because the objective component already failed (E is 5.8-14.5% lower than A on aggregate across all 9 units). However, the human component is still required:
+- For H5 (which depends on the same listening data).
+- For the completeness of the H6 record.
 
 ---
 
-## STEP 1 Conclusion
+## STEP 1 Conclusion (factual)
 
 Under the frozen experimental conditions:
-- The backend change (B) did not improve over baseline (A).
-- The contract path (C) produced identical audio to B (no overhead, no value).
-- Performance realization (D) regressed loudness without improvement.
-- Acoustic compilation (E) improved 1 metric but not enough.
-- The full pipeline (E) is measurably worse than baseline (A).
+- H1, H3, H4 did not pass.
+- H2 produced identical output for C and B; no measurable incremental effect was demonstrated.
+- H5 remains PENDING (requires blind listening).
+- H6 objective component did not pass; H6 final status remains PENDING-FINAL until the human component is completed.
 
-All guardrail violations (masking, midrange_density, timbral_movement) are consistent across B-E, indicating systemic issues with the refactored backend's frequency balance.
+All guardrail violations (masking, midrange_density, timbral_movement) are consistent across B-E. **No remediation is being performed.** The protocol is frozen.
 
-**STEP 2 (architectural interpretation) and STEP 3 (approval decision) follow in separate documents, after the user reviews this effect report.**
+**STEP 2 (architectural interpretation) and STEP 3 (approval decision) are deferred** until:
+1. The blind listening session is conducted.
+2. H5 and the H6 human component are computed.
+3. All H1-H6 statuses are final.
+
+In Step 2, there is no automatic approval. Every decision about CompositionEvent, VoiceSpecification, performance compiler, acoustic compiler, and the backend will be a separate human decision based on the results, effect sizes, and complexity cost.
+
+---
+
+## Frozen Artifacts
+
+The following artifacts are saved as FROZEN experiment output and will not be modified:
+
+- `validation/renders/` — 45 WAV files
+- `validation/results/frozen-units.json` — 9 frozen CompositionEvent[] arrays
+- `validation/results/metrics.json` — all 15 metrics for all 45 renders
+- `validation/results/hypotheses.json` — H1-H6 results (H5 and H6 final = PENDING)
+- `validation/results/effect-report.md` — this document
+- `validation/listening/blind-renders/` — 45 blind renders (hashed filenames)
+- `validation/listening/rating-sheet.csv` — empty, awaiting listener ratings
+- `validation/listening/playlist.m3u` — randomized playback order
+- `validation/listening/key.json` — secret mapping (do not view until ratings complete)
+- `validation/listening/INSTRUCTIONS.md` — blind listening protocol
+- `audit-reports/PSY4-PRE-RENDER-SNAPSHOT.md` — frozen protocol
+
+**No thresholds, metrics, seeds, normalization, guardrails, or decision rules have been changed. No rerender. No remediation. No architectural changes.**

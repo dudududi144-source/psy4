@@ -7223,3 +7223,53 @@ Artifacts produced:
 - validation/listening/setup-blind-listening.py, analyze-listening.py, INSTRUCTIONS.md, rating-sheet.csv, playlist.m3u, key.json, blind-renders/ (45 WAVs)
 - validation/results/frozen-units.json, metrics.json, hypotheses.json, effect-report.md
 - validation/renders/ (45 WAVs)
+
+---
+Task ID: PSY4-VALIDATION-FREEZE-AND-CORRECT-REPORT (orchestrator)
+Agent: z-ai-code (main)
+Task: STOP. No changes to Foundation/PSY4. No remediation. No rerender. Fix effect report with precise status language. Save all artifacts as frozen. Keep H5 PENDING. Keep H6 PENDING-FINAL.
+
+Work Log:
+- User instruction: STOP. Accept results as-is. Frozen protocol stays. No optimization/tuning/Mutator/Decision/refactor. No architectural approval. Foundation frozen.
+- Corrected the effect report (validation/results/effect-report.md):
+  * REMOVED "all hypotheses failed" language.
+  * H1: FAIL (0/9 units pass).
+  * H2: FAIL / no demonstrated effect. C ≡ B is a valid experimental result. Only permitted claim: "Under the frozen implementation, C and B produced identical output, therefore no measurable incremental effect of the representation-path change was demonstrated." NO architectural inference about CompositionEvent or contract path validity.
+  * H3: FAIL (0/9 units pass).
+  * H4: FAIL (0/9 units pass).
+  * H5: PENDING. Cannot be marked PASS or FAIL before blind listening is performed.
+  * H6 objective component: FAIL (0/9 units pass aggregate).
+  * H6 final status: PENDING-FINAL. Requires human listening component for completeness, even though objective component already failed. H6 cannot pass (objective failed), but human component is still required for the record and for H5.
+- Updated validation/results/hypotheses.json with precise status:
+  * H5.passes = None (PENDING), status = "PENDING"
+  * H6.passes = None (PENDING-FINAL), objective_component_passes = False, human_component_passes = None, final_status = "PENDING-FINAL"
+  * H2.note added: no architectural inference from C ≡ B.
+- Verified all frozen artifacts intact:
+  * 45 WAVs in validation/renders/
+  * frozen-units.json (9 units)
+  * metrics.json (all 15 metrics × 45 renders)
+  * hypotheses.json (corrected)
+  * effect-report.md (corrected)
+  * 45 blind renders in validation/listening/blind-renders/
+  * rating-sheet.csv (empty, awaiting listener)
+  * playlist.m3u (randomized)
+  * key.json (secret)
+  * INSTRUCTIONS.md
+- Confirmed NO remediation performed:
+  * Renderer: UNCHANGED
+  * VoiceSpec: UNCHANGED
+  * Foundation: UNCHANGED (frozen)
+  * Thresholds: UNCHANGED (frozen)
+  * Rerender: NONE
+  * Remediation for masking/midrange/timbral: NONE
+
+Stage Summary:
+- Effect report corrected with precise status language per user instruction.
+- All artifacts saved as FROZEN experiment output.
+- H5 = PENDING (requires blind listening).
+- H6 = PENDING-FINAL (objective component FAIL, human component PENDING).
+- NO changes to Foundation, PSY4, renderer, VoiceSpec, thresholds.
+- NO remediation. NO rerender. NO architectural approval.
+- Next step: human blind listening per locked protocol (45 renders, randomized, hashed filenames, rating sheet, key hidden until ratings complete).
+- After ratings: run validation/listening/analyze-listening.py to compute H5 and H6 human component.
+- Only after all H1-H6 final: proceed to Step 2 (Architectural Interpretation). No automatic approval — every decision about CompositionEvent, VoiceSpecification, performance compiler, acoustic compiler, backend will be separate human decision based on results, effect sizes, complexity cost.
