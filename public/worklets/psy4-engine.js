@@ -2091,8 +2091,8 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         if (msg.delayFeedback !== undefined) this.delay.setFeedback(msg.delayFeedback);
         break;
       case 'events':
-        // Batch of events from main thread
-        console.log(`[WORKLET] Received ${msg.events.length / EVENT_SIZE} events`);
+        // Send confirmation back to main thread (worklet console.log not visible in browser)
+        this.port.postMessage({ type: 'eventsReceived', count: msg.events.length / EVENT_SIZE });
         this.enqueueEvents(msg.events);
         break;
       case 'initSharedBuffer':
