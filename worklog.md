@@ -7615,3 +7615,66 @@ Stage Summary:
 - Midrange problem = MUSICAL MODEL GAP, not mixing gap. Fix = composition must CONTAIN midrange material (acid/counterline/pluck/perc/pad), NOT EQ/saturation/midrangeDensity field.
 - Paper composition "Nightfall Drive" (7-min Full-On, 12 sections) validates the model can express a complete track.
 - Verdict: GO for V2 design. NO-GO for V2 implementation. Next step (if approved) = formal V2 schema design document, separate from this redesign.
+
+---
+Task ID: PSY4-MUSIC-COMPOSITION-MODEL-DEEP-REVIEW (orchestrator)
+Agent: z-ai-code (main)
+Task: Deep design review of the musical composition model. NO CODE, no Foundation changes, no PSY4 changes, no V2 schema, no audio, no V1 rerun. Determine whether the model can represent a COMPLETE psytrance composition (not just a larger role list). GO/NO-GO for separate Schema Design phase.
+
+Work Log:
+- User instruction: STOP. Deep review before V2. Don't equate ROLE with MUSIC. Build composition ontology in plain language (no schema). Prove with paper composition (6-9 min). Test against 3 subgenres. Complexity audit. The model must generate MUSICAL REASONS, not just parameters.
+- Built on existing research (RESEARCH-A/B/C, 35+ sources) but went deeper into the "musical reasons" aspect that the previous redesign missed.
+- Wrote audit-reports/PSY4-MUSIC-COMPOSITION-MODEL-DEEP-REVIEW.md with 19 sections:
+
+Section 0 — Executive Diagnosis: previous redesign was still role-centric (parameter containers). The critical test: can the model say "the counterline enters because the lead has established the primary motif and the section is moving from establishment into development" — not just "counterline density = 0.6"? Previous model couldn't. This review corrects that.
+
+Section 1 — Musical Requirements: 12 functional requirements (R1-R12, including "why each element exists", "identity preservation across transformations") + 6 non-functional (N1-N6, no synthesis/mix/master, no overfitting, no field maximization).
+
+Section 2 — Do Not Equate ROLE with MUSIC: for every concept, 9 questions must be answered (function, material, when, evolution, responds to, constrains, contrasts with, disappearance behavior, identity contribution). Example: ACID as role-only (insufficient: role/density) vs ACID as musical element (sufficient: function=tension+motion, material=rhythmic-melodic cell, when=enters DEV_1 exits BREAKDOWN returns DROP transformed, how evolves=filter-state-transform, responds to=complements lead, constrains=register contrast + sidechainIntent scope, contrasts with=lead melodic clarity vs acid timbral motion, disappearance=creates space for pad+atmosphere, identity=specific filter movement pattern becomes signature).
+
+Section 3 — Complete Composition Ontology (plain language, NO schema): 23 concepts derived from musical requirements: Track Identity, Style/Subgenre Identity, Musical Material, Musical Roles, Role Instances, Role Lifecycle, Motifs, Rhythmic Cells, Harmonic Material, Groove Systems, Inter-Role Relationships, Call/Response, Development, Variation, Recurrence, Negative Space, Sections, Phrases, Energy, Tension/Release, Transitions, Long-Form Narrative, Track Identity/Signature Elements.
+
+Section 4 — Vertical Composition Model: DROP vertical stack with 12 roles across 4 layers (rhythmic-foundation, midrange-melodic, sustained-harmonic, structural/transitional). Each role has musical reason for presence. 7 states (essential/supporting/optional/absent/sparse/returning/transitional). Goal = musical completeness not maximal density.
+
+Section 5 — Horizontal Development Model: 12-section horizontal arc with musical reasons for each. Motif A identity/introduction/stable duration/changes/removal/return/recognition. "Variation without randomization" — every variation has a REASON.
+
+Section 6 — Musical Intent Model: 17 roles with explicit musical purposes (KICK=low-end anchor, BASS=rolling pulse, LEAD=identity+hook, ACID=tension+psychedelic motion, COUNTERLINE=response+contrast, PAD=harmonic space+emotional contrast, ATMOSPHERE=psychedelic environment, etc.). Intent must NOT become synthesis (no cutoff/FM/sample).
+
+Section 7 — Relationship Model: Kick↔Bass (8 musical parameters: pattern, pitch relationship, timing, energy, space/priority intent, section-specific behavior, re-entry, groove identity). Lead↔Counterline (call/response, complement, contrast, harmonic). Motif↔Motif (parent/child, callback, variation, counterpoint). Percussion↔Groove (reinforcement, anticipation, fill, phrase punctuation). Section↔Roles (entry, exit, transformation, density change, energy contribution).
+
+Section 8 — Negative-Space Model: 7 semantic states (never-introduced, intentionally-absent, temporarily-muted, thinning, exiting, returning, transformed-absence). BREAKDOWN vs DROP example with full role-activity mask + musical reasons. Semantic, not parametric (not "density=0").
+
+Section 9 — Low-End Grammar as Music: KbBB base pattern + variations + phrase-end fills + section overrides + breakdown suspension + re-entry behavior + groove identity. Does NOT specify oscillator/waveform/filter/envelope/compressor/EQ/saturation/sample. Genre convention vs implementation detail distinguished.
+
+Section 10 — Midrange Composition Model: 7 midrange roles (ACID, COUNTERLINE, PLUCK/STAB, ARPEGGIO, PERCUSSION, PAD, TEXTURE) with musical purpose/material/register/density/lifecycle/development/relationship-to-hook. Fix = composition must CONTAIN midrange material, NOT midrangeDensity field or EQ boost. Model makes it impossible for a "complete psytrance" to accidentally be kick/bass/high only.
+
+Section 11 — Long-Form Arrangement Model: multi-scale (TRACK→SECTION→PHRASE→BAR→EVENT) + motif-identity scale (MOTIF→INSTANCE→TRANSFORMATION→RECURRING INSTANCE). Motif A traceability example across 256 bars with identity preserved.
+
+Section 12 — Style/Subgenre Model: full musical grammar table comparing Full-on/Progressive/Dark on 15 dimensions (rhythmic conventions, low-end grammar, repetition, percussion layering, phrase cadence, section contrast, breakdown/build/drop behavior, atmospheric role, melodic density, psychedelic texture, variation rate, callback behavior, long-form development). FACT/PRACTICE/CONVENTION/INFERENCE labeled.
+
+Section 13 — Boundary Audit: WHAT (24 concepts) / HOW (10 concepts) / MIX (6 concepts) classification. sidechainIntent (musical banded, Foundation) vs compressor implementation (mix, PSY4). registerIntent (musical, Foundation) vs EQ (mix, PSY4). filter-state-transform (musical operation, Foundation) vs filter cutoff values (synthesis, PSY4). 6 ambiguous concepts explained. 16 synthesis/mix/master concepts explicitly rejected from Foundation.
+
+Section 14 — Paper Composition: "Nightfall Drive" (Full-On, 145 BPM, E phrygian-dominant, 7 min, 254 bars, 12 sections). Each section has musical reason. DROP_1 vertical stack with 12 roles each with musical reason. Motif A development schedule (12 events, each with reason). Kick↔bass relationship throughout (section-specific behavior). Negative space verification. Model generates MUSICAL REASONS not just parameters.
+
+Section 15 — Anti-Overfitting Tests: 3 scenarios tested with same ontology:
+* Scenario A (Full-on "Nightfall Drive"): model describes cleanly ✅
+* Scenario B (Progressive "Deep Current" 132 BPM 8 min): style profile constraints change (layeredPercussion=false, continuousGroove=true), arrangement longer/subtler, midrange sparser, sustained prominent. Same ontology, different parameterization ✅
+* Scenario C (Darkpsy "Abyssal Forms" 148 BPM 7 min): constraints change (tensionReleaseStructure=false, psychedelicTexture=true foreground, oddTimeCycles=true), arrangement linear/hypnotic, midrange abstract/dissonant, texture foreground, odd-time cycles. Same ontology ✅
+Verdict: ontology works for all 3 without fundamental changes.
+
+Section 16 — Complexity/Minimality Analysis: every entity audited for musical problem solved. 20 entities all required, none reducible (per-role energy could be derived — medium). 10 fields rejected (midrangeDensity, oscillatorType, cutoff, samplePath, envelopeMs, eqLow/Mid/High, compressorThreshold/Ratio, stereoWidth, lufs, PresetPayload, TexturePayload.partials). No field exists "only because PSY4 lacks capability."
+
+Section 17 — What Is Still Missing: 5 low-severity gaps (vocal/event material, micro-timing formalization, per-role energy trajectory, modulation/key changes, listener psychology). None block schema design.
+
+Section 18 — GO/NO-GO: 19 acceptance criteria all pass ✅. Boundary audit confirms no synthesis/mix/master in Foundation ✅. GO for separate Schema Design phase. Does NOT mean Foundation should change, V2 schema exists, V2 will pass vertical proof, PSY4 can realize, or architecture approved.
+
+Section 19 — Final Report: 24-concept ontology summary. What changed from previous design (shift from role-centric to intent-centric; formalized identity preservation, negative space semantics, midrange as first-class, low-end grammar, anti-overfitting, complexity audit, musical intent formalized, reason generation). What paper composition proves (model generates musical reasons, 12 simultaneous roles with reasons, identity preservation, semantic negative space). What remains unresolved (5 low-severity gaps). Ontology ready for Schema Design: YES.
+
+Stage Summary:
+- Deep review document written: audit-reports/PSY4-MUSIC-COMPOSITION-MODEL-DEEP-REVIEW.md (~1100 lines, 19 sections).
+- No code modified. No Foundation changes. No PSY4 changes. No audio rendered. No V1 rerun. No V2 schema. No architecture approved.
+- KEY SHIFT: from role-centric (parameter containers) to intent-centric (reason-generating). The model now answers WHY each element exists, not just THAT it exists with what density.
+- Paper composition "Nightfall Drive" validates the model generates musical reasons for every event.
+- Anti-overfitting: 3 subgenres (Full-on, Progressive, Dark) all expressible with same ontology.
+- Complexity audit: 20 required entities, 10 rejected fields, no field exists only because PSY4 lacks capability.
+- Verdict: GO for separate Schema Design phase. Next step (if accepted) = Schema Design derived from validated ontology. NOT implementation, NOT rendering, NOT optimization.
