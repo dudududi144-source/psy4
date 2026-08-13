@@ -587,19 +587,23 @@ self.onmessage = function(e) {
       break;
     }
     case 'compose': {
-      console.log('[WORKER] Received compose request, targetBar:', msg.targetBar);
-      if (!composer) { console.log('[WORKER] ERROR: composer not initialized'); return; }
+      if (!composer) return;
       const barOriginAudioTime = msg.barOriginAudioTime;
       const beatDur = 60 / composer.opts.bpm;
       const allEvents = [];
-      for (let b = lastComposedBar + 1; b <= msg.targetBar; b++) {
-        const result = composer.composeBar(b);
-        const evs = result.events;
-        for (let i = 0; i < evs.length; i++) {
-          evs[i].at += barOriginAudioTime;
-          allEvents.push(evs[i]);
+      // FIX: Always compose from lastComposedBar+1 up to targetBar.
+      // If lastComposedBar >= targetBar, we already composed everything —
+      // but still send an empty response so the main thread knows we're alive.
+      if (lastComposedBar < msg.targetBar) {
+        for (let b = lastComposedBar + 1; b <= msg.targetBar; b++) {
+          const result = composer.composeBar(b);
+          const evs = result.events;
+          for (let i = 0; i < evs.length; i++) {
+            evs[i].at += barOriginAudioTime;
+            allEvents.push(evs[i]);
+          }
+          lastComposedBar = b;
         }
-        lastComposedBar = b;
       }
       // Convert to flat Float64Array: [at, note, velocity, duration, channelHash, ...]
       // channelHash: map channel string to voice ID number

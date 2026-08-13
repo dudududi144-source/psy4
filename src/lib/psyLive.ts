@@ -1266,6 +1266,8 @@ export class PsyLive {
       const currentBar = snap.bar;
       const beatDur = 60 / snap.bpm;
       const targetBar = currentBar + 3; // compose 3 bars ahead
+      // FIX: Always send compose request when targetBar increases.
+      // The worker tracks its own lastComposedBar and only composes new bars.
       if (this.lastWorkerComposeBar < targetBar) {
         const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
         this.compositionWorker?.postMessage({
