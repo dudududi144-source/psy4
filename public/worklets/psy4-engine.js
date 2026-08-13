@@ -1811,6 +1811,11 @@ class MasterChain {
 class Psy4EngineProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
+    // CRITICAL FIX: Set port.onmessage FIRST, before any other initialization.
+    // If any constructor code throws after this, messages still work.
+    // If any code throws BEFORE this, messages never work but process() still runs.
+    // This was the root cause of "voices=0/32" — events were sent but never received.
+    this.port.onmessage = (e) => this.handleMessage(e.data);
     this.sr = sampleRate;
 
     // Transport
@@ -2014,8 +2019,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       [this.clapSamplePool, 0, this.ST_SAMPLE],
     ];
 
-    // Command handler
-    this.port.onmessage = (e) => this.handleMessage(e.data);
+    // port.onmessage moved to top of constructor (CRITICAL FIX)
   }
 
   handleMessage(msg) {
