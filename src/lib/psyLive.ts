@@ -20,6 +20,25 @@ import { MusicalSession, type NotePlan } from '../../foundation/music/MusicalSes
 import { CausalComposer, type CausalNoteEvent, type CausalBarResult } from '../../foundation/music/CausalComposer';
 import { SamplerBridge, type PsyDevice, type MusicalTransport as BridgeTransport, type MusicalContext as BridgeContext } from './sampler-bridge';
 import { MaterialRealizer } from './material-realizer';
+import { Psy4EngineNode, VOICE, type VoiceId } from './studio/engine/engineWorklet';
+
+// Voice ID mapping: CausalComposer channels → AudioWorklet voice IDs
+const CHANNEL_TO_VOICE: Record<string, VoiceId> = {
+  kick: VOICE.KICK, bass: VOICE.BASS, sub: VOICE.BASS,
+  lead: VOICE.LEAD, counterline: VOICE.LEAD, motif: VOICE.LEAD,
+  acid: VOICE.ACID, arp: VOICE.LEAD,
+  pad: VOICE.PAD, drone: VOICE.PAD,
+  'hat-closed': VOICE.HAT, 'hat-open': VOICE.HAT_OPEN, hat: VOICE.HAT,
+  shaker: VOICE.SHAKER,
+  clap: VOICE.CLAP, snare: VOICE.CLAP,
+  percussion: VOICE.PERC, tom: VOICE.PERC, fill: VOICE.PERC, rim: VOICE.PERC,
+  ride: VOICE.HAT, crash: VOICE.HAT_OPEN,
+  texture: VOICE.TEXTURE, atmosphere: VOICE.TEXTURE,
+  riser: VOICE.RISER, impact: VOICE.IMPACT,
+  sweep: VOICE.SWEEP, reverse: VOICE.SWEEP,
+  downlifter: VOICE.DOWNLIFTER,
+  stab: VOICE.ZAP, chord: VOICE.FM,
+};
 
 // F13/R1: Removed dead imports — BeatPLL, PatternMutator, MelodyObserver,
 // RadioStateGate, TransportAdapter. The LIVE instances live inside
@@ -270,8 +289,11 @@ export class PsyLive {
   private currentCausalBar: CausalBarResult | null = null;
   private causalEventQueue: CausalNoteEvent[] = [];
   private causalHistory: Array<{ bar: number; action: string }> = [];
-  // MATERIAL REALIZER: the new full realization engine (replaces old 4-voice synth)
+  // MATERIAL REALIZER: fallback if worklet fails
   private realizer: MaterialRealizer | null = null;
+  // AUDIOWORKLET: the REAL production engine (Moog, PolyBLEP, 64 voices, real samples)
+  private engineNode: Psy4EngineNode | null = null;
+  private useWorklet = false;
   // Optional sampler bridge — if set, composition events are published to registered PsyDevices.
   private samplerBridge: SamplerBridge | null = null;
   private currentNotePlan: NotePlan | null = null;
@@ -476,15 +498,15 @@ export class PsyLive {
     this.causalComposer = new CausalComposer({
       bpm: 145, rootPc: 4, scaleName: 'phrygian-dominant', seed: 42,
     });
-    // MATERIAL REALIZER — the new full realization engine
+    // MATERIAL REALIZER — fallback if worklet fails
     this.realizer = new MaterialRealizer({
       audioContext: this.ctx,
       masterGain: this.master ?? this.ctx.destination,
     });
-    // Load real drum samples asynchronously
-    this.realizer.loadSamples().then(() => {
-      console.log('[PSY4] Real drum samples loaded');
-    }).catch(() => {});
+
+    // AUDIOWORKLET — the REAL production engine
+    // Try to initialize the worklet. If it succeeds, use it instead of MaterialRealizer.
+    this.initWorkletEngine();
     // F13/R4-D: Apply pending style if set before play()
     if (this.pendingStyle) {
       this.session.setStyle(this.pendingStyle);
@@ -737,11 +759,14 @@ export class PsyLive {
     this.ensureAudio();
     if (this.playing) return;
     this.playing = true;
-    // F1.18: Start Transport — it sets the initial anchor
+    // Start AudioWorklet engine if available
+    if (this.useWorklet && this.engineNode) {
+      this.engineNode.play();
+      this.engineNode.setBPM(145);
+    }
     this.transport!.start();
     this.lastScheduledBeatIndex = -1;
     this.updateDelayTime();
-    // setInterval is a WAKE-UP mechanism only — NOT the musical clock
     this.timer = setInterval(() => this.scheduler(), this.lookahead);
     this.startUITimer();
     this.emit();
@@ -749,6 +774,7 @@ export class PsyLive {
 
   stop(): void {
     this.playing = false;
+    if (this.engineNode) this.engineNode.stop();
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     this.stopUITimer();
     this.emit();
@@ -812,26 +838,34 @@ export class PsyLive {
 
   // F11/F13: Style control — sets session style and locks it (radio won't overwrite)
   setStyle(style: string): void {
-    if (this.session) {
-      this.session.setStyle(style);
-    } else {
-      // Session not yet created — store and apply on play()
-      this.pendingStyle = style;
+    this.currentStyle = style as any;
+    if (this.session) this.session.setStyle(style);
+    // Route to AudioWorklet macros
+    if (this.engineNode) {
+      const styleMap: Record<string, any> = {
+        FULL_ON: { energy: 0.8, aggression: 0.7, brightness: 0.7, psychedelia: 0.5 },
+        DARK: { energy: 0.6, aggression: 0.5, brightness: 0.3, psychedelia: 0.7, darkness: 0.7 },
+        PROGRESSIVE: { energy: 0.5, aggression: 0.3, brightness: 0.5, psychedelia: 0.3, density: 0.5 },
+        ACID: { energy: 0.7, aggression: 0.6, brightness: 0.8, psychedelia: 0.8 },
+      };
+      const m = styleMap[style] || {};
+      this.engineNode.setMacros(m);
     }
   }
 
-  // F13/R2: Musical controls — delegate to MusicalSession public API (fixed)
   setEnergy(v: number): void {
     if (this.session) this.session.setEnergy(v);
-    // Note: if session is null, the value is lost. UI should call after play().
+    if (this.engineNode) this.engineNode.setMacros({ energy: v, density: v * 0.8 + 0.2 });
   }
 
   setDensity(v: number): void {
     if (this.session) this.session.setDensity(v);
+    if (this.engineNode) this.engineNode.setMacros({ density: v });
   }
 
   setTension(v: number): void {
     if (this.session) this.session.setTension(v);
+    if (this.engineNode) this.engineNode.setMacros({ psychedelia: v, aggression: v * 0.7 });
   }
 
   // F13/R2B: Unlock methods — return to AUTO mode
@@ -872,6 +906,92 @@ export class PsyLive {
 
   private updateDelayTime(): void {
     if (this.delay) this.delay.delayTime.value = this.stepDur() * 3;
+  }
+
+  // ── AudioWorklet Engine Initialization ──
+  private async initWorkletEngine(): Promise<void> {
+    if (!this.ctx) return;
+    try {
+      this.engineNode = new Psy4EngineNode(this.ctx);
+      const ok = await this.engineNode.init();
+      if (ok) {
+        this.useWorklet = true;
+        // Connect worklet output through analyser (for visualizer)
+        const out = this.engineNode.outputNode;
+        if (out && this.analyser) {
+          out.disconnect();
+          out.connect(this.analyser);
+          // analyser already connected to destination
+        }
+        // Set default world params
+        this.engineNode.setWorld({
+          kickFundamental: 50, kickDecay: 0.15,
+          bassCutoff: 400, bassResonance: 4,
+          leadCutoff: 1800, leadDetune: 8,
+          padCutoff: 800, padAttack: 0.3, padDetune: 6, padEvolveRate: 0.5,
+          duck: 0.6,
+        });
+        this.engineNode.setMacros({
+          energy: 0.5, psychedelia: 0.4, darkness: 0.3, density: 0.7,
+          groove: 0.8, evolution: 0.3, space: 0.3, surprise: 0.2,
+          aggression: 0.5, brightness: 0.6,
+        });
+        // Load real drum samples into worklet
+        this.loadWorkletSamples();
+        console.log('[PSY4] AudioWorklet engine active — Moog ladder + PolyBLEP + real samples');
+      } else {
+        console.warn('[PSY4] Worklet init failed — using MaterialRealizer fallback');
+        this.realizer?.loadSamples().catch(() => {});
+      }
+    } catch (e) {
+      console.warn('[PSY4] Worklet error:', e, '— using MaterialRealizer fallback');
+      this.realizer?.loadSamples().catch(() => {});
+    }
+  }
+
+  private async loadWorkletSamples(): Promise<void> {
+    if (!this.engineNode || !this.ctx) return;
+    const sampleFiles: Record<string, { category: string; sub: string }> = {
+      'md_kick_Kicks_0051.wav': { category: 'kick', sub: 'main' },
+      '909_BD_02.wav': { category: 'kick', sub: '909' },
+      '909_BD_04.wav': { category: 'kick', sub: '909' },
+      'nord_kick_punchy_67.wav': { category: 'kick', sub: 'nord' },
+      'md_snare_Snares_0000.wav': { category: 'snare', sub: 'main' },
+      'md_snare_Snares_0004.wav': { category: 'snare', sub: 'main' },
+      'md_clap_Claps_0006.wav': { category: 'clap', sub: 'main' },
+      'md_clap_Claps_0000.wav': { category: 'clap', sub: 'main' },
+      'md_hat_Hats_0008.wav': { category: 'hat', sub: 'closed' },
+      'md_hat_Hats_0012.wav': { category: 'hat', sub: 'closed' },
+      'md_hat_Hats_0015.wav': { category: 'hat', sub: 'open' },
+      'md_perc_Percs_0001.wav': { category: 'perc', sub: 'main' },
+      'md_perc_Percs_0000.wav': { category: 'perc', sub: 'main' },
+      'md_tom_Toms_0000.wav': { category: 'perc', sub: 'tom' },
+      'md_ride_Cymbals_0000.wav': { category: 'perc', sub: 'ride' },
+      'hat_open.wav': { category: 'hat', sub: 'open' },
+      'hat_closed.wav': { category: 'hat', sub: 'closed' },
+      'clap.wav': { category: 'clap', sub: 'main' },
+      'kick.wav': { category: 'kick', sub: 'main' },
+    };
+
+    const samples: { name: string; category: string; subcategory: string; sampleRate: number; data: Float32Array }[] = [];
+    for (const [file, info] of Object.entries(sampleFiles)) {
+      try {
+        const path = file.includes('/') ? `/samples/${file}` : `/samples/real/${file}`;
+        const res = await fetch(path);
+        if (!res.ok) continue;
+        const buf = await res.arrayBuffer();
+        const decoded = await this.ctx.decodeAudioData(buf);
+        const data = decoded.getChannelData(0);
+        // Copy to transferable buffer
+        const copy = new Float32Array(data.length);
+        copy.set(data);
+        samples.push({ name: file, category: info.category, subcategory: info.sub, sampleRate: decoded.sampleRate, data: copy });
+      } catch (e) { /* skip */ }
+    }
+    if (samples.length > 0) {
+      this.engineNode.loadSamples(samples);
+      console.log(`[PSY4] Loaded ${samples.length} real samples into worklet`);
+    }
   }
 
   // F1.18: stepDur reads from Transport — no independent engineBpm
@@ -951,6 +1071,10 @@ export class PsyLive {
       if (this.causalEventQueue.length > 200) {
         this.causalEventQueue = this.causalEventQueue.slice(-100);
       }
+      // Flush batched events to AudioWorklet
+      if (this.useWorklet && this.engineNode) {
+        this.engineNode.flushEvents();
+      }
     } catch (e) {}
   }
 
@@ -960,26 +1084,24 @@ export class PsyLive {
 
     // Track kick count for UI
     if (ev.channel === 'kick') this.kickCount++;
-    // Track bass note for UI display
     if (ev.channel === 'bass' && ev.note > 0) this.bassFreq = mtof(ev.note);
 
-    // Use MaterialRealizer if available (new full realization engine)
-    if (this.realizer) {
-      this.realizer.realize(ev);
-    } else {
-      // Fallback to old synth voices
-      const time = ev.at;
-      const v = this.getVariant();
-      switch (ev.channel) {
-        case 'kick': this.kick(time, ev.velocity); break;
-        case 'bass': this.bass(time, mtof(ev.note), v, ev.velocity); break;
-        case 'lead': this.lead(time, mtof(ev.note), v, false); break;
-        case 'hat': this.hat(time, (v.hatLvl || 0.12) * ev.velocity * 2.5, false); break;
-        default: break;
+    // Route to AudioWorklet if available (REAL DSP: Moog, PolyBLEP, samples)
+    if (this.useWorklet && this.engineNode) {
+      const voiceId = CHANNEL_TO_VOICE[ev.channel];
+      if (voiceId !== undefined) {
+        // For sub: play bass one octave lower
+        const note = ev.channel === 'sub' ? ev.note - 12 : ev.note;
+        // For counterline: play lead at lower register
+        const finalNote = ev.channel === 'counterline' ? ev.note - 7 : note;
+        this.engineNode.scheduleEvent(ev.at, voiceId, finalNote, ev.velocity, ev.duration, 0);
       }
+    } else if (this.realizer) {
+      // Fallback: MaterialRealizer (basic Web Audio)
+      this.realizer.realize(ev);
     }
 
-    // Publish to sampler bridge (if attached) — plays in parallel.
+    // Publish to sampler bridge (if attached)
     if (this.samplerBridge) {
       const note = { voice: ev.channel, step: 0, midi: ev.note, velocity: ev.velocity };
       this.samplerBridge.publishNote(ev.at, note, false, 0.1);
