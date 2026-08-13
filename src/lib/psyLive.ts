@@ -17,6 +17,7 @@ import { MusicalTransport } from '../../foundation/transport/MusicalTransport';
 import { RadioObservationLayer } from '../../foundation/radio/RadioObservationLayer';
 import { DEFAULT_RADIO_CONFIG } from '../../foundation/radio/RadioObservationTypes';
 import { MusicalSession, type NotePlan } from '../../foundation/music/MusicalSession';
+import { SamplerBridge, type PsyDevice, type MusicalTransport as BridgeTransport, type MusicalContext as BridgeContext } from './sampler-bridge';
 
 // F13/R1: Removed dead imports — BeatPLL, PatternMutator, MelodyObserver,
 // RadioStateGate, TransportAdapter. The LIVE instances live inside
@@ -252,6 +253,8 @@ export class PsyLive {
 
   // F8: MusicalSession — THE single musical runtime (no feature flags, no legacy)
   private session: MusicalSession | null = null;
+  // Optional sampler bridge — if set, composition events are published to registered PsyDevices.
+  private samplerBridge: SamplerBridge | null = null;
   private currentNotePlan: NotePlan | null = null;
 
   // R6: Master safety limiter
@@ -833,6 +836,10 @@ export class PsyLive {
     try {
       const now = this.ctx.currentTime;
       const snap = this.transport.snapshot();
+      // Push transport to sampler bridge (if attached).
+      if (this.samplerBridge) {
+        this.samplerBridge.publishTransport(snap as unknown as BridgeTransport);
+      }
       const stepDur = snap.beatDuration / 4; // 16th note duration
 
       // F22 P0-E: Get groove state for swing + microtiming
@@ -905,7 +912,25 @@ export class PsyLive {
           if (note.midi !== null) this.lead(time, mtof(note.midi), v, s16 % 4 === 0);
           break;
       }
+      // Publish to sampler bridge (if attached) — plays in parallel with synth.
+      if (this.samplerBridge) {
+        this.samplerBridge.publishNote(time, note, s16 === 15, snap.beatDuration / 4);
+      }
     }
+  }
+
+  // ── Sampler bridge (optional) ──
+  // Attach a SamplerBridge to route PSY4's composition to external PsyDevices.
+  // The bridge plays IN PARALLEL with PSY4's synth — it does NOT replace it.
+  attachSamplerBridge(bridge: SamplerBridge): void {
+    this.samplerBridge = bridge;
+  }
+
+  // Register a PsyDevice on the sampler bridge (convenience method).
+  attachSamplerDevice<T extends PsyDevice>(device: T): T | null {
+    if (!this.samplerBridge) return null;
+    this.samplerBridge.register(device);
+    return device;
   }
 
   // ── Composition mode ──
