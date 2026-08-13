@@ -267,6 +267,8 @@ class KickVoice {
     this.midPhase = 0;
     this.prevNoise = 0;
     this.noise = new PinkNoise();
+    // PERF-ZERO-ALLOC: preallocated output buffer (avoids per-sample array literal)
+    this._out = new Float32Array(2);
   }
 
   trigger(time, amp, fund, decay, sr) {
@@ -285,12 +287,14 @@ class KickVoice {
     this.noise.reset();
   }
 
-  // Returns [sample, done]
+  // Returns this._out (Float32Array[2]); _out[0] = mono sample, _out[1] = 0.
+  // Caller checks `this.active` to detect voice-end (no done flag in return).
   render(currentTime, sr) {
-    if (!this.active) return [0, true];
+    const out = this._out;
+    if (!this.active) { out[0] = 0; return out; }
     const dt = 1 / sr;
     this.t += dt;
-    if (this.t > this.subDecay + 0.05) { this.active = false; return [0, true]; }
+    if (this.t > this.subDecay + 0.05) { this.active = false; out[0] = 0; return out; }
 
     const t = this.t;
     const f0 = this.fund;
@@ -324,7 +328,8 @@ class KickVoice {
     // always have saturation. Without it, the kick sounds flat and digital.)
     sample = fastTanh(sample * this.saturation);
     sample *= this.amp * 0.8;
-    return [sample, false];
+    out[0] = sample;
+    return out;
   }
 }
 
@@ -354,6 +359,8 @@ class BassVoice {
     this.harmonicLevel = 0.55;  // harmonic (filtered osc) level (was hardcoded 0.55)
     this.cutoffFloor = 80;      // minimum cutoff (prevents filter from closing fully)
     this.cutoffDecay = 0.04;    // cutoff envelope decay time (was hardcoded 0.04)
+    // PERF-ZERO-ALLOC: preallocated output buffer
+    this._out = new Float32Array(2);
   }
 
   trigger(time, freq, dur, amp, acid, sr, params) {
@@ -389,10 +396,11 @@ class BassVoice {
   }
 
   render(currentTime, sr) {
-    if (!this.active) return [0, true];
+    const out = this._out;
+    if (!this.active) { out[0] = 0; return out; }
     const dt = 1 / sr;
     this.t += dt;
-    if (this.t > this.bassDecay) { this.active = false; return [0, true]; }
+    if (this.t > this.bassDecay) { this.active = false; out[0] = 0; return out; }
 
     const inc = this.freq / sr;
     const osc = this.acid ? this.saw.process(inc) : this.square.process(inc);
@@ -431,7 +439,8 @@ class BassVoice {
     const decayEnv = Math.exp(-this.t / (this.bassDecay * 0.5));
     const ampEnv = attackEnv * decayEnv;
 
-    return [mixed * ampEnv * this.amp, false];
+    out[0] = mixed * ampEnv * this.amp;
+    return out;
   }
 }
 
@@ -453,6 +462,8 @@ class LeadVoice {
     this.lfoDepth = 0.3;
     this.detune = 10;
     this.noise = new PinkNoise(); // air/texture layer
+    // PERF-ZERO-ALLOC: preallocated output buffer
+    this._out = new Float32Array(2);
   }
 
   trigger(time, freq, dur, amp, sr, params) {
@@ -488,10 +499,11 @@ class LeadVoice {
   }
 
   render(currentTime, sr) {
-    if (!this.active) return [0, true];
+    const out = this._out;
+    if (!this.active) { out[0] = 0; return out; }
     const dt = 1 / sr;
     this.t += dt;
-    if (this.t > this.dur + 0.05) { this.active = false; return [0, true]; }
+    if (this.t > this.dur + 0.05) { this.active = false; out[0] = 0; return out; }
 
     // BUG FIX: Use each saw's OWN frequency (set via setFreq in trigger) — NOT the base freq.
     // Previously used `const inc = this.freq / sr` for all saws, which ignored the detune
@@ -533,7 +545,8 @@ class LeadVoice {
     // Amp envelope
     const ampEnv = Math.min(1, this.t / 0.006) * Math.exp(-this.t / this.dur);
     const sample = saturated * ampEnv * this.amp;
-    return [sample, false];
+    out[0] = sample;
+    return out;
   }
 }
 
@@ -562,6 +575,8 @@ class AcidVoice {
     this.prevFreq = 0;
     this.slideFreq = 0;
     this.slideActive = false;
+    // PERF-ZERO-ALLOC: preallocated output buffer
+    this._out = new Float32Array(2);
   }
 
   trigger(time, freq, dur, amp, sr, param) {
@@ -619,10 +634,11 @@ class AcidVoice {
   }
 
   render(currentTime, sr) {
-    if (!this.active) return [0, true];
+    const out = this._out;
+    if (!this.active) { out[0] = 0; return out; }
     const dt = 1 / sr;
     this.t += dt;
-    if (this.t > this.dur + 0.05) { this.active = false; return [0, true]; }
+    if (this.t > this.dur + 0.05) { this.active = false; out[0] = 0; return out; }
 
     // ── THERMAL DRIFT: slow random frequency modulation ──
     // PSY3: aDrift += (aDriftT - aDrift) * 0.0002
@@ -675,7 +691,8 @@ class AcidVoice {
 
     const ampEnv = Math.min(1, this.t / 0.003) * Math.exp(-this.t / this.dur);
     const sample = distorted * ampEnv * this.amp;
-    return [sample, false];
+    out[0] = sample;
+    return out;
   }
 }
 
@@ -692,6 +709,8 @@ class FMVoice {
     this.carPhase = 0;
     this.modPhase = 0;
     this.filter = new MoogLadder();
+    // PERF-ZERO-ALLOC: preallocated output buffer
+    this._out = new Float32Array(2);
   }
 
   trigger(time, freq, dur, amp, sr, params) {
@@ -711,10 +730,11 @@ class FMVoice {
   }
 
   render(currentTime, sr) {
-    if (!this.active) return [0, true];
+    const out = this._out;
+    if (!this.active) { out[0] = 0; return out; }
     const dt = 1 / sr;
     this.t += dt;
-    if (this.t > this.dur + 0.05) { this.active = false; return [0, true]; }
+    if (this.t > this.dur + 0.05) { this.active = false; out[0] = 0; return out; }
 
     // Modulator: sine at freq * ratio, with envelope on modulation index
     this.modPhase += 2 * Math.PI * this.freq * this.ratio * dt;
@@ -733,7 +753,8 @@ class FMVoice {
 
     // Amp envelope: 3ms attack + exp decay over dur
     const ampEnv = Math.min(1, this.t / 0.003) * Math.exp(-this.t / this.dur);
-    return [saturated * ampEnv * this.amp, false];
+    out[0] = saturated * ampEnv * this.amp;
+    return out;
   }
 }
 
@@ -747,6 +768,8 @@ class PadVoice {
     this.filter = new MoogLadder();
     this.lfoPhase = 0;
     this.filterSweepPhase = 0; // slow filter sweep
+    // PERF-ZERO-ALLOC: preallocated output buffer (stereo: [left, right])
+    this._out = new Float32Array(2);
   }
 
   trigger(time, freq, dur, amp, sr, params) {
@@ -772,8 +795,11 @@ class PadVoice {
 
   // Mono render (backward compat — delegates to renderStereo and sums to mono)
   render(currentTime, sr) {
-    const [l, r] = this.renderStereo(currentTime, sr);
-    return [(l + r) * 0.5, false];
+    const out = this.renderStereo(currentTime, sr);
+    // renderStereo wrote left→out[0], right→out[1]; collapse to mono in out[0]
+    const sum = (out[0] + out[1]) * 0.5;
+    out[0] = sum;
+    return out;
   }
 
   // STEREO render — PSY3 stereo spread: detuned oscs panned L/C/R
@@ -781,10 +807,11 @@ class PadVoice {
   // We use 3 oscs panned L/C/R for wider stereo image.
   // Filter is applied to the MID signal (M/S processing) — preserves stereo width.
   renderStereo(currentTime, sr) {
-    if (!this.active) return [0, 0, true];
+    const out = this._out;
+    if (!this.active) { out[0] = 0; out[1] = 0; return out; }
     const dt = 1 / sr;
     this.t += dt;
-    if (this.t > this.dur + 0.1) { this.active = false; return [0, 0, true]; }
+    if (this.t > this.dur + 0.1) { this.active = false; out[0] = 0; out[1] = 0; return out; }
 
     // Evolve LFO modulates detune (via frequency)
     this.lfoPhase += this.evolveRate * dt;
@@ -824,7 +851,9 @@ class PadVoice {
     const attackEnv = Math.min(1, this.t / this.attack);
     const releaseEnv = Math.min(1, (this.dur - this.t) / 0.4);
     const ampEnv = Math.max(0, Math.min(1, Math.min(attackEnv, releaseEnv)));
-    return [left * ampEnv * this.amp, right * ampEnv * this.amp, false];
+    out[0] = left * ampEnv * this.amp;
+    out[1] = right * ampEnv * this.amp;
+    return out;
   }
 }
 
@@ -836,6 +865,8 @@ class HatVoice {
     this.t = 0;
     this.noise = new PinkNoise();
     this.prevNoise = 0;
+    // PERF-ZERO-ALLOC: preallocated output buffer
+    this._out = new Float32Array(2);
   }
 
   trigger(time, open, amp, sr) {
@@ -849,9 +880,10 @@ class HatVoice {
   }
 
   render(currentTime, sr) {
-    if (!this.active) return [0, true];
+    const out = this._out;
+    if (!this.active) { out[0] = 0; return out; }
     this.t += 1 / sr;
-    if (this.t > this.decay * 1.5) { this.active = false; return [0, true]; }
+    if (this.t > this.decay * 1.5) { this.active = false; out[0] = 0; return out; }
 
     const n = this.noise.process();
     // Highpass via differentiation
@@ -859,7 +891,8 @@ class HatVoice {
     this.prevNoise = n;
     const env = Math.exp(-this.t / this.decay);
     const sample = hp * env * 0.5 * this.amp / 0.12;
-    return [sample, false];
+    out[0] = sample;
+    return out;
   }
 }
 
@@ -870,6 +903,8 @@ class ClapVoice {
     this.active = false;
     this.t = 0;
     this.noise = new PinkNoise();
+    // PERF-ZERO-ALLOC: preallocated output buffer
+    this._out = new Float32Array(2);
   }
 
   trigger(time, amp, sr) {
@@ -882,9 +917,10 @@ class ClapVoice {
   }
 
   render(currentTime, sr) {
-    if (!this.active) return [0, true];
+    const out = this._out;
+    if (!this.active) { out[0] = 0; return out; }
     this.t += 1 / sr;
-    if (this.t > 0.3) { this.active = false; return [0, true]; }
+    if (this.t > 0.3) { this.active = false; out[0] = 0; return out; }
 
     const n = this.noise.next();
     let g = 0;
@@ -894,7 +930,8 @@ class ClapVoice {
       }
     }
     const sample = n * g * 0.6 * this.amp / 0.4;
-    return [sample, false];
+    out[0] = sample;
+    return out;
   }
 }
 
@@ -908,6 +945,8 @@ class PercVoice {
     this.t = 0;
     this.phase = 0;
     this.filter = new MoogLadder();
+    // PERF-ZERO-ALLOC: preallocated output buffer
+    this._out = new Float32Array(2);
   }
 
   trigger(time, freq, amp, sr) {
@@ -920,9 +959,10 @@ class PercVoice {
   }
 
   render(currentTime, sr) {
-    if (!this.active) return [0, true];
+    const out = this._out;
+    if (!this.active) { out[0] = 0; return out; }
     this.t += 1 / sr;
-    if (this.t > 0.1) { this.active = false; return [0, true]; }
+    if (this.t > 0.1) { this.active = false; out[0] = 0; return out; }
 
     // Pitch envelope: starts 1.5x higher, drops to fundamental
     const pitchEnv = 1.5 * Math.exp(-this.t / 0.01) + 0.5;
@@ -937,7 +977,8 @@ class PercVoice {
 
     const env = Math.exp(-this.t / 0.05);
     const sample = saturated * env * this.amp;
-    return [sample, false];
+    out[0] = sample;
+    return out;
   }
 }
 
@@ -952,6 +993,8 @@ class ShakerVoice {
     this.noise = new PinkNoise();
     this.prevNoise = 0;
     this.filter = new MoogLadder(); // for HP shaping
+    // PERF-ZERO-ALLOC: preallocated output buffer
+    this._out = new Float32Array(2);
   }
 
   trigger(time, amp, sr) {
@@ -964,9 +1007,10 @@ class ShakerVoice {
   }
 
   render(currentTime, sr) {
-    if (!this.active) return [0, true];
+    const out = this._out;
+    if (!this.active) { out[0] = 0; return out; }
     this.t += 1 / sr;
-    if (this.t > 0.08) { this.active = false; return [0, true]; }
+    if (this.t > 0.08) { this.active = false; out[0] = 0; return out; }
 
     const n = this.noise.process();
     // HP via differentiation (fast)
@@ -978,7 +1022,8 @@ class ShakerVoice {
     const saturated = fastTanh(shaped * 2.5);
     const env = Math.exp(-this.t / 0.03);
     const sample = saturated * env * 2 * this.amp;
-    return [sample, false];
+    out[0] = sample;
+    return out;
   }
 }
 
@@ -997,6 +1042,8 @@ class TextureVoice {
     this.noise = new PinkNoise();
     this.morphPhase = 0;
     this.noiseFilter = new MoogLadder(); // separate filter for noise layer
+    // PERF-ZERO-ALLOC: preallocated output buffer
+    this._out = new Float32Array(2);
   }
 
   trigger(time, dur, amp, type, sr) {
@@ -1019,13 +1066,14 @@ class TextureVoice {
   }
 
   render(currentTime, sr) {
-    if (!this.active) return [0, true];
+    const out = this._out;
+    if (!this.active) { out[0] = 0; return out; }
     this.t += 1 / sr;
-    if (this.t > this.dur + 0.1) { this.active = false; return [0, true]; }
+    if (this.t > this.dur + 0.1) { this.active = false; out[0] = 0; return out; }
 
     const dt = 1 / sr;
     const env = Math.min(1, this.t / 0.5) * Math.min(1, (this.dur - this.t) / 0.5);
-    if (env <= 0) return [0, false];
+    if (env <= 0) { out[0] = 0; return out; }
 
     // Layer 1: Detuned saw bed — provides harmonic content
     const inc = this.baseFreq / sr;
@@ -1047,7 +1095,8 @@ class TextureVoice {
     // Saturation for warmth
     mix = fastTanh(mix * 1.3);
 
-    return [mix * env * this.amp, false];
+    out[0] = mix * env * this.amp;
+    return out;
   }
 }
 
@@ -1063,6 +1112,8 @@ class FXVoice {
     this.noise = new PinkNoise();
     this.phase = 0;
     this.filter = new MoogLadder(); // filter for riser/sweep
+    // PERF-ZERO-ALLOC: preallocated output buffer
+    this._out = new Float32Array(2);
   }
 
   trigger(type, time, dur, amp, sr) {
@@ -1077,10 +1128,11 @@ class FXVoice {
   }
 
   render(currentTime, sr) {
-    if (!this.active) return [0, true];
+    const out = this._out;
+    if (!this.active) { out[0] = 0; return out; }
     const dt = 1 / sr;
     this.t += dt;
-    if (this.t > this.dur + 0.2) { this.active = false; return [0, true]; }
+    if (this.t > this.dur + 0.2) { this.active = false; out[0] = 0; return out; }
 
     let sample = 0;
     const t = this.t;
@@ -1155,7 +1207,8 @@ class FXVoice {
         break;
       }
     }
-    return [sample * this.amp, false];
+    out[0] = sample * this.amp;
+    return out;
   }
 }
 
@@ -1176,6 +1229,8 @@ class SampleVoice {
     this.decay = 0.3;
     this.position = 0;          // fractional sample position
     this.pan = 0;               // -1..1
+    // PERF-ZERO-ALLOC: preallocated output buffer (stereo: [left, right])
+    this._out = new Float32Array(2);
   }
 
   trigger(sampleData, sampleRate, playbackRate, amp, decay, pan) {
@@ -1190,14 +1245,17 @@ class SampleVoice {
     this.pan = pan || 0;
   }
 
-  // Returns [leftSample, rightSample, done]
+  // Returns this._out (Float32Array[2]); _out[0]=left, _out[1]=right.
+  // Caller checks `this.active` to detect sample-end (no done flag in return).
   renderStereo(currentTime, sr) {
-    if (!this.active || !this.sampleData) return [0, 0, true];
+    const out = this._out;
+    if (!this.active || !this.sampleData) { out[0] = 0; out[1] = 0; return out; }
     this.t += 1 / sr;
     const env = Math.exp(-this.t / this.decay);
     if (env < 0.001 || this.position >= this.sampleData.length) {
       this.active = false;
-      return [0, 0, true];
+      out[0] = 0; out[1] = 0;
+      return out;
     }
 
     // Linear interpolation playback
@@ -1221,7 +1279,9 @@ class SampleVoice {
     const leftGain = pan <= 0 ? 1 : 1 - pan;
     const rightGain = pan >= 0 ? 1 : 1 + pan;
 
-    return [sample * leftGain, sample * rightGain, false];
+    out[0] = sample * leftGain;
+    out[1] = sample * rightGain;
+    return out;
   }
 }
 
@@ -1255,13 +1315,16 @@ class SchroederReverb {
     }
     this.wet = 0.45;  // INCREASED from 0.3 — more audible reverb
     this.inputGain = 0.15; // send level
+    // PERF-ZERO-ALLOC: preallocated stereo output buffer
+    this._out = new Float32Array(2);
   }
 
   setWet(wet) { this.wet = wet; }
   setInputGain(g) { this.inputGain = g; }
 
-  // Process a mono input, return stereo [left, right] reverb output
+  // Process a mono input, return this._out (Float32Array[2]): _out[0]=left, _out[1]=right.
   process(input, sr) {
+    const out = this._out;
     // Scale input by send level
     const inSample = input * this.inputGain;
 
@@ -1273,10 +1336,10 @@ class SchroederReverb {
       const delayed = buf[idx];
       // One-pole lowpass for damping (high frequencies decay faster)
       this.combLP[i] = delayed + this.combDamping * (this.combLP[i] - delayed);
-      const out = inSample + this.combLP[i] * this.combFeedback;
-      buf[idx] = out;
+      const cOut = inSample + this.combLP[i] * this.combFeedback;
+      buf[idx] = cOut;
       this.combIdx[i] = (idx + 1) % this.combDelays[i];
-      combSum += out;
+      combSum += cOut;
     }
     combSum *= 0.25; // normalize
 
@@ -1286,17 +1349,17 @@ class SchroederReverb {
       const buf = this.allpassBuffers[i];
       const idx = this.allpassIdx[i];
       const delayed = buf[idx];
-      const out = -ap * this.allpassFeedback + delayed;
+      const apOut = -ap * this.allpassFeedback + delayed;
       buf[idx] = ap + delayed * this.allpassFeedback;
       this.allpassIdx[i] = (idx + 1) % this.allpassDelays[i];
-      ap = out;
+      ap = apOut;
     }
 
     // Stereo: slight delay between L and R for width
     // (re-use allpass output, offset by a few samples for stereo effect)
-    const left = ap * this.wet;
-    const right = combSum * this.wet * 0.9; // slightly different for width
-    return [left, right];
+    out[0] = ap * this.wet;
+    out[1] = combSum * this.wet * 0.9; // slightly different for width
+    return out;
   }
 
   reset() {
@@ -1327,6 +1390,8 @@ class StereoDelay {
     this.sr = 44100;
     // LP filter on feedback for darker echoes
     this.fbLP = [0, 0];
+    // PERF-ZERO-ALLOC: preallocated stereo output buffer
+    this._out = new Float32Array(2);
   }
 
   setDelayTimes(leftMs, rightMs) {
@@ -1338,8 +1403,9 @@ class StereoDelay {
   setWet(wet) { this.wet = wet; }
   setInputGain(g) { this.inputGain = g; }
 
-  // Process stereo input [left, right], return stereo [left, right] delay output
+  // Process stereo input [left, right], return this._out (Float32Array[2]): _out[0]=left, _out[1]=right.
   process(leftIn, rightIn, sr) {
+    const out = this._out;
     this.sr = sr;
     const leftDelaySamples = Math.floor(this.leftDelay * sr);
     const rightDelaySamples = Math.floor(this.rightDelay * sr);
@@ -1364,7 +1430,9 @@ class StereoDelay {
     this.leftIdx = (this.leftIdx + 1) % this.bufferSize;
     this.rightIdx = (this.rightIdx + 1) % this.bufferSize;
 
-    return [leftDelayed * this.wet, rightDelayed * this.wet];
+    out[0] = leftDelayed * this.wet;
+    out[1] = rightDelayed * this.wet;
+    return out;
   }
 
   reset() {
@@ -1561,12 +1629,15 @@ class StereoWidener {
     this.delaySamples = Math.max(1, Math.floor(0.012 * sampleRate));
     this.prevDelayed = 0;
     this.width = 0.3; // PSY3 default width
+    // PERF-ZERO-ALLOC: preallocated stereo output buffer
+    this._out = new Float32Array(2);
   }
 
   setWidth(w) { this.width = Math.max(0, Math.min(0.5, w)); }
 
-  // Takes stereo [left, right], returns widened stereo [left, right]
+  // Takes stereo [left, right], returns this._out (Float32Array[2]): widened [left, right].
   process(left, right, sr) {
+    const out = this._out;
     // Mid signal
     const mid = (left + right) * 0.5;
 
@@ -1582,7 +1653,9 @@ class StereoWidener {
     // Add width: L += side*width, R -= side*width
     // This adds a delayed+HP'd version of the mid to the side channel,
     // creating a sense of space without destroying the original image.
-    return [left + side * this.width, right - side * this.width];
+    out[0] = left + side * this.width;
+    out[1] = right - side * this.width;
+    return out;
   }
 
   reset() {

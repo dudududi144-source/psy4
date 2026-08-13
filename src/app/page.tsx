@@ -87,6 +87,7 @@ export default function Page() {
     causalAction: 'NO_CHANGE', causalWhyNow: '', causalTension: 0, causalContrastDebt: 0,
     causalAnticipation: 0, causalGrooveStability: 0, causalExpectation: 0,
     causalActiveMaterials: [], causalHistory: [],
+    audioProcessMs: 0, audioCpuLoad: 0, audioActiveVoices: 0, audioVoiceBudget: 0,
   });
 
   const [streamId, setStreamId] = useState('psyndora');
@@ -225,6 +226,17 @@ export default function Page() {
               <span className="text-sm font-mono tabular-nums" style={{ color: '#b967ff' }}>{s.bassNote}</span>
               <span className="text-[9px] text-slate-500 uppercase">Key</span>
             </div>
+            {/* PERF: audio-thread CPU load indicator (turns red if over budget) */}
+            {s.playing && (
+              <div className="hidden md:flex items-center gap-1.5 px-2 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.04)' }}>
+                <Cpu className="w-3 h-3" style={{ color: s.audioProcessMs > 3 ? '#ef4444' : s.audioProcessMs > 2 ? '#f59e0b' : '#10b981' }} />
+                <span className="text-[9px] font-mono tabular-nums" style={{ color: s.audioProcessMs > 3 ? '#ef4444' : s.audioProcessMs > 2 ? '#f59e0b' : '#94a3b8' }}>
+                  {s.audioProcessMs.toFixed(1)}ms
+                </span>
+                <span className="text-[8px] text-slate-600">·</span>
+                <span className="text-[9px] font-mono text-slate-400 tabular-nums">{s.audioActiveVoices}/{s.audioVoiceBudget}v</span>
+              </div>
+            )}
             <div className="hidden sm:flex items-center gap-1">
               <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ color: syncMeta.color, background: `${syncMeta.color}18` }}>
                 {syncMeta.label}

@@ -178,13 +178,15 @@ export class Psy4EngineNode {
    */
   loadSamples(samples: { name: string; category: string; subcategory: string; sampleRate: number; data: Float32Array }[]) {
     if (!this.node) return;
-    // Transfer all Float32Array buffers (zero-copy)
+    // PERF: compute total bytes BEFORE transferring (detached ArrayBuffers report byteLength=0)
+    let totalBytes = 0;
     const transferables: ArrayBuffer[] = [];
     for (const s of samples) {
+      totalBytes += s.data.buffer.byteLength;
       transferables.push(s.data.buffer);
     }
     this.node.port.postMessage({ type: 'loadSamples', samples }, transferables);
-    console.log(`[PSY4] Transferred ${samples.length} samples to worklet (${transferables.reduce((a, b) => a + b.byteLength, 0)} bytes)`);
+    console.log(`[PSY4] Transferred ${samples.length} samples to worklet (${totalBytes} bytes)`);
   }
 
   triggerDuck() {

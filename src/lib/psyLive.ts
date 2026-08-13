@@ -20,7 +20,7 @@ import { MusicalSession, type NotePlan } from '../../foundation/music/MusicalSes
 import { CausalComposer, type CausalNoteEvent, type CausalBarResult } from '../../foundation/music/CausalComposer';
 import { SamplerBridge, type PsyDevice, type MusicalTransport as BridgeTransport, type MusicalContext as BridgeContext } from './sampler-bridge';
 import { MaterialRealizer } from './material-realizer';
-import { Psy4EngineNode, VOICE, type VoiceId } from './studio/engine/engineWorklet';
+import { Psy4EngineNode, VOICE, type VoiceId, type EngineStats } from './studio/engine/engineWorklet';
 
 // Voice ID mapping: CausalComposer channels → AudioWorklet voice IDs
 const CHANNEL_TO_VOICE: Record<string, VoiceId> = {
@@ -178,6 +178,11 @@ export interface LiveState {
   causalExpectation: number;
   causalActiveMaterials: string[];
   causalHistory: Array<{ bar: number; action: string }>;
+  // PERF: audio-thread diagnostics (from worklet stats)
+  audioProcessMs: number;       // last process() duration in ms (budget = 3.0)
+  audioCpuLoad: number;         // 0..1 smoothed
+  audioActiveVoices: number;    // current polyphony
+  audioVoiceBudget: number;     // dynamic ceiling (drops under overload)
 }
 
 // ─── MusicState (from architecture review) ────────────────────────────────
@@ -288,6 +293,8 @@ export class PsyLive {
   private causalComposer: CausalComposer | null = null;
   private currentCausalBar: CausalBarResult | null = null;
   private causalEventQueue: CausalNoteEvent[] = [];
+  // PERF: preallocated scratch buffer for the scheduler's remaining-queue (avoids [] alloc per tick)
+  private _queueScratch: CausalNoteEvent[] = [];
   private causalHistory: Array<{ bar: number; action: string }> = [];
   // MATERIAL REALIZER: fallback if worklet fails
   private realizer: MaterialRealizer | null = null;
@@ -321,6 +328,8 @@ export class PsyLive {
   private lastBufferedBassFreq = 0;
   // PERF: counter to throttle session.observeRadioTick (every 5th detect tick = 500ms)
   private sessionTickCounter = 0;
+  // PERF: last worklet stats (CPU load, voice budget, processMs) for diagnostics
+  private lastWorkletStats: EngineStats | null = null;
 
   // Learning
   private learningData: LearningData | null = null;
@@ -424,6 +433,11 @@ export class PsyLive {
       causalExpectation: motifState?.expectationLevel ?? 0,
       causalActiveMaterials: this.causalComposer?.getActiveVoices() ?? [],
       causalHistory: this.causalHistory.slice(-12),
+      // PERF: audio-thread diagnostics
+      audioProcessMs: this.lastWorkletStats?.processMs ?? 0,
+      audioCpuLoad: this.lastWorkletStats?.cpuLoad ?? 0,
+      audioActiveVoices: this.lastWorkletStats?.activeVoices ?? 0,
+      audioVoiceBudget: this.lastWorkletStats?.voiceBudget ?? 0,
     });
   }
 
@@ -943,6 +957,16 @@ export class PsyLive {
       const ok = await this.engineNode.init();
       if (ok) {
         this.useWorklet = true;
+        // PERF: wire stats callback to monitor audio-thread CPU load.
+        // The worklet reports processMs, cpuLoad, activeVoices, voiceBudget every ~10Hz.
+        // We log warnings when over budget so audio dropouts are diagnosable.
+        this.engineNode.onStats((stats) => {
+          this.lastWorkletStats = stats;
+          // Warn if process() exceeds the 3ms budget (will cause audio dropouts)
+          if (stats.processMs > 3.0) {
+            console.warn(`[PSY4] AUDIO THREAD OVER BUDGET: processMs=${stats.processMs.toFixed(2)}ms cpuLoad=${(stats.cpuLoad*100).toFixed(0)}% voices=${stats.activeVoices}/${stats.voiceBudget}`);
+          }
+        });
         // Connect worklet output through analyser (for visualizer)
         const out = this.engineNode.outputNode;
         if (out && this.analyser) {
@@ -1081,8 +1105,10 @@ export class PsyLive {
       }
 
       // Process event queue: schedule events that are due within the lookahead window
+      // PERF: reuse a preallocated remaining buffer instead of allocating [] every tick (20Hz)
       const scheduleWindow = now + this.scheduleAheadTime;
-      const remaining: CausalNoteEvent[] = [];
+      const remaining = this._queueScratch;
+      remaining.length = 0;
       for (const ev of this.causalEventQueue) {
         if (ev.at <= scheduleWindow) {
           if (ev.at >= now - 0.05) {
@@ -1093,10 +1119,12 @@ export class PsyLive {
           remaining.push(ev);
         }
       }
+      // Swap: the remaining array becomes the new queue, old queue becomes scratch
+      this._queueScratch = this.causalEventQueue;
       this.causalEventQueue = remaining;
       // Safety: if queue grows too large, trim old events
       if (this.causalEventQueue.length > 200) {
-        this.causalEventQueue = this.causalEventQueue.slice(-100);
+        this.causalEventQueue.length = 100;
       }
       // Flush batched events to AudioWorklet
       if (this.useWorklet && this.engineNode) {
