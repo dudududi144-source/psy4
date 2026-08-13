@@ -404,13 +404,9 @@ export class PsyLive {
     const transportBpm = this.transport ? this.transport.snapshot().bpm : 145;
     // PERF: radioLayer.getSnapshot() just returns lastSnapshot (no alloc) — safe to call.
     const radioSnap = this.radioLayer?.getSnapshot();
-    // CAUSAL: Extract causal state for UI
-    // FIX: stateAfter is now a direct reference to the live CausalState (not a snapshot).
-    // materials is a Map, so we use .get() instead of [] access.
-    const cs = this.currentCausalBar?.stateAfter as Record<string, unknown> | undefined;
+    // CAUSAL: Extract causal state for UI — reads from lightweight snapshot (5 fields)
+    const cs = this.currentCausalBar?.stateAfter as { tensionLevel?: number; contrastDebt?: number; anticipationLevel?: number; grooveStability?: number; expectationLevel?: number } | undefined;
     const cd = this.currentCausalBar?.decision;
-    const materialsMap = cs?.materials as Map<string, { expectationLevel?: number }> | undefined;
-    const motifState = materialsMap?.get('motif-A');
     this.onState?.({
       playing: this.playing, radioOn: this.radioOn,
       radioBpm: transportBpm, engineBpm: transportBpm,
@@ -433,14 +429,14 @@ export class PsyLive {
       radioSignalState: radioSnap?.signal.state ?? 'DISCONNECTED',
       radioObservationState: radioSnap?.signal.observationState ?? 'NO_SIGNAL',
       radioConfidence: radioSnap?.beat?.confidence ?? 0,
-      // CAUSAL state
+      // CAUSAL state — reads from lightweight snapshot (no Map access, no allocation)
       causalAction: cd?.action ?? 'NO_CHANGE',
       causalWhyNow: cd?.selected.whyNow ?? '',
-      causalTension: (cs?.tensionLevel as number) ?? 0,
-      causalContrastDebt: (cs?.contrastDebt as number) ?? 0,
-      causalAnticipation: (cs?.anticipationLevel as number) ?? 0,
-      causalGrooveStability: (cs?.grooveStability as number) ?? 0,
-      causalExpectation: motifState?.expectationLevel ?? 0,
+      causalTension: cs?.tensionLevel ?? 0,
+      causalContrastDebt: cs?.contrastDebt ?? 0,
+      causalAnticipation: cs?.anticipationLevel ?? 0,
+      causalGrooveStability: cs?.grooveStability ?? 0,
+      causalExpectation: cs?.expectationLevel ?? 0,
       causalActiveMaterials: this.causalComposer?.getActiveVoices() ?? [],
       causalHistory: this.causalHistory.slice(-12),
       // PERF: audio-thread diagnostics
@@ -1737,8 +1733,9 @@ export class PsyLive {
   // ── UI timer (2fps) ──
   private startUITimer(): void {
     if (this.uiTimer) clearInterval(this.uiTimer);
-    // UI updates at 250ms (4Hz) — frequent enough for live feel, not enough to choke React
-    this.uiTimer = setInterval(() => this.emit(), 250);
+    // FIX: UI updates at 500ms (2Hz) — was 250ms (4Hz). The studio UI doesn't need
+    // 4 updates/second; 2 is enough for live feel and halves React re-render pressure.
+    this.uiTimer = setInterval(() => this.emit(), 500);
   }
   private stopUITimer(): void {
     if (this.uiTimer) { clearInterval(this.uiTimer); this.uiTimer = null; }

@@ -289,19 +289,25 @@ export class CausalComposer {
       }
     }
 
-    // 5. FIX: Return lightweight references instead of full snapshots.
-    // The emit() only reads 5 fields from stateAfter (tensionLevel, contrastDebt,
-    // anticipationLevel, grooveStability, materials['motif-A'].expectationLevel).
-    // Creating full snapshots (4× per bar: stateBefore, stateAfter, memoryBefore, memoryAfter)
-    // was allocating ~100 objects per bar on the main thread → audio stutter.
-    // Now we return direct references to the live state objects. The UI reads them
-    // lazily; no allocation happens unless emit() actually runs.
+    // 5. FIX: Return a LIGHTWEIGHT snapshot — only the 5 fields the UI reads.
+    // Full snapshot (snapshotCausalState + memory.snapshot) allocated ~100 objects/bar.
+    // This lightweight version allocates exactly 1 small object with 6 numbers.
+    // The UI emit() reads: tensionLevel, contrastDebt, anticipationLevel,
+    // grooveStability, expectationLevel (from materials['motif-A']).
+    const motifState = this.state.materials.get('motif-A');
+    const stateAfter = {
+      tensionLevel: this.state.tensionLevel,
+      contrastDebt: this.state.contrastDebt,
+      anticipationLevel: this.state.anticipationLevel,
+      grooveStability: this.state.grooveStability,
+      expectationLevel: motifState?.expectationLevel ?? 0,
+    };
     return {
       bar,
       decision,
       events,
-      stateAfter: this.state as unknown as Record<string, unknown>,
-      memoryAfter: {} as Record<string, unknown>,  // FIX: memory snapshot not needed for live playback
+      stateAfter: stateAfter as unknown as Record<string, unknown>,
+      memoryAfter: {} as Record<string, unknown>,
     };
   }
 
@@ -357,8 +363,8 @@ export class CausalComposer {
       action,
       selected: candidate,
       candidates: [candidate],
-      // FIX: return lightweight references, not full snapshots (was allocating ~50 objects per forced bar)
-      stateBefore: this.state as unknown as Record<string, unknown>,
+      // FIX: return lightweight reference, not full snapshot
+      stateBefore: {} as Record<string, unknown>,
       memoryBefore: {} as Record<string, unknown>,
     };
   }
