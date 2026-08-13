@@ -56,7 +56,7 @@ const VOICE_BUDGET_DROP_PER_OVERAGE = 1; // drop 1 voice per 0.5ms overage
 const V_KICK = 0, V_BASS = 1, V_LEAD = 2, V_ACID = 3, V_PAD = 4;
 const V_HAT = 5, V_HAT_OPEN = 6, V_CLAP = 7, V_PERC = 8, V_SHAKER = 9;
 const V_TEXTURE = 10, V_RISER = 11, V_IMPACT = 12, V_SWEEP = 13;
-const V_ZAP = 14, V_BLIP = 15, V_DOWNLIFTER = 16, V_FM = 17;
+const V_ZAP = 14, V_BLIP = 15, V_DOWNLIFTER = 16, V_FM = 17, V_SNARE = 18;
 
 // ─── Fast polynomial tanh (Pade approximation, PSY5 pattern) ───────────────
 // 10x cheaper than Math.tanh (no transcendental call, just multiply + add).
@@ -1870,6 +1870,9 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < 4; i++) this.kickSamplePool.push(new SampleVoice());
     for (let i = 0; i < 4; i++) this.hatSamplePool.push(new SampleVoice());
     for (let i = 0; i < 2; i++) this.clapSamplePool.push(new SampleVoice());
+    // SNARE sample pool — separate from clap (snare has sharper attack)
+    this.snareSamplePool = [];
+    for (let i = 0; i < 2; i++) this.snareSamplePool.push(new SampleVoice());
 
     // Sample bank (loaded from main thread via ArrayBuffer transfer)
     this.samples = {};  // { name: { data, sampleRate, category } }
@@ -2021,6 +2024,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       [this.kickSamplePool, 0, this.ST_SAMPLE],
       [this.hatSamplePool,  0, this.ST_SAMPLE],
       [this.clapSamplePool, 0, this.ST_SAMPLE],
+      [this.snareSamplePool, 0, this.ST_SAMPLE],
     ];
 
     // port.onmessage moved to top of constructor (CRITICAL FIX)
@@ -2053,7 +2057,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           Atomics.store(this.sharedEventCount, 0, 0);
         }
         // Deactivate all voices
-        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.fmPool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool]) {
+        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.fmPool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool, this.snareSamplePool]) {
           for (const v of pool) v.active = false;
         }
         break;
@@ -2116,7 +2120,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'panic':
         // Kill all voices
-        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.fmPool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool]) {
+        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.fmPool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool, this.snareSamplePool]) {
           for (const v of pool) v.active = false;
         }
         break;
@@ -2342,6 +2346,30 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
               this.sampleUsage[clapName] = (this.sampleUsage[clapName] || 0) + 1;
             }
           } else {
+            const v = this.getFreeVoice(this.clapPool);
+            if (v) v.trigger(t, velocity, sr);
+          }
+        } else {
+          const v = this.getFreeVoice(this.clapPool);
+          if (v) v.trigger(t, velocity, sr);
+        }
+        break;
+      }
+      case V_SNARE: {
+        // SNARE — separate from clap. Uses snare samples (sharper attack than clap).
+        if (this.samplesReady) {
+          const snareNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'snare');
+          if (snareNames.length > 0) {
+            const idx = (this.rrCounters.snare || 0) % snareNames.length;
+            this.rrCounters.snare = ((this.rrCounters.snare || 0) + 1) % snareNames.length;
+            const snareName = snareNames[idx];
+            const v = this.getFreeVoice(this.snareSamplePool);
+            if (v) {
+              const samp = this.samples[snareName];
+              v.trigger(samp.data, samp.sampleRate, 1.0, velocity, 0.15, 0);
+            }
+          } else {
+            // Fallback: use synth clap
             const v = this.getFreeVoice(this.clapPool);
             if (v) v.trigger(t, velocity, sr);
           }

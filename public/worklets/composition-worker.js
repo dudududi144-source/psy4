@@ -614,7 +614,7 @@ self.onmessage = function(e) {
       // channelHash: map channel string to voice ID number
       const CHANNEL_TO_ID = {
         kick: 0, bass: 1, sub: 1, lead: 2, counterline: 2, motif: 2,
-        acid: 3, pad: 4, 'hat-closed': 5, hat: 5, 'hat-open': 6, clap: 7, snare: 7,
+        acid: 3, pad: 4, 'hat-closed': 5, hat: 5, 'hat-open': 6, clap: 7, snare: 18,
         percussion: 8, tom: 8, fill: 8, rim: 8, shaker: 9, ride: 5, crash: 6,
         texture: 10, atmosphere: 10, riser: 11, impact: 12, sweep: 13, zap: 14,
         blip: 15, downlifter: 16, drone: 4, chord: 2,
