@@ -888,8 +888,17 @@ export class PsyLive {
       if (!this.currentCausalBar || this.currentCausalBar.bar !== currentBar) {
         this.currentCausalBar = this.causalComposer.composeBar(currentBar);
         // Queue all events from this bar for scheduling
+        // CRITICAL: CausalComposer uses bar*4*beatDur as absolute time from bar 0.
+        // We need to offset by the transport's origin audio time so events
+        // align with the actual audio clock.
+        const barOriginAudioTime = snap.beatTime - snap.beat * (60 / snap.bpm);
         for (const ev of this.currentCausalBar.events) {
-          this.causalEventQueue.push(ev);
+          // ev.at is bar-relative (bar * 4 * beatDur + stepOffset)
+          // Convert to absolute audio time: add the transport's origin
+          this.causalEventQueue.push({
+            ...ev,
+            at: ev.at + barOriginAudioTime,
+          });
         }
         // Record decision in history
         this.causalHistory.push({
@@ -909,11 +918,16 @@ export class PsyLive {
           if (ev.at >= now - 0.05) {
             this.scheduleCausalEvent(ev);
           }
+          // else: event is too late, drop it (don't add to remaining)
         } else {
           remaining.push(ev);
         }
       }
       this.causalEventQueue = remaining;
+      // Safety: if queue grows too large, trim old events
+      if (this.causalEventQueue.length > 200) {
+        this.causalEventQueue = this.causalEventQueue.slice(-100);
+      }
     } catch (e) {}
   }
 
