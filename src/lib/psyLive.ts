@@ -305,8 +305,8 @@ export class PsyLive {
   // Scheduler — wake-up mechanism only (NOT a musical clock)
   // F1.18: setInterval wakes the scheduler; musical time comes from Transport
   private timer: ReturnType<typeof setInterval> | null = null;
-  private readonly lookahead = 25;
-  private readonly scheduleAheadTime = 0.15;
+  private readonly lookahead = 50; // 50ms scheduler (was 25ms — too frequent, chokes main thread)
+  private readonly scheduleAheadTime = 0.2; // 200ms lookahead (was 150ms)
   private lastScheduledBeatIndex = -1; // dedup based on Transport beatIndex
 
   // Kick detection
@@ -1049,8 +1049,8 @@ export class PsyLive {
           action: this.currentCausalBar.decision.action,
         });
         if (this.causalHistory.length > 64) this.causalHistory.shift();
-        // Emit state update with causal info
-        this.emit();
+        // NOTE: emit() is NOT called here — it's called by the UI timer (500ms).
+        // Calling emit() on every bar causes React re-renders that choke the main thread.
       }
 
       // Process event queue: schedule events that are due within the lookahead window
@@ -1254,10 +1254,10 @@ export class PsyLive {
     }
   }
 
-  // ── Detection (200ms tick) ──
+  // ── Detection (100ms tick — was 200ms, too slow for beat tracking) ──
   private startDetection(): void {
     if (this.detectTimer) clearInterval(this.detectTimer);
-    this.detectTimer = setInterval(() => this.detect(), 200);
+    this.detectTimer = setInterval(() => this.detect(), 100);
   }
 
   private detect(): void {
@@ -1324,11 +1324,10 @@ export class PsyLive {
     // F2.5 — Update occupancy from radio layer (for arranger decisions)
     this.occupancy = radioSnap.occupancy;
 
-    // F8 — Feed radio observations into MusicalSession (THE single composer)
-    if (this.session && radioSnap.signal.state !== 'NO_SIGNAL') {
-      // F17.2: Full musical feature extraction — pass FFT data + pitch + radio BPM
-      // to the session's learning pipeline. This fixes the circular BPM
-      // observation (was passing transportSnap.bpm, now passing radioSnap.beat.estimatedBpm).
+    // F8 — Feed radio observations into MusicalSession (LEGACY — not used by CausalComposer)
+    // This is kept for learning data collection only. CausalComposer doesn't read from session.
+    // Skip if no radio signal to save CPU.
+    if (this.session && radioSnap.signal.state !== 'NO_SIGNAL' && this.radioOn) {
       const radioBpm = radioSnap.beat?.estimatedBpm ?? transportSnap.bpm;
       const pitchClass = radioSnap.pitch?.pitchClass ?? null;
       const pitchConfidence = radioSnap.pitch?.confidence ?? 0;
@@ -1348,7 +1347,10 @@ export class PsyLive {
     }
 
     // F18.5: Apply learned timbre to synthesis parameters
-    this.applyLearnedTimbre();
+    // Only when worklet is NOT active (worklet uses its own params via macros)
+    if (!this.useWorklet) {
+      this.applyLearnedTimbre();
+    }
 
     // Update radio level for UI
     this.radioLevel = radioSnap.signal.spectralEnergy;
@@ -1446,7 +1448,8 @@ export class PsyLive {
   // ── UI timer (2fps) ──
   private startUITimer(): void {
     if (this.uiTimer) clearInterval(this.uiTimer);
-    this.uiTimer = setInterval(() => this.emit(), 500);
+    // UI updates at 250ms (4Hz) — frequent enough for live feel, not enough to choke React
+    this.uiTimer = setInterval(() => this.emit(), 250);
   }
   private stopUITimer(): void {
     if (this.uiTimer) { clearInterval(this.uiTimer); this.uiTimer = null; }
