@@ -17,6 +17,8 @@ import { MusicalTransport } from '../../foundation/transport/MusicalTransport';
 import { RadioObservationLayer } from '../../foundation/radio/RadioObservationLayer';
 import { DEFAULT_RADIO_CONFIG } from '../../foundation/radio/RadioObservationTypes';
 import { CausalComposer, type CausalNoteEvent, type CausalBarResult } from '../../foundation/music/CausalComposer';
+// ADR-001: CausalComposer runs on a Web Worker now. This import is kept for type compatibility
+// but the actual composition happens in public/worklets/composition-worker.js
 import { type MusicalTransport as BridgeTransport } from './sampler-bridge'; // type only — SamplerBridge is dead code
 import { MaterialRealizer } from './material-realizer';
 import { Psy4EngineNode, VOICE, type VoiceId, type EngineStats } from './studio/engine/engineWorklet';
@@ -295,7 +297,22 @@ export class PsyLive {
   private radioLayer: RadioObservationLayer | null = null;
 
   // MusicalSession REMOVED — was 1403 lines of dead code. All composition goes through CausalComposer.
-  // CAUSAL: The live composition authority
+  // ADR-001: CausalComposer runs on a Web Worker. These fields manage the worker.
+  private compositionWorker: Worker | null = null;
+  private workerReady = false;
+  private workerState: { tensionLevel: number; contrastDebt: number; anticipationLevel: number; grooveStability: number; expectationLevel: number } = { tensionLevel: 0, contrastDebt: 0, anticipationLevel: 0, grooveStability: 0, expectationLevel: 0 };
+  private workerAction = 'NO_CHANGE';
+  private workerActiveVoices: string[] = [];
+  private lastWorkerComposeBar = -1;
+  // ADR-001: Cached user controls (worker doesn't send these back, we cache locally)
+  private cachedUserControls = {
+    energy: 0.5,
+    tension: 0.3,
+    style: 'FULL_ON' as 'FULL_ON' | 'DARK' | 'PROGRESSIVE' | 'ACID',
+    forcedSection: null as 'BREAK' | 'BUILD' | 'DROP' | null,
+    forcedBarsRemaining: 0,
+  };
+  // CAUSAL: The live composition authority (now null — worker handles it)
   private causalComposer: CausalComposer | null = null;
   private currentCausalBar: CausalBarResult | null = null;
   private causalEventQueue: CausalNoteEvent[] = [];
@@ -410,11 +427,12 @@ export class PsyLive {
     const transportBpm = this.transport ? this.transport.snapshot().bpm : 145;
     // PERF: radioLayer.getSnapshot() just returns lastSnapshot (no alloc) — safe to call.
     const radioSnap = this.radioLayer?.getSnapshot();
-    // CAUSAL: Extract causal state for UI — reads from lightweight snapshot (5 fields)
-    const cs = this.currentCausalBar?.stateAfter as { tensionLevel?: number; contrastDebt?: number; anticipationLevel?: number; grooveStability?: number; expectationLevel?: number } | undefined;
-    const cd = this.currentCausalBar?.decision;
-    // PERF: getUserControls called ONCE, result spread inline (no IIFE allocation)
-    const uc = this.causalComposer?.getUserControls();
+    // CAUSAL: Extract causal state from worker state (ADR-001: worker sends state back)
+    const cs = this.workerState;
+    const cd = { action: this.workerAction, selected: { whyNow: '' } };
+    // PERF: getUserControls — now from worker (sent via state messages)
+    // For now, use cached values from worker state
+    const uc = this.cachedUserControls;
     this.onState?.({
       playing: this.playing, radioOn: this.radioOn,
       radioBpm: transportBpm, engineBpm: transportBpm,
@@ -548,10 +566,17 @@ export class PsyLive {
 
     // F8 — Initialize MusicalSession (LEGACY — kept for migration, not live authority)
     // MusicalSession instantiation REMOVED — dead code
-    // CAUSAL — Initialize CausalComposer (THE live composition authority)
-    this.causalComposer = new CausalComposer({
-      bpm: 145, rootPc: 4, scaleName: 'phrygian-dominant', seed: 42,
+    // ADR-001: CausalComposer runs on a Web Worker (composition thread)
+    // The worker handles all composition — main thread only forwards events to AudioWorklet
+    this.compositionWorker = new Worker('/worklets/composition-worker.js');
+    this.compositionWorker.onmessage = (e) => this.handleWorkerMessage(e.data);
+    this.compositionWorker.postMessage({
+      type: 'init',
+      opts: { bpm: 145, rootPc: 4, scaleName: 'phrygian-dominant', seed: 42 },
     });
+    // Keep causalComposer reference for getUserControls (worker sends state back)
+    this.causalComposer = null; // Will be replaced by worker state
+    this.workerReady = false;
     // MATERIAL REALIZER — fallback if worklet fails
     this.realizer = new MaterialRealizer({
       audioContext: this.ctx,
@@ -561,12 +586,9 @@ export class PsyLive {
     // AUDIOWORKLET — the REAL production engine
     // Try to initialize the worklet. If it succeeds, use it instead of MaterialRealizer.
     this.initWorkletEngine();
-    // F13/R4-D: Apply pending style if set before play()
-    // STAGE 2: Apply to CausalComposer (was: MusicalSession)
+    // ADR-001: Apply pending style via worker
     if (this.pendingStyle) {
-      const s = this.pendingStyle === 'DARK' || this.pendingStyle === 'PROGRESSIVE' || this.pendingStyle === 'ACID'
-        ? this.pendingStyle : 'FULL_ON';
-      this.causalComposer?.setStyle(s as 'FULL_ON' | 'DARK' | 'PROGRESSIVE' | 'ACID');
+      this.setStyle(this.pendingStyle);
       this.pendingStyle = null;
     }
 
@@ -900,11 +922,10 @@ export class PsyLive {
   // WAS: this.session.setStyle() — session is dead code, doesn't drive playback
   setStyle(style: string): void {
     this.currentStyle = style as any;
-    // STAGE 2: Route to CausalComposer — changes musical grammar (scale, motif, bass pattern)
     const s = (style === 'DARK' || style === 'PROGRESSIVE' || style === 'ACID') ? style : 'FULL_ON';
-    this.causalComposer?.setStyle(s as 'FULL_ON' | 'DARK' | 'PROGRESSIVE' | 'ACID');
-    if (!this.causalComposer) this.pendingStyle = style; // apply on play()
-    // Also update AudioWorklet macros (synth timbre)
+    this.cachedUserControls.style = s as 'FULL_ON' | 'DARK' | 'PROGRESSIVE' | 'ACID';
+    this.sendWorkerControls();
+    if (!this.workerReady) this.pendingStyle = style;
     if (this.engineNode) {
       const styleMap: Record<string, any> = {
         FULL_ON: { energy: 0.8, aggression: 0.7, brightness: 0.7, psychedelia: 0.5 },
@@ -920,7 +941,7 @@ export class PsyLive {
   // STAGE 2: Energy — now routes to CausalComposer (was: dead session.setEnergy)
   setEnergy(v: number): void {
     // STAGE 2: CausalComposer uses energy for velocity scaling + threshold bias
-    this.causalComposer?.setEnergy(v);
+    this.cachedUserControls.energy = v; this.sendWorkerControls();
     // Also update AudioWorklet macros (synth density/brightness)
     if (this.engineNode) this.engineNode.setMacros({ energy: v, density: v * 0.8 + 0.2 });
   }
@@ -934,7 +955,7 @@ export class PsyLive {
   // STAGE 2: Tension — now routes to CausalComposer (was: dead session.setTension)
   setTension(v: number): void {
     // STAGE 2: CausalComposer uses tension for contrast debt rate + variation intensity
-    this.causalComposer?.setTension(v);
+    this.cachedUserControls.tension = v; this.sendWorkerControls();
     // Also update AudioWorklet macros (synth psychedelia/aggression)
     if (this.engineNode) this.engineNode.setMacros({ psychedelia: v, aggression: v * 0.7 });
   }
@@ -952,18 +973,48 @@ export class PsyLive {
   // NOW: CausalComposer.forceSection() — causal override, integrates with inference.
   forceSection(section: string): void {
     const s = section === 'BREAK' || section === 'BUILD' || section === 'DROP' ? section : 'BREAK';
-    this.causalComposer?.forceSection(s as 'BREAK' | 'BUILD' | 'DROP', 4);
+    this.cachedUserControls.forcedSection = s as 'BREAK' | 'BUILD' | 'DROP';
+    this.cachedUserControls.forcedBarsRemaining = 4;
+    this.sendWorkerControls();
   }
-  releaseSection(): void { this.causalComposer?.releaseSection(); }
-  triggerBreak(bars = 4): void { this.causalComposer?.forceSection('BREAK', bars); }
-  triggerBuild(bars = 4): void { this.causalComposer?.forceSection('BUILD', bars); }
-  triggerDrop(bars = 4): void { this.causalComposer?.forceSection('DROP', bars); }
+  releaseSection(): void {
+    this.cachedUserControls.forcedSection = null;
+    this.cachedUserControls.forcedBarsRemaining = 0;
+    this.sendWorkerControls();
+  }
+  triggerBreak(bars = 4): void {
+    this.cachedUserControls.forcedSection = 'BREAK';
+    this.cachedUserControls.forcedBarsRemaining = bars;
+    this.sendWorkerControls();
+  }
+  triggerBuild(bars = 4): void {
+    this.cachedUserControls.forcedSection = 'BUILD';
+    this.cachedUserControls.forcedBarsRemaining = bars;
+    this.sendWorkerControls();
+  }
+  triggerDrop(bars = 4): void {
+    this.cachedUserControls.forcedSection = 'DROP';
+    this.cachedUserControls.forcedBarsRemaining = bars;
+    this.sendWorkerControls();
+  }
   getArrangementState() {
-    const uc = this.causalComposer?.getUserControls();
-    return uc ? {
-      section: uc.forcedSection ?? 'AUTO',
-      barsRemaining: uc.forcedBarsRemaining,
-    } : null;
+    return {
+      section: this.cachedUserControls.forcedSection ?? 'AUTO',
+      barsRemaining: this.cachedUserControls.forcedBarsRemaining,
+    };
+  }
+
+  // ADR-001: Send user controls to the composition Web Worker
+  private sendWorkerControls(): void {
+    if (!this.compositionWorker || !this.workerReady) return;
+    this.compositionWorker.postMessage({
+      type: 'controls',
+      energy: this.cachedUserControls.energy,
+      tension: this.cachedUserControls.tension,
+      style: this.cachedUserControls.style,
+      forcedSection: this.cachedUserControls.forcedSection,
+      bars: this.cachedUserControls.forcedBarsRemaining,
+    });
   }
 
   // F18.5: Apply learned timbre to synthesis parameters.
@@ -1171,52 +1222,63 @@ export class PsyLive {
   //
   // Policy for tab suspension: DROP STALE EVENTS.
   private scheduler(): void {
-    if (!this.ctx || !this.transport || !this.causalComposer) return;
+    if (!this.ctx || !this.transport || !this.workerReady) return;
     try {
       const now = this.ctx.currentTime;
       const snap = this.transport.snapshot();
-      // Push transport to sampler bridge (if attached).
-      // SamplerBridge.publishTransport REMOVED — dead code
 
-      // CAUSAL: Compose bars AHEAD of time and PUSH to worklet immediately.
-      // FIX: with 3s lookahead at 145 BPM, we need ~2 bars ahead.
-      // Compose 3 bars ahead to ensure events are always in worklet queue.
+      // ADR-001: Send compose request to Web Worker (composition thread)
+      // The worker composes 3 bars ahead and returns events as a Float64Array (Transferable, zero-copy)
       const currentBar = snap.bar;
       const beatDur = 60 / snap.bpm;
-      const lastComposedBar = this.currentCausalBar?.bar ?? -1;
-      const targetBar = currentBar + 3; // compose 3 bars ahead for safety
-      if (lastComposedBar < targetBar) {
+      const targetBar = currentBar + 3; // compose 3 bars ahead
+      if (this.lastWorkerComposeBar < targetBar) {
         const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
-        for (let b = lastComposedBar + 1; b <= targetBar; b++) {
-          const barResult = this.causalComposer.composeBar(b);
-          const evs = barResult.events;
-          for (let i = 0; i < evs.length; i++) {
-            const ev = evs[i];
-            ev.at += barOriginAudioTime;
-            if (ev.channel === 'kick') this.kickCount++;
-            if (ev.channel === 'bass' && ev.note > 0) this.bassFreq = mtof(ev.note);
-            if (this.useWorklet && this.engineNode) {
-              const voiceId = CHANNEL_TO_VOICE[ev.channel];
-              if (voiceId !== undefined) {
-                const note = ev.channel === 'sub' ? ev.note - 12 : ev.note;
-                const finalNote = ev.channel === 'counterline' ? ev.note - 7 : note;
-                this.engineNode.scheduleEvent(ev.at, voiceId, finalNote, ev.velocity, ev.duration, 0);
-              }
-            } else if (this.realizer) {
-              this.realizer.realize(ev);
-            }
+        this.compositionWorker?.postMessage({
+          type: 'compose',
+          targetBar,
+          barOriginAudioTime,
+        });
+        this.lastWorkerComposeBar = targetBar;
+      }
+    } catch (e) {}
+  }
+
+  // ADR-001: Handle messages from the composition Web Worker
+  private handleWorkerMessage(msg: any): void {
+    switch (msg.type) {
+      case 'ready':
+        this.workerReady = true;
+        break;
+      case 'events': {
+        // msg.events is a Float64Array (Transferable) with [at, note, velocity, duration, voiceId, param] per event
+        // Forward directly to AudioWorklet (zero-copy from worker → main → worklet)
+        if (this.useWorklet && this.engineNode && msg.count > 0) {
+          const flat = msg.events;
+          const EVENT_SIZE = 6;
+          for (let i = 0; i < msg.count; i++) {
+            const base = i * EVENT_SIZE;
+            const at = flat[base];
+            const note = flat[base + 1];
+            const velocity = flat[base + 2];
+            const duration = flat[base + 3];
+            const voiceId = flat[base + 4] as VoiceId;
+            const param = flat[base + 5];
+            // Track kick count + bass freq for UI
+            if (voiceId === VOICE.KICK) this.kickCount++;
+            if (voiceId === VOICE.BASS && note > 0) this.bassFreq = mtof(note);
+            this.engineNode.scheduleEvent(at, voiceId, note, velocity, duration, param);
           }
-          this.currentCausalBar = barResult;
-        }
-        if (this.useWorklet && this.engineNode) {
           this.engineNode.flushEvents();
         }
+        break;
       }
-
-      // OLD queue-based scheduling REMOVED — events are now pushed directly to worklet
-      // in the compose loop above. No need to process causalEventQueue anymore.
-      // The worklet holds events in its ring buffer and plays them at the correct audio time.
-    } catch (e) {}
+      case 'state':
+        this.workerState = msg.state;
+        this.workerAction = msg.action;
+        this.workerActiveVoices = msg.activeVoices;
+        break;
+    }
   }
 
   // CAUSAL: Schedule a single causal event for playback via MaterialRealizer
