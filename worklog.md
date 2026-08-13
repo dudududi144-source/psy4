@@ -6870,3 +6870,49 @@ Stage Summary:
 - HARD STOP observed — awaiting user decision on architecture + MVP ladder + 3 challenge questions.
 - Key communicated insight: the architecture is feasible IF the user accepts (a) human checkpoints for musicality, (b) MusicalIntent invariant in loop, (c) Web Audio for inner loop. The smallest proof is MVP-1 (kick sample selection, 1-2 days, ~300 LoC) which uses only existing assets + minimal new loop controller code. If MVP-1 works, MVP-2/3/4 follow naturally. If MVP-1 fails, architecture is wrong and we rethink.
 - Key challenge: the critic is the bottleneck, not the synth. The previous F22 failure was critic-Goodhart (DSP metrics passed, sound didn't improve). The proposed multi-dimensional critic with targeted weak-dimension mutation + constraint thresholds on musical dimensions + human checkpoint is the mitigation. But the user must accept that "fully automatic commercial quality" is not achievable with current critic technology — the honest claim is "automatic improvement on measurable dimensions + human checkpoint for musicality".
+
+---
+Task ID: PSY4-MIDI-ACOUSTIC-COMPILER-DESIGN-CHALLENGE (orchestrator)
+Agent: z-ai-code (main)
+Task: Critical redesign challenge of the 7-layer architecture. NO CODE. Answer 14 specific design questions, challenge the user's ideas where wrong, propose revised architecture.
+
+Work Log:
+- Read worklog tail for context (post-MIDI-COMPILER-DESIGN).
+- Verified existing type structures: SoundDNA.ts (interface with 25+ features), commercialReference.ts (TargetRange, SpectralBalance, GenreTargets, AnalysisResult, scoreAgainstTarget function — already has the per-genre target pattern), forensic/audioAnalyzer.ts (DynamicsMetrics, SpectrumBand, SpectrumMetrics, TransientMetrics, LowEndMetrics, AudioAnalysis — already has structured DSP analysis).
+- Synthesized critical design challenge report at audit-reports/PSY4-MIDI-ACOUSTIC-COMPILER-DESIGN-CHALLENGE.md answering the user's 14 questions:
+  1. Is current architecture correct? PARTIALLY. 3 structural defects: Musical Physics missing as explicit layer, Mixing conflated with Render, critic too thin (10 dims, no reliability tiering).
+  2. What's missing? 13 components listed (Musical Physics, Mixing split, VoiceGroup, AcousticNote, Sound Genome repurposed, 24-dim tiered critic, genre config, Preserve/Producer modes, reference profile extractor, BPM-aware timing, mutation registry, Pareto tracker, human checkpoint UI).
+  3. Should Musical Physics be separate layer? YES. It produces AcousticNote — the contract between musical reasoning and synthesis. Without it, acoustic targets get hardcoded into synth voice functions (current psyLive.ts problem).
+  4. Acoustic Note definition: three-stage model (MIDI Note → Musical Note → Acoustic Note → SynthesisGraph). AcousticNote carries target RANGES (not exact values). VoiceGroup concept for kick+bass as one acoustic unit.
+  5. Sound Genome definition: CHALLENGE — user's proposed list includes synthesis mechanisms (FMIndex, FMRatio, wavetablePosition) which should NOT be in Sound Genome. Sound Genome is purely DESCRIPTIVE. Mechanisms belong in SynthesisGraph. Revised Sound Genome with ~25 descriptors only.
+  6. Audio/Music Genome (24-dim critic): 3 reliability tiers. Tier 1 (15 DSP dims, reliable, optimization targets), Tier 2 (7 musical proxy dims, constraints), Tier 3 (2 subjective dims, human-only). Honest claim: 15 measurable, 7 proxy, 2 need human.
+  7. Preserve vs Producer modes: CHALLENGE — Producer candidates should be per-PHRASE not per-note (200 notes × 3 = 600 candidates overwhelms user; 4 phrases × 3 = 12 manageable).
+  8. Reference Listening: reference is TARGET (profiles), not SOURCE (audio to copy). Reference → KickProfile/BassProfile/LeadProfile/SpectralProfile/etc. One-to-many problem managed via codebook narrowing + Pareto front diversity + human pick.
+  9. Critic architecture: 7 Goodhart protections. Biggest = no single scalar objective (Pareto dominance mandatory). Tiered reliability. Hard constraints as filters. Regression detection. Diversity preservation. Reference comparison. Periodic human checkpoints.
+  10. Optimization: per-parameter-type. Sample choice → greedy. Synth family → exhaustive. Continuous params → CMA-ES. Final polish → Bayesian. Arrangement → beam. MIDI candidates → constrained genetic. Diversity → NSGA-II. DDSP rejected (overkill, loses assets).
+  11. Backend: Forensic Engine = CRITIC BACKEND (not synth engine). SuperCollider = OPTIONAL and DEFERRED (not needed unless Web Audio quality ceiling hit on lead voice after 50 iterations). Decision tree provided.
+  12. Existing assets: ~60% exists (Musical Intelligence, Sound Intelligence voices, Mixing chain, Critic DSP, commercial targets, samples, render pipeline). ~40% must be built. ~3500 LoC total (not 10,000).
+  13. What must be built from scratch: 16 components listed with LoC estimates. Total ~3500 LoC across ~15 modules.
+  14. MVP: MVP-CORE — full pipeline, 4-bar, 3 voices, 10 iterations, no human checkpoint. ~1500 LoC, 2 weeks. Proves the core idea end-to-end. NOT a single-voice MVP (user rejected that).
+  15. A/B/C experiment: A (current) vs B (bugfix+wire) vs C (full compiler). Same MIDI/BPM/reference. Decision rule: C > B > A on ≥12 of 15 Tier 1 dims AND user ear confirms.
+  16. Failure modes: 10 listed (Critic-Goodhart, search space explosion, AcousticNote over-specification, VoiceGroup coupling, codebook brittleness, Producer candidate explosion, genre config complexity, render non-determinism, stale targets, loop too slow).
+  17. Kill criteria: 8 criteria (MVP-CORE failure, Critic-Goodhart 3x, codebook explosion >50 rules, iteration >30s, Web Audio ceiling after 50 iters, Producer rejection >80%, genre porting >50% rewrite, reference matching impossible after 50 iters). Contract: if any triggers, stop and rethink.
+  18. Roadmap: 6 phases over ~11-13 weeks. Phase 0 (prove architecture, 2w) → Phase 1 (Musical Physics + full critic, 2w) → Phase 2 (Sound Intelligence + codebook, 2w) → Phase 3 (Producer mode + reference pipeline, 2w) → Phase 4 (genre porting, 1w) → Phase 5 (SC escalation, conditional, 2w) → Phase 6 (polish, 2w). Each phase has a gate.
+
+- 3 challenges to the user's proposal:
+  1. Sound Genome must NOT include synthesis mechanisms (FMIndex, FMRatio, wavetablePosition). Those belong in SynthesisGraph. Sound Genome is purely descriptive.
+  2. Producer mode candidates should be per-PHRASE, not per-note. Per-note candidates overwhelm the user.
+  3. SuperCollider is OPTIONAL and DEFERRED. Don't commit upfront. Web Audio loop proves architecture first.
+
+- 3 things the user is right about that I embraced:
+  1. Musical Physics as separate layer. YES.
+  2. No single quality score. YES. Pareto mandatory.
+  3. Genre = constraints + priors, not hardcoded rules. YES.
+
+- Honest bottom line communicated: 15 DSP dims measurable, 7 musical proxy, 2 subjective (groove, musicality) need human. The human checkpoint is structurally necessary, not optional. The system is a COMPILER (MIDI → audio with measurable quality improvement) plus a CO-PRODUCER (human checkpoint for musicality). NOT a fully automatic commercial-quality generator.
+
+Stage Summary:
+- Design challenge report written: audit-reports/PSY4-MIDI-ACOUSTIC-COMPILER-DESIGN-CHALLENGE.md (~800 lines).
+- No code modified. No engine installed. No tests written.
+- HARD STOP observed — awaiting user decision on revised 9-layer architecture + 3 challenges + MVP-CORE + A/B/C experiment + 8 kill criteria.
+- Key communicated insight: the architecture is feasible IF the user accepts (a) Musical Physics as Layer 2, (b) Sound Genome purely descriptive (no mechanisms), (c) Producer candidates per-phrase, (d) SC deferred, (e) human checkpoint structurally necessary. The smallest proof is MVP-CORE (full pipeline, 4-bar, 3 voices, 10 iterations, ~1500 LoC, 2 weeks). 8 kill criteria are the contract — if any triggers, stop and rethink before building more.
