@@ -834,29 +834,49 @@ export class PsyLive {
     this.ensureAudio();
     if (this.playing) return;
     this.playing = true;
+    // CRITICAL FIX: If worklet isn't ready yet (async init still running),
+    // wait for it before starting playback. Otherwise events are dropped.
     if (this.useWorklet && this.engineNode) {
       this.engineNode.play();
       this.engineNode.setBPM(145);
+    } else {
+      // Worklet not ready — poll until it is, then start
+      const checkReady = setInterval(() => {
+        if (this.useWorklet && this.engineNode) {
+          clearInterval(checkReady);
+          this.engineNode.play();
+          this.engineNode.setBPM(145);
+          // Now send initial compose
+          this.sendInitialCompose();
+        }
+      }, 50);
+      // Timeout after 5s
+      setTimeout(() => clearInterval(checkReady), 5000);
     }
     this.transport!.start();
     this.lastScheduledBeatIndex = -1;
     this.updateDelayTime();
     this.timer = setInterval(() => this.scheduler(), this.lookahead);
     this.startUITimer();
-    // CRITICAL: Send initial compose request only if worklet is ready
+    // Send initial compose if worklet is already ready
     if (this.workerReady && this.useWorklet && this.engineNode) {
-      const snap = this.transport!.snapshot();
-      const beatDur = 60 / snap.bpm;
-      const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
-      this.lastWorkerComposeBar = -1;
-      this.compositionWorker?.postMessage({
-        type: 'compose',
-        targetBar: 3,
-        barOriginAudioTime,
-      });
-      this.lastWorkerComposeBar = 3;
+      this.sendInitialCompose();
     }
     this.emit();
+  }
+
+  private sendInitialCompose(): void {
+    if (!this.workerReady || !this.useWorklet || !this.engineNode) return;
+    const snap = this.transport!.snapshot();
+    const beatDur = 60 / snap.bpm;
+    const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
+    this.lastWorkerComposeBar = -1;
+    this.compositionWorker?.postMessage({
+      type: 'compose',
+      targetBar: 3,
+      barOriginAudioTime,
+    });
+    this.lastWorkerComposeBar = 3;
   }
 
   stop(): void {
