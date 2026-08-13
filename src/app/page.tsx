@@ -90,6 +90,7 @@ export default function Page() {
     causalActiveMaterials: [], causalHistory: [],
     audioProcessMs: 0, audioCpuLoad: 0, audioActiveVoices: 0, audioVoiceBudget: 0,
     userEnergy: 0.5, userTension: 0.3, userStyle: 'FULL_ON', forcedSection: null, forcedBarsRemaining: 0,
+    samplePalette: 'md',
   });
 
   const [streamId, setStreamId] = useState('psyndora');
@@ -310,6 +311,19 @@ export default function Page() {
                       className="text-[8px] font-bold py-1.5 rounded transition-all disabled:opacity-30 hover:scale-105"
                       style={{ background: s.userStyle === st ? 'rgba(185,103,255,0.3)' : 'rgba(255,255,255,0.05)', color: s.userStyle === st ? '#fff' : '#94a3b8', border: s.userStyle === st ? '1px solid rgba(185,103,255,0.5)' : '1px solid transparent' }}>
                       {st === 'FULL_ON' ? 'F.ON' : st.slice(0, 4)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* STAGE 5: Sample palette switcher — changes the drum machine */}
+              <div>
+                <span className="text-[9px] text-slate-400 mb-1 block">Drums</span>
+                <div className="grid grid-cols-4 gap-1">
+                  {(['md', '909', 'nord', 'real'] as const).map(p => (
+                    <button key={p} onClick={() => engineRef.current?.setSamplePalette(p)} disabled={!s.playing}
+                      className="text-[8px] font-bold py-1.5 rounded transition-all disabled:opacity-30 hover:scale-105"
+                      style={{ background: s.samplePalette === p ? 'rgba(0,255,200,0.25)' : 'rgba(255,255,255,0.05)', color: s.samplePalette === p ? '#00ffc8' : '#94a3b8', border: s.samplePalette === p ? '1px solid rgba(0,255,200,0.5)' : '1px solid transparent' }}>
+                      {p.toUpperCase()}
                     </button>
                   ))}
                 </div>

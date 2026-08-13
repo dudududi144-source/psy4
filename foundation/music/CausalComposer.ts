@@ -134,6 +134,12 @@ export class CausalComposer {
   private forcedSection: 'BREAK' | 'BUILD' | 'DROP' | null = null;
   private forcedBarsRemaining = 0;
 
+  // STAGE 6: Material fade-in tracking.
+  // When a material is first introduced, it plays at reduced velocity for 1-2 bars
+  // (fade-in). This prevents the "hard cut" jump when new layers enter.
+  // Map: materialId → bar when it was introduced.
+  private materialIntroBar: Map<string, number> = new Map();
+
   constructor(opts: CausalComposerOptions) {
     this.opts = { ...opts };
     this.state = createCausalState();
@@ -359,6 +365,9 @@ export class CausalComposer {
   private executeDecision(decision: Decision, bar: number): CausalNoteEvent[] {
     const events: CausalNoteEvent[] = [];
     const action = decision.action;
+    // STAGE 6: Record which channels existed BEFORE this decision, so we can
+    // detect newly introduced channels and mark them for fade-in tracking.
+    const voicesBefore = new Set(this.activeVoices);
     const beatDur = 60 / this.opts.bpm;
     const stepDur = beatDur / 4;
     const barStart = bar * 4 * beatDur;
@@ -666,7 +675,54 @@ export class CausalComposer {
         break;
     }
 
+    // STAGE 6: Apply fade-in to newly introduced materials.
+    // When a material first enters (INTRODUCE_*), scale down its velocity for the
+    // first bar (50%) and second bar (80%) to create a smooth crossfade instead of a hard cut.
+    // First: detect which channels are NEW (added in this decision) and register their intro bar.
+    for (const voice of this.activeVoices) {
+      if (!voicesBefore.has(voice)) {
+        this.materialIntroBar.set(voice, bar);
+      }
+    }
+    // Also: when a channel is removed (BREAKDOWN, THIN_REGISTER), clear its intro tracking
+    // so if it re-enters later, it gets a fresh fade-in.
+    for (const tracked of Array.from(this.materialIntroBar.keys())) {
+      if (!this.activeVoices.has(tracked)) {
+        this.materialIntroBar.delete(tracked);
+      }
+    }
+    this.applyFadeIn(events, bar);
+
     return events;
+  }
+
+  /**
+   * STAGE 6: Apply velocity fade-in to newly introduced materials.
+   * Tracks when each channel was first introduced and scales velocity:
+   *   bar 0 (intro bar): 50% velocity
+   *   bar 1: 80% velocity
+   *   bar 2+: 100% velocity (fully established)
+   * This eliminates the "hard cut" jump when new layers enter.
+   */
+  private applyFadeIn(events: CausalNoteEvent[], bar: number): void {
+    for (const ev of events) {
+      const channel = ev.channel;
+      // Skip groove channels (kick, bass, sub) — they're always present, no fade needed
+      if (channel === 'kick' || channel === 'bass' || channel === 'sub') continue;
+
+      const introBar = this.materialIntroBar.get(channel);
+      if (introBar === undefined) continue; // not a tracked material
+
+      const barsSinceIntro = bar - introBar;
+      if (barsSinceIntro === 0) {
+        // First bar — 50% velocity (gentle fade-in)
+        ev.velocity *= 0.5;
+      } else if (barsSinceIntro === 1) {
+        // Second bar — 80% velocity (still settling in)
+        ev.velocity *= 0.8;
+      }
+      // barsSinceIntro >= 2: full velocity (no scaling)
+    }
   }
 
   /**

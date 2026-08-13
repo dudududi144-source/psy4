@@ -189,6 +189,8 @@ export interface LiveState {
   userStyle: string;            // FULL_ON | DARK | PROGRESSIVE | ACID
   forcedSection: string | null; // BREAK | BUILD | DROP | null (AUTO)
   forcedBarsRemaining: number;  // how many bars left in forced section
+  // STAGE 5: current sample palette
+  samplePalette: string;        // 'md' | '909' | 'nord' | 'real'
 }
 
 // ─── MusicState (from architecture review) ────────────────────────────────
@@ -450,6 +452,8 @@ export class PsyLive {
       userStyle: this.causalComposer?.getUserControls().style ?? 'FULL_ON',
       forcedSection: this.causalComposer?.getUserControls().forcedSection ?? null,
       forcedBarsRemaining: this.causalComposer?.getUserControls().forcedBarsRemaining ?? 0,
+      // STAGE 5: current sample palette
+      samplePalette: this.currentPalette,
     });
   }
 
@@ -1039,39 +1043,100 @@ export class PsyLive {
   }
 
   private async loadWorkletSamples(): Promise<void> {
+    // STAGE 5: Load default palette ('md' = MachineDrum). User can switch via setSamplePalette().
+    await this.loadPalette('md');
+  }
+
+  // STAGE 5: Current sample palette — 'md' (MachineDrum) | '909' (Roland) | 'nord' (Nord) | 'real' (mixed)
+  private currentPalette: 'md' | '909' | 'nord' | 'real' = 'md';
+
+  /**
+   * STAGE 5: Switch the drum sample palette at runtime.
+   * Each palette uses samples from a different drum machine:
+   *   'md'   — MachineDrum (default, 126 samples, punchy electronic)
+   *   '909'  — Roland TR-909 (5 samples, classic analog)
+   *   'nord' — Nord Drum (10 samples, synthetic percussion)
+   *   'real' — Mixed real samples (kick.wav, hat_closed.wav, etc.)
+   * Loads new samples into the worklet without restarting playback.
+   */
+  async setSamplePalette(palette: 'md' | '909' | 'nord' | 'real'): Promise<void> {
+    if (palette === this.currentPalette) return;
+    this.currentPalette = palette;
+    await this.loadPalette(palette);
+    console.log(`[PSY4] Sample palette switched to: ${palette}`);
+  }
+
+  getSamplePalette(): string { return this.currentPalette; }
+
+  // STAGE 5: Load a specific palette's samples into the worklet.
+  // Selects kick/hat/clap/snare samples matching the palette prefix.
+  private async loadPalette(palette: 'md' | '909' | 'nord' | 'real'): Promise<void> {
     if (!this.engineNode || !this.ctx) return;
-    const sampleFiles: Record<string, { category: string; sub: string }> = {
-      'md_kick_Kicks_0051.wav': { category: 'kick', sub: 'main' },
-      '909_BD_02.wav': { category: 'kick', sub: '909' },
-      '909_BD_04.wav': { category: 'kick', sub: '909' },
-      'nord_kick_punchy_67.wav': { category: 'kick', sub: 'nord' },
-      'md_snare_Snares_0000.wav': { category: 'snare', sub: 'main' },
-      'md_snare_Snares_0004.wav': { category: 'snare', sub: 'main' },
-      'md_clap_Claps_0006.wav': { category: 'clap', sub: 'main' },
-      'md_clap_Claps_0000.wav': { category: 'clap', sub: 'main' },
-      'md_hat_Hats_0008.wav': { category: 'hat', sub: 'closed' },
-      'md_hat_Hats_0012.wav': { category: 'hat', sub: 'closed' },
-      'md_hat_Hats_0015.wav': { category: 'hat', sub: 'open' },
-      'md_perc_Percs_0001.wav': { category: 'perc', sub: 'main' },
-      'md_perc_Percs_0000.wav': { category: 'perc', sub: 'main' },
-      'md_tom_Toms_0000.wav': { category: 'perc', sub: 'tom' },
-      'md_ride_Cymbals_0000.wav': { category: 'perc', sub: 'ride' },
-      'hat_open.wav': { category: 'hat', sub: 'open' },
-      'hat_closed.wav': { category: 'hat', sub: 'closed' },
-      'clap.wav': { category: 'clap', sub: 'main' },
-      'kick.wav': { category: 'kick', sub: 'main' },
+
+    // Define which sample files to load per palette.
+    // Each palette picks 2 kicks + 2 hats + 2 claps + 1 snare for variety.
+    const paletteFiles: Record<string, Record<string, { category: string; sub: string }>> = {
+      md: {
+        'md_kick_Kicks_0051.wav': { category: 'kick', sub: 'main' },
+        'md_kick_Kicks_0007.wav': { category: 'kick', sub: 'alt' },
+        'md_snare_Snares_0000.wav': { category: 'snare', sub: 'main' },
+        'md_clap_Claps_0006.wav': { category: 'clap', sub: 'main' },
+        'md_clap_Claps_0000.wav': { category: 'clap', sub: 'alt' },
+        'md_hat_Hats_0008.wav': { category: 'hat', sub: 'closed' },
+        'md_hat_Hats_0012.wav': { category: 'hat', sub: 'closed' },
+        'md_hat_Hats_0015.wav': { category: 'hat', sub: 'open' },
+        'md_perc_Percs_0001.wav': { category: 'perc', sub: 'main' },
+        'md_perc_Percs_0000.wav': { category: 'perc', sub: 'alt' },
+        'md_tom_Toms_0000.wav': { category: 'perc', sub: 'tom' },
+        'md_ride_Cymbals_0000.wav': { category: 'perc', sub: 'ride' },
+      },
+      '909': {
+        '909_BD_02.wav': { category: 'kick', sub: 'main' },
+        '909_BD_04.wav': { category: 'kick', sub: 'alt' },
+        '909_BD_05.wav': { category: 'kick', sub: 'deep' },
+        '909_BD_06.wav': { category: 'kick', sub: 'punch' },
+        '909_BD_07.wav': { category: 'kick', sub: 'sub' },
+        // 909 has no hat/clap files in the bank — fall back to md for those
+        'md_hat_Hats_0008.wav': { category: 'hat', sub: 'closed' },
+        'md_hat_Hats_0015.wav': { category: 'hat', sub: 'open' },
+        'md_clap_Claps_0006.wav': { category: 'clap', sub: 'main' },
+        'md_snare_Snares_0000.wav': { category: 'snare', sub: 'main' },
+      },
+      nord: {
+        'nord_kick_punchy_67.wav': { category: 'kick', sub: 'main' },
+        'nord_kick_deep_68.wav': { category: 'kick', sub: 'deep' },
+        'nord_kick_sub_93.wav': { category: 'kick', sub: 'sub' },
+        'nord_kick_warm_45.wav': { category: 'kick', sub: 'warm' },
+        'nord_snare_Snare1.wav': { category: 'snare', sub: 'main' },
+        'nord_perc_Perc1.wav': { category: 'perc', sub: 'main' },
+        'nord_perc_Perc2.wav': { category: 'perc', sub: 'alt' },
+        // Nord has no hats/claps — fall back to md
+        'md_hat_Hats_0008.wav': { category: 'hat', sub: 'closed' },
+        'md_hat_Hats_0015.wav': { category: 'hat', sub: 'open' },
+        'md_clap_Claps_0006.wav': { category: 'clap', sub: 'main' },
+      },
+      real: {
+        'kick.wav': { category: 'kick', sub: 'main' },
+        'hat_closed.wav': { category: 'hat', sub: 'closed' },
+        'hat_open.wav': { category: 'hat', sub: 'open' },
+        'clap.wav': { category: 'clap', sub: 'main' },
+        'bass_A.wav': { category: 'bass', sub: 'main' },
+        'lead.wav': { category: 'lead', sub: 'main' },
+      },
     };
 
+    const sampleFiles = paletteFiles[palette] || paletteFiles.md;
     const samples: { name: string; category: string; subcategory: string; sampleRate: number; data: Float32Array }[] = [];
     for (const [file, info] of Object.entries(sampleFiles)) {
       try {
-        const path = file.includes('/') ? `/samples/${file}` : `/samples/real/${file}`;
+        const path = file.includes('/') || file.includes('.') && !file.includes('_')
+          ? `/samples/${file}`  // real/ root samples (kick.wav, etc.)
+          : `/samples/real/${file}`;
         const res = await fetch(path);
         if (!res.ok) continue;
         const buf = await res.arrayBuffer();
         const decoded = await this.ctx.decodeAudioData(buf);
         const data = decoded.getChannelData(0);
-        // Copy to transferable buffer
         const copy = new Float32Array(data.length);
         copy.set(data);
         samples.push({ name: file, category: info.category, subcategory: info.sub, sampleRate: decoded.sampleRate, data: copy });
@@ -1079,7 +1144,7 @@ export class PsyLive {
     }
     if (samples.length > 0) {
       this.engineNode.loadSamples(samples);
-      console.log(`[PSY4] Loaded ${samples.length} real samples into worklet`);
+      console.log(`[PSY4] Loaded ${samples.length} samples for palette '${palette}' into worklet`);
     }
   }
 
