@@ -7061,3 +7061,83 @@ Stage Summary:
 - Verdict: APPROVE vertical proof implementation only. DO NOT APPROVE final architecture, Foundation changes, or optimizer/Mutator/Decision/SC/UI.
 - No code written. No Foundation changes. No architecture ratified. Protocol frozen.
 - Awaiting user's final confirmation to begin implementation.
+
+---
+Task ID: PSY4-VERTICAL-VALIDATION-PROTOCOL-FINAL (orchestrator)
+Agent: z-ai-code (main)
+Task: Apply 6 final corrections to validation protocol. Freeze protocol before render #1. NO CODE.
+
+Work Log:
+- Read user's 6 corrections: (1) separate experimental result from architectural conclusion for H1-H4, (2) H5 needs real rank agreement not weak top-2 overlap, (3) n=9 experimental units not 45, (4) split metrics into quality vs guardrail, (5) aggregate naming "unweighted arithmetic" not "no weighting", (6) H6 = end-to-end only + multiple comparisons acknowledgment.
+- Wrote audit-reports/PSY4-VERTICAL-VALIDATION-PROTOCOL-FINAL.md applying all 6 corrections.
+
+Correction 1 (H1-H4 effect vs conclusion):
+- Each hypothesis reports EFFECT first (experimental result under test conditions).
+- Architectural conclusion is SEPARATE interpretation step, happens AFTER all results reported.
+- "Architecture validated" cannot be inferred from H1-H4 individually. Only H6 supports "overall approach works" — and even H6 doesn't ratify specific abstractions.
+- Two-step process: (1) report effect with numbers, (2) human judgment on whether abstraction earned its place.
+
+Correction 2 (H5 real rank agreement):
+- Previous rule (top-2 ∩ ≥1) too weak — nearly opposite rankings could pass.
+- New rule: pairwise preference agreement. 5 variants → C(5,2)=10 pairs per unit. For each pair: DSP preference (higher aggregate) vs human preference (higher Likert). Binary agreement.
+- Per-unit agreement rate = agreeing pairs / 10.
+- H5 acceptance: mean per-unit agreement ≥70% AND ≥7 of 9 units have per-unit agreement ≥60%.
+- Purpose: detect Goodhart divergence (DSP says X>Y, ear says Y>X).
+
+Correction 3 (n=9):
+- n=9 experimental units (3 compositions × 3 seeds).
+- 45 renders but NOT 45 independent observations.
+- All A/B/C/D/E inferences paired within same (composition, seed).
+- With n=9, cannot do formal statistical significance testing with reasonable power → use predefined effect-size decision rule.
+
+Correction 4 (quality vs guardrail metrics):
+- Reclassified 15 metrics into 11 quality + 4 guardrail.
+- QUALITY (11, contribute to aggregate, "higher normalized = better"): pitch_correctness, scale_correctness, kick_clarity, bass_definition, kick_bass_separation, transient_quality, spectral_balance, dynamic_range, loudness, phase_coherence, reference_similarity.
+- GUARDRAIL (4, constraint, NOT in aggregate): masking (lower better, <0.3 constraint), midrange_density (target range 8-18%), stereo_width (target range 0.3-0.7), timbral_movement (target range 0.3-0.7).
+- Each metric has: raw measurement, direction, normalization formula, target/range, classification.
+- Guardrails are pass/fail prerequisites. A variant violating a guardrail cannot pass its hypothesis even if quality metrics improve.
+- No metric added just to reach 15. The 11+4 split reflects actual measurement structure.
+
+Correction 5 (aggregate naming):
+- "unweighted arithmetic aggregate" (NOT "no weighting").
+- Formula: mean of 11 quality metrics = 1/11 weighting each.
+- Acknowledged: equal-weight mean is still weighting.
+- Role: secondary/end-to-end summary, NOT sole reason to declare abstraction successful.
+- H1-H4 use per-metric thresholds as primary decision rule. H6 uses aggregate as ONE of two criteria.
+
+Correction 6 (H6 end-to-end + multiple comparisons):
+- H6 answers ONE question: "is E better than A objectively AND sounds better to human?"
+- H6 does NOT prove CompositionEvent or VoiceSpec correct.
+- Hypothesis roles locked: H1=backend effect, H2=representation-path effect, H3=performance realization effect, H4=acoustic realization effect, H5=evaluator/perception agreement, H6=end-to-end outcome.
+- Multiple comparisons acknowledged: 11 quality metrics + n=9 → cannot do formal significance testing. Use predefined effect-size decision rule (NOT p-values). Metric-level threshold crossing reported as "effect size meets predefined threshold" NOT "statistically significant". No Bonferroni/BH correction. Implicit protection: per-hypothesis rule requires MULTIPLE metrics to improve simultaneously (≥3 for H1/H6, ≥2 for H2/H3/H4). Acknowledged as limitation: experiment is underpowered for formal inference.
+
+Frozen decision rules:
+- H1: B vs A, ≥6/9 units: B improves ≥3/11 quality by ≥10%, no regression >10%, no guardrail violation.
+- H2: C vs B, ≥6/9 units: C improves ≥2/11 quality by ≥5%, no regression >10%, no guardrail violation.
+- H3: D vs C, ≥6/9 units: D improves ≥2/11 quality by ≥5%, no regression >10%, no guardrail violation.
+- H4: E vs D, ≥6/9 units: E improves ≥2/11 quality by ≥5%, no regression >10%, no guardrail violation.
+- H5: mean per-unit pairwise agreement ≥70% AND ≥7/9 units ≥60%.
+- H6: ≥6/9 units E aggregate > A by ≥10% AND listener rates E ≥4 "commercial" for ≥2/3 compositions AND no guardrail violation.
+
+Guardrail hard-fail thresholds: masking >0.5, midrange <5% or >25%, stereo <0.2 or >0.9, timbral_movement <0.2 or >0.9.
+
+Reporting structure (3 steps, separated):
+1. Effect reporting per hypothesis (raw measurements, paired comparisons, decision rule result, guardrail violations — NO architectural language).
+2. Architectural interpretation (human judgment, AFTER all effects reported — effect size worth complexity? which fields consumed? etc).
+3. Ratification decision (explicit RATIFY/DROP/MODIFY per abstraction — not automatic from hypothesis passing).
+
+5 Foundation GAPs remain unfilled: velocity-as-intent, articulation, microtiming offset, dynamics curve, timbral character. CompositionEngine NOT changed.
+
+Final approved protocol:
+  Foundation actual output (unchanged) → temporary validation representation → PSY4 → renderer → objective metrics (11 quality + 4 guardrail) + blind listening → frozen analysis → architectural decision only after results.
+
+Hard boundaries unchanged: no Foundation changes, no GAP filling, no CompositionEngine refactor, no optimizer, no Mutator, no Decision, no SC, no UI, no final architecture approval.
+
+Implementation scope: ~1150 LoC, 1-2 weeks.
+
+Stage Summary:
+- Final protocol document written: audit-reports/PSY4-VERTICAL-VALIDATION-PROTOCOL-FINAL.md (~400 lines).
+- All 6 corrections applied. Protocol frozen pre-render. Thresholds do not change after results.
+- Verdict: APPROVE — IMPLEMENT THE VERTICAL VALIDATION ONLY.
+- No code written. No Foundation changes. No architecture ratified. Protocol frozen.
+- Awaiting user's final go to begin implementation.
