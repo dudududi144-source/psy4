@@ -2226,14 +2226,15 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_BASS: {
-        // PURE SYNTH BASS — uses WORLD-SPECIFIC parameters (not hardcoded!)
-        // BEFORE: cutoffStart: 800, cutoffEnd: 200, resonance: 2 (same for all worlds)
-        // AFTER: uses wp.bassCutoff, wp.bassResonance from world params
+        // PURE SYNTH BASS — rolling psytrance bass
         const v = this.getFreeVoice(this.bassPool);
         if (v) v.trigger(t, note, duration, velocity, false, sr, {
-          cutoffStart: Math.min(2000, wp.bassCutoff * 4),  // world-specific
-          cutoffEnd: wp.bassCutoff,                         // world-specific
-          resonance: wp.bassResonance,                      // world-specific
+          cutoffStart: 3000,      // FIX: was wp.bassCutoff * 4 = 1600. Too low — filter closes too fast.
+          cutoffEnd: 300,          // FIX: was wp.bassCutoff = 400. End at 300Hz for tighter bass.
+          resonance: 0.15,         // FIX: was wp.bassResonance = 4 (res = 4/20 = 0.2). Lower = less squelch, cleaner bass.
+          cutoffDecay: 0.08,       // FIX: was 0.04 (40ms). Doubled to 80ms — gives the pluck more body.
+          subLevel: 0.5,           // More sub for weight
+          harmonicLevel: 0.6,      // More harmonic for character
         });
         break;
       }
@@ -2241,15 +2242,15 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         // PURE SYNTH LEAD — supersaw + FM + Moog filter + LFO modulation
         const v = this.getFreeVoice(this.leadPool);
         if (v) v.trigger(t, note, duration, velocity, sr, {
-          cutoff: wp.leadCutoff * (0.7 + mc.brightness * 0.6),
-          detune: wp.leadDetune * (0.5 + mc.psychedelia),
-          resonance: 2 + mc.psychedelia * 3,
-          lfoRate: 0.5 + mc.psychedelia * 3,
-          lfoDepth: mc.psychedelia * 0.3,
-          // PHASE 10: FM modulation — psychedelia macro controls FM depth
-          fmDepth: mc.psychedelia * 0.8,   // 0..0.8 — more psychedelic = more FM
-          fmRate: 2 + mc.psychedelia * 4,  // 2..6 Hz — modulator frequency
-          fmRatio: 2,                       // 2:1 = classic FM ratio
+          cutoff: 4000,                    // FIX: was ~2000. Too dark/muffled. 4000Hz = bright, audible lead.
+          detune: 12,                      // FIX: was ~10. Slightly more detune = wider supersaw.
+          resonance: 0.3,                  // FIX: was 2-5 (res = 0.1-0.25). Lower = cleaner, less squelch.
+          lfoRate: 2,                      // FIX: was 0.5-3.5. 2Hz = audible movement without being too fast.
+          lfoDepth: 0.4,                   // FIX: was 0-0.3. More movement = more psychedelic.
+          filterEnvAmount: 1.5,            // FIX: was 1.0. More dramatic filter sweep on each note.
+          fmDepth: 0.3,                    // FIX: was 0-0.8. Fixed at 0.3 = subtle metallic character.
+          fmRate: 3,                       // FIX: was 2-6. 3Hz = classic FM.
+          fmRatio: 2,                      // 2:1 = classic FM ratio
         });
         break;
       }
