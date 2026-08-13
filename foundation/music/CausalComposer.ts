@@ -289,16 +289,19 @@ export class CausalComposer {
       }
     }
 
-    // 5. Snapshot state + memory after
-    const stateAfter = snapshotCausalState(this.state);
-    const memoryAfter = this.memory.snapshot();
-
+    // 5. FIX: Return lightweight references instead of full snapshots.
+    // The emit() only reads 5 fields from stateAfter (tensionLevel, contrastDebt,
+    // anticipationLevel, grooveStability, materials['motif-A'].expectationLevel).
+    // Creating full snapshots (4× per bar: stateBefore, stateAfter, memoryBefore, memoryAfter)
+    // was allocating ~100 objects per bar on the main thread → audio stutter.
+    // Now we return direct references to the live state objects. The UI reads them
+    // lazily; no allocation happens unless emit() actually runs.
     return {
       bar,
       decision,
       events,
-      stateAfter,
-      memoryAfter,
+      stateAfter: this.state as unknown as Record<string, unknown>,
+      memoryAfter: {} as Record<string, unknown>,  // FIX: memory snapshot not needed for live playback
     };
   }
 
@@ -354,8 +357,9 @@ export class CausalComposer {
       action,
       selected: candidate,
       candidates: [candidate],
-      stateBefore: snapshotCausalState(this.state),
-      memoryBefore: this.memory.snapshot(),
+      // FIX: return lightweight references, not full snapshots (was allocating ~50 objects per forced bar)
+      stateBefore: this.state as unknown as Record<string, unknown>,
+      memoryBefore: {} as Record<string, unknown>,
     };
   }
 

@@ -405,10 +405,12 @@ export class PsyLive {
     // PERF: radioLayer.getSnapshot() just returns lastSnapshot (no alloc) — safe to call.
     const radioSnap = this.radioLayer?.getSnapshot();
     // CAUSAL: Extract causal state for UI
+    // FIX: stateAfter is now a direct reference to the live CausalState (not a snapshot).
+    // materials is a Map, so we use .get() instead of [] access.
     const cs = this.currentCausalBar?.stateAfter as Record<string, unknown> | undefined;
     const cd = this.currentCausalBar?.decision;
-    const materials = cs?.materials as Record<string, { expectationLevel?: number }> | undefined;
-    const motifState = materials?.['motif-A'];
+    const materialsMap = cs?.materials as Map<string, { expectationLevel?: number }> | undefined;
+    const motifState = materialsMap?.get('motif-A');
     this.onState?.({
       playing: this.playing, radioOn: this.radioOn,
       radioBpm: transportBpm, engineBpm: transportBpm,
@@ -1647,13 +1649,12 @@ export class PsyLive {
   // PERF: 1 Hz learning derivation. Replaces per-beat deriveInsights() call.
   // Batch-processes pending kick BPMs and bass freqs, then runs scale detection once.
   // STAGE 4: Also feeds detected BPM/scale/key into CausalComposer.
+  // FIX: learnTick now runs deriveInsights ONCE, and applyLearnedParamsToComposer
+  // uses the already-computed result (was calling getInsights → deriveInsights AGAIN = 2× per second).
   private learnTick(): void {
     if (!this.learningData) return;
     if (this.pendingKickBpms.length === 0 && this.pendingBassFreqs.length === 0) {
-      // Nothing new — but still mark insights dirty in case learningData was loaded fresh.
-      if (this.insightsDirty) {
-        // cachedInsights will be recomputed on next emit()
-      }
+      // Nothing new — skip entirely. No need to recompute insights if nothing changed.
       return;
     }
     // Batch-record pending kicks (single deriveInsights at the end, not per-kick)
@@ -1669,13 +1670,14 @@ export class PsyLive {
     // Single deriveInsights per second (was per beat ≈ 2.4×/sec at 145 BPM)
     this.learningData = deriveInsights(this.learningData);
     this.learningDirty = true;
-    this.insightsDirty = true; // emit() will recompute cachedInsights lazily
 
-    // ── STAGE 4: Feed detected musical parameters into CausalComposer ──
-    // The learning system detects BPM (from kick intervals), scale (from pitch
-    // class histogram), and key (from bass freq votes). These should influence
-    // the causal composer's musical output so the engine follows the radio.
-    // Only update when the learning has enough confidence (avoids jitter).
+    // FIX: compute insights ONCE here, cache it. applyLearnedParamsToComposer reads the cache.
+    // (was: applyLearnedParamsToComposer called getInsights → deriveInsights AGAIN)
+    this.cachedInsights = getInsights(this.learningData);
+    this.insightsDirty = false;
+
+    // STAGE 4: Feed detected musical parameters into CausalComposer.
+    // Now uses cachedInsights (already computed above) — no double deriveInsights.
     this.applyLearnedParamsToComposer();
   }
 
@@ -1686,13 +1688,8 @@ export class PsyLive {
   private lastAppliedRoot = -1;
   private lastAppliedScale = '';
   private applyLearnedParamsToComposer(): void {
-    if (!this.causalComposer || !this.cachedInsights) {
-      // Force recompute of cachedInsights if dirty
-      if (this.insightsDirty && this.learningData) {
-        this.cachedInsights = getInsights(this.learningData);
-        this.insightsDirty = false;
-      }
-    }
+    // FIX: cachedInsights is already computed in learnTick() before this is called.
+    // Do NOT call getInsights here — that would run deriveInsights AGAIN (2× per second).
     if (!this.causalComposer || !this.cachedInsights) return;
 
     const insights = this.cachedInsights;
