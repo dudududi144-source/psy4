@@ -351,7 +351,7 @@ class BassVoice {
     this.cutoffStart = 800;
     this.cutoffEnd = 200;
     this.res = 0.1;
-    this.bassDecay = 0.12;
+    this.bassDecay = 0.25;  // FIX: was 0.12. Rolling bass needs overlap between 16th notes.
     // Post-filter state (one-pole HP for cleaning mud)
     this.hpState = 0;
     // PSY3 bass params: subLevel, harmonicLevel, cutoffFloor, cutoffDecay
@@ -399,7 +399,7 @@ class BassVoice {
       this.cutoffStart = params?.cutoffStart ?? 800;
       this.cutoffEnd = params?.cutoffEnd ?? 200;
       this.res = Math.min(0.3, (params?.resonance ?? 3) / 20);
-      this.bassDecay = 0.12;
+      this.bassDecay = 0.25;  // FIX: was 0.12. Rolling bass needs overlap.
       // PHASE 7a: Rolling bass — moderate LFO synced to note rate
       // The LFO reopens the filter slightly on each note, creating movement
       this.lfoRate = 4;  // 4Hz — gentle rolling
