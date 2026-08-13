@@ -429,7 +429,7 @@ class CausalComposerWorker {
         events.push({ at: barStart, note: padRoot, velocity: Math.min(1, 0.25 * velScale), duration: 4 * beatDur, channel: 'pad' });
         events.push({ at: barStart, note: padRoot + 7, velocity: Math.min(1, 0.2 * velScale), duration: 4 * beatDur, channel: 'pad' });
         events.push({ at: barStart, note: padRoot + 12, velocity: Math.min(1, 0.15 * velScale), duration: 4 * beatDur, channel: 'pad' });
-        events.push({ at: barStart, note: this.opts.rootPc + 24, velocity: Math.min(1, 0.2 * velScale), duration: 4 * beatDur, channel: 'drone' });
+        // COMMERCIAL FIX: Removed 'drone' — was an unwanted low sound that muddied the mix
         break;
       }
       case 'CALLBACK_MOTIF': {
@@ -439,7 +439,7 @@ class CausalComposerWorker {
         this.activeVoices.delete('pad');
         this.activeVoices.add('hat-closed');
         this.activeVoices.add('percussion');
-        events.push({ at: barStart, note: 36, velocity: 0.9, duration: 0.3, channel: 'impact' });
+        // COMMERCIAL FIX: Removed 'impact' — was an unwanted sound that didn't fit
         const root = this.opts.rootPc + 72;
         const steps = grammar.motifSteps;
         const intervals = grammar.motifIntervals;

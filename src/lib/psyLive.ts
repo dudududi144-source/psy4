@@ -19,7 +19,7 @@ import { DEFAULT_RADIO_CONFIG } from '../../foundation/radio/RadioObservationTyp
 import { CausalComposer, type CausalNoteEvent, type CausalBarResult } from '../../foundation/music/CausalComposer';
 // ADR-001: CausalComposer runs on a Web Worker now. This import is kept for type compatibility
 // but the actual composition happens in public/worklets/composition-worker.js
-import { type MusicalTransport as BridgeTransport } from './sampler-bridge'; // type only — SamplerBridge is dead code
+// SamplerBridge import REMOVED — fully dead code
 import { MaterialRealizer } from './material-realizer';
 import { Psy4EngineNode, VOICE, type VoiceId, type EngineStats } from './studio/engine/engineWorklet';
 
@@ -1300,30 +1300,13 @@ export class PsyLive {
       // Fallback: MaterialRealizer (basic Web Audio)
       this.realizer.realize(ev);
     }
-
-    // Publish to sampler bridge (if attached) — sends CausalNoteEvent to external PsyDevices.
-    // This is the INTEGRATION SEAM: PSY4 composition → canonical NoteEvent → DeviceHost → SamplerDevice.
-    if (this.samplerBridge) {
-      this.samplerBridge.publishNote(ev.at, {
-        voice: ev.channel as 'kick' | 'bass' | 'lead' | 'hat',
-        midi: ev.note,
-        velocity: ev.velocity,
-      }, false, ev.duration);
-    }
   }
 
-  // ─── Sampler Bridge (integration seam for external PsyDevices) ─────────────
-  private samplerBridge: { publishNote: (time: number, note: { voice: string; midi: number | null; velocity: number }, isOpenHat: boolean, stepDur: number) => void; register: (device: unknown) => void; publishTransport: (snap: unknown) => void; publishContext: (ctx: unknown) => void; } | null = null;
-
-  attachSamplerBridge(bridge: { publishNote: (time: number, note: { voice: string; midi: number | null; velocity: number }, isOpenHat: boolean, stepDur: number) => void; register: (device: unknown) => void; publishTransport: (snap: unknown) => void; publishContext: (ctx: unknown) => void; }): void {
-    this.samplerBridge = bridge;
-  }
+  // SamplerBridge FULLY REMOVED — was dead code causing confusion and errors
 
   get engineBusInput(): AudioNode | null {
     return this.engineBus ?? null;
   }
-
-  // SamplerBridge methods REMOVED — was 212 lines of dead code, never used from UI
 
   // ── Composition mode ──
   // F1.18: tempo changes go through Transport.setTempo()

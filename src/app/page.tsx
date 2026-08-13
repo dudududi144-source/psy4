@@ -76,7 +76,7 @@ const MemoHistoryEntry = React.memo(HistoryEntry);
 
 export default function Page() {
   const engineRef = useRef<PsyLive | null>(null);
-  const samplerBundleRef = useRef<{ dispose: () => void; device: { onStop?: () => void } } | null>(null);
+  // samplerBundleRef REMOVED — PSY Sampler integration removed
   const [s, setS] = useState<LiveState>({
     playing: false, radioOn: false, radioBpm: 0, engineBpm: 145,
     syncStatus: 'idle', mixMode: 'solo', kickCount: 0, bassNote: '—',
@@ -111,59 +111,8 @@ export default function Page() {
     const e = new PsyLive();
     e.onState = setS;
     engineRef.current = e;
-
-    // ─── PSY Sampler Integration ────────────────────────────────────────────
-    // Load the sampler bundle and wire it to PSY4's composition output.
-    // The sampler plays IN PARALLEL with PSY4's synth — additive, not replacing.
-    try {
-      // Import the SamplerBridge from PSY4's own lib (not the external bundle).
-      const { SamplerBridge } = await import('../lib/sampler-bridge');
-      const bridge = new SamplerBridge();
-      e.attachSamplerBridge(bridge);
-
-      // Wait for PsyLive to initialize its AudioContext (happens on first play).
-      const originalOnState = e.onState;
-      let samplerLoaded = false;
-      e.onState = (state: unknown) => {
-        originalOnState?.(state);
-        if (!samplerLoaded && e.audioContext) {
-          samplerLoaded = true;
-          // FIX: Load sampler bundle via script tag (works in all environments)
-          const script = document.createElement('script');
-          script.src = '/psy-sampler.js';
-          script.onload = () => {
-            try {
-              const samplerModule = (window as any).createSamplerDevice ? { createSamplerDevice: (window as any).createSamplerDevice } : null;
-              if (!samplerModule) {
-                console.warn('[psy-sampler] createSamplerDevice not found');
-                return;
-              }
-              const ctx = e.audioContext!;
-              const bundle = samplerModule.createSamplerDevice({
-                audioContext: ctx,
-                manifestUrl: '/samples/manifest.json',
-                outputNode: e.engineBusInput,
-              });
-              bridge.register(bundle.device);
-              bundle.device.onStart?.();
-              bundle.load().then((result: { loaded: number; total: number }) => {
-                console.log(`[psy-sampler] ${result.loaded}/${result.total} samples loaded`);
-              }).catch((err: unknown) => {
-                console.warn('[psy-sampler] Sample loading failed:', err);
-              });
-              samplerBundleRef.current = bundle;
-            } catch (err) {
-              console.warn('[psy-sampler] Init failed:', err);
-            }
-          };
-          script.onerror = () => console.warn('[psy-sampler] Script load failed');
-          document.head.appendChild(script);
-        }
-      };
-    } catch (err) {
-      console.warn('[psy-sampler] Integration failed (non-fatal):', err);
-    }
-    // ─── End PSY Sampler Integration ────────────────────────────────────────
+    // PSY Sampler integration REMOVED — was causing syntax errors (export in script tag)
+    // and adding unwanted sounds. PSY4 now uses ONLY its own AudioWorklet engine.
   }, []);
   useEffect(() => { init(); }, [init]);
 
