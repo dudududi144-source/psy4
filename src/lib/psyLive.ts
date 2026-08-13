@@ -1265,9 +1265,6 @@ export class PsyLive {
         this.workerReady = true;
         break;
       case 'events': {
-        console.log(`[PSY4] handleWorkerMessage: received ${msg.count} events, useWorklet=${this.useWorklet}, engineNode=${!!this.engineNode}`);
-        // msg.events is a Float64Array (Transferable) with [at, note, velocity, duration, voiceId, param] per event
-        // Forward directly to AudioWorklet (zero-copy from worker → main → worklet)
         if (this.useWorklet && this.engineNode && msg.count > 0) {
           const flat = msg.events;
           const EVENT_SIZE = 6;

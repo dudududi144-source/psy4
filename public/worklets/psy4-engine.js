@@ -2091,8 +2091,6 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         if (msg.delayFeedback !== undefined) this.delay.setFeedback(msg.delayFeedback);
         break;
       case 'events':
-        // Send confirmation back to main thread (worklet console.log not visible in browser)
-        this.port.postMessage({ type: 'eventsReceived', count: msg.events.length / EVENT_SIZE });
         this.enqueueEvents(msg.events);
         break;
       case 'initSharedBuffer':
@@ -2439,16 +2437,6 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 
     // Process events that are due (time <= current audio time)
     const currentAudioTime = currentFrame / sr;
-    // DEBUG: send timing info via port.postMessage (worklet console.log not visible)
-    if (this._debugCount === undefined) this._debugCount = 0;
-    if (this._debugCount < 3 && this.eventCount > 0) {
-      this._debugCount++;
-      const firstEventTime = this.eventBuffer[this.eventReadIdx * EVENT_SIZE];
-      this.port.postMessage({
-        type: 'debug',
-        msg: `ct=${currentAudioTime.toFixed(3)} count=${this.eventCount} ft=${firstEventTime.toFixed(3)} diff=${(firstEventTime - currentAudioTime).toFixed(3)}`
-      });
-    }
 
     // ADR-009: Check SharedArrayBuffer for new events (lock-free, zero-allocation)
     if (this.sharedEventCount) {

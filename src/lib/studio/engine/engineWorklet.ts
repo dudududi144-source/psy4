@@ -116,10 +116,6 @@ export class Psy4EngineNode {
         const msg = e.data;
         if (msg.type === 'stats' && this.statsCallback) {
           this.statsCallback(msg);
-        } else if (msg.type === 'eventsReceived') {
-          console.log(`[ENGINE] Worklet confirmed ${msg.count} events received`);
-        } else if (msg.type === 'debug') {
-          console.log(`[WORKLET DEBUG] ${msg.msg}`);
         }
       };
       this.ready = true;
@@ -231,10 +227,8 @@ export class Psy4EngineNode {
    */
   flushEvents() {
     if (!this.node || this.eventBatchCount === 0) return;
-    // FIX: Disabled SharedArrayBuffer — was causing race conditions.
     const events = new Float64Array(this.eventBatchCount * EVENT_SIZE);
     events.set(this.eventBatch.subarray(0, this.eventBatchCount * EVENT_SIZE));
-    console.log(`[FLUSH] Sending ${this.eventBatchCount} events to worklet`);
     this.node.port.postMessage({ type: 'events', events }, [events.buffer]);
     this.eventBatchCount = 0;
   }
