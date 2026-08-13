@@ -8442,3 +8442,55 @@ Stage Summary:
 - KEY ACHIEVEMENT: 13 of 13 CausalActions now have inference rules AND execution logic (was 10/13). The causal engine's full vocabulary is live.
 - KEY ACHIEVEMENT: The engine now follows the radio's BPM (145→144 detected), key (C#), and scale (Harmonic Minor) — musical parameters, not just tempo.
 - The causal history shows the engine making rich, varied decisions: hats → response → breakdown → variations → callbacks, all state-driven.
+
+---
+Task ID: STAGE-5+6 (sample palettes + crossfade) + git commit
+Agent: z.ai-code (main)
+Task: Complete stages 5 (sample palette switching) and 6 (crossfade for material entry), then push to git.
+
+Work Log:
+STAGE 5 — Sample Palette Switching:
+- psyLive.ts: Added setSamplePalette('md'|'909'|'nord'|'real') — runtime drum machine switch
+- psyLive.ts: Refactored loadWorkletSamples into loadPalette(palette) — loads per-palette sample sets
+- 4 palettes defined:
+  * md (MachineDrum, default): 12 samples — kick, snare, clap, hat, perc, tom, ride
+  * 909 (Roland TR-909): 5 kick samples + md fallback for hats/claps
+  * nord (Nord Drum): 4 kicks + snare + perc + md fallback for hats/claps
+  * real (mixed): kick.wav, hat_closed.wav, hat_open.wav, clap.wav, bass_A.wav, lead.wav
+- psyLive.ts: Added currentPalette field + getSamplePalette() + samplePalette in LiveState
+- page.tsx: Added "Drums" palette switcher UI (4 buttons: MD/909/NORD/REAL) with cyan highlight
+- page.tsx: Added samplePalette to initial LiveState
+
+STAGE 6 — Crossfade for Material Entry:
+- CausalComposer.ts: Added materialIntroBar Map<string, number> — tracks when each channel was introduced
+- CausalComposer.ts: In executeDecision, snapshot activeVoices before the switch, then detect new channels after
+- CausalComposer.ts: applyFadeIn() — scales velocity: 50% on intro bar, 80% on second bar, 100% after
+- CausalComposer.ts: Auto-clears tracking when material removed (BREAKDOWN/THIN_REGISTER) so re-entry gets fresh fade
+- Skip groove channels (kick/bass/sub) — they're always present, no fade needed
+- This eliminates the "hard cut" jump when new layers (lead, hats, acid, pad) enter
+
+Verification (Agent Browser):
+- Palette switching confirmed: console shows "Loaded 10 samples for palette 'nord'" + "Sample palette switched to: nord"
+- MD highlighted as default (cyan)
+- 909/NORD/REAL buttons all clickable and functional
+- 30-second stability test: 1802 frames, max 36.8ms, 0 over 50ms, 0 audio warnings, 0 errors
+- Crossfade active (fade-in tracking built, materials enter at reduced velocity)
+
+Git:
+- Committed: a4eb1a7 "feat: connect controls to CausalComposer + complete missing actions + sample palettes + crossfade"
+- 4 files changed, 158 insertions(+), 23 deletions(-)
+- CausalComposer.ts (+56), psyLive.ts (+111/-23), page.tsx (+14), InferenceEngine.ts (mode change only)
+- Push FAILED: no GitHub credentials available in the environment (no token, no SSH key)
+- User needs to provide GitHub token or push manually
+
+Stage Summary:
+- STAGE 5 COMPLETE: Runtime sample palette switching — 4 drum machines, no restart needed
+- STAGE 6 COMPLETE: Velocity crossfade eliminates hard-cut jumps on material entry (50%→80%→100% over 2 bars)
+- ALL 6 STAGES NOW COMPLETE:
+  1. Cleanup (MusicalSession dead routing removed)
+  2. Connect controls to CausalComposer (energy/tension/style/section)
+  3. Complete 3 missing actions (INTRODUCE_ACID/PAD/RESPONSE)
+  4. Learning integration (BPM/scale/key from radio → CausalComposer)
+  5. Sample palette switching (md/909/nord/real)
+  6. Crossfade for smooth material entry
+- Git commit made but push requires credentials
