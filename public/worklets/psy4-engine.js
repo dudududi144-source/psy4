@@ -1860,10 +1860,16 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < 2; i++) this.fmPool.push(new FMVoice());        // PSY3 FM acid voice
     // Total: 34 voices (was 64+28=92)
 
-    // Sample voice pools — DISABLED (no samples loaded, saves 28 voices)
+    // Sample voice pools — populated with SampleVoice instances
+    // CRITICAL FIX: These were EMPTY arrays. When samplesReady=true (after loading
+    // 12 drum samples), getFreeVoice() returned null and kicks/hats/claps were
+    // silently dropped. This was the root cause of "no audio output".
     this.kickSamplePool = [];
     this.hatSamplePool = [];
     this.clapSamplePool = [];
+    for (let i = 0; i < 4; i++) this.kickSamplePool.push(new SampleVoice());
+    for (let i = 0; i < 4; i++) this.hatSamplePool.push(new SampleVoice());
+    for (let i = 0; i < 2; i++) this.clapSamplePool.push(new SampleVoice());
 
     // Sample bank (loaded from main thread via ArrayBuffer transfer)
     this.samples = {};  // { name: { data, sampleRate, category } }
