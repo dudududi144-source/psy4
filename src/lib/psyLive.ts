@@ -363,11 +363,7 @@ export class PsyLive {
   // UI timer
   private uiTimer: ReturnType<typeof setInterval> | null = null;
 
-  // ── PERF: throttled heavy-work timers ──
-  // Learning derivation (scale detection, tempo stats) — 1 Hz (was: every beat ≈ 2.4 Hz)
-  private learnTimer: ReturnType<typeof setInterval> | null = null;
-  // localStorage persistence — 0.2 Hz (every 5s; was: every beat)
-  private persistTimer: ReturnType<typeof setInterval> | null = null;
+  // learnTimer + persistTimer REMOVED — merged into uiTimer (ADR-006)
   // Pending kicks/notes accumulated between learn ticks (avoids per-beat array spreads)
   private pendingKickBpms: number[] = [];
   private pendingBassFreqs: number[] = [];

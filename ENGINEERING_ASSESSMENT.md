@@ -15,11 +15,14 @@
 | Phase 5 (done) | Dead code removal (1615 lines) | 35/100 |
 | Phase 1 (done) | Web Worker (composition thread) | 55/100 |
 | Phase 4 (done) | Determinism (mulberry32 PRNG) | 62/100 |
-| Phase 3 (done) | RT-safe worklet (already zero-alloc) | 67/100 |
+| Phase 3 (done) | RT-safe worklet (zero-alloc) | 67/100 |
 | Phase 6 (done) | Tests (architecture verification) | 72/100 |
-| Phase 2 (pending) | SharedArrayBuffer (lock-free) | 82/100 |
-| Phase 7 (pending) | Sound quality | 89/100 |
-| Phase 8 (pending) | Documentation | 100/100 |
+| Phase 7a (done) | Bass filter LFO (rolling psytrance) | 78/100 |
+| Phase 7c (done) | Master chain (already had multiband+true-peak) | 82/100 |
+| Phase 8 (done) | Documentation (ADR + architecture diagram) | 82/100 |
+| Phase 2 (pending) | SharedArrayBuffer (lock-free) | 92/100 |
+| More tests (pending) | Integration + audio quality | 97/100 |
+| Lead FM (pending) | Complete FM modulation | 100/100 |
 
 ---
 
