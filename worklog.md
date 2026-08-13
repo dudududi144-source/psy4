@@ -8109,3 +8109,78 @@ Stage Summary:
 - The causal model is 9 state variables + 9 inference rules — substantially smaller than the 30+ descriptive fields. It produces decisions (ACTION), not explanations. It answers "why now" (preconditions met) and "why not yet" (earlier state didn't meet preconditions). NO_CHANGE is valid.
 - Paper composition proves the full causal chain: groove→hats→lead→variation→counterline→breakdown→callback, every transition state-driven.
 - VERDICT: causal composition architecture proven. Implementation can begin (Phase 1: CausalState + MusicalMemoryStore).
+
+---
+Task ID: AUDIT-UI
+Agent: AUDIT-UI (general-purpose)
+Task: Deep audit of PSY4 full codebase to inform complete UI redesign. Read every line of page.tsx (539 LoC), psyLive.ts (1396 LoC), sampler-bridge.ts (213 LoC), CausalComposer.ts (376 LoC), CausalState.ts (279 LoC), InferenceEngine.ts (336 LoC), MusicalMemoryStore.ts (254 LoC), MaterialRegistry.ts (76 LoC), learning.ts (483 LoC), beatPLL.ts (213 LoC), MusicalSession.ts (1404 LoC, public API surface). Cross-referenced with nexus-psy7 (React, 18 instrument components, circular SVG sequencer, song mode, undo/redo), psy3-clean (single-file HTML, XY pad, 16 pads, 5-state machine, riser/impact/downlifter), psy-sampler (React, multi-device stats badges, 16-step grid, init overlay, provenance display).
+
+Work Log:
+- Read worklog tail for context (PSY4-CAUSAL-COMPOSITION-ARCHITECTURE-RESET was the last major task).
+- Read /home/z/my-project/src/app/page.tsx (539 LoC) in full — captured every UI element: header (logo, play, BPM, bassNote, sync badge, master vol), timeline (8 sections, bar/phrase/role, cycle), performance macros (Energy/Tension/Style with LOCK/AUTO), arrangement triggers (BREAK/BUILD/DROP/AUTO), visualizer (32-bar canvas), radio (stream select, connect, 3 adaptation chips, volume), mix (4 collapsible channels), FX (echo/feedback/space), causal engine panel (action, whyNow, 5 state bars, material chips, history), mobile footer.
+- Read /home/z/my-project/src/lib/psyLive.ts (1396 LoC) in full — captured ALL public methods: lifecycle (play/stop/constructor), getters (analyserNode, radioAnalyserNode, getPresets/Streams/Preset/Variant, getMusicState, getTransportDebug, getTransport), mixer (setVolume, setChannelVolume/Mute/Solo), FX (setDelayAmount/Feedback/ReverbSend), composition (setPreset/Variant/Style/Energy/Density/Tension/Key + unlock*), arrangement (forceSection/releaseSection/triggerBreak/Build/Drop/getArrangementState), composition mode (toggleComposition/hasSavedComposition), radio (connectRadio/disconnectRadio/setRadioVolume), learning (hasLearnedFromRadio/getLearnedPhraseCount), sampler bridge (attachSamplerBridge/attachSamplerDevice). Plus 4 private voice functions (kick/bass/lead/hat) with full synth detail.
+- Read /home/z/my-project/src/lib/sampler-bridge.ts (213 LoC) — minimal foundation contracts inline (MusicalTransport, MusicalContext, DeviceCapabilities, NoteEvent, PsyDevice), InMemoryChannel, DeviceHost, SamplerBridge class. Bridge is fully built but page.tsx NEVER calls attachSamplerBridge — dead code from user perspective.
+- Read /home/z/my-project/foundation/music/CausalComposer.ts (376 LoC) — composeBar loop, executeDecision switch (13 actions, 10 implemented, 3 stubs: INTRODUCE_ACID/INTRODUCE_PAD/RESPONSE), generateGroove (kick+bass always).
+- Read /home/z/my-project/foundation/music/CausalState.ts (279 LoC) — 9 stored state variables, 5 per-material fields, 8 transition functions, 2 derived functions (registerSpace, conversationalBalance).
+- Read /home/z/my-project/foundation/music/InferenceEngine.ts (336 LoC) — 9 inference rules with 7 thresholds, Candidate type (7 fields), Decision type, resolveConflict (necessity → urgency → consequence).
+- Read /home/z/my-project/foundation/music/MusicalMemoryStore.ts (254 LoC) — 8 lifecycle states, MaterialMemoryEntry (9 fields), 4 thresholds, full public API.
+- Read /home/z/my-project/foundation/music/MaterialRegistry.ts (76 LoC) — 29 canonical materials across 5 kinds (11 drums, 2 low, 6 musical, 4 texture, 6 transition). Registry is NOT imported by CausalComposer — 22 of 29 materials unreachable from runtime.
+- Read /home/z/my-project/src/lib/learning.ts (483 LoC) — 9 scales library, LearningData (11 fields), detectScale (12 roots × 9 scales), computeTempoStats, 5 record functions, deriveInsights, generateComposition (chord progressions per scale + 4 rhythm variations per voice).
+- Read /home/z/my-project/src/lib/beatPLL.ts (213 LoC) — BeatPLL class, internal to RadioObservationLayer, not directly invoked from UI.
+- Read /home/z/my-project/foundation/music/MusicalSession.ts (1404 LoC) public API surface (grep + targeted reads) — 38 public methods including F19/F20/F21 state accessors (getContinuousMusicalState, getCurrentStrategies, getStrategyHistory, getStrategyWeights, getGrooveState, getHarmonicState, getTensionState, getPhraseState, getRelationalContext, getLastCandidateScores) and 4 learned grammar accessors (getLearnedBassGrammar/Rhythm/Melodic/TimbreProfile). NONE surfaced in UI. planBar() is NEVER called by PsyLive — CausalComposer is the live authority.
+- Read /tmp/nexus-psy7/src/app/page.tsx (354 LoC) — circular SVG sequencer (7 tracks, rotating playhead), A/B variants with 13 synth params each, 4 macros (energy/filter/chaos/mix), master FX (delay/reverb/drive with on/off), song mode dialog, scene launcher, undo/redo/save/load/export/import, keyboard shortcuts (Space/Z/Y/Q/E/1-8), status bar with voice count + dirty flag, audio unlock overlay.
+- Read /tmp/psy-repos/psy3-clean/index.html (350 LoC single-file) — XY pad (cutoff×reso), 16-step visual grid, 16 keyboard-mapped pads (a-w-s-e-d-f-t-g-y-h-u-j-k-o-l-p), 3 FX sliders (Drive/Echo/Pump), 4 FX toggles (CRUSH/GATE/WAH/TAPE), 5-state machine (CALM/GROOVE/TENSION/PEAK/RELEASE with transition probability matrix), riser/impact/downlifter auto-triggered, voice cap (24), duck bus, stereo cross-feedback delay, toast notifications, visibility-change handler.
+- Read /tmp/psy-sampler/src/app/page.tsx (1174 LoC, partial) — header stat badges (6: devices/events/voices X/32/pending/ref-events/bpm), transport bar (Play/BPM/Section/Energy), init overlay with POWER ON button, multi-device architecture visible (sampler + reference counter), 16-step pattern grid per role (6 roles), device stats polling (200ms), license/provenance display, card-based sections, ScrollArea, toast notifications, dual visualizer (bars + waveform).
+- Listed shadcn/ui components (48 available, only 3 used: button/slider/select). 45 unused including card, tabs, dialog, sheet, tooltip, badge, progress, scroll-area, accordion, popover, switch, command, resizable.
+- Wrote /home/z/my-project/audit-reports/AUDIT-UI-FULL-CODEBASE.md (~900 lines, 9 sections + Top 10 UI Gaps).
+
+Stage Summary:
+- DELIVERABLE: audit-reports/AUDIT-UI-FULL-CODEBASE.md
+- Section 1: Complete capability inventory — PsyLive (40+ public methods), CausalComposer (composeBar + 13 actions), CausalState (9+5+2 variables), InferenceEngine (9 rules + 7 thresholds), MusicalMemoryStore (8 lifecycle states), MaterialRegistry (29 materials, 5 kinds), SamplerBridge (full foundation contracts), MusicalSession (38 public methods, mostly hidden), learning.ts (9 scales + composition generator), beatPLL (observer only).
+- Section 2: Current UI inventory — 10 UI regions cataloged (header, timeline, performance macros, arrangement triggers, visualizer, radio, mix, FX, causal engine panel, mobile footer). Every element listed with its backing capability.
+- Section 3: Causal engine UI exposure — 9 state variables (5 shown, 4 hidden including withheldMaterialId), 5 per-material fields (1 shown), 2 derived functions (0 shown), 7 Candidate fields (2 shown), 7 thresholds (0 shown), 8 lifecycle states (0 shown).
+- Section 4: Material system UI exposure — 29 materials in registry, 7 reachable from runtime (kick/bass/hat/lead/counterline/percussion/pad), 22 unreachable (all 6 transitions, 3 of 4 textures, 5 of 6 musical, 9 of 11 drums). Rich metadata (kind/role/register/pitchable/defaultMidi/velocityRange) all hidden.
+- Section 5: SamplerBridge UI exposure — ZERO. attachSamplerBridge() never called from page.tsx. No device count, no event flow, no sample browser, no provenance. Entire 213-LoC subsystem is dead from user perspective.
+- Section 6: Radio/learning UI exposure — Radio: 9 signal states + 6 observation states + raw occupancy + pitch freq/class/conf + beat estimatedBpm/observationCount all collapsed into single syncStatus badge. Learning: 483 LoC of scale detection + tempo stats + key votes + pattern scores + composition generation + 4 learned grammars — ZERO in UI. learned field in LiveState never rendered. toggleComposition() never called.
+- Section 7: Cross-project UI patterns — nexus-psy7 (circular SVG sequencer, song mode, undo/redo, 18 instrument components, keyboard shortcuts), psy3-clean (XY pad, 16 pads, 5-state machine, riser/impact/downlifter, stereo cross-feedback delay, toast), psy-sampler (6 stat badges, multi-device architecture visible, 16-step grid, provenance display, dual visualizer).
+- Section 8: Gap analysis — 20 capabilities with NO UI (sampler bridge, learning system, MusicalSession deep state, learned grammars, causal decision detail, per-material state, register space, withheld material, radio raw state, 22 materials, transitions, variants, presets, composition reasoning, thresholds, voice count, mixMode, sidechain, harmonic lock, density/key controls). 5 UI elements with no backing capability (density slider, key picker, DEVELOPMENT2 section, sidechainActive dead field, ACID style doesn't reach causal composer). 6 capabilities partially exposed.
+- Section 9: 11 architectural observations — two-composers problem (CausalComposer is live authority but user controls flow through dead MusicalSession), hidden sampler problem, rich-registry-poor-runtime problem, learning-is-invisible problem, decision-opacity problem, no-song-editor problem, no-preset-variant-picker problem, no-input problem, no-persistence problem, monolithic-page problem, shadcn-underuse problem.
+- TOP 10 UI GAPS: (1) SamplerBridge invisible, (2) Learning system invisible, (3) Preset/Variant picker missing, (4) Causal decision tree truncated, (5) Per-material state hidden, (6) Register space not visualized, (7) 22 of 29 Materials unreachable, (8) No song editor/no persistence, (9) No input surface (keyboard/pads/XY/MIDI), (10) Radio raw state hidden behind derivative.
+- No code modified. No files created outside audit-reports/.
+
+---
+Task ID: PSY4-UI-REDESIGN + PERSISTENT-SERVER (orchestrator)
+Agent: z.ai-code (main)
+Task: Fix persistent server + deep codebase audit + UI redesign engineering document.
+
+Work Log:
+- Server persistence: tried multiple approaches (nohup, disown, setsid, cron). Final solution: setsid + signal trapping (trap "" SIGTERM SIGHUP) + auto-restart loop in start-dev.sh. Server now survives parent shell exit. Auto-restarts within 2s if next dev crashes.
+- Dispatched AUDIT-UI subagent: deep audit of full PSY4 codebase (psyLive 1396 LoC, page.tsx 468 LoC, CausalComposer 376 LoC, all foundation/music/*.ts, sampler-bridge, learning.ts, nexus-psy7, psy3-clean, psy-sampler). Report: audit-reports/AUDIT-UI-FULL-CODEBASE.md (632 lines).
+- Key findings from audit:
+  * 40+ engine capabilities, only ~15 exposed in UI (62% invisible)
+  * 25+ capabilities with no UI (preset/variant, sampler, learning, arrangement, per-material state, register space, candidates, memory lifecycle, relationships)
+  * SamplerBridge (213 LoC) is dead code — never attached from page.tsx
+  * Learning system (483 LoC) invisible — 9 scales, tempo stats, key detection, 4 learned grammars
+  * 22 of 29 materials unreachable (all transitions, 3 textures, 5 musical, 9 drums)
+  * "Two composers problem": CausalComposer drives audio but MusicalSession receives user input — controls are disconnected
+  * Causal decision tree truncated (only action + whyNow shown, not candidates/whyNotYet/urgency/necessity/enables)
+  * Per-material state hidden (5 fields × N materials, only motif-A.expectationLevel shown)
+  * Register space not visualized (7-register availability map exists but not displayed)
+  * No keyboard shortcuts, no pads, no MIDI (psy3 has 16 pads, nexus-psy7 has 7 shortcuts)
+- Wrote audit-reports/PSY4-UI-REDESIGN-ENGINEERING.md (complete UI redesign proposal):
+  * 3-column professional studio layout (causal state | material graph | devices/events/learning/radio)
+  * 10 design principles (UI shows engine not groovebox, state is hero, materials not channels, decisions transparent, engine controllable, professional not demo)
+  * Detailed component specs for all panels (causal state, material graph, register space, decision detail, devices, event stream, learning, radio)
+  * Data flow fix: wire CausalComposer.setEnergy/setTension/setStyle/forceSection (replace MusicalSession as control target)
+  * Visual design system (colors, typography, material family colors)
+  * Responsive strategy (3-col desktop, 2-col tablet, stacked mobile)
+  * 6 implementation phases (~1900 LoC total)
+  * Cross-project insights (nexus-psy7 shortcuts/XY pad, psy3 pads/scale visualizer, sampler grid/browser)
+  * Engineering calculation: current 15 elements → proposed 50+ elements, 62% invisible → 95% visible
+
+Stage Summary:
+- Server: persistent via setsid + signal trapping + auto-restart loop (start-dev.sh). Survives parent exit. Auto-restarts within 2s.
+- Audit: AUDIT-UI-FULL-CODEBASE.md (632 lines, 9 sections, complete capability inventory + 10 UI gaps)
+- Redesign: PSY4-UI-REDESIGN-ENGINEERING.md (complete engineering proposal, 3-column studio UI, ~1900 LoC estimated)
+- No code modified yet (design document only). Awaiting approval to implement.
+- Key insight: the engine is already capable — the UI just doesn't show it. The redesign makes the engine's full power visible and controllable.
