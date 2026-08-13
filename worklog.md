@@ -8312,3 +8312,81 @@ Stage Summary:
 - VERIFICATION: 30-second load test — 0 audio dropouts, 0 frames over 100ms, audio thread never over 3ms budget
 - The stutter is now eliminated at BOTH the main thread AND audio thread levels.
 - Audio-thread CPU indicator is now visible in the header (green/amber/red based on processMs).
+
+---
+Task ID: STAGE-1+2 (cleanup + connect controls)
+Agent: z.ai-code (main)
+Task: Execute the approved 2-stage plan: (1) remove dead MusicalSession routing for user controls, (2) connect energy/tension/style/section controls directly to CausalComposer.
+
+Work Log:
+STAGE 1 — Cleanup (remove dead routing):
+- psyLive.ts: setStyle/setEnergy/setTension/setDensity no longer call this.session.* (MusicalSession is dead code — doesn't drive playback)
+- psyLive.ts: triggerBreak/triggerBuild/triggerDrop/releaseSection/forceSection no longer call this.session.* (countdown-based, replaced by causal override)
+- psyLive.ts: unlockStyle/unlockEnergy/unlockDensity/unlockTension/unlockKey now no-ops (CausalComposer has no lock concept — controls are always live)
+- psyLive.ts: getArrangementState now reads from CausalComposer.getUserControls() instead of session
+- NOTE: MusicalSession kept ONLY for learning data collection (session.observeRadioTick → grammarBuilder). This is the one live use. Everything else removed.
+- NOTE: MusicalSession.ts file (1403 lines) NOT deleted yet — it's still imported for observeRadioTick. Full deletion is Stage 3 (future).
+
+STAGE 2 — Connect controls to CausalComposer:
+- CausalComposer.ts: Added 7 new user-control fields + methods:
+  * userEnergy (0..1) — velocity scaling (±20%) + gates percussion layers
+  * userTension (0..1) — contrast debt accumulation rate + VARY_MOTIF interval shift size (2-5 semitones)
+  * userStyle (FULL_ON|DARK|PROGRESSIVE|ACID) — changes musical grammar
+  * forcedSection (BREAK|BUILD|DROP|null) — overrides causal inference for N bars
+  * forcedBarsRemaining — countdown for forced section
+  * setBPM/setRoot/setScale — for future learning system integration
+  * getUserControls() — returns current control state for UI
+
+- CausalComposer.ts: Added STYLE_GRAMMARS constant — 4 style definitions:
+  * FULL_ON: phrygian-dominant, [0,4,7,4] motif, rolling 16th bass, dense percussion
+  * DARK: phrygian, [0,1,3,1] motif (dark minor 2nd), sparse bass, low percussion
+  * PROGRESSIVE: dorian, [0,3,5,7] motif, off-beat 8th bass, medium percussion
+  * ACID: phrygian-dominant, [0,1,7,1] motif, spaced bass + acidBass=true (routes to AcidVoice/TB-303 in worklet!)
+
+- CausalComposer.ts: Modified composeBar():
+  * If forcedSection set → buildForcedDecision() overrides inference (BREAK→BREAKDOWN, BUILD→sequential introduce, DROP→max density)
+  * Auto-releases after forcedBarsRemaining reaches 0
+  * userTension > 0.5 → nudges tensionLevel toward target + extra contrast debt accumulation
+
+- CausalComposer.ts: Modified generateGroove():
+  * Energy → velocity scaling (0.8..1.2× on all events)
+  * Style grammar → bass pattern (was hardcoded rolling 16ths for all styles)
+  * ACID style → bassChannel='acid' (routes to AcidVoice TB-303 in worklet — WAS DEAD, NOW LIVE)
+  * Energy > 0.3 gates backbeat (snare/clap)
+  * Energy > 0.6 gates ride layer
+
+- CausalComposer.ts: Modified INTRODUCE_LEAD:
+  * Uses style grammar motifIntervals + motifSteps (was hardcoded [0,4,7,4] for all styles)
+  * Energy → velocity scaling
+
+- CausalComposer.ts: Modified VARY_MOTIF:
+  * Tension controls shift size: 2 + round(tension*3) = 2..5 semitones (was hardcoded +2)
+  * Uses style grammar intervals
+
+- psyLive.ts: Added user control state to LiveState + emit():
+  * userEnergy, userTension, userStyle, forcedSection, forcedBarsRemaining
+  * All read from causalComposer.getUserControls()
+
+- page.tsx: Updated UI:
+  * Style buttons now show active state from s.userStyle (was local state only)
+  * Arrangement buttons (BREAK/BUILD/DROP/AUTO) show active highlight + glow when forced
+  * AUTO button highlights cyan when no forced section (AUTO mode active)
+  * Added forced section countdown indicator ("DROP · 3 bars left")
+  * Initial LiveState includes new fields
+
+Verification (Agent Browser):
+- Engine starts, all controls enabled (no disabled buttons)
+- ACID button click → purple highlight confirmed (rgba(185,103,255,0.3))
+- DROP click → "8 active materials" (kick, bass, snare, etc.) — forced DROP introduced all layers
+- DROP auto-released after 4 bars (~6.6s at 145 BPM) → returned to AUTO
+- Style switching (DARK → ACID) works without errors
+- BREAK works (breakdown strips layers, adds pad/atmosphere)
+- 20-second stability test: 1201 frames, max 32.5ms, 0 over 50ms, 0 audio warnings, 0 errors
+
+Stage Summary:
+- STAGE 1 COMPLETE: Dead MusicalSession routing removed for all user controls. Session kept only for learning data collection.
+- STAGE 2 COMPLETE: All 7 user controls (energy, tension, style, forceSection, releaseSection, BPM, root, scale) now route to CausalComposer.
+- KEY ACHIEVEMENT: The ACID style now routes bass to the AcidVoice (TB-303) in the worklet — this voice was DEAD for the entire project's existence. It's now live.
+- KEY ACHIEVEMENT: Each style (FULL_ON/DARK/PROGRESSIVE/ACID) now has a distinct musical grammar — different scale, different motif shape, different bass pattern. They sound different, not just different synth macros.
+- KEY ACHIEVEMENT: BREAK/BUILD/DROP are now causal overrides that integrate with the inference engine, not countdown timers. They auto-release and return to AUTO.
+- The sliders NOW AFFECT THE MUSIC. Energy changes velocity + percussion density. Tension changes contrast debt rate + variation intensity. Style changes the actual musical grammar.

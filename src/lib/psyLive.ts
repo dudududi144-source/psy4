@@ -183,6 +183,12 @@ export interface LiveState {
   audioCpuLoad: number;         // 0..1 smoothed
   audioActiveVoices: number;    // current polyphony
   audioVoiceBudget: number;     // dynamic ceiling (drops under overload)
+  // STAGE 2: user control state (for UI display — shows what the user set)
+  userEnergy: number;           // 0..1 — what the user set
+  userTension: number;          // 0..1 — what the user set
+  userStyle: string;            // FULL_ON | DARK | PROGRESSIVE | ACID
+  forcedSection: string | null; // BREAK | BUILD | DROP | null (AUTO)
+  forcedBarsRemaining: number;  // how many bars left in forced section
 }
 
 // ─── MusicState (from architecture review) ────────────────────────────────
@@ -438,6 +444,12 @@ export class PsyLive {
       audioCpuLoad: this.lastWorkletStats?.cpuLoad ?? 0,
       audioActiveVoices: this.lastWorkletStats?.activeVoices ?? 0,
       audioVoiceBudget: this.lastWorkletStats?.voiceBudget ?? 0,
+      // STAGE 2: user control state (from CausalComposer)
+      userEnergy: this.causalComposer?.getUserControls().energy ?? 0.5,
+      userTension: this.causalComposer?.getUserControls().tension ?? 0.3,
+      userStyle: this.causalComposer?.getUserControls().style ?? 'FULL_ON',
+      forcedSection: this.causalComposer?.getUserControls().forcedSection ?? null,
+      forcedBarsRemaining: this.causalComposer?.getUserControls().forcedBarsRemaining ?? 0,
     });
   }
 
@@ -546,8 +558,11 @@ export class PsyLive {
     // Try to initialize the worklet. If it succeeds, use it instead of MaterialRealizer.
     this.initWorkletEngine();
     // F13/R4-D: Apply pending style if set before play()
+    // STAGE 2: Apply to CausalComposer (was: MusicalSession)
     if (this.pendingStyle) {
-      this.session.setStyle(this.pendingStyle);
+      const s = this.pendingStyle === 'DARK' || this.pendingStyle === 'PROGRESSIVE' || this.pendingStyle === 'ACID'
+        ? this.pendingStyle : 'FULL_ON';
+      this.causalComposer?.setStyle(s as 'FULL_ON' | 'DARK' | 'PROGRESSIVE' | 'ACID');
       this.pendingStyle = null;
     }
 
@@ -873,15 +888,19 @@ export class PsyLive {
     if (this.reverbSend && this.ctx) this.reverbSend.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
   }
 
-  // F13/R4-D: Pending style — stored when setStyle is called before session
-  // is created (before play()). Applied in ensureAudio() after session init.
+  // F13/R4-D: Pending style — stored when setStyle is called before play()
+  // STAGE 2: Applied to CausalComposer (was: MusicalSession)
   private pendingStyle: string | null = null;
 
-  // F11/F13: Style control — sets session style and locks it (radio won't overwrite)
+  // STAGE 2: Style control — now routes to CausalComposer (the live authority)
+  // WAS: this.session.setStyle() — session is dead code, doesn't drive playback
   setStyle(style: string): void {
     this.currentStyle = style as any;
-    if (this.session) this.session.setStyle(style);
-    // Route to AudioWorklet macros
+    // STAGE 2: Route to CausalComposer — changes musical grammar (scale, motif, bass pattern)
+    const s = (style === 'DARK' || style === 'PROGRESSIVE' || style === 'ACID') ? style : 'FULL_ON';
+    this.causalComposer?.setStyle(s as 'FULL_ON' | 'DARK' | 'PROGRESSIVE' | 'ACID');
+    if (!this.causalComposer) this.pendingStyle = style; // apply on play()
+    // Also update AudioWorklet macros (synth timbre)
     if (this.engineNode) {
       const styleMap: Record<string, any> = {
         FULL_ON: { energy: 0.8, aggression: 0.7, brightness: 0.7, psychedelia: 0.5 },
@@ -894,35 +913,54 @@ export class PsyLive {
     }
   }
 
+  // STAGE 2: Energy — now routes to CausalComposer (was: dead session.setEnergy)
   setEnergy(v: number): void {
-    if (this.session) this.session.setEnergy(v);
+    // STAGE 2: CausalComposer uses energy for velocity scaling + threshold bias
+    this.causalComposer?.setEnergy(v);
+    // Also update AudioWorklet macros (synth density/brightness)
     if (this.engineNode) this.engineNode.setMacros({ energy: v, density: v * 0.8 + 0.2 });
   }
 
   setDensity(v: number): void {
-    if (this.session) this.session.setDensity(v);
+    // NOTE: density is now derived from energy inside CausalComposer (energy * 0.8 + 0.2).
+    // This setter is kept for API compat but only updates the worklet macro.
     if (this.engineNode) this.engineNode.setMacros({ density: v });
   }
 
+  // STAGE 2: Tension — now routes to CausalComposer (was: dead session.setTension)
   setTension(v: number): void {
-    if (this.session) this.session.setTension(v);
+    // STAGE 2: CausalComposer uses tension for contrast debt rate + variation intensity
+    this.causalComposer?.setTension(v);
+    // Also update AudioWorklet macros (synth psychedelia/aggression)
     if (this.engineNode) this.engineNode.setMacros({ psychedelia: v, aggression: v * 0.7 });
   }
 
   // F13/R2B: Unlock methods — return to AUTO mode
-  unlockStyle(): void { this.session?.unlockStyle(); }
-  unlockEnergy(): void { this.session?.unlockEnergy(); }
-  unlockDensity(): void { this.session?.unlockDensity(); }
-  unlockTension(): void { this.session?.unlockTension(); }
-  unlockKey(): void { this.session?.unlockKey(); }
+  // STAGE 2: These now release CausalComposer forced sections (was: dead session.unlock*)
+  unlockStyle(): void { /* style is always live in CausalComposer, no lock */ }
+  unlockEnergy(): void { /* energy is always live, no lock */ }
+  unlockDensity(): void { /* density derived from energy */ }
+  unlockTension(): void { /* tension is always live, no lock */ }
+  unlockKey(): void { /* key handled by learning system */ }
 
-  // F15 Phase 4: Arrangement controls — user can direct the arrangement
-  forceSection(section: string): void { this.session?.forceSection(section); }
-  releaseSection(): void { this.session?.releaseSection(); }
-  triggerBreak(bars = 4): void { this.session?.triggerBreak(bars); }
-  triggerBuild(bars = 4): void { this.session?.triggerBuild(bars); }
-  triggerDrop(bars = 4): void { this.session?.triggerDrop(bars); }
-  getArrangementState() { return this.session?.getArrangementState(); }
+  // F15 Phase 4: Arrangement controls — STAGE 2: now route to CausalComposer
+  // WAS: this.session.forceSection() — session is dead code, countdown-based.
+  // NOW: CausalComposer.forceSection() — causal override, integrates with inference.
+  forceSection(section: string): void {
+    const s = section === 'BREAK' || section === 'BUILD' || section === 'DROP' ? section : 'BREAK';
+    this.causalComposer?.forceSection(s as 'BREAK' | 'BUILD' | 'DROP', 4);
+  }
+  releaseSection(): void { this.causalComposer?.releaseSection(); }
+  triggerBreak(bars = 4): void { this.causalComposer?.forceSection('BREAK', bars); }
+  triggerBuild(bars = 4): void { this.causalComposer?.forceSection('BUILD', bars); }
+  triggerDrop(bars = 4): void { this.causalComposer?.forceSection('DROP', bars); }
+  getArrangementState() {
+    const uc = this.causalComposer?.getUserControls();
+    return uc ? {
+      section: uc.forcedSection ?? 'AUTO',
+      barsRemaining: uc.forcedBarsRemaining,
+    } : null;
+  }
 
   // F18.5: Apply learned timbre to synthesis parameters.
   // Called from detect() when timbre profile is available.

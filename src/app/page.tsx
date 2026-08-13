@@ -88,6 +88,7 @@ export default function Page() {
     causalAnticipation: 0, causalGrooveStability: 0, causalExpectation: 0,
     causalActiveMaterials: [], causalHistory: [],
     audioProcessMs: 0, audioCpuLoad: 0, audioActiveVoices: 0, audioVoiceBudget: 0,
+    userEnergy: 0.5, userTension: 0.3, userStyle: 'FULL_ON', forcedSection: null, forcedBarsRemaining: 0,
   });
 
   const [streamId, setStreamId] = useState('psyndora');
@@ -306,26 +307,40 @@ export default function Page() {
                   {STYLES.map(st => (
                     <button key={st} onClick={() => handleStyle(st)} disabled={!s.playing}
                       className="text-[8px] font-bold py-1.5 rounded transition-all disabled:opacity-30 hover:scale-105"
-                      style={{ background: style === st ? 'rgba(185,103,255,0.3)' : 'rgba(255,255,255,0.05)', color: style === st ? '#fff' : '#94a3b8', border: style === st ? '1px solid rgba(185,103,255,0.5)' : '1px solid transparent' }}>
+                      style={{ background: s.userStyle === st ? 'rgba(185,103,255,0.3)' : 'rgba(255,255,255,0.05)', color: s.userStyle === st ? '#fff' : '#94a3b8', border: s.userStyle === st ? '1px solid rgba(185,103,255,0.5)' : '1px solid transparent' }}>
                       {st === 'FULL_ON' ? 'F.ON' : st.slice(0, 4)}
                     </button>
                   ))}
                 </div>
               </div>
               <div className="grid grid-cols-4 gap-1 pt-1">
-                <button onClick={triggerBreak} disabled={!s.playing} className="flex flex-col items-center gap-0.5 py-2 rounded-lg text-[8px] font-bold transition-all disabled:opacity-30 hover:scale-105" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#ef4444' }}>
+                <button onClick={triggerBreak} disabled={!s.playing}
+                  className="flex flex-col items-center gap-0.5 py-2 rounded-lg text-[8px] font-bold transition-all disabled:opacity-30 hover:scale-105"
+                  style={{ background: s.forcedSection === 'BREAK' ? 'rgba(239,68,68,0.35)' : 'rgba(239,68,68,0.1)', border: s.forcedSection === 'BREAK' ? '1px solid rgba(239,68,68,0.7)' : '1px solid rgba(239,68,68,0.2)', color: '#ef4444', boxShadow: s.forcedSection === 'BREAK' ? '0 0 12px rgba(239,68,68,0.4)' : 'none' }}>
                   <ArrowDown className="w-3 h-3" /> BREAK
                 </button>
-                <button onClick={triggerBuild} disabled={!s.playing} className="flex flex-col items-center gap-0.5 py-2 rounded-lg text-[8px] font-bold transition-all disabled:opacity-30 hover:scale-105" style={{ background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.2)', color: '#f59e0b' }}>
+                <button onClick={triggerBuild} disabled={!s.playing}
+                  className="flex flex-col items-center gap-0.5 py-2 rounded-lg text-[8px] font-bold transition-all disabled:opacity-30 hover:scale-105"
+                  style={{ background: s.forcedSection === 'BUILD' ? 'rgba(245,158,11,0.35)' : 'rgba(245,158,11,0.1)', border: s.forcedSection === 'BUILD' ? '1px solid rgba(245,158,11,0.7)' : '1px solid rgba(245,158,11,0.2)', color: '#f59e0b', boxShadow: s.forcedSection === 'BUILD' ? '0 0 12px rgba(245,158,11,0.4)' : 'none' }}>
                   <ArrowUp className="w-3 h-3" /> BUILD
                 </button>
-                <button onClick={triggerDrop} disabled={!s.playing} className="flex flex-col items-center gap-0.5 py-2 rounded-lg text-[8px] font-bold transition-all disabled:opacity-30 hover:scale-105" style={{ background: 'rgba(255,46,136,0.1)', border: '1px solid rgba(255,46,136,0.2)', color: '#ff2e88' }}>
+                <button onClick={triggerDrop} disabled={!s.playing}
+                  className="flex flex-col items-center gap-0.5 py-2 rounded-lg text-[8px] font-bold transition-all disabled:opacity-30 hover:scale-105"
+                  style={{ background: s.forcedSection === 'DROP' ? 'rgba(255,46,136,0.35)' : 'rgba(255,46,136,0.1)', border: s.forcedSection === 'DROP' ? '1px solid rgba(255,46,136,0.7)' : '1px solid rgba(255,46,136,0.2)', color: '#ff2e88', boxShadow: s.forcedSection === 'DROP' ? '0 0 12px rgba(255,46,136,0.4)' : 'none' }}>
                   <Flame className="w-3 h-3" /> DROP
                 </button>
-                <button onClick={releaseSection} disabled={!s.playing} className="flex flex-col items-center gap-0.5 py-2 rounded-lg text-[8px] font-bold transition-all disabled:opacity-30 hover:scale-105" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#94a3b8' }}>
+                <button onClick={releaseSection} disabled={!s.playing}
+                  className="flex flex-col items-center gap-0.5 py-2 rounded-lg text-[8px] font-bold transition-all disabled:opacity-30 hover:scale-105"
+                  style={{ background: s.forcedSection === null ? 'rgba(0,255,200,0.15)' : 'rgba(255,255,255,0.04)', border: s.forcedSection === null ? '1px solid rgba(0,255,200,0.4)' : '1px solid rgba(255,255,255,0.08)', color: s.forcedSection === null ? '#00ffc8' : '#94a3b8' }}>
                   <RotateCcw className="w-3 h-3" /> AUTO
                 </button>
               </div>
+              {/* STAGE 2: forced section countdown indicator */}
+              {s.forcedSection && s.forcedBarsRemaining > 0 && (
+                <div className="text-center text-[8px] font-mono text-slate-500">
+                  {s.forcedSection} · {s.forcedBarsRemaining} bars left
+                </div>
+              )}
             </div>
           </div>
 

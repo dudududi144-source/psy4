@@ -50,6 +50,51 @@ export interface CausalComposerOptions {
   seed: number;
 }
 
+// ── STYLE GRAMMARS ──
+// Each style defines the musical grammar: scale, motif shape, bass pattern, density.
+// This is what makes FULL_ON sound different from DARK.
+const STYLE_GRAMMARS: Record<string, {
+  scaleName: string;
+  motifIntervals: number[];      // intervals from root for the lead motif
+  motifSteps: number[];          // which 16th-step positions the motif hits
+  bassPattern: number[];         // which 16th-step positions the bass hits (rolling psy bass)
+  acidBass: boolean;             // whether to use TB-303 acid voice instead of regular bass
+  percussionDensity: number;     // 0..1 — how many percussion layers
+}> = {
+  FULL_ON: {
+    scaleName: 'phrygian-dominant',
+    motifIntervals: [0, 4, 7, 4],       // root, third, fifth, third — bright, heroic
+    motifSteps: [0, 4, 8, 12],          // on the beat
+    bassPattern: [1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15], // rolling 16ths
+    acidBass: false,
+    percussionDensity: 0.8,
+  },
+  DARK: {
+    scaleName: 'phrygian',
+    motifIntervals: [0, 1, 3, 1],       // root, b2, b3, b2 — dark, minor second
+    motifSteps: [0, 6, 8, 14],          // sparse, off-beat
+    bassPattern: [0, 3, 6, 8, 11, 14],  // sparse, triplet feel
+    acidBass: false,
+    percussionDensity: 0.4,
+  },
+  PROGRESSIVE: {
+    scaleName: 'dorian',
+    motifIntervals: [0, 3, 5, 7],       // root, b3, 4, 5 — modal, uplifting
+    motifSteps: [0, 4, 8, 12],
+    bassPattern: [1, 3, 5, 7, 9, 11, 13, 15], // off-beat 8ths
+    acidBass: false,
+    percussionDensity: 0.6,
+  },
+  ACID: {
+    scaleName: 'phrygian-dominant',
+    motifIntervals: [0, 1, 7, 1],       // root, b2, fifth, b2 — tense, acid
+    motifSteps: [0, 4, 8, 12],
+    bassPattern: [0, 3, 6, 9, 12, 15],  // spaced for acid 303 pattern
+    acidBass: true,                      // USE TB-303 acid voice!
+    percussionDensity: 0.7,
+  },
+};
+
 export interface CausalNoteEvent {
   /** Audio time (seconds). */
   at: number;
@@ -74,13 +119,108 @@ export interface CausalBarResult {
 export class CausalComposer {
   readonly state: CausalState;
   readonly memory: MusicalMemoryStore;
-  private readonly opts: CausalComposerOptions;
+  private opts: CausalComposerOptions;
   private activeVoices: Set<string> = new Set();
 
+  // ── USER CONTROL STATE (Stage 2: wired to UI sliders/buttons) ──
+  // These influence causal decisions, NOT just synth params.
+  // energy  0..1   — drives density, velocity, and lowers inference thresholds (things happen sooner)
+  // tension 0..1   — drives contrast debt accumulation rate and target tension level
+  // style   FULL_ON | DARK | PROGRESSIVE | ACID — changes musical grammar (scale, motif shape, bass pattern)
+  // forcedSection — if set, overrides inference for the next bar(s). null = AUTO (causal inference drives).
+  private userEnergy = 0.5;
+  private userTension = 0.3;
+  private userStyle: 'FULL_ON' | 'DARK' | 'PROGRESSIVE' | 'ACID' = 'FULL_ON';
+  private forcedSection: 'BREAK' | 'BUILD' | 'DROP' | null = null;
+  private forcedBarsRemaining = 0;
+
   constructor(opts: CausalComposerOptions) {
-    this.opts = opts;
+    this.opts = { ...opts };
     this.state = createCausalState();
     this.memory = new MusicalMemoryStore();
+  }
+
+  // ── USER CONTROL API (Stage 2) ──
+
+  /**
+   * Set energy (0..1). Influences:
+   *   - Velocity scaling on generated events (±20%)
+   *   - Inference threshold bias: high energy → lower thresholds → things happen sooner
+   *   - Percussion density in generateGroove (more layers at high energy)
+   */
+  setEnergy(v: number): void {
+    this.userEnergy = Math.max(0, Math.min(1, v));
+  }
+
+  /**
+   * Set tension (0..1). Influences:
+   *   - contrastDebt accumulation rate (high tension → debt grows faster → breakdowns sooner)
+   *   - Direct tensionLevel nudge (moves state toward target)
+   *   - Motif variation intensity (higher tension → larger intervals in VARY_MOTIF)
+   */
+  setTension(v: number): void {
+    this.userTension = Math.max(0, Math.min(1, v));
+  }
+
+  /**
+   * Set style. Changes the musical grammar:
+   *   FULL_ON     — Phrygian dominant, 4-on-floor, dense percussion, bright lead
+   *   DARK        — Phrygian, sparse, low register, dark lead
+   *   PROGRESSIVE — Dorian, medium density, evolving pad, melodic lead
+   *   ACID        — Phrygian dominant + TB-303 acid bass (uses AcidVoice in worklet)
+   */
+  setStyle(style: 'FULL_ON' | 'DARK' | 'PROGRESSIVE' | 'ACID'): void {
+    this.userStyle = style;
+    // Apply scale + root changes
+    const styleGrammar = STYLE_GRAMMARS[style];
+    if (styleGrammar) {
+      this.opts.scaleName = styleGrammar.scaleName;
+      // Keep rootPc as-is (user can change key separately if needed)
+    }
+  }
+
+  /**
+   * Force a section for the next N bars (overrides causal inference).
+   *   BREAK — force BREAKDOWN (strip layers, add pad/atmosphere)
+   *   BUILD — force sequential introduction (hats → lead → percussion → counterline)
+   *   DROP  — force maximum density (all layers active, high velocity)
+   * Pass null or call releaseSection() to return to AUTO (causal inference).
+   */
+  forceSection(section: 'BREAK' | 'BUILD' | 'DROP', bars = 4): void {
+    this.forcedSection = section;
+    this.forcedBarsRemaining = Math.max(1, bars);
+  }
+
+  /** Return to causal AUTO mode (release forced section). */
+  releaseSection(): void {
+    this.forcedSection = null;
+    this.forcedBarsRemaining = 0;
+  }
+
+  /** Set BPM (from learning system or user). */
+  setBPM(bpm: number): void {
+    this.opts.bpm = Math.max(60, Math.min(200, bpm));
+  }
+
+  /** Set root pitch class (0-11, from learning system or user). */
+  setRoot(rootPc: number): void {
+    this.opts.rootPc = ((Math.round(rootPc) % 12) + 12) % 12;
+  }
+
+  /** Set scale by name (from learning system or user). */
+  setScale(scaleName: string): void {
+    this.opts.scaleName = scaleName;
+  }
+
+  /** Get current user control state (for UI display). */
+  getUserControls() {
+    return {
+      energy: this.userEnergy,
+      tension: this.userTension,
+      style: this.userStyle,
+      forcedSection: this.forcedSection,
+      forcedBarsRemaining: this.forcedBarsRemaining,
+    };
   }
 
   /**
@@ -90,11 +230,32 @@ export class CausalComposer {
    */
   composeBar(bar: number): CausalBarResult {
     // 1. Advance time-based state (contrast debt, anticipation)
+    // PERF: tension control — high userTension makes contrast debt accumulate faster
+    // (breakdowns come sooner when the user pushes tension up)
     onBarAdvance(this.state, bar);
+    if (this.userTension > 0.5) {
+      // Nudge tensionLevel toward user target (±0.1 per bar, causal not instant)
+      const target = this.userTension;
+      this.state.tensionLevel += (target - this.state.tensionLevel) * 0.15;
+      // Extra contrast debt accumulation when user wants tension
+      this.state.contrastDebt += (this.userTension - 0.5) * 0.05;
+    }
 
-    // 2. Infer what should happen
+    // 2. Infer what should happen — OR use forced section
     const activeVoicesArr = Array.from(this.activeVoices);
-    const decision = infer(this.state, this.memory, activeVoicesArr);
+    let decision: Decision;
+
+    if (this.forcedSection && this.forcedBarsRemaining > 0) {
+      // USER OVERRIDE: forced section takes priority over causal inference
+      decision = this.buildForcedDecision(this.forcedSection, activeVoicesArr);
+      this.forcedBarsRemaining--;
+      if (this.forcedBarsRemaining === 0) {
+        this.forcedSection = null; // auto-release
+      }
+    } else {
+      // CAUSAL AUTO: normal inference drives the decision
+      decision = infer(this.state, this.memory, activeVoicesArr);
+    }
 
     // 3. Execute the decision → generate events + update state + memory
     const events = this.executeDecision(decision, bar);
@@ -105,8 +266,6 @@ export class CausalComposer {
     }
 
     // 4b. Track ongoing material play (lead, hats, etc. play every bar they're active)
-    // This is CRITICAL: the motif plays every bar, not just when INTRODUCE_LEAD fires.
-    // Without this, expectation/exhaustion never build, and no variation ever fires.
     if (decision.action !== 'BREAKDOWN') {
       if (this.activeVoices.has('lead')) {
         this.memory.onMaterialPlayed('motif-A', bar);
@@ -124,6 +283,63 @@ export class CausalComposer {
       events,
       stateAfter,
       memoryAfter,
+    };
+  }
+
+  /**
+   * Build a forced decision (user override). This bypasses causal inference
+   * but still produces the same Decision shape so executeDecision can handle it.
+   */
+  private buildForcedDecision(section: 'BREAK' | 'BUILD' | 'DROP', activeVoices: string[]): Decision {
+    let action: CausalAction;
+    let whyNow: string;
+
+    if (section === 'BREAK') {
+      action = 'BREAKDOWN';
+      whyNow = `USER FORCED BREAK (${this.forcedBarsRemaining} bars remaining)`;
+    } else if (section === 'DROP') {
+      // DROP = maximum density. If we already have lead+percussion, just keep going.
+      // If not, introduce what's missing.
+      if (!activeVoices.includes('hat-closed')) {
+        action = 'INTRODUCE_HATS';
+      } else if (!activeVoices.includes('lead')) {
+        action = 'INTRODUCE_LEAD';
+      } else if (!activeVoices.includes('percussion')) {
+        action = 'INTRODUCE_PERCUSSION';
+      } else {
+        action = 'NO_CHANGE'; // everything already active — just keep playing at high energy
+      }
+      whyNow = `USER FORCED DROP (${this.forcedBarsRemaining} bars remaining)`;
+    } else {
+      // BUILD = sequential introduction. Pick the next missing layer.
+      if (!activeVoices.includes('hat-closed')) {
+        action = 'INTRODUCE_HATS';
+      } else if (!activeVoices.includes('lead')) {
+        action = 'INTRODUCE_LEAD';
+      } else if (!activeVoices.includes('percussion')) {
+        action = 'INTRODUCE_PERCUSSION';
+      } else if (!activeVoices.includes('counterline')) {
+        action = 'INTRODUCE_COUNTERLINE';
+      } else {
+        action = 'NO_CHANGE'; // build complete
+      }
+      whyNow = `USER FORCED BUILD (${this.forcedBarsRemaining} bars remaining)`;
+    }
+
+    const candidate = {
+      action,
+      whyNow,
+      whyNotYet: 'user override — causal inference bypassed',
+      urgency: 1.0,
+      necessity: 'required' as const,
+      enables: [],
+    };
+    return {
+      action,
+      selected: candidate,
+      candidates: [candidate],
+      stateBefore: snapshotCausalState(this.state),
+      memoryBefore: this.memory.snapshot(),
     };
   }
 
@@ -170,15 +386,17 @@ export class CausalComposer {
         this.activeVoices.add('lead');
         this.memory.onMaterialPlayed('motif-A', bar);
         onMaterialPlayed(this.state, 'motif-A', bar);
-        // Generate a simple motif (root + third + fifth)
+        // STAGE 2: Style-specific motif (was hardcoded [0,4,7,4])
+        const grammar = STYLE_GRAMMARS[this.userStyle] || STYLE_GRAMMARS.FULL_ON;
         const root = this.opts.rootPc + 60; // octave 4
-        const steps = [0, 4, 8, 12];
-        const intervals = [0, 4, 7, 4]; // root, third, fifth, third
+        const steps = grammar.motifSteps;
+        const intervals = grammar.motifIntervals;
+        const velScale = 0.8 + this.userEnergy * 0.4;
         for (let i = 0; i < steps.length; i++) {
           events.push({
             at: barStart + steps[i] * stepDur,
             note: root + intervals[i],
-            velocity: 0.6,
+            velocity: Math.min(1, 0.6 * velScale),
             duration: stepDur * 2,
             channel: 'lead',
           });
@@ -204,17 +422,22 @@ export class CausalComposer {
 
       case 'VARY_MOTIF': {
         const materialId = decision.selected.materialId || 'motif-A';
-        this.memory.onMaterialTransformed(materialId, bar, 'transpose+2');
+        // STAGE 2: tension controls variation intensity (was hardcoded +2)
+        // High tension → larger shift (±2 to ±5 semitones)
+        const shift = 2 + Math.round(this.userTension * 3); // 2..5
+        this.memory.onMaterialTransformed(materialId, bar, `transpose+${shift}`);
         onMaterialVaried(this.state, materialId);
-        // Generate varied motif (transposed +2)
-        const root = this.opts.rootPc + 60 + 2;
-        const steps = [0, 4, 8, 12];
-        const intervals = [0, 4, 7, 4];
+        // Generate varied motif (transposed by shift)
+        const grammar = STYLE_GRAMMARS[this.userStyle] || STYLE_GRAMMARS.FULL_ON;
+        const root = this.opts.rootPc + 60 + shift;
+        const steps = grammar.motifSteps;
+        const intervals = grammar.motifIntervals;
+        const velScale = 0.8 + this.userEnergy * 0.4;
         for (let i = 0; i < steps.length; i++) {
           events.push({
             at: barStart + steps[i] * stepDur,
             note: root + intervals[i],
-            velocity: 0.65,
+            velocity: Math.min(1, 0.65 * velScale),
             duration: stepDur * 2,
             channel: 'lead',
           });
@@ -346,6 +569,8 @@ export class CausalComposer {
   /**
    * Generate the groove (kick + bass) for a bar.
    * This is the foundational layer, always present (except in breakdown).
+   *
+   * STAGE 2: Now respects userEnergy (velocity scaling) and userStyle (bass pattern + acid voice).
    */
   private generateGroove(bar: number): CausalNoteEvent[] {
     this.activeVoices.add('kick');
@@ -357,16 +582,35 @@ export class CausalComposer {
     const bassRoot = this.opts.rootPc + 33;
     const subRoot = this.opts.rootPc + 24; // sub octave
 
+    // STAGE 2: energy → velocity scaling (±20%)
+    const energyVelScale = 0.8 + this.userEnergy * 0.4; // 0.8..1.2
+    // STAGE 2: style grammar → bass pattern + acid flag
+    const grammar = STYLE_GRAMMARS[this.userStyle] || STYLE_GRAMMARS.FULL_ON;
+
     // Kick on beats 0, 1, 2, 3 (4-on-floor)
     for (let beat = 0; beat < 4; beat++) {
-      events.push({ at: barStart + beat * beatDur, note: 36, velocity: 0.9, duration: beatDur * 0.8, channel: 'kick' });
+      events.push({
+        at: barStart + beat * beatDur,
+        note: 36,
+        velocity: Math.min(1, 0.9 * energyVelScale),
+        duration: beatDur * 0.8,
+        channel: 'kick',
+      });
     }
 
-    // Rolling bass: K-b-B-B pattern
-    const bassSteps = [1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15];
-    for (const step of bassSteps) {
+    // STAGE 2: Style-specific bass pattern (was hardcoded rolling 16ths)
+    // ACID style uses 'acid' channel → routes to AcidVoice (TB-303) in worklet
+    const bassChannel = grammar.acidBass ? 'acid' : 'bass';
+    for (const step of grammar.bassPattern) {
       const isAfterKick = step % 4 === 1;
-      events.push({ at: barStart + step * stepDur, note: bassRoot, velocity: isAfterKick ? 0.6 : 0.8, duration: stepDur * 0.9, channel: 'bass' });
+      const vel = (isAfterKick ? 0.6 : 0.8) * energyVelScale;
+      events.push({
+        at: barStart + step * stepDur,
+        note: bassRoot,
+        velocity: Math.min(1, vel),
+        duration: stepDur * 0.9,
+        channel: bassChannel,
+      });
     }
 
     // Sub-bass: sustained root under bass (when groove established)
@@ -376,27 +620,29 @@ export class CausalComposer {
     }
 
     // Snare/clap on beats 2 and 4 (backbeat) — only when groove is established
-    if (this.state.grooveStability > 0.4) {
+    // STAGE 2: energy gates whether backbeat plays (low energy = no backbeat yet)
+    if (this.state.grooveStability > 0.4 && this.userEnergy > 0.3) {
       this.activeVoices.add('snare');
-      events.push({ at: barStart + beatDur, note: 38, velocity: 0.55, duration: stepDur * 0.5, channel: 'snare' });
-      events.push({ at: barStart + 3 * beatDur, note: 38, velocity: 0.55, duration: stepDur * 0.5, channel: 'snare' });
+      events.push({ at: barStart + beatDur, note: 38, velocity: 0.55 * energyVelScale, duration: stepDur * 0.5, channel: 'snare' });
+      events.push({ at: barStart + 3 * beatDur, note: 38, velocity: 0.55 * energyVelScale, duration: stepDur * 0.5, channel: 'snare' });
       // Clap layered on snare
-      events.push({ at: barStart + beatDur, note: 39, velocity: 0.4, duration: stepDur * 0.3, channel: 'clap' });
-      events.push({ at: barStart + 3 * beatDur, note: 39, velocity: 0.4, duration: stepDur * 0.3, channel: 'clap' });
+      events.push({ at: barStart + beatDur, note: 39, velocity: 0.4 * energyVelScale, duration: stepDur * 0.3, channel: 'clap' });
+      events.push({ at: barStart + 3 * beatDur, note: 39, velocity: 0.4 * energyVelScale, duration: stepDur * 0.3, channel: 'clap' });
     }
 
     // Ride on every beat when fully established (shimmer layer)
-    if (this.state.grooveStability > 0.8) {
+    // STAGE 2: only at high energy
+    if (this.state.grooveStability > 0.8 && this.userEnergy > 0.6) {
       this.activeVoices.add('ride');
       for (let beat = 0; beat < 4; beat++) {
-        events.push({ at: barStart + beat * beatDur + stepDur * 0.5, note: 59, velocity: 0.2, duration: stepDur * 0.3, channel: 'ride' });
+        events.push({ at: barStart + beat * beatDur + stepDur * 0.5, note: 59, velocity: 0.2 * energyVelScale, duration: stepDur * 0.3, channel: 'ride' });
       }
     }
 
     // Phrase-end fill (bar 7 of phrase)
     if (bar % 8 === 7) {
-      events.push({ at: barStart + 3 * beatDur + stepDur * 2, note: 45, velocity: 0.5, duration: stepDur * 0.4, channel: 'fill' });
-      events.push({ at: barStart + 3 * beatDur + stepDur * 3, note: 50, velocity: 0.6, duration: stepDur * 0.3, channel: 'fill' });
+      events.push({ at: barStart + 3 * beatDur + stepDur * 2, note: 45, velocity: 0.5 * energyVelScale, duration: stepDur * 0.4, channel: 'fill' });
+      events.push({ at: barStart + 3 * beatDur + stepDur * 3, note: 50, velocity: 0.6 * energyVelScale, duration: stepDur * 0.3, channel: 'fill' });
     }
 
     // Track groove material
