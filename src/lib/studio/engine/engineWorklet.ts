@@ -118,6 +118,8 @@ export class Psy4EngineNode {
           this.statsCallback(msg);
         } else if (msg.type === 'eventsReceived') {
           console.log(`[ENGINE] Worklet confirmed ${msg.count} events received`);
+        } else if (msg.type === 'debug') {
+          console.log(`[WORKLET DEBUG] ${msg.msg}`);
         }
       };
       this.ready = true;
