@@ -350,7 +350,11 @@ class CausalComposerWorker {
     if (phrasePos === 16) return 'DROP_START';
     if (phrasePos === 24) return 'BREAKDOWN_START';
     if (phrasePos === 28) return 'REBUILD_START';
-    return null;  // free composition within section
+    // Within sections: ensure layers stay active
+    if (phrasePos >= 8 && phrasePos < 16) return 'GROOVE_MAINTAIN';
+    if (phrasePos >= 16 && phrasePos < 24) return 'DROP_MAINTAIN';
+    if (phrasePos >= 28) return 'REBUILD_MAINTAIN';
+    return null;  // intro: free composition
   }
 
   // ARRANGEMENT: Build decision based on section
@@ -386,6 +390,23 @@ class CausalComposerWorker {
     } else if (section === 'REBUILD_START') {
       action = 'CALLBACK_MOTIF';
       whyNow = 'ARRANGEMENT: REBUILD — bring back lead + hats';
+    } else if (section === 'GROOVE_MAINTAIN') {
+      // Ensure hats + percussion stay active during groove
+      if (!activeVoices.includes('hat-closed')) action = 'INTRODUCE_HATS';
+      else action = 'NO_CHANGE';
+      whyNow = 'ARRANGEMENT: GROOVE MAINTAIN';
+    } else if (section === 'DROP_MAINTAIN') {
+      // Ensure lead + hats stay active during drop
+      if (!activeVoices.includes('lead')) action = 'INTRODUCE_LEAD';
+      else if (!activeVoices.includes('hat-closed')) action = 'INTRODUCE_HATS';
+      else action = 'NO_CHANGE';
+      whyNow = 'ARRANGEMENT: DROP MAINTAIN';
+    } else if (section === 'REBUILD_MAINTAIN') {
+      // Ensure lead + hats stay active after rebuild
+      if (!activeVoices.includes('lead')) action = 'INTRODUCE_LEAD';
+      else if (!activeVoices.includes('hat-closed')) action = 'INTRODUCE_HATS';
+      else action = 'NO_CHANGE';
+      whyNow = 'ARRANGEMENT: REBUILD MAINTAIN';
     }
 
     return {
