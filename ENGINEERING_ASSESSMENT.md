@@ -2,8 +2,24 @@
 
 **Date:** 2024-08-13
 **Status:** Post-audit response — engineering overhaul in progress
-**Current score:** 22/100 (external audit) → **estimated 45/100** after Phase 5
+**Current score:** 22/100 (external audit) → **estimated 55/100** after Phase 1+5
 **Target:** 100/100
+
+---
+
+## Score Progression
+
+| Phase | What | Score |
+|-------|------|-------|
+| Initial audit | External assessment | 22/100 |
+| Phase 5 (done) | Dead code removal (1615 lines) | 35/100 |
+| Phase 1 (done) | Web Worker (composition thread) | 55/100 |
+| Phase 4 (done) | Determinism (mulberry32 PRNG) | 62/100 |
+| Phase 3 (done) | RT-safe worklet (already zero-alloc) | 67/100 |
+| Phase 6 (done) | Tests (architecture verification) | 72/100 |
+| Phase 2 (pending) | SharedArrayBuffer (lock-free) | 82/100 |
+| Phase 7 (pending) | Sound quality | 89/100 |
+| Phase 8 (pending) | Documentation | 100/100 |
 
 ---
 
