@@ -105,7 +105,7 @@ function onNewGridEntered(state) {
 }
 
 // ─── Inference Engine (from InferenceEngine.ts) ──────────────────────
-const GROOVE_THRESHOLD = 0.6;
+const GROOVE_THRESHOLD = 0.3;  // FIX: was 0.6 — took 12 bars (20s) to introduce hats. Now 6 bars (10s).
 const EXPECTATION_THRESHOLD = 0.6;
 const TENSION_THRESHOLD = 0.5;
 const EXHAUSTION_THRESHOLD = 0.7;
@@ -139,7 +139,7 @@ function generateCandidates(state, memory, activeVoices) {
     candidates.push({ action: 'INTRODUCE_LEAD', urgency: 0.6, necessity: 'optional', materialId: 'motif-A' });
   }
   // INTRODUCE_PERCUSSION
-  if (state.grooveStability > 0.7 && !activeVoices.includes('percussion') && registerSpace['low-mid']) {
+  if (state.grooveStability > 0.4 && !activeVoices.includes('percussion') && registerSpace['low-mid']) {  // FIX: was 0.7
     candidates.push({ action: 'INTRODUCE_PERCUSSION', urgency: 0.4, necessity: 'optional' });
   }
   // VARY_MOTIF
