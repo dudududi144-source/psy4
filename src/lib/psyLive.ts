@@ -1406,24 +1406,14 @@ export class PsyLive {
   private startDetection(): void {
     if (this.detectTimer) clearInterval(this.detectTimer);
     this.detectTimer = setInterval(() => this.detect(), 100);
-    // PERF: learning derivation at 1 Hz (scale detection over 12 roots × 9 scales = ~1300 iters)
-    if (!this.learnTimer) this.learnTimer = setInterval(() => this.learnTick(), 1000);
-    // PERF: localStorage persistence at 0.2 Hz (JSON.stringify + setItem is sync & blocking)
-    if (!this.persistTimer) this.persistTimer = setInterval(() => this.persistTick(), 5000);
-    // PERF: ensure UI updates even when engine isn't playing (radio-only mode).
-    // Previously detect() called emit() every 100 ms — that was the stutter source.
-    // Now the 250 ms uiTimer is the only emit path, started here for radio-only mode.
+    // MUSICAL FIX: learnTick + persistTick merged into uiTimer (no separate timers)
     if (!this.uiTimer) this.startUITimer();
   }
 
   private stopDetection(): void {
     if (this.detectTimer) { clearInterval(this.detectTimer); this.detectTimer = null; }
-    if (this.learnTimer) { clearInterval(this.learnTimer); this.learnTimer = null; }
-    if (this.persistTimer) { clearInterval(this.persistTimer); this.persistTimer = null; }
-    // Final flush of any pending learning data
+    // MUSICAL FIX: learnTimer + persistTimer merged into uiTimer. Only clear uiTimer.
     if (this.learningDirty) this.persistTick();
-    // PERF: only stop the UI timer if the engine isn't playing. When engine is playing,
-    // play() owns the uiTimer and will stop it on stop().
     if (!this.playing) this.stopUITimer();
   }
 
@@ -1491,33 +1481,11 @@ export class PsyLive {
     // F2.5 — Update occupancy from radio layer (for arranger decisions)
     this.occupancy = radioSnap.occupancy;
 
-    // F8 — Feed radio observations into MusicalSession (LEGACY — not used by CausalComposer)
-    // This is kept for learning data collection only. CausalComposer doesn't read from session.
-    // Skip if no radio signal to save CPU.
-    // PERF: throttle session.observeRadioTick to 2 Hz (every 5th detect tick).
-    // extractSpectralFeatures inside is heavy (full FFT loop + centroid/flatness/rolloff).
-    // 100ms × 5 = 500ms cadence is plenty for grammar learning.
-    this.sessionTickCounter++;
-    const runSessionTick = this.sessionTickCounter >= 5;
-    if (runSessionTick) this.sessionTickCounter = 0;
-    if (runSessionTick && this.session && radioSnap.signal.state !== 'NO_SIGNAL' && this.radioOn) {
-      const radioBpm = radioSnap.beat?.estimatedBpm ?? transportSnap.bpm;
-      const pitchClass = radioSnap.pitch?.pitchClass ?? null;
-      const pitchConfidence = radioSnap.pitch?.confidence ?? 0;
-
-      this.session.observeRadioTick({
-        audioTime,
-        radioBpm,
-        energy: radioSnap.signal.spectralEnergy,
-        occupancy: radioSnap.occupancy,
-        bassFreq: this.bassFreq > 0 ? this.bassFreq : null,
-        pitchClass,
-        pitchConfidence,
-        freqData: fd,
-        sampleRate: this.ctx.sampleRate,
-        fftSize: this.radioAnalyser.fftSize,
-      });
-    }
+    // MUSICAL FIX: session.observeRadioTick REMOVED entirely.
+    // Was collecting learning data that nobody reads (only BPM/scale used, and
+    // those come from learnTick). This was running extractSpectralFeatures every
+    // 500ms for nothing. Saves CPU + removes dead code path.
+    // The session field is kept for compatibility but observeRadioTick is never called.
 
     // F18.5: Apply learned timbre to synthesis parameters
     // Only when worklet is NOT active (worklet uses its own params via macros)
@@ -1722,11 +1690,24 @@ export class PsyLive {
   // ── UI timer ──
   private startUITimer(): void {
     if (this.uiTimer) clearInterval(this.uiTimer);
-    // FIX: UI updates at 2000ms (0.5Hz) — the audio engine is the priority.
-    // The studio UI only shows BPM/decision/state which change at ~1.6s bar intervals.
-    // 0.5Hz is enough for human perception of "live" updates and minimizes React render cost.
-    this.uiTimer = setInterval(() => this.emit(), 2000);
+    // MUSICAL FIX: merged learnTick + persistTick + emit into ONE timer at 2000ms.
+    // Was 4 separate timers (detect 100ms, learn 1000ms, persist 5000ms, emit 2000ms).
+    // Now: detect stays separate (needs 100ms for radio), but learn+persist+emit
+    // run in a single 2000ms tick with internal counters.
+    this._mergedTickCounter = 0;
+    this.uiTimer = setInterval(() => {
+      this._mergedTickCounter++;
+      // emit every tick (2000ms)
+      this.emit();
+      // learnTick every tick (2000ms — was 1000ms, but nothing changes that fast)
+      this.learnTick();
+      // persistTick every 3rd tick (6000ms — was 5000ms)
+      if (this._mergedTickCounter % 3 === 0) {
+        this.persistTick();
+      }
+    }, 2000);
   }
+  private _mergedTickCounter = 0;
   private stopUITimer(): void {
     if (this.uiTimer) { clearInterval(this.uiTimer); this.uiTimer = null; }
   }

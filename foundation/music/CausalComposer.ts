@@ -323,8 +323,7 @@ export class CausalComposer {
       action = 'BREAKDOWN';
       whyNow = `USER FORCED BREAK (${this.forcedBarsRemaining} bars remaining)`;
     } else if (section === 'DROP') {
-      // DROP = maximum density. If we already have lead+percussion, just keep going.
-      // If not, introduce what's missing.
+      // DROP = maximum density immediately. Introduce all missing layers + impact.
       if (!activeVoices.includes('hat-closed')) {
         action = 'INTRODUCE_HATS';
       } else if (!activeVoices.includes('lead')) {
@@ -332,7 +331,7 @@ export class CausalComposer {
       } else if (!activeVoices.includes('percussion')) {
         action = 'INTRODUCE_PERCUSSION';
       } else {
-        action = 'NO_CHANGE'; // everything already active — just keep playing at high energy
+        action = 'NO_CHANGE'; // everything active — maximum energy
       }
       whyNow = `USER FORCED DROP (${this.forcedBarsRemaining} bars remaining)`;
     } else {
@@ -721,25 +720,31 @@ export class CausalComposer {
       if (channel === 'kick' || channel === 'bass' || channel === 'sub') continue;
 
       const introBar = this.materialIntroBar.get(channel);
-      if (introBar === undefined) continue; // not a tracked material
+      if (introBar === undefined) continue;
 
       const barsSinceIntro = bar - introBar;
+      // MUSICAL FIX: smoother fade-in over 4 bars (was 2 bars)
+      // Bar 0: 30% (very gentle entry)
+      // Bar 1: 55% (still settling)
+      // Bar 2: 80% (almost there)
+      // Bar 3: 95% (nearly full)
+      // Bar 4+: 100% (fully established)
       if (barsSinceIntro === 0) {
-        // First bar — 50% velocity (gentle fade-in)
-        ev.velocity *= 0.5;
+        ev.velocity *= 0.3;
       } else if (barsSinceIntro === 1) {
-        // Second bar — 80% velocity (still settling in)
+        ev.velocity *= 0.55;
+      } else if (barsSinceIntro === 2) {
         ev.velocity *= 0.8;
+      } else if (barsSinceIntro === 3) {
+        ev.velocity *= 0.95;
       }
-      // barsSinceIntro >= 2: full velocity (no scaling)
     }
   }
 
   /**
    * Generate the groove (kick + bass) for a bar.
-   * This is the foundational layer, always present (except in breakdown).
-   *
-   * STAGE 2: Now respects userEnergy (velocity scaling) and userStyle (bass pattern + acid voice).
+   * MUSICAL FIX: groove now EVOLVES across bars — bass notes move, filter sweeps,
+   * density changes. This creates the "rolling" psytrance feel instead of a static loop.
    */
   private generateGroove(bar: number): CausalNoteEvent[] {
     this.activeVoices.add('kick');
@@ -749,58 +754,72 @@ export class CausalComposer {
     const stepDur = beatDur / 4;
     const barStart = bar * 4 * beatDur;
     const bassRoot = this.opts.rootPc + 33;
-    const subRoot = this.opts.rootPc + 24; // sub octave
-
-    // STAGE 2: energy → velocity scaling (±20%)
-    const energyVelScale = 0.8 + this.userEnergy * 0.4; // 0.8..1.2
-    // STAGE 2: style grammar → bass pattern + acid flag
+    const subRoot = this.opts.rootPc + 24;
+    const energyVelScale = 0.8 + this.userEnergy * 0.4;
     const grammar = STYLE_GRAMMARS[this.userStyle] || STYLE_GRAMMARS.FULL_ON;
 
-    // Kick on beats 0, 1, 2, 3 (4-on-floor)
+    // Kick on beats 0, 1, 2, 3 (4-on-floor) — velocity varies slightly for human feel
     for (let beat = 0; beat < 4; beat++) {
+      const kickVel = beat === 0 ? 0.95 : 0.88; // downbeat slightly louder
       events.push({
         at: barStart + beat * beatDur,
         note: 36,
-        velocity: Math.min(1, 0.9 * energyVelScale),
+        velocity: Math.min(1, kickVel * energyVelScale),
         duration: beatDur * 0.8,
         channel: 'kick',
       });
     }
 
-    // STAGE 2: Style-specific bass pattern (was hardcoded rolling 16ths)
-    // ACID style uses 'acid' channel → routes to AcidVoice (TB-303) in worklet
+    // BASS: rolling psytrance bass with EVOLUTION
+    // The bass notes change across the phrase — not just root every time.
+    // Phrase position (0-7) determines the bass variation.
+    const phrasePos = bar % 8;
     const bassChannel = grammar.acidBass ? 'acid' : 'bass';
-    for (const step of grammar.bassPattern) {
+
+    // Bass note pattern: evolves through the phrase
+    // Bars 0-1: root only (establishing)
+    // Bars 2-3: root + octave (movement)
+    // Bars 4-5: root + fifth (harmonic movement)
+    // Bars 6-7: root + fifth + octave (fill building)
+    let bassOffsets: number[] = [0]; // start with root only
+    if (phrasePos >= 2) bassOffsets = [0, 0]; // root, root
+    if (phrasePos >= 4) bassOffsets = [0, 7]; // root, fifth
+    if (phrasePos >= 6) bassOffsets = [0, 7, 12]; // root, fifth, octave (build)
+
+    const bassPattern = grammar.bassPattern;
+    for (let i = 0; i < bassPattern.length; i++) {
+      const step = bassPattern[i];
       const isAfterKick = step % 4 === 1;
       const vel = (isAfterKick ? 0.6 : 0.8) * energyVelScale;
+      // Cycle through bassOffsets for melodic movement
+      const offset = bassOffsets[i % bassOffsets.length];
       events.push({
         at: barStart + step * stepDur,
-        note: bassRoot,
+        note: bassRoot + offset,
         velocity: Math.min(1, vel),
         duration: stepDur * 0.9,
         channel: bassChannel,
       });
     }
 
-    // Sub-bass: sustained root under bass (when groove established)
+    // Sub-bass: sustained root (when groove established)
     if (this.state.grooveStability > 0.5) {
       this.activeVoices.add('sub');
       events.push({ at: barStart, note: subRoot, velocity: 0.4, duration: 4 * beatDur, channel: 'sub' });
     }
 
-    // Snare/clap on beats 2 and 4 (backbeat) — only when groove is established
-    // STAGE 2: energy gates whether backbeat plays (low energy = no backbeat yet)
+    // Snare/clap backbeat (when groove established + energy)
     if (this.state.grooveStability > 0.4 && this.userEnergy > 0.3) {
       this.activeVoices.add('snare');
-      events.push({ at: barStart + beatDur, note: 38, velocity: 0.55 * energyVelScale, duration: stepDur * 0.5, channel: 'snare' });
-      events.push({ at: barStart + 3 * beatDur, note: 38, velocity: 0.55 * energyVelScale, duration: stepDur * 0.5, channel: 'snare' });
-      // Clap layered on snare
-      events.push({ at: barStart + beatDur, note: 39, velocity: 0.4 * energyVelScale, duration: stepDur * 0.3, channel: 'clap' });
-      events.push({ at: barStart + 3 * beatDur, note: 39, velocity: 0.4 * energyVelScale, duration: stepDur * 0.3, channel: 'clap' });
+      // Backbeat velocity increases toward phrase end (build tension)
+      const buildIntensity = phrasePos >= 6 ? 1.2 : 1.0;
+      events.push({ at: barStart + beatDur, note: 38, velocity: Math.min(1, 0.55 * energyVelScale * buildIntensity), duration: stepDur * 0.5, channel: 'snare' });
+      events.push({ at: barStart + 3 * beatDur, note: 38, velocity: Math.min(1, 0.55 * energyVelScale * buildIntensity), duration: stepDur * 0.5, channel: 'snare' });
+      events.push({ at: barStart + beatDur, note: 39, velocity: Math.min(1, 0.4 * energyVelScale * buildIntensity), duration: stepDur * 0.3, channel: 'clap' });
+      events.push({ at: barStart + 3 * beatDur, note: 39, velocity: Math.min(1, 0.4 * energyVelScale * buildIntensity), duration: stepDur * 0.3, channel: 'clap' });
     }
 
-    // Ride on every beat when fully established (shimmer layer)
-    // STAGE 2: only at high energy
+    // Ride layer (high energy only)
     if (this.state.grooveStability > 0.8 && this.userEnergy > 0.6) {
       this.activeVoices.add('ride');
       for (let beat = 0; beat < 4; beat++) {
@@ -808,16 +827,31 @@ export class CausalComposer {
       }
     }
 
-    // Phrase-end fill (bar 7 of phrase)
-    if (bar % 8 === 7) {
-      events.push({ at: barStart + 3 * beatDur + stepDur * 2, note: 45, velocity: 0.5 * energyVelScale, duration: stepDur * 0.4, channel: 'fill' });
-      events.push({ at: barStart + 3 * beatDur + stepDur * 3, note: 50, velocity: 0.6 * energyVelScale, duration: stepDur * 0.3, channel: 'fill' });
+    // PHRASE FILLS — much richer than before
+    // Bar 7: snare roll building into phrase end
+    // Bar 15/23/etc: bigger fill with toms + riser
+    if (phrasePos === 7) {
+      // Snare roll on last beat (16th note buildup)
+      for (let s = 0; s < 4; s++) {
+        events.push({
+          at: barStart + 3 * beatDur + s * stepDur,
+          note: 38,
+          velocity: Math.min(1, (0.4 + s * 0.15) * energyVelScale),
+          duration: stepDur * 0.4,
+          channel: 'snare',
+        });
+      }
+      // Tom fill
+      events.push({ at: barStart + 3 * beatDur + stepDur * 2, note: 45, velocity: 0.6 * energyVelScale, duration: stepDur * 0.4, channel: 'fill' });
+      events.push({ at: barStart + 3 * beatDur + stepDur * 3, note: 50, velocity: 0.7 * energyVelScale, duration: stepDur * 0.3, channel: 'fill' });
+      // Riser at phrase boundary (every 2 phrases = 16 bars)
+      if (bar % 16 === 15) {
+        events.push({ at: barStart, note: 72, velocity: 0.4 * energyVelScale, duration: 2 * beatDur, channel: 'riser' });
+      }
     }
 
-    // Track groove material
     this.memory.onMaterialPlayed('groove', bar);
     onMaterialPlayed(this.state, 'groove', bar);
-
     return events;
   }
 
