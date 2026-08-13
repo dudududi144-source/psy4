@@ -7004,3 +7004,60 @@ Stage Summary:
 - No code modified. No Foundation changes. No architecture ratified.
 - Key change from previous report: the 10-field contract was honestly mapped to Foundation's real types and shrunk to 6 fields (4 MAPPED, 5 GAP → dropped, moved to PSY4 derivations). The A/B/C/D confound was fixed by splitting into A/B/C/D/E (one variable per step). Pass/fail became hypothesis tests with null hypotheses allowed. "B almost certainly better" was deleted. Blind listening became a formal acceptance criterion.
 - Awaiting user's final confirmation to proceed with implementation under the locked boundaries.
+
+---
+Task ID: PSY4-FINAL-VALIDATION-LOCK-IN (orchestrator)
+Agent: z-ai-code (main)
+Task: Lock the 4 final conditions. Define complete experiment protocol with FROZEN thresholds. Confirm 5 Foundation GAPs remain unfilled. State final approved boundary. NO CODE.
+
+Work Log:
+- Read user's 4 final conditions: (1) B→C representation-only (same input), (2) CompositionEvent = temporary validation representation not architecture, (3) experiment protocol locked pre-render, (4) 5 Foundation GAPs remain unfilled.
+- Wrote audit-reports/PSY4-FINAL-VALIDATION-LOCK-IN.md locking all 4 conditions.
+
+Condition 1 (B→C representation-only):
+- B and C receive EXACTLY the same Foundation output.
+- B: Foundation output → renderer (raw, reads what it needs).
+- C: same Foundation output → CompositionEvent → VoiceSpec → SAME renderer.
+- C must NOT receive musical information B didn't.
+- CompositionEvent contains ONLY fields derivable from Foundation's actual output.
+- role/scaleDegree/harmonicRole are PSY4 derivations, not new information.
+
+Condition 2 (CompositionEvent = temporary):
+- 6 fields are EXPERIMENTAL SCHEMA, not architecture.
+- Post-experiment: if H2 passes, inspect which fields C actually consumed, keep only those.
+- If H2 fails, drop CompositionEvent entirely.
+- No commitment now to any field being permanent.
+
+Condition 3 (experiment protocol frozen pre-render):
+- Defined complete protocol BEFORE any render:
+  * 3 compositions (Foundation-generated 4-bar, Foundation-generated 8-bar, hand-encoded 4-bar matching rolling_bass preset)
+  * 3 seeds per composition (1, 2, 3)
+  * 45 total renders (3×3×5 variants A/B/C/D/E)
+  * BPM 145, sample rate 44100 mono
+  * 1 reference WAV (commercial psytrance ~10s, for reference_similarity metric only, NOT used as synthesis target)
+- 15 objective metrics defined with: direction "better", normalization formula, target range.
+- Aggregate = simple mean of 15 normalized metrics (no weighting — weighting introduces subjective priors).
+- Blind listening protocol: 45 unlabeled renders, randomized, level-matched, 1-5 Likert on kick/bass/lead/mix/overall-commercial, mandatory breaks every 9 renders.
+- H5 acceptance: ≥70% of (composition,seed) pairs have human top-2 ∩ DSP top-2 ≥ 1.
+- H6 acceptance: ≥6 of 9 pairs E aggregate > A by ≥10% AND listener rates E ≥4 "commercial" for ≥2 of 3 compositions.
+- Pass/fail thresholds FROZEN: 10% for H1/H6, 5% for H2/H3/H4, 6-of-9 pairs, 7-of-9 for H5, 4-of-5 Likert. Do NOT change after results.
+
+Condition 4 (5 Foundation GAPs remain unfilled):
+- velocity as performance intent: GAP. Foundation has velocity 0-1, PSY4 uses as-is.
+- articulation: GAP. Foundation has none. D derives from role+velocity threshold (PSY4 computation, NOT Foundation field).
+- microtiming offset: Foundation has RhythmPattern.micros (fractional steps) — this IS Foundation-provided. D uses if present. MotifNote has no micros → flat 0, GAP logged.
+- dynamics curve: GAP. Foundation has tension/density per bar, no per-note curve. D uses bar-level. GAP logged.
+- timbral character: GAP. Foundation has none. E uses genre codebook defaults. GAP logged.
+- CompositionEngine NOT changed. If D/E can't do something, skip/flat-default, log GAP. Do NOT invent information.
+
+Final approved boundary:
+  Foundation actual output → validation representation (CompositionEvent, temporary) → PSY4 (VoiceSpec builder, temporary) → renderer (Web Audio + AdvancedSynthVoice + samples) → objective metrics (15 DSP) + blind listening → decide which abstractions survive.
+
+Implementation scope: ~1150 LoC. 1-2 weeks. No optimizer, no architecture ratification, no Foundation changes.
+
+Stage Summary:
+- Final lock-in document written: audit-reports/PSY4-FINAL-VALIDATION-LOCK-IN.md (~330 lines).
+- 4 conditions locked. Experiment protocol frozen (45 renders, 15 metrics + blind listening, 6 hypotheses with frozen thresholds). 5 Foundation GAPs confirmed unfilled. Final boundary stated.
+- Verdict: APPROVE vertical proof implementation only. DO NOT APPROVE final architecture, Foundation changes, or optimizer/Mutator/Decision/SC/UI.
+- No code written. No Foundation changes. No architecture ratified. Protocol frozen.
+- Awaiting user's final confirmation to begin implementation.
