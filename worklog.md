@@ -6956,3 +6956,51 @@ Stage Summary:
 - No code modified. No engine installed. No tests written.
 - HARD STOP observed — awaiting user decision on 10 questions (minimal 3-stage architecture, 10-field contract, ownership map, Musical Physics as function, VoiceSpecification, critic permission matrix, Web Audio backend, A/B/C/D experiment, pass/fail criteria, BUILD verdict).
 - Key communicated insight: the architecture was over-engineered in previous proposals (9 layers). The reconciliation collapses to 3 stages with Musical Physics as a function, Mixing as a field, Sound Intelligence as a codebook lookup. The contract is 10 fields. The proof is ~800 LoC (not 3500). The A/B/C/D experiment isolates contract / performance / acoustic compilation as separate measurable contributions. Verdict: BUILD the vertical proof only, with clear kill criteria that stop development if the architecture doesn't produce measurable improvement.
+
+---
+Task ID: PSY4-VALIDATION-FIRST-LOCK-IN (orchestrator)
+Agent: z-ai-code (main)
+Task: Respond to user's conditional approval. Lock 10 boundaries. Honest field-by-field mapping with GAPs. Fix A/B/C/D confound. Convert pass/fail to hypothesis tests. NO CODE.
+
+Work Log:
+- Read Foundation actual source types: MotifNote {step, midi, velocity, durationSteps, glide}, BassNote {step, midi, velocity, durationSteps}, RhythmPattern {hits, velocities, probabilities, micros}, MusicalContext {tonic, scaleName, octave, bpm, beatsPerBar, beatPosition, barPosition, phrasePosition, harmonicContext, density, energy, tension, sectionRole, repetitionPressure, noveltyPressure}.
+- Performed honest field-by-field mapping of CompositionEvent → Foundation real types:
+  * time: MAPPED (step index + bpm → seconds)
+  * midi: MAPPED (absolute MIDI, Foundation already realized)
+  * duration: MAPPED (durationSteps)
+  * role: PARTIAL/GAP — Foundation has no VoiceRole enum on notes. Derivable from material kind + track name. DROPPED from contract; PSY4 infers.
+  * scaleDegree: PARTIAL/GAP — Foundation stores midi not degree. Recoverable via nearestDegree(). DROPPED from contract; PSY4 computes.
+  * harmonicRole: GAP — Foundation has harmonicContext (chord pcs) but doesn't label notes. DROPPED from contract; PSY4 computes from note pc vs chord.
+  * voiceGroup: GAP — Foundation has phrase/bar structure but no acoustic voiceGroup. DROPPED; PSY4 constructs from beat alignment.
+  * phrasePosition: MAPPED (barPosition, phrasePosition, beatPosition, step)
+  * beatStrength: PARTIAL/GAP — Foundation has strongBeats list + velocity but no categorical. DROPPED; PSY4 derives from strongBeats + velocity threshold.
+  * tension: MAPPED (MusicalContext.tension)
+  * accent: PARTIAL/GAP — Foundation has velocity 0-1, no category. DROPPED; PSY4 derives from velocity threshold.
+- Result: contract shrunk from 10 fields to 6 (step, midi, durationSteps, velocity, barContext, sourceMaterial+trackName). All musical labels (role, scaleDegree, harmonicRole, voiceGroup, beatStrength, accent) are PSY4 derivations, NOT Foundation-provided. No new Foundation concepts invented.
+- Fixed A/B/C/D confound: original B changed contract AND backend (two variables). Revised to A/B/C/D/E with one variable per step:
+  * A = current psyLive (baseline)
+  * B = new backend + RAW MIDI (isolates BACKEND)
+  * C = B + contract (isolates CONTRACT)
+  * D = C + performance realization (isolates PERFORMANCE)
+  * E = D + acoustic compilation (isolates ACOUSTIC)
+- Converted pass/fail to hypothesis tests H1-H6:
+  * H1: B > A (backend hypothesis)
+  * H2: C > B (contract hypothesis)
+  * H3: D > C (performance hypothesis)
+  * H4: E > D (acoustic hypothesis)
+  * H5: DSP metrics align with human ear (critic-ear alignment — most critical)
+  * H6: E > A (overall improvement)
+  * All null hypotheses allowed (B≈A, C≈B, D≈C, E≈D, E≈A are valid outcomes)
+- DELETED "B almost certainly better than A" claim per user instruction.
+- Blind A/B listening = formal acceptance criterion (not decoration). Per user boundary #8 and cited research (objective metrics ≠ human perception).
+- Musical Physics = pure function for VALIDATION ONLY. Not final architecture ruling. Revisited if it needs state/cross-voice coordination.
+- CompositionEvent + VoiceSpecification = validation contract/DTO only. Ratified only if A/B/C/D/E proves them.
+- Foundation CompositionEngine untouched. No new Foundation ownership.
+- Scope confirmed: vertical proof only (~850 LoC, 1-2 weeks). No optimizer, no Mutator, no Decision, no SC, no UI, no large refactor.
+- Verdict changed: BUILD → APPROVE (vertical validation only) / DO NOT APPROVE (final architecture ratification).
+
+Stage Summary:
+- Lock-in document written: audit-reports/PSY4-VALIDATION-FIRST-LOCK-IN.md (~500 lines).
+- No code modified. No Foundation changes. No architecture ratified.
+- Key change from previous report: the 10-field contract was honestly mapped to Foundation's real types and shrunk to 6 fields (4 MAPPED, 5 GAP → dropped, moved to PSY4 derivations). The A/B/C/D confound was fixed by splitting into A/B/C/D/E (one variable per step). Pass/fail became hypothesis tests with null hypotheses allowed. "B almost certainly better" was deleted. Blind listening became a formal acceptance criterion.
+- Awaiting user's final confirmation to proceed with implementation under the locked boundaries.
