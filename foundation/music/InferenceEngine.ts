@@ -89,9 +89,10 @@ export function generateCandidates(
   const conversationalBalance = deriveConversationalBalance(activeVoices);
 
   // Rule: groove saturation → new rhythmic grid (hats)
+  const hasHats = activeVoices.includes('hat') || activeVoices.includes('hat-closed');
   if (
     state.grooveStability > GROOVE_STABILITY_THRESHOLD &&
-    !activeVoices.includes('hat') &&
+    !hasHats &&
     registerSpace.high
   ) {
     candidates.push({
@@ -107,7 +108,7 @@ export function generateCandidates(
   // Rule: groove complete + no motif + register mid empty → introduce lead
   if (
     state.grooveStability > GROOVE_STABILITY_THRESHOLD &&
-    activeVoices.includes('hat') &&
+    hasHats &&
     !activeVoices.includes('lead') &&
     registerSpace['high-mid']
   ) {

@@ -19,6 +19,7 @@ import { DEFAULT_RADIO_CONFIG } from '../../foundation/radio/RadioObservationTyp
 import { MusicalSession, type NotePlan } from '../../foundation/music/MusicalSession';
 import { CausalComposer, type CausalNoteEvent, type CausalBarResult } from '../../foundation/music/CausalComposer';
 import { SamplerBridge, type PsyDevice, type MusicalTransport as BridgeTransport, type MusicalContext as BridgeContext } from './sampler-bridge';
+import { MaterialRealizer } from './material-realizer';
 
 // F13/R1: Removed dead imports — BeatPLL, PatternMutator, MelodyObserver,
 // RadioStateGate, TransportAdapter. The LIVE instances live inside
@@ -269,6 +270,8 @@ export class PsyLive {
   private currentCausalBar: CausalBarResult | null = null;
   private causalEventQueue: CausalNoteEvent[] = [];
   private causalHistory: Array<{ bar: number; action: string }> = [];
+  // MATERIAL REALIZER: the new full realization engine (replaces old 4-voice synth)
+  private realizer: MaterialRealizer | null = null;
   // Optional sampler bridge — if set, composition events are published to registered PsyDevices.
   private samplerBridge: SamplerBridge | null = null;
   private currentNotePlan: NotePlan | null = null;
@@ -473,6 +476,15 @@ export class PsyLive {
     this.causalComposer = new CausalComposer({
       bpm: 145, rootPc: 4, scaleName: 'phrygian-dominant', seed: 42,
     });
+    // MATERIAL REALIZER — the new full realization engine
+    this.realizer = new MaterialRealizer({
+      audioContext: this.ctx,
+      masterGain: this.master ?? this.ctx.destination,
+    });
+    // Load real drum samples asynchronously
+    this.realizer.loadSamples().then(() => {
+      console.log('[PSY4] Real drum samples loaded');
+    }).catch(() => {});
     // F13/R4-D: Apply pending style if set before play()
     if (this.pendingStyle) {
       this.session.setStyle(this.pendingStyle);
@@ -931,43 +943,30 @@ export class PsyLive {
     } catch (e) {}
   }
 
-  // CAUSAL: Schedule a single causal event for playback via synth voices
+  // CAUSAL: Schedule a single causal event for playback via MaterialRealizer
   private scheduleCausalEvent(ev: CausalNoteEvent): void {
     if (!this.ctx) return;
-    const time = ev.at;
-    const v = this.getVariant();
 
-    switch (ev.channel) {
-      case 'kick':
-        this.kick(time, ev.velocity);
-        break;
-      case 'bass':
-        this.bass(time, mtof(ev.note), v, ev.velocity);
-        break;
-      case 'lead':
-      case 'counterline':
-        this.lead(time, mtof(ev.note), v, false);
-        break;
-      case 'hat':
-        this.hat(time, (v.hatLvl || 0.12) * ev.velocity * 2.5, false);
-        break;
-      case 'pad':
-        this.lead(time, mtof(ev.note), { ...v, leadLvl: 0.2 }, false);
-        break;
-      case 'percussion':
-        this.hat(time, ev.velocity * 0.3, false);
-        break;
-      case 'impact':
-        this.kick(time, ev.velocity);
-        break;
-      default:
-        break;
+    // Use MaterialRealizer if available (new full realization engine)
+    if (this.realizer) {
+      this.realizer.realize(ev);
+    } else {
+      // Fallback to old synth voices (should not happen if realizer is initialized)
+      const time = ev.at;
+      const v = this.getVariant();
+      switch (ev.channel) {
+        case 'kick': this.kick(time, ev.velocity); break;
+        case 'bass': this.bass(time, mtof(ev.note), v, ev.velocity); break;
+        case 'lead': this.lead(time, mtof(ev.note), v, false); break;
+        case 'hat': this.hat(time, (v.hatLvl || 0.12) * ev.velocity * 2.5, false); break;
+        default: break;
+      }
     }
 
-    // Publish to sampler bridge (if attached) — plays in parallel with synth.
+    // Publish to sampler bridge (if attached) — plays in parallel.
     if (this.samplerBridge) {
       const note = { voice: ev.channel, step: 0, midi: ev.note, velocity: ev.velocity };
-      this.samplerBridge.publishNote(time, note, false, 0.1);
+      this.samplerBridge.publishNote(ev.at, note, false, 0.1);
     }
   }
 
