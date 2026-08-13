@@ -128,25 +128,36 @@ export default function Page() {
         originalOnState?.(state);
         if (!samplerLoaded && e.audioContext) {
           samplerLoaded = true;
-          // Load the external sampler bundle from public/.
-          import('/psy-sampler.js').then((samplerModule) => {
-            const ctx = e.audioContext!;
-            const bundle = samplerModule.createSamplerDevice({
-              audioContext: ctx,
-              manifestUrl: '/samples/manifest.json',
-              outputNode: e.engineBusInput,
-            });
-            bridge.register(bundle.device);
-            bundle.device.onStart?.();
-            bundle.load().then((result: { loaded: number; total: number }) => {
-              console.log(`[psy-sampler] ${result.loaded}/${result.total} samples loaded`);
-            }).catch((err: unknown) => {
-              console.warn('[psy-sampler] Sample loading failed:', err);
-            });
-            samplerBundleRef.current = bundle;
-          }).catch((err: unknown) => {
-            console.warn('[psy-sampler] Bundle load failed:', err);
-          });
+          // FIX: Load sampler bundle via script tag (works in all environments)
+          const script = document.createElement('script');
+          script.src = '/psy-sampler.js';
+          script.onload = () => {
+            try {
+              const samplerModule = (window as any).createSamplerDevice ? { createSamplerDevice: (window as any).createSamplerDevice } : null;
+              if (!samplerModule) {
+                console.warn('[psy-sampler] createSamplerDevice not found');
+                return;
+              }
+              const ctx = e.audioContext!;
+              const bundle = samplerModule.createSamplerDevice({
+                audioContext: ctx,
+                manifestUrl: '/samples/manifest.json',
+                outputNode: e.engineBusInput,
+              });
+              bridge.register(bundle.device);
+              bundle.device.onStart?.();
+              bundle.load().then((result: { loaded: number; total: number }) => {
+                console.log(`[psy-sampler] ${result.loaded}/${result.total} samples loaded`);
+              }).catch((err: unknown) => {
+                console.warn('[psy-sampler] Sample loading failed:', err);
+              });
+              samplerBundleRef.current = bundle;
+            } catch (err) {
+              console.warn('[psy-sampler] Init failed:', err);
+            }
+          };
+          script.onerror = () => console.warn('[psy-sampler] Script load failed');
+          document.head.appendChild(script);
         }
       };
     } catch (err) {
