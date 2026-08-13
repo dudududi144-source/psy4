@@ -95,6 +95,25 @@ export default function Page() {
   const [showMix, setShowMix] = useState(false);
   const [showFx, setShowFx] = useState(false);
   const [showRadio, setShowRadio] = useState(false);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      switch (e.code) {
+        case 'Space': e.preventDefault(); togglePlay(); break;
+        case 'KeyB': triggerBreak(); break;
+        case 'KeyD': triggerDrop(); break;
+        case 'KeyU': triggerBuild(); break;
+        case 'KeyA': releaseSection(); break;
+        case 'KeyM': setShowMix(p => !p); break;
+        case 'KeyF': setShowFx(p => !p); break;
+        case 'KeyR': setShowRadio(p => !p); break;
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [s.playing, style, energy, tension]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
 
@@ -325,15 +344,17 @@ export default function Page() {
               {showMix && (
                 <div className="px-3 pb-3 space-y-1.5">
                   {[
-                    { label: 'DRUMS', color: '#00ffc8', vol: 0.8 },
-                    { label: 'BASS', color: '#3b82f6', vol: 0.6 },
-                    { label: 'LEAD', color: '#ff2e88', vol: 0.45 },
-                    { label: 'TEXTURE', color: '#8b5cf6', vol: 0.3 },
-                    { label: 'FX', color: '#f59e0b', vol: 0.5 },
+                    { label: 'DRUMS', bus: 'drum' as const, color: '#00ffc8', vol: 0.8 },
+                    { label: 'BASS', bus: 'bass' as const, color: '#3b82f6', vol: 0.6 },
+                    { label: 'LEAD', bus: 'lead' as const, color: '#ff2e88', vol: 0.45 },
+                    { label: 'TEXTURE', bus: 'texture' as const, color: '#8b5cf6', vol: 0.3 },
+                    { label: 'FX', bus: 'transition' as const, color: '#f59e0b', vol: 0.5 },
                   ].map(ch => (
                     <div key={ch.label} className="flex items-center gap-2 p-1.5 rounded" style={{ background: `${ch.color}08` }}>
-                      <span className="text-[10px] font-bold w-10" style={{ color: ch.color }}>{ch.label}</span>
-                      <input type="range" min={0} max={1} step={0.01} defaultValue={ch.vol} className="flex-1" style={{ accentColor: ch.color, height: '4px' }} />
+                      <span className="text-[10px] font-bold w-10" style={{ color: ch.label === 'FX' ? '#f59e0b' : ch.color }}>{ch.label}</span>
+                      <input type="range" min={0} max={1} step={0.01} defaultValue={ch.vol}
+                        onChange={e => engineRef.current?.setBusVolume(ch.bus, parseFloat(e.target.value))}
+                        className="flex-1" style={{ accentColor: ch.color, height: '4px' }} />
                       <span className="text-[9px] tabular-nums text-slate-500 w-6 text-right">{Math.round(ch.vol * 100)}</span>
                     </div>
                   ))}
@@ -350,11 +371,15 @@ export default function Page() {
               {showFx && (
                 <div className="px-3 pb-3 grid grid-cols-3 gap-3">
                   {[
-                    { label: 'Echo', color: '#f59e0b' }, { label: 'Feedback', color: '#a855f7' }, { label: 'Space', color: '#06b6d4' },
+                    { label: 'Echo', color: '#f59e0b', handler: (v: number) => engineRef.current?.setDelayAmount(v) },
+                    { label: 'Feedback', color: '#a855f7', handler: (v: number) => engineRef.current?.setDelayFeedback(v) },
+                    { label: 'Space', color: '#06b6d4', handler: (v: number) => engineRef.current?.setReverbSend(v) },
                   ].map(fx => (
                     <div key={fx.label}>
                       <div className="flex justify-between mb-0.5"><span className="text-[9px] uppercase font-semibold text-slate-300">{fx.label}</span></div>
-                      <input type="range" min={0} max={1} step={0.01} defaultValue={0.3} className="w-full" style={{ accentColor: fx.color, height: '4px' }} />
+                      <input type="range" min={0} max={0.85} step={0.01} defaultValue={0.3}
+                        onChange={e => fx.handler(parseFloat(e.target.value))}
+                        className="w-full" style={{ accentColor: fx.color, height: '4px' }} />
                     </div>
                   ))}
                 </div>

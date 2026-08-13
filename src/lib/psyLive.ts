@@ -774,8 +774,19 @@ export class PsyLive {
       this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
   }
 
-  // F11: Per-channel volume controls
+  // NEW: Bus volume control for MaterialRealizer's 5 buses
+  setBusVolume(bus: 'drum' | 'bass' | 'lead' | 'texture' | 'transition', v: number): void {
+    if (this.realizer) this.realizer.setBusVolume(bus, v);
+  }
+
+  // F11: Per-channel volume controls (legacy — routes to realizer buses)
   setChannelVolume(channel: 'kick' | 'bass' | 'lead' | 'hat', v: number): void {
+    // Route to MaterialRealizer buses
+    if (channel === 'kick') this.setBusVolume('drum', v);
+    else if (channel === 'bass') this.setBusVolume('bass', v);
+    else if (channel === 'lead') this.setBusVolume('lead', v);
+    else if (channel === 'hat') this.setBusVolume('drum', v * 0.5);
+    // Also set legacy bus for fallback path
     const bus = channel === 'kick' ? this.kickBus : channel === 'bass' ? this.bassBus : channel === 'lead' ? this.leadBus : this.hatBus;
     if (bus && this.ctx) bus.gain.setTargetAtTime(v, this.ctx.currentTime, 0.03);
   }
@@ -947,11 +958,16 @@ export class PsyLive {
   private scheduleCausalEvent(ev: CausalNoteEvent): void {
     if (!this.ctx) return;
 
+    // Track kick count for UI
+    if (ev.channel === 'kick') this.kickCount++;
+    // Track bass note for UI display
+    if (ev.channel === 'bass' && ev.note > 0) this.bassFreq = mtof(ev.note);
+
     // Use MaterialRealizer if available (new full realization engine)
     if (this.realizer) {
       this.realizer.realize(ev);
     } else {
-      // Fallback to old synth voices (should not happen if realizer is initialized)
+      // Fallback to old synth voices
       const time = ev.at;
       const v = this.getVariant();
       switch (ev.channel) {
