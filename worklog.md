@@ -7813,3 +7813,119 @@ Stage Summary:
 - The model should be SMALLER, not larger. Most descriptive fields (role, density, energy, lifecycle, intent, section labels) are DERIVED from causal state + inference rules. The minimal causal model needs: state variables + inference rules + material with identity + material relationships + groove grammar + causal rules + musical memory + genre grammar.
 - VERDICT: CONDITIONAL GO. All 20 must-pass criteria pass conceptually. But causal model must be formalized + validated (full paper composition with state tracking, completeness check, ambiguity check) before schema design.
 - The guiding principle: building a system that can reason about why the next musical event should exist, not a system that can represent a psytrance track.
+
+---
+Task ID: AUDIT-SAMPLER
+Agent: AUDIT-SAMPLER
+Task: Deep audit of PSY4 sample infrastructure (sample loading, caching, voice allocation, playback, timing, determinism, RT safety, manifest provenance, offline/realtime parity). NO CODE, no Foundation changes.
+
+Work Log:
+- Read worklog tail for context (PSY4 deep commercial audio rebuild history; recent focus on composition ontology, not sampler infra).
+- Read in full: sampleBank.ts (267 LOC), multisampleGenerator.ts (525 LOC), audioBackend.ts (238 LOC interface), engineWorklet.ts (252 LOC), psy4-engine.js (2576 LOC), psy4-dsp.js (486 LOC), offlineRenderer.ts (115 LOC), public/samples/manifest.json (dead, 6-entry bare array), public/samples/real/manifest.json (~108 entries, no provenance), SAMPLE_MANIFEST.json (6 entries, full provenance + ingestion policy).
+- Wrote audit-reports/AUDIT-SAMPLER-PSY4-INFRASTRUCTURE.md with 12 sections + master REUSE/ADAPT/REWRITE/DO NOT PORT table.
+
+Key findings:
+- REUSE: psy4-dsp.js (gold standard — modular, deterministic, RT-safe), sampleBank.ts (clean loader, needs FFT upgrade), multisampleGenerator.ts (deterministic LCG-seeded, currently dead code), DSP classes inside psy4-engine.js (MoogLadder, BLSaw, SchroederReverb, StereoDelay, BusProcessor, MultibandComp, MasterChain), SAMPLE_MANIFEST.json format.
+- ADAPT: psy4-engine.js (DSP reusable, engine composition needs refactor), engineWorklet.ts (parameterize processor name), audioBackend.ts (split 26-method interface), SampleVoice (add cubic interp, anti-aliasing, loop, keyzones, ADSR; fix linear-not-equal-power pan), VoicePool (promote to class with priority stealing).
+- DO NOT PORT: offlineRenderer.ts (STUB — returns zero-filled arrays, never calls OfflineAudioContext.startRendering), public/samples/manifest.json (dead file).
+- CRITICAL RT VIOLATION: triggerVoice() for V_KICK/V_HAT/V_CLAP/V_PERC does Object.keys(this.samples).filter().filter() — two array allocations + two closures PER DRHIT, on the audio thread, inside process(). Violates PSY5 RT contract documented in the file header. Fix: precompute sample-name arrays in loadSamples handler.
+- CRITICAL DETERMINISM BUG: Math.random() in AcidVoice.trigger() (thermal drift target) and TextureVoice.trigger() (baseFreq) — on the audio thread, breaks reproducible renders.
+- CRITICAL PROVENANCE GAP: 108 real samples (md_*, nord_*, 909_*) have NO license/source/author metadata. SAMPLE_MANIFEST.json's own ingestion policy says "NEVER assume a random downloaded sample is commercially usable" — the real samples violate this. Commercial use is legally risky.
+- Round-robin bugs: V_PERC reuses rrCounters.clap (line 2224); V_HAT_OPEN uses per-hit RR while V_HAT uses phrase-lock (inconsistent).
+- SampleVoice limitations: linear interp (not cubic), no anti-aliasing for pitch-down, no loop mode, no ADSR, no keyzones, no multi-sample. Bass/lead samples explicitly marked "not yet used in worklet" in SAMPLE_MANIFEST.json.
+- MIDI path: no explicit MIDI handling in audited files. Likely bug: V_BASS passes `note` (MIDI) as `freq` (Hz) to BassVoice.trigger — either upstream conversion (not visible) or low notes are inaudible. Requires verification.
+- Offline/realtime parity: NOT achieved. offlineRenderer.ts is a stub. Worklet itself is offline-capable (no Date.now, uses currentFrame) EXCEPT for Math.random in Acid/Texture and performance.now-based voice budget dropping (which should be disabled in offline mode).
+
+Stage Summary:
+- Audit document written: audit-reports/AUDIT-SAMPLER-PSY4-INFRASTRUCTURE.md (~12 sections, ~600 lines, master verdict table for 19 components).
+- No code modified. No Foundation changes. No PSY4 changes.
+- The PSY4 sampler infrastructure has solid DSP primitives (REUSE) but a broken RT contract in triggerVoice (array allocation per drum hit), non-deterministic Math.random in two voices, a stub offline renderer, an incomplete SampleVoice (no loop/keyzones/ADSR/anti-aliasing), and a critical provenance gap (108 real samples without license metadata).
+- The path to a standalone device: extract DSP classes into a primitives library, build a real VoicePool with priority stealing, build a KeyzoneMap for multi-sample instruments, replace Math.random with seeded LCG, precompute sample-name arrays, implement a real offline renderer, and reconcile all sample manifests under the SAMPLE_MANIFEST.json format with full provenance.
+
+---
+Task ID: PSY-SAMPLER-INTEGRATION-DESIGN (orchestrator)
+Agent: z-ai-code (main)
+Task: Architecture reconciliation + integration design for PSY Sampler Device. NO CODE, no Foundation changes, no PSY4 changes, no new repo, no implementation. Plan the Sampler as a true family citizen respecting Foundation contract + WHAT/WHEN/HOW boundaries + composition architecture.
+
+Work Log:
+- User instruction: stop "research only", move to binding execution planning. But don't jump to code. Build a Sampler device that is a true PSY family citizen, implements PsyDevice contract, consumes MusicalTransport/MusicalContext/MusicalEvent, doesn't invent composition, doesn't fork architecture.
+- Read all 6 repositories' actual source files (not relying on previous reports):
+  * /tmp/psy-foundation/packages/device-sdk/src/{device,host,reference,index}.ts — canonical PsyDevice contract
+  * /tmp/psy-foundation/packages/protocol/src/{events,state,channel}.ts — MusicalEvent, MusicalContext, DeviceCapabilities, Channel
+  * /tmp/psy-foundation/packages/transport/src/types.ts — MusicalTransport
+  * /tmp/psy-foundation/FOUNDATION_FREEZE.md — confirmed frozen (250 tests pass, 13 packages)
+  * /tmp/nexus-psy7/src/lib/audio/sampler-tool/index.ts — buffer utilities (decode, normalize, reverse, trim, slice)
+  * /home/z/my-project SAMPLE_MANIFEST.json — gold-standard provenance format (source, author, license, attribution, usageRestrictions)
+  * /home/z/my-project/public/samples/real/manifest.json — 108 samples, provenance-bare
+- Dispatched AUDIT-SAMPLER subagent to deep-audit PSY4 sample infrastructure (sampleBank, multisampleGenerator, audioBackend, engineWorklet, psy4-engine.js, psy4-dsp.js, offlineRenderer, manifests). Report: audit-reports/AUDIT-SAMPLER-PSY4-INFRASTRUCTURE.md.
+- AUDIT-SAMPLER critical findings:
+  1. Real-time violation: triggerVoice() for drums does Object.keys().filter().filter() per hit inside process() — array allocation + closures on audio thread. Violates PSY5 RT contract documented in file header.
+  2. Non-determinism: AcidVoice and TextureVoice use Math.random() on audio thread. Same seed → different renders.
+  3. Provenance gap: 108 real samples have no license metadata (source/author/license/attribution missing). SAMPLE_MANIFEST.json (6 PSY3 samples) is gold standard with all fields. Commercial use legally risky.
+- Reuse/Adapt/Rewrite/Do Not Port matrix:
+  * REUSE: sampleBank.ts, multisampleGenerator.ts, psy4-dsp.js (gold standard), SAMPLE_MANIFEST.json format, nexus-psy7 sampler-tool, DSP classes (reverb/delay/bus/comp/master from psy4-engine.js)
+  * ADAPT: audioBackend.ts (split 26-method interface), engineWorklet.ts (parameterize), psy4-engine.js (fix RT violations + determinism), SampleVoice (add cubic interp, anti-aliasing, loop, keyzones, ADSR, fix pan), VoicePool (priority stealing), real samples manifest (add provenance)
+  * DO NOT PORT: offlineRenderer.ts (stub returns zeros), PSY3 manifest.json (dead file)
+  * REWRITE: MIDI path (none exists — but belongs upstream, not in device)
+- Wrote audit-reports/PSY-SAMPLER-INTEGRATION-DESIGN.md with 25 sections:
+
+Section 1 — Executive Summary: goal is Sampler as family citizen. Key findings: Foundation has clean frozen canonical contract; PSY4 has reusable infra with critical defects (RT violations, non-determinism, provenance gap); no MIDI path in Foundation (belongs upstream); offline renderer is stub. Verdict: CONDITIONAL GO (3 conditions: fix RT violations, establish provenance, resolve NoteEvent gap).
+
+Section 2 — Repository Topology: 6 repos mapped (psy-foundation frozen, psy4 active, nexus-psy7 standalone, psy5/psy3/psy minimal). Decision: Sampler lives in PSY4 (src/lib/devices/sampler/), NOT new repo, imports Foundation contracts.
+
+Section 3 — Canonical Contract Audit (verified from source): PsyDevice (5 methods + 3 optional), DeviceHost (register/unregister/pushTransport/pushContext/publish), MusicalTransport (beatTime + origin.audioTime = timing authority), MusicalContext (rootPc, scale, style, section), MusicalEvent (NoteEvent is primary for Sampler), DeviceCapabilities (audio/midi/inputs/outputs/voices/latencyMs/roles), Channel (in-memory pub/sub). Contract is sufficient for basic Sampler. No new contract needed.
+
+Section 4 — Existing Sampler Infrastructure Audit: REUSE/ADAPT/REWRITE/DO NOT PORT table from AUDIT-SAMPLER. 3 critical defects: RT violation (per-drum-hit array allocation in process()), non-determinism (Math.random in audio thread), provenance gap (108 samples no license).
+
+Section 5 — Device Boundary: Sampler OWNS (sample loading, decoding, playback, voice allocation, pitch, velocity, deterministic selection, timing). Does NOT OWN (composition, arrangement, what motif exists, when role enters, genre logic, expectation/tension, artist identity, synthesis policy, mix/master). Boundary enforcement: Sampler receives MusicalEvents, doesn't decide which to generate. If asked to play missing material, reports MISSING_MATERIAL diagnostic, doesn't invent substitute.
+
+Section 6 — Timing Architecture: authority = AudioContext.currentTime via transport (beatTime + origin.audioTime). Forbidden: Date.now(), performance.now() as musical clock, setInterval/setTimeout for sequencing, browser randomness. Required behaviors: on-time/late/early event handling, transport jump (flush + reset), section change, device start after transport, pause/resume. Lookahead 100ms default.
+
+Section 7 — Determinism Architecture: same composition + same sample bank + same seed = same rendering. Deterministic selection function f(worldSeed, materialId/channel, midiNote, velocity, section, phrase, eventIndex) → sampleIndex. Seeded LCG, NOT Math.random(). Round-robin = deterministic counter, not random. Seek = rebuild counter from event log.
+
+Section 8 — Sample Lifecycle: DISCOVER→MANIFEST→FETCH→DECODE→ANALYZE→REGISTER→TRANSFER→READY→PLAY→EVICT. Per-stage ownership (owner, thread, memory, failure mode). Memory management: 256MB cache default, LRU eviction, explicit disposal.
+
+Section 9 — Voice Lifecycle: IDLE→ACTIVE→RELEASING→IDLE. Max voices 32 default (from performance budget). Priority per role (kick highest). Stealing (lowest-priority releasing, then active). Protected voices (kick/bass during attack 50ms). Preallocated pool, no allocation in process().
+
+Section 10 — Manifest/Licensing: required fields (extending SAMPLE_MANIFEST gold standard: name, category, subcategory, source, author, license, attribution, dateAcquired, usageRestrictions, duration, sampleRate, channels, peak, rms, centroid, fundamental, quality, role). License tiers: commercial-safe ✅, license-required ⚠️, unknown ❌ quarantine. Provenance enforcement: unknown samples quarantined (test only). Current state: 6 PSY3 samples gold standard, 108 real samples provenance-bare.
+
+Section 11 — DeviceHost Integration: registration flow (channel + host + sampler.register). Sampler receives onTransport (timing), onContext (rootPc/style/section for selection), onEvent (NoteEvent → playback, SectionEvent → round-robin reset), onStart (init), onStop (release). Does NOT receive composition decisions, material identity (unless in NoteEvent), mix/master.
+
+Section 12 — MusicalEvent Integration: NoteEvent primary (note, velocity, duration, channel, at). SectionEvent (round-robin reset). BeatEvent/EnergyEvent/DropEvent ignored (composition concerns). NoteEvent contract gap: lacks materialId, motifId, lifecycleState, variationState (see §23).
+
+Section 13 — UI Boundary: device is headless. Works without React/DOM/UI, in test harness, in offline render. UI responsibilities (browser, bank selection, diagnostics) are separate, downstream. UI is NOT source of truth. Test harness: Node.js + web-audio-api.
+
+Section 14 — MIDI Boundary: Foundation has NO MIDI path. MIDI translation belongs upstream (Foundation or dedicated bridge), NOT in device. Flow: MIDI → bridge → MusicalEvent → DeviceHost → Sampler. MIDI bridge is documented gap, out of scope for Sampler.
+
+Section 15 — Offline Rendering Boundary: goal = realtime ≈ offline. offlineRenderer.ts is stub (DO NOT PORT). writeWavFile reusable. web-audio-api provides OfflineAudioContext for Node. Architecture: device schedules against event.at (audio time), identical logic in realtime/offline. Documented limitation: worklet behavior may differ slightly — must test.
+
+Section 16 — Memory/Performance Budget: memory (256MB cache, 32 voices × 1KB = 32KB, manifest 50KB). CPU (32 voices × 344 blocks/sec × 10 ops = 110K ops/sec, well within budget). Latency (100ms lookahead + 2.9ms block = ~3-5ms device latency).
+
+Section 17 — Dependency Graph: Sampler depends on @psy-foundation/{device-sdk,protocol,transport,scheduler}, web-audio-api, SAMPLE_MANIFEST.json. Does NOT depend on React/DOM, PSY4 composition engine, PSY4 synth voices, psy4-engine.js. No dependency cycles (one-way: Sampler → Foundation + PSY4 infra).
+
+Section 18 — Test Strategy: 8 test categories (Contract, Timing, Determinism, Voice, Samples, Integration, Performance, Offline). Headless Node.js + web-audio-api. Deterministic seeds. CI-ready.
+
+Section 19 — Failure Modes: sample missing, decode failure, voice starvation, worklet unavailable, manifest missing, license unknown, transport not received, event in past. All have defined behavior.
+
+Section 20 — Security/Licensing Risks: unlicensed samples (provenance enforcement), path traversal (manifest validation), worklet injection (static code, typed messages), memory exhaustion (cache limit + LRU), event flood (lookahead limit).
+
+Section 21 — Open Contract Gaps:
+  Gap 1: NoteEvent lacks sample-selection context (materialId, motifId, lifecycleState, variationState). REQUIRED CONTRACT GAP. Foundation owns (musical info). Foundation frozen — requires team approval. Until resolved, Sampler uses channel + note + position-based selection.
+  Gap 2: No MIDI bridge. Documented. Out of scope.
+  Gap 3: No offline render pipeline. Documented. Separate work.
+
+Section 22 — Minimal Implementation Plan: Phase 0 (contract verification ✅), Phase 1 (minimal headless sampler: PsyDevice + single voice + NoteEvent + deterministic selection + transport sync), Phase 2 (VoicePool: stealing, round-robin, performance), Phase 3 (SampleBank: manifest, loading, decode, cache, lifecycle), Phase 4 (Integration: DeviceHost, context, sections, events), Phase 5 (UI only after headless works), Phase 6 (Offline/export).
+
+Section 23 — Anti-Pattern Audit: 12 anti-patterns checked (composition decisions, React dep, psy4 dep, new contract, duplicate VoicePool, duplicate timing, non-deterministic random, synthesis logic, mixing/mastering, sample-selection as WHAT/WHEN, UI-worklet direct, dependency cycles). All have mitigation. None unresolved.
+
+Section 24 — GO/NO-GO: 12 conditions checklist. 10 pass, 2 conditional (Condition 6: RT safety — PSY4 worklet has violations, must fix or use clean worklet; Condition 7: provenance — 108 samples lack license, must extend manifest). Verdict: CONDITIONAL GO. Does NOT mean implementation can start, Foundation changes, MIDI bridge, offline pipeline, or architecture approval. Next step: decide worklet strategy, extend manifest, propose NoteEvent extension, then Phase 1.
+
+Section 25 — Final Principle: goal is Sampler as true family citizen respecting Foundation contract + WHAT/WHEN/HOW boundaries + composition architecture + runtime constraints, without architecture fork. When composition engine says "this material should sound now", Sampler knows HOW to execute deterministically, precisely, efficiently, testably.
+
+Stage Summary:
+- Integration design document written: audit-reports/PSY-SAMPLER-INTEGRATION-DESIGN.md (~900 lines, 25 sections).
+- No code modified. No Foundation changes. No PSY4 changes. No new repository. No implementation. No audio rendering.
+- KEY FINDINGS: Foundation canonical contract is clean, frozen, sufficient for Sampler. PSY4 has reusable sample infra (sampleBank, multisampleGenerator, psy4-dsp.js, SAMPLE_MANIFEST format) but critical defects (RT violations in psy4-engine.js, non-determinism, provenance gap). Sampler lives in PSY4 as new module, implements PsyDevice, consumes MusicalEvent, doesn't invent composition.
+- 3 open contract gaps: NoteEvent lacks sample-selection context (REQUIRED, needs Foundation approval), MIDI bridge missing (out of scope), offline pipeline stub (separate work).
+- VERDICT: CONDITIONAL GO. 10/12 conditions pass. 2 conditions pending: fix RT violations + establish sample provenance.
+- Next step: await user review. If approved, decide worklet strategy + extend manifest + propose NoteEvent extension, then Phase 1 (minimal headless sampler).
