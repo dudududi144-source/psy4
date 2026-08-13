@@ -1958,7 +1958,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       bassCutoff: 150, bassResonance: 3,
       leadCutoff: 1800, leadDetune: 10,
       padCutoff: 1200, padAttack: 0.5, padDetune: 7, padEvolveRate: 0.1,
-      duck: 0.4,
+      duck: 0.6,  // FIX: was 0.4. Commercial psytrance ducks bass 50-60% on each kick.
     };
 
     // Macros
@@ -2227,7 +2227,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         }
         // Trigger sidechain — DEEPER duck for real psytrance groove
         // 6dB depth (was ~3-4dB) — commercial psytrance has obvious pumping
-        this.duckEnv = 1 - wp.duck * 0.7 * (0.5 + mc.aggression * 0.5);
+        this.duckEnv = 1 - wp.duck * (0.5 + mc.aggression * 0.5);  // FIX: was *0.7 — deeper duck
         break;
       }
       case V_BASS: {
@@ -2620,14 +2620,15 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
               break;
             }
             case 2: {
+              const ducked2 = s * duckEnvRef.duckEnv;  // FIX: lead/music also ducked (was not ducked)
               if (stereo === ST_HAAS) {
-                musicBusL += s;
+                musicBusL += ducked2;
                 const delayed = leadDelayL[leadDelayIdx];
-                leadDelayL[leadDelayIdx] = s;
+                leadDelayL[leadDelayIdx] = ducked2;
                 leadDelayIdx = (leadDelayIdx + 1) % 18;
                 musicBusR += delayed;
               } else {
-                musicBusL += s; musicBusR += s;
+                musicBusL += ducked2; musicBusR += ducked2;
               }
               break;
             }
