@@ -1152,7 +1152,7 @@ class FXVoice {
     this.type = type;
     this.t = 0;
     this.dur = dur || 0.3;
-    this.amp = amp || 0.2;
+    this.amp = Math.max(0.5, amp || 0.5);  // FIX: was 0.2 default. FX need to be audible.
     this.phase = 0;
     this.noise.reset();
     this.filter.reset();
@@ -1170,42 +1170,41 @@ class FXVoice {
     switch (this.type) {
       case V_RISER: {
         // Riser = noise through filter that opens up + amplitude rise
-        // BEFORE: just noise * env. No filter, no character.
+        // FIX: louder, more dramatic build, longer filter sweep
         const n = this.noise.process();
-        // Filter opens from 200Hz to 8000Hz over the duration
-        const cutoff = 200 + (t / this.dur) * 7800;
-        const filtered = this.filter.process(n, cutoff, 0.2, 1.5, sr);
-        // Amplitude rises exponentially (not linear)
-        const env = Math.pow(t / this.dur, 2) * 0.35;
-        sample = fastTanh(filtered * env * 3); // saturate for punch
+        // Filter opens from 100Hz to 10000Hz over the duration — FIX: wider range
+        const cutoff = 100 + Math.pow(t / this.dur, 1.5) * 9900;  // FIX: exponential curve, wider range
+        const filtered = this.filter.process(n, cutoff, 0.3, 2.0, sr);  // FIX: more resonance, more drive
+        // Amplitude rises exponentially — FIX: louder, more dramatic
+        const env = Math.pow(t / this.dur, 3) * 0.6;  // FIX: was pow(2)*0.35 — steeper curve, louder
+        sample = fastTanh(filtered * env * 4);  // FIX: was *3 — more saturation
         break;
       }
       case V_IMPACT: {
         // Impact = sub sine boom + noise burst (two layers)
-        // BEFORE: just sine going down. No body, no texture.
-        // Sub boom: sine from 120Hz to 35Hz with exp decay
-        const f = 120 * Math.exp(-t / 0.15) + 35;
+        // Sub boom: sine from 150Hz to 40Hz with exp decay — FIX: louder, deeper
+        const f = 150 * Math.exp(-t / 0.12) + 40;
         this.phase += 2 * Math.PI * f * dt;
-        const subEnv = Math.exp(-t / 0.2);
-        const sub = Math.sin(this.phase) * subEnv * 0.7;
-        // Noise burst: short percussive crack
+        const subEnv = Math.exp(-t / 0.25);
+        const sub = Math.sin(this.phase) * subEnv * 0.9;  // FIX: was 0.7 — louder
+        // Noise burst: short percussive crack — FIX: louder, longer
         const n = this.noise.process();
-        const noiseEnv = Math.exp(-t / 0.02); // 20ms crack
-        const crack = n * noiseEnv * 0.3;
+        const noiseEnv = Math.exp(-t / 0.04);  // FIX: was 0.02 — 40ms crack instead of 20ms
+        const crack = n * noiseEnv * 0.5;  // FIX: was 0.3 — louder
         sample = sub + crack;
-        sample = fastTanh(sample * 1.5); // saturate
+        sample = fastTanh(sample * 2.0);  // FIX: was 1.5 — more saturation = punchier
         break;
       }
       case V_SWEEP: {
         // Sweep = filtered noise with filter moving + amplitude curve
-        // BEFORE: noise * sin envelope. No filter movement.
+        // FIX: louder, more dramatic filter movement
         const n = this.noise.process();
-        // Filter sweeps from low to high and back
         const sweepPos = t / this.dur;
-        const cutoff = 200 + Math.sin(Math.PI * sweepPos) * 4000 + 2000;
-        const filtered = this.filter.process(n, cutoff, 0.3, 1.3, sr);
-        const env = Math.sin(Math.PI * sweepPos) * 0.2;
-        sample = filtered * env;
+        // Filter sweeps from high to low (downward) — FIX: clearer direction
+        const cutoff = 6000 - Math.pow(sweepPos, 1.5) * 5500 + 500;  // FIX: 6000→500, exponential
+        const filtered = this.filter.process(n, cutoff, 0.4, 1.8, sr);  // FIX: more resonance, more drive
+        const env = Math.sin(Math.PI * sweepPos) * 0.5;  // FIX: was 0.2 — louder
+        sample = fastTanh(filtered * env * 2.5);  // FIX: add saturation
         break;
       }
       case V_ZAP: {
@@ -1907,7 +1906,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     // REBALANCED for proper mix: kick lower, music higher (lead+pad now audible)
     // FIX: Mix balance — kick should be loudest, bass under kick, lead audible
     // Commercial psytrance: kick 0dB, bass -3dB, lead -6dB, hats -12dB, pad -18dB
-    this.busGains = [1.0, 0.7, 0.9, 0.5, 0.4];  // drum=1.0, bass=0.7, music=0.9, atmos=0.5, fx=0.4
+    this.busGains = [1.0, 0.7, 0.9, 0.5, 0.7];  // drum=1.0, bass=0.7, music=0.9, atmos=0.5, fx=0.7
 
     // ── BUS PROCESSORS — SEPARATE L and R instances ──
     // CRITICAL FIX: Previously L and R shared the same instance, which meant
