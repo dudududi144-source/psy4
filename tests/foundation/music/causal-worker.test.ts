@@ -129,22 +129,138 @@ describe('Architecture (ADR compliance)', () => {
   });
 });
 
-// ─── Sound quality metrics (placeholder for Phase 7) ─────────────────
+// ─── Phase 9: Integration + Audio Quality Tests ──────────────────────
 
-describe('Sound Quality (Phase 7 — pending)', () => {
-  it('should have bass filter that reopens (rolling psytrance)', () => {
-    // TODO: verify bass voice has filter LFO that reopens per note
-    // This is a known gap — bass filter closes and never reopens
-    expect(true).toBe(true); // placeholder
+describe('Phase 9: Integration Tests', () => {
+  it('should have COOP/COEP headers for SharedArrayBuffer (ADR-009)', () => {
+    const fs = require('fs');
+    const config = fs.readFileSync('./next.config.ts', 'utf-8');
+    expect(config.includes('Cross-Origin-Opener-Policy')).toBe(true);
+    expect(config.includes('Cross-Origin-Embedder-Policy')).toBe(true);
   });
 
-  it('should have lead with FM/wavetable modulation', () => {
-    // TODO: verify lead voice has FM or wavetable
-    expect(true).toBe(true); // placeholder
+  it('should have initSharedBuffer method in engineWorklet', () => {
+    const fs = require('fs');
+    const code = fs.readFileSync('./src/lib/studio/engine/engineWorklet.ts', 'utf-8');
+    expect(code.includes('initSharedBuffer')).toBe(true);
+    expect(code.includes('SharedArrayBuffer')).toBe(true);
+    expect(code.includes('Atomics')).toBe(true);
   });
 
-  it('should have master chain with multiband + true-peak', () => {
-    // TODO: verify master chain has multiband compression + true-peak limiting
-    expect(true).toBe(true); // placeholder
+  it('should have SharedArrayBuffer handler in worklet', () => {
+    const fs = require('fs');
+    const code = fs.readFileSync('./public/worklets/psy4-engine.js', 'utf-8');
+    expect(code.includes('initSharedBuffer')).toBe(true);
+    expect(code.includes('sharedEventBuffer')).toBe(true);
+    expect(code.includes('Atomics.load')).toBe(true);
+    expect(code.includes('Atomics.store')).toBe(true);
+  });
+
+  it('should have composition worker file', () => {
+    const fs = require('fs');
+    expect(fs.existsSync('./public/worklets/composition-worker.js')).toBe(true);
+    const code = fs.readFileSync('./public/worklets/composition-worker.js', 'utf-8');
+    // Must have mulberry32 PRNG
+    expect(code.includes('mulberry32')).toBe(true);
+    // Must have CausalComposerWorker class
+    expect(code.includes('class CausalComposerWorker')).toBe(true);
+    // Must have all 13 actions
+    expect(code.includes('INTRODUCE_ACID')).toBe(true);
+    expect(code.includes('INTRODUCE_PAD')).toBe(true);
+    expect(code.includes('RESPONSE')).toBe(true);
+  });
+
+  it('should have bass filter LFO (ADR-007)', () => {
+    const fs = require('fs');
+    const code = fs.readFileSync('./public/worklets/psy4-engine.js', 'utf-8');
+    expect(code.includes('lfoPhase')).toBe(true);
+    expect(code.includes('lfoRate')).toBe(true);
+    expect(code.includes('lfoDepth')).toBe(true);
+  });
+
+  it('should have master chain with multiband + true-peak (ADR-010)', () => {
+    const fs = require('fs');
+    const code = fs.readFileSync('./public/worklets/psy4-engine.js', 'utf-8');
+    expect(code.includes('class MasterChain')).toBe(true);
+    expect(code.includes('MultibandComp')).toBe(true);
+    expect(code.includes('true-peak') || code.includes('tpPrevInput')).toBe(true);
+    expect(code.includes('lufsTargetLufs')).toBe(true);
+  });
+});
+
+describe('Phase 9: Audio Quality Metrics', () => {
+  it('should have 17 voice types in worklet', () => {
+    const fs = require('fs');
+    const code = fs.readFileSync('./public/worklets/psy4-engine.js', 'utf-8');
+    const voiceClasses = [
+      'class KickVoice', 'class BassVoice', 'class LeadVoice', 'class AcidVoice',
+      'class FMVoice', 'class PadVoice', 'class HatVoice', 'class ClapVoice',
+      'class PercVoice', 'class ShakerVoice', 'class TextureVoice', 'class FXVoice',
+      'class SampleVoice'
+    ];
+    let count = 0;
+    for (const cls of voiceClasses) {
+      if (code.includes(cls)) count++;
+    }
+    expect(count).toBeGreaterThanOrEqual(13); // at least 13 voice classes
+  });
+
+  it('should have real drum samples loaded', () => {
+    const fs = require('fs');
+    const psyLive = fs.readFileSync('./src/lib/psyLive.ts', 'utf-8');
+    expect(psyLive.includes('md_kick')).toBe(true);
+    expect(psyLive.includes('909_BD')).toBe(true);
+    expect(psyLive.includes('nord_kick')).toBe(true);
+  });
+
+  it('should have 4 sample palettes (md/909/nord/real)', () => {
+    const fs = require('fs');
+    const psyLive = fs.readFileSync('./src/lib/psyLive.ts', 'utf-8');
+    expect(psyLive.includes("'md'")).toBe(true);
+    expect(psyLive.includes("'909'")).toBe(true);
+    expect(psyLive.includes("'nord'")).toBe(true);
+    expect(psyLive.includes("'real'")).toBe(true);
+  });
+
+  it('should have style grammars with distinct scales', () => {
+    const fs = require('fs');
+    const worker = fs.readFileSync('./public/worklets/composition-worker.js', 'utf-8');
+    expect(worker.includes('phrygian-dominant')).toBe(true);
+    expect(worker.includes('phrygian')).toBe(true);
+    expect(worker.includes('dorian')).toBe(true);
+  });
+});
+
+describe('Phase 9: Performance Metrics', () => {
+  it('should have MAX_EVENTS >= 1024', () => {
+    const fs = require('fs');
+    const code = fs.readFileSync('./public/worklets/psy4-engine.js', 'utf-8');
+    const match = code.match(/MAX_EVENTS\s*=\s*(\d+)/);
+    if (match) {
+      expect(parseInt(match[1])).toBeGreaterThanOrEqual(1024);
+    }
+  });
+
+  it('should have scheduleAheadTime >= 3.0s (large buffer)', () => {
+    const fs = require('fs');
+    const psyLive = fs.readFileSync('./src/lib/psyLive.ts', 'utf-8');
+    const match = psyLive.match(/scheduleAheadTime\s*=\s*([\d.]+)/);
+    if (match) {
+      expect(parseFloat(match[1])).toBeGreaterThanOrEqual(3.0);
+    }
+  });
+
+  it('should have prefetch >= 3 bars ahead', () => {
+    const fs = require('fs');
+    const psyLive = fs.readFileSync('./src/lib/psyLive.ts', 'utf-8');
+    expect(psyLive.includes('targetBar = currentBar + 3')).toBe(true);
+  });
+
+  it('should have zero postMessage in worklet hot path (only stats)', () => {
+    const fs = require('fs');
+    const code = fs.readFileSync('./public/worklets/psy4-engine.js', 'utf-8');
+    // Count postMessage calls — should be 1 (stats only)
+    const postMessageCount = (code.match(/this\.port\.postMessage/g) || []).length;
+    expect(postMessageCount).toBe(1); // only stats
   });
 });

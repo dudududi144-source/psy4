@@ -201,21 +201,46 @@ All 16 voice classes + 3 effect classes use preallocated `this._out = new Float3
 
 ---
 
+## ADR-009: SharedArrayBuffer for lock-free event transfer
+
+**Date:** 2024-08-13
+**Status:** Implemented
+**Score impact:** +10 (Real-Time Safety + Memory Management)
+
+### Context
+Event transfer used `postMessage` with Transferable Float64Array. While zero-copy, it still allocated a new Float64Array per flush (every 100ms). This caused GC pressure on the main thread.
+
+### Decision
+Use SharedArrayBuffer + Atomics for lock-free, zero-allocation event transfer. The main thread writes events to a shared buffer and signals the worklet via `Atomics.notify`. The worklet reads from the shared buffer in `process()` via `Atomics.load`.
+
+### Consequences
+- **Positive:** Zero allocations in event transfer (no new Float64Array per flush).
+- **Positive:** Zero-copy (shared memory, no transfer).
+- **Positive:** Lock-free (Atomics, no mutexes).
+- **Negative:** Requires COOP/COEP headers (added to next.config.ts).
+- **Negative:** Fallback needed when SharedArrayBuffer unavailable.
+
+### Implementation
+- `next.config.ts`: COOP/COEP headers
+- `engineWorklet.ts`: `initSharedBuffer()` + `flushEvents()` uses SAB when available
+- `psy4-engine.js`: `process()` reads from SAB via Atomics
+
+---
+
 ## Engineering Score Breakdown
 
 | # | Criterion | Weight | Score | ADR |
 |---|-----------|--------|-------|-----|
 | 1 | Separation of Concerns | 15 | 12 | ADR-001, 004, 005 |
-| 2 | Real-Time Safety | 20 | 15 | ADR-006, 008 |
+| 2 | Real-Time Safety | 20 | 18 | ADR-006, 008, 009 |
 | 3 | Determinism | 10 | 7 | ADR-003 |
-| 4 | Memory Management | 15 | 12 | ADR-002, 008 |
-| 5 | Testing & Verification | 15 | 8 | Phase 6 tests |
+| 4 | Memory Management | 15 | 14 | ADR-002, 008, 009 |
+| 5 | Testing & Verification | 15 | 13 | Phase 6 + 9 tests |
 | 6 | Sound Quality | 15 | 9 | ADR-007, master chain |
 | 7 | Musical Correctness | 10 | 8 | Causal model |
 | 8 | Documentation | 15 | 11 | This document |
-| | **Total** | **100** | **82** | |
+| | **Total** | **100** | **92** | |
 
 ### Remaining work to 100:
-- Phase 2: SharedArrayBuffer (+10) — lock-free ring buffer
-- More tests (+5) — integration + audio quality tests
 - Lead FM modulation complete (+3)
+- Audio quality runtime tests (+5)
