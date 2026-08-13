@@ -259,10 +259,10 @@ class KickVoice {
     this.clickDecay = 0.002;
     this.subLevel = 0.8;
     this.midLevel = 0.5;
-    this.clickLevel = 0.35;
-    this.startMult = 2.4;
-    this.pitchDecay = 0.04;
-    this.saturation = 1.5;
+    this.clickLevel = 0.5;   // COMMERCIAL FIX: louder click (professional kicks have prominent click)
+    this.startMult = 4.0;    // COMMERCIAL FIX: more dramatic pitch sweep (was 2.4 — pro kicks sweep 3-5x)
+    this.pitchDecay = 0.025; // COMMERCIAL FIX: faster pitch decay (was 0.04 — pro is ~25ms)
+    this.saturation = 1.8;   // COMMERCIAL FIX: more saturation (was 1.5 — adds punch)
     this.phase = 0;
     this.midPhase = 0;
     this.prevNoise = 0;
@@ -415,41 +415,45 @@ class BassVoice {
     this.t += dt;
     if (this.t > this.bassDecay) { this.active = false; out[0] = 0; return out; }
 
+    // COMMERCIAL FIX: Use SAW wave (not square) — psytrance bass is always saw.
+    // Source: dsokolovskiy.com (professional psytrance producer)
+    // Square is too hollow; saw has the harmonics needed for filter movement.
     const inc = this.freq / sr;
-    const osc = this.acid ? this.saw.process(inc) : this.square.process(inc);
+    const osc = this.saw.process(inc);  // always saw — even for acid (acid uses filter, not osc type)
 
-    // 1. FILTER: Moog ladder with envelope + LFO (PHASE 7a: rolling psytrance)
-    //    Envelope: closes from cutoffStart → cutoffEnd (per-note pluck)
-    //    LFO: reopens the filter periodically (rolling character)
-    //    Without LFO, filter closes and stays closed = static drone
+    // COMMERCIAL FIX: 24dB/oct filter (Moog ladder is already 24dB — good)
+    // Filter envelope: fast decay (pluck) + LFO (rolling)
+    // Source: professional bass uses Decay ~30% of max, Attack=0, Release=0, Sustain=low
     const cutoffEnv = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / this.cutoffDecay) + this.cutoffEnd;
-    // PHASE 7a: LFO modulates the cutoff UP (reopens filter)
+    // LFO reopens filter (rolling character)
     this.lfoPhase += 2 * Math.PI * this.lfoRate * dt;
-    const lfoMod = (Math.sin(this.lfoPhase) * 0.5 + 0.5) * this.lfoDepth;  // 0..depth, unipolar
-    const lfoAmount = (this.cutoffStart - this.cutoffEnd) * lfoMod;  // scale to cutoff range
+    const lfoMod = (Math.sin(this.lfoPhase) * 0.5 + 0.5) * this.lfoDepth;
+    const lfoAmount = (this.cutoffStart - this.cutoffEnd) * lfoMod;
     const cutoff = Math.max(this.cutoffFloor, cutoffEnv + lfoAmount);
     const drive = this.acid ? 2.5 : 1.3;
     const filtered = this.filter.process(osc, cutoff, this.res, drive, sr);
 
-    // 2. SUB: Clean sine at fundamental
+    // COMMERCIAL FIX: Sub sine (clean fundamental) — but at lower level
+    // Professional bass has sub, but it shouldn't dominate
     this.phase += 2 * Math.PI * this.freq / sr;
     const sub = Math.sin(this.phase) * this.subLevel;
 
-    // 3. MIX: Body (filtered) + Sub (clean)
+    // MIX: filtered saw (character) + sub (weight)
     let mixed = filtered * this.harmonicLevel + sub * this.subLevel;
 
-    // 4. SATURATION: Post-mix tanh
+    // SATURATION: Post-mix tanh — adds harmonics + warmth
     mixed = fastTanh(mixed * 1.8);
 
-    // 5. HP FILTER: Remove subsonic mud
+    // HP FILTER: Remove subsonic mud
     const hpCutoff = 30;
     const hpA = (1 / sr) * 2 * Math.PI * hpCutoff;
     this.hpState += hpA * (mixed - this.hpState) / (1 + hpA);
     mixed = mixed - this.hpState * 0.7;
 
-    // 6. AMP ENVELOPE: Fast attack + exponential decay
-    const attackEnv = Math.min(1, this.t / 0.001);
-    const decayEnv = Math.exp(-this.t / (this.bassDecay * 0.5));
+    // COMMERCIAL FIX: Shorter decay = tighter bass (was 0.12s, now proportional)
+    // Professional psytrance bass is tight — not sustained
+    const attackEnv = Math.min(1, this.t / 0.001);  // 1ms attack (instant)
+    const decayEnv = Math.exp(-this.t / (this.bassDecay * 0.4));  // faster decay
     const ampEnv = attackEnv * decayEnv;
 
     out[0] = mixed * ampEnv * this.amp;
