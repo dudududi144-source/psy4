@@ -1581,6 +1581,7 @@ export class PsyLive {
 
   // PERF: 1 Hz learning derivation. Replaces per-beat deriveInsights() call.
   // Batch-processes pending kick BPMs and bass freqs, then runs scale detection once.
+  // STAGE 4: Also feeds detected BPM/scale/key into CausalComposer.
   private learnTick(): void {
     if (!this.learningData) return;
     if (this.pendingKickBpms.length === 0 && this.pendingBassFreqs.length === 0) {
@@ -1604,6 +1605,60 @@ export class PsyLive {
     this.learningData = deriveInsights(this.learningData);
     this.learningDirty = true;
     this.insightsDirty = true; // emit() will recompute cachedInsights lazily
+
+    // ── STAGE 4: Feed detected musical parameters into CausalComposer ──
+    // The learning system detects BPM (from kick intervals), scale (from pitch
+    // class histogram), and key (from bass freq votes). These should influence
+    // the causal composer's musical output so the engine follows the radio.
+    // Only update when the learning has enough confidence (avoids jitter).
+    this.applyLearnedParamsToComposer();
+  }
+
+  // STAGE 4: Feed learned BPM/scale/key into CausalComposer.
+  // Only applies when radio is connected AND confidence is high enough.
+  // Tracks last-applied values to avoid redundant updates.
+  private lastAppliedBpm = 0;
+  private lastAppliedRoot = -1;
+  private lastAppliedScale = '';
+  private applyLearnedParamsToComposer(): void {
+    if (!this.causalComposer || !this.cachedInsights) {
+      // Force recompute of cachedInsights if dirty
+      if (this.insightsDirty && this.learningData) {
+        this.cachedInsights = getInsights(this.learningData);
+        this.insightsDirty = false;
+      }
+    }
+    if (!this.causalComposer || !this.cachedInsights) return;
+
+    const insights = this.cachedInsights;
+    // Only apply when radio is ON (don't let stale learning data override user's manual session)
+    if (!this.radioOn) return;
+
+    // BPM: apply if stable confidence > 0.5 and differs from current by > 2 BPM
+    if (insights.tempo && insights.tempo.confidence > 0.5 && insights.tempo.stable > 0) {
+      const detectedBpm = insights.tempo.stable;
+      if (Math.abs(detectedBpm - this.lastAppliedBpm) > 2) {
+        this.causalComposer.setBPM(detectedBpm);
+        // Also update transport so the audio clock matches
+        if (this.transport) this.transport.setTempo(detectedBpm, 'radio');
+        this.lastAppliedBpm = detectedBpm;
+      }
+    }
+
+    // Key (root pitch class): apply if top key has enough votes
+    if (insights.scale && insights.scale.matchScore > 0.6) {
+      const rootPc = insights.scale.root;
+      if (rootPc !== this.lastAppliedRoot) {
+        this.causalComposer.setRoot(rootPc);
+        this.lastAppliedRoot = rootPc;
+      }
+      // Scale: apply if detected and differs from current
+      const scaleName = insights.scale.name.toLowerCase().replace(' ', '-');
+      if (scaleName !== this.lastAppliedScale) {
+        this.causalComposer.setScale(scaleName);
+        this.lastAppliedScale = scaleName;
+      }
+    }
   }
 
   // PERF: 0.2 Hz localStorage persistence. Replaces per-beat saveLearning() call.

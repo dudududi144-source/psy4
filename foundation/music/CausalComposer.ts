@@ -266,10 +266,20 @@ export class CausalComposer {
     }
 
     // 4b. Track ongoing material play (lead, hats, etc. play every bar they're active)
+    // STAGE 3: Also track acid + pad — without this, they'd start but never build
+    // expectation/exhaustion, so no variation/transformation would ever fire for them.
     if (decision.action !== 'BREAKDOWN') {
       if (this.activeVoices.has('lead')) {
         this.memory.onMaterialPlayed('motif-A', bar);
         onMaterialPlayed(this.state, 'motif-A', bar);
+      }
+      if (this.activeVoices.has('acid')) {
+        this.memory.onMaterialPlayed('acid-A', bar);
+        onMaterialPlayed(this.state, 'acid-A', bar);
+      }
+      if (this.activeVoices.has('pad')) {
+        this.memory.onMaterialPlayed('pad-A', bar);
+        onMaterialPlayed(this.state, 'pad-A', bar);
       }
     }
 
@@ -553,6 +563,99 @@ export class CausalComposer {
         // Thin the midrange — remove counterline if present
         if (this.activeVoices.has('counterline')) {
           this.activeVoices.delete('counterline');
+        }
+        break;
+      }
+
+      // ── STAGE 3: The 3 missing actions — now implemented ──
+
+      case 'INTRODUCE_ACID': {
+        // TB-303 acid line — squelchy, rhythmic, adds psychedelic tension.
+        // Routes to AcidVoice in the worklet (channel: 'acid' → VOICE.ACID).
+        // Pattern: 16th-note runs with accent on beats, using scale tones.
+        this.activeVoices.add('acid');
+        this.memory.onMaterialPlayed('acid-A', bar);
+        onMaterialPlayed(this.state, 'acid-A', bar);
+        const grammar = STYLE_GRAMMARS[this.userStyle] || STYLE_GRAMMARS.FULL_ON;
+        const acidRoot = this.opts.rootPc + 57; // octave 3-4 boundary — 303 sits here
+        // 303-style pattern: dense 16ths with pitch movement
+        // Use scale intervals for melodic shape (not just root)
+        const acidIntervals = grammar.scaleName === 'phrygian' || grammar.scaleName === 'phrygian-dominant'
+          ? [0, 0, 1, 0, 3, 0, 1, 0, 0, 0, 1, 3, 0, 1, 0, 0] // phrygian: root, b2, b3
+          : [0, 0, 2, 0, 3, 0, 2, 0, 0, 0, 3, 2, 0, 2, 0, 0]; // minor/dorian: root, 2nd, b3
+        const velScale = 0.8 + this.userEnergy * 0.4;
+        for (let step = 0; step < 16; step++) {
+          const isBeat = step % 4 === 0;
+          const vel = (isBeat ? 0.7 : 0.5) * velScale;
+          events.push({
+            at: barStart + step * stepDur,
+            note: acidRoot + acidIntervals[step],
+            velocity: Math.min(1, vel),
+            duration: stepDur * 0.7, // short staccato — 303 character
+            channel: 'acid',
+          });
+        }
+        break;
+      }
+
+      case 'INTRODUCE_PAD': {
+        // Sustained pad chord — harmonic foundation + atmosphere.
+        // Routes to PadVoice in the worklet (channel: 'pad' → VOICE.PAD).
+        // Uses a chord voicing based on the current scale.
+        this.activeVoices.add('pad');
+        this.memory.onMaterialPlayed('pad-A', bar);
+        onMaterialPlayed(this.state, 'pad-A', bar);
+        const grammar = STYLE_GRAMMARS[this.userStyle] || STYLE_GRAMMARS.FULL_ON;
+        const padRoot = this.opts.rootPc + 48; // octave 3
+        // Chord voicing depends on scale
+        let chord: number[];
+        if (grammar.scaleName === 'phrygian' || grammar.scaleName === 'phrygian-dominant') {
+          chord = [0, 1, 7, 12]; // root, b2, fifth, octave — dark, tense pad
+        } else if (grammar.scaleName === 'dorian') {
+          chord = [0, 3, 7, 10]; // root, b3, fifth, b7 — modal, open pad
+        } else {
+          chord = [0, 4, 7, 11]; // root, third, fifth, major 7th — standard
+        }
+        const velScale = 0.8 + this.userEnergy * 0.4;
+        for (const interval of chord) {
+          events.push({
+            at: barStart,
+            note: padRoot + interval,
+            velocity: Math.min(1, 0.22 * velScale),
+            duration: 4 * beatDur, // sustain whole bar
+            channel: 'pad',
+          });
+        }
+        break;
+      }
+
+      case 'RESPONSE': {
+        // A melodic response to an unresolved musical "question."
+        // Similar to INTRODUCE_COUNTERLINE but motivated by conversational balance
+        // (the lead asked something, now we answer it).
+        // Uses complementary rhythm (off-beat) and a lower register.
+        this.activeVoices.add('counterline');
+        const answeredId = this.state.unresolvedMaterial[0] || 'motif-A';
+        this.memory.onMaterialPlayed('counterline-1', bar);
+        this.memory.setResponse('counterline-1', answeredId);
+        onResponseGiven(this.state, answeredId);
+        const grammar = STYLE_GRAMMARS[this.userStyle] || STYLE_GRAMMARS.FULL_ON;
+        // Response is in a lower register, uses inverted motif (complementary)
+        const responseRoot = this.opts.rootPc + 55; // octave 3
+        // Inverted motif: reverse the interval direction
+        const baseIntervals = grammar.motifIntervals;
+        const invIntervals = baseIntervals.map(iv => -iv + 7); // invert around the fifth
+        // Off-beat steps (complementary to lead's on-beat hits)
+        const responseSteps = [2, 6, 10, 14];
+        const velScale = 0.8 + this.userEnergy * 0.4;
+        for (let i = 0; i < responseSteps.length; i++) {
+          events.push({
+            at: barStart + responseSteps[i] * stepDur,
+            note: responseRoot + invIntervals[i % invIntervals.length],
+            velocity: Math.min(1, 0.55 * velScale),
+            duration: stepDur * 1.5,
+            channel: 'counterline',
+          });
         }
         break;
       }

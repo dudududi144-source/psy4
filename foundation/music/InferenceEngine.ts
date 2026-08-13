@@ -240,6 +240,69 @@ export function generateCandidates(
     });
   }
 
+  // ── STAGE 3: New rules for the 3 missing actions ──
+
+  // Rule: tension high + no acid line + high-mid register empty → introduce acid (TB-303)
+  // Acid is a distinctive psytrance voice — a squelchy 303 line that adds psychedelic tension.
+  // It's motivated when tension is already high and the high-mid register has space.
+  if (
+    state.tensionLevel > 0.6 &&
+    !activeVoices.includes('acid') &&
+    registerSpace['high-mid'] &&
+    state.grooveStability > 0.6
+  ) {
+    candidates.push({
+      action: 'INTRODUCE_ACID',
+      whyNow: `tensionLevel=${state.tensionLevel.toFixed(2)} > 0.6 AND groove stable AND register[high-mid] empty — acid 303 line adds psychedelic tension`,
+      whyNotYet: `earlier: tension was below 0.6 or groove not stable — acid without tension is unmotivated`,
+      urgency: state.tensionLevel > 0.8 ? 0.8 : 0.6,
+      necessity: 'optional',
+      enables: ['psychedelic character', 'tension escalation', 'future transformation'],
+      materialId: 'acid-A',
+    });
+  }
+
+  // Rule: low contrast debt + no pad + low register sparse → introduce pad
+  // Pad adds harmonic foundation and atmosphere. It's motivated when the arrangement
+  // is thin (low contrast debt = not much has changed recently) and the low-mid register is empty.
+  if (
+    state.contrastDebt < 0.3 &&
+    !activeVoices.includes('pad') &&
+    registerSpace['low-mid'] &&
+    state.grooveStability > 0.4 &&
+    state.bar > 4
+  ) {
+    candidates.push({
+      action: 'INTRODUCE_PAD',
+      whyNow: `contrastDebt=${state.contrastDebt.toFixed(2)} < 0.3 (arrangement thin) AND register[low-mid] empty — pad adds harmonic foundation`,
+      whyNotYet: `earlier: arrangement was busy or groove not established — pad would clutter`,
+      urgency: 0.3,
+      necessity: 'optional',
+      enables: ['harmonic depth', 'atmosphere', 'sustained tonal anchor'],
+      materialId: 'pad-A',
+    });
+  }
+
+  // Rule: unresolved material + no response given → RESPONSE
+  // When the lead has asked a "question" (unresolved material) and no counterline
+  // has answered it, a response is musically necessary.
+  if (
+    state.unresolvedMaterial.length > 0 &&
+    state.tensionLevel > 0.4 &&
+    !activeVoices.includes('counterline')
+  ) {
+    const answeredId = state.unresolvedMaterial[0];
+    candidates.push({
+      action: 'RESPONSE',
+      whyNow: `unresolvedMaterial=[${state.unresolvedMaterial.join(',')}] AND tensionLevel=${state.tensionLevel.toFixed(2)} > 0.4 — musical question needs an answer`,
+      whyNotYet: `earlier: no unresolved material or tension too low — response without a question is unmotivated`,
+      urgency: state.tensionLevel > 0.7 ? 0.8 : 0.5,
+      necessity: state.tensionLevel > 0.8 ? 'required' : 'optional',
+      enables: ['conversational balance', 'tension resolution', 'musical dialogue'],
+      materialId: answeredId,
+    });
+  }
+
   return candidates;
 }
 

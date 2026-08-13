@@ -30,8 +30,9 @@ const MATERIAL_COLORS: Record<string, string> = {
 const ACTION_COLORS: Record<string, string> = {
   NO_CHANGE: '#64748b', INTRODUCE_HATS: '#eab308', INTRODUCE_LEAD: '#ff2e88',
   INTRODUCE_PERCUSSION: '#06b6d4', INTRODUCE_COUNTERLINE: '#ec4899',
+  INTRODUCE_ACID: '#10b981', INTRODUCE_PAD: '#8b5cf6', RESPONSE: '#14b8a6',
   VARY_MOTIF: '#f59e0b', TRANSFORM_MOTIF: '#f97316', CALLBACK_MOTIF: '#a855f7',
-  BREAKDOWN: '#ef4444', THIN_REGISTER: '#64748b', RESPONSE: '#10b981',
+  BREAKDOWN: '#ef4444', THIN_REGISTER: '#64748b',
 };
 
 function StateBar({ label, value, color, threshold }: { label: string; value: number; color: string; threshold?: number }) {
