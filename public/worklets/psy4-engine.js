@@ -468,7 +468,7 @@ class LeadVoice {
     this.active = false;
     this.t = 0;
     this.dur = 0.3;
-    this.amp = 0.5;
+    this.amp = 0.8;  // FIX: was 0.5. Lead needs to be prominent in the mix.
     this.saws = [new BLSaw(), new BLSaw(), new BLSaw(), new BLSaw(), new BLSaw()];
     this.octaveSaws = [new BLSaw(), new BLSaw(), new BLSaw()];
     this.filter = new MoogLadder();
@@ -1905,7 +1905,9 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 
     // Bus gains (drum, bass, music, atmos, fx)
     // REBALANCED for proper mix: kick lower, music higher (lead+pad now audible)
-    this.busGains = [0.85, 1.0, 1.0, 0.85, 0.65];
+    // FIX: Mix balance — kick should be loudest, bass under kick, lead audible
+    // Commercial psytrance: kick 0dB, bass -3dB, lead -6dB, hats -12dB, pad -18dB
+    this.busGains = [1.0, 0.7, 0.9, 0.5, 0.4];  // drum=1.0, bass=0.7, music=0.9, atmos=0.5, fx=0.4
 
     // ── BUS PROCESSORS — SEPARATE L and R instances ──
     // CRITICAL FIX: Previously L and R shared the same instance, which meant

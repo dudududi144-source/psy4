@@ -312,6 +312,26 @@ class CausalComposerWorker {
     if (decision.action !== 'BREAKDOWN') {
       events.push(...this.generateGroove(bar));
     }
+
+    // FX: Add impact at DROP_START, riser at BREAKDOWN_START, sweep at REBUILD_START
+    const beatDur = 60 / this.opts.bpm;
+    const barStart = bar * 4 * beatDur;
+    const sectionType = this.getArrangementSection(bar);
+    if (sectionType === 'DROP_START') {
+      // IMPACT: big one-shot at the drop
+      events.push({ at: barStart, note: 36, velocity: 0.95, duration: 0.5, channel: 'impact' });
+      // Riser leading into the drop (2 bars before — but we're AT the drop, so it's a crash)
+      events.push({ at: barStart, note: 72, velocity: 0.6, duration: beatDur * 2, channel: 'riser' });
+    } else if (sectionType === 'BREAKDOWN_START') {
+      // SWEEP: downward sweep at breakdown
+      events.push({ at: barStart, note: 60, velocity: 0.4, duration: beatDur * 4, channel: 'sweep' });
+    } else if (sectionType === 'REBUILD_START') {
+      // RISER: upward riser at rebuild
+      events.push({ at: barStart, note: 48, velocity: 0.5, duration: beatDur * 2, channel: 'riser' });
+      // IMPACT: hit at the rebuild
+      events.push({ at: barStart + beatDur * 2, note: 36, velocity: 0.8, duration: 0.4, channel: 'impact' });
+    }
+
     if (decision.action !== 'BREAKDOWN') {
       if (this.activeVoices.has('lead')) onMaterialPlayed(this.state, 'motif-A', bar);
       if (this.activeVoices.has('acid')) onMaterialPlayed(this.state, 'acid-A', bar);
