@@ -1046,12 +1046,13 @@ export class PsyLive {
       const ok = await this.engineNode.init();
       if (ok) {
         this.useWorklet = true;
+        // ADR-009: Initialize SharedArrayBuffer for lock-free event transfer (zero-allocation)
+        const sharedOk = this.engineNode.initSharedBuffer();
+        if (sharedOk) console.log('[PSY4] SharedArrayBuffer active — lock-free event transfer');
+        else console.log('[PSY4] SharedArrayBuffer not available — using Transferable fallback');
         // PERF: wire stats callback to monitor audio-thread CPU load.
-        // The worklet reports processMs, cpuLoad, activeVoices, voiceBudget every ~10Hz.
-        // We log warnings when over budget so audio dropouts are diagnosable.
         this.engineNode.onStats((stats) => {
           this.lastWorkletStats = stats;
-          // Warn if process() exceeds the 3ms budget (will cause audio dropouts)
           if (stats.processMs > 3.0) {
             console.warn(`[PSY4] AUDIO THREAD OVER BUDGET: processMs=${stats.processMs.toFixed(2)}ms cpuLoad=${(stats.cpuLoad*100).toFixed(0)}% voices=${stats.activeVoices}/${stats.voiceBudget}`);
           }

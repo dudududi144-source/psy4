@@ -2058,6 +2058,13 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         // Batch of events from main thread
         this.enqueueEvents(msg.events);
         break;
+      case 'initSharedBuffer':
+        // ADR-009: Receive SharedArrayBuffer for lock-free event transfer
+        // The main thread writes events to this buffer and signals via Atomics
+        this.sharedEventBuffer = msg.buffer;
+        this.sharedEventCount = new Int32Array(msg.countBuffer);
+        this.sharedEventView = new Float64Array(this.sharedEventBuffer);
+        break;
       case 'trigger':
         // Single immediate event
         this.enqueueEvent(msg.time, msg.voice, msg.note, msg.velocity, msg.duration, msg.param);
@@ -2393,6 +2400,28 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 
     // Process events that are due (time <= current audio time)
     const currentAudioTime = currentFrame / sr;
+
+    // ADR-009: Check SharedArrayBuffer for new events (lock-free, zero-allocation)
+    if (this.sharedEventCount) {
+      const sharedCount = Atomics.load(this.sharedEventCount, 0);
+      if (sharedCount > 0) {
+        // Copy events from shared buffer into the ring buffer
+        for (let i = 0; i < sharedCount; i++) {
+          const sBase = i * EVENT_SIZE;
+          this.enqueueEvent(
+            this.sharedEventView[sBase],     // time
+            this.sharedEventView[sBase + 1], // voice
+            this.sharedEventView[sBase + 2], // note
+            this.sharedEventView[sBase + 3], // velocity
+            this.sharedEventView[sBase + 4], // duration
+            this.sharedEventView[sBase + 5]  // param
+          );
+        }
+        // Clear the count (signal to main thread that we consumed the events)
+        Atomics.store(this.sharedEventCount, 0, 0);
+      }
+    }
+
     while (this.eventCount > 0) {
       const idx = this.eventReadIdx;
       const base = idx * EVENT_SIZE;

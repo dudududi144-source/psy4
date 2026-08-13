@@ -221,16 +221,52 @@ export class Psy4EngineNode {
   }
 
   /**
-   * Send batched events to the worklet. Called periodically by the scheduler.
-   * Uses Transferable for zero-copy.
+   * Send batched events to the worklet.
+   * ADR-009: Uses SharedArrayBuffer when available (zero-copy, zero-allocation).
+   * Falls back to Transferable Float64Array when SharedArrayBuffer is not available.
    */
   flushEvents() {
     if (!this.node || this.eventBatchCount === 0) return;
-    // Copy only the filled portion (Transferable transfers ownership, so we need a fresh array)
+    // ADR-009: Try SharedArrayBuffer first (zero-copy, no allocation)
+    if (typeof SharedArrayBuffer !== 'undefined' && this.sharedEventBuffer) {
+      // Copy events directly into the shared buffer (no new allocation)
+      const sharedView = new Float64Array(this.sharedEventBuffer);
+      sharedView.set(this.eventBatch.subarray(0, this.eventBatchCount * EVENT_SIZE));
+      // Signal the worklet that new events are available (via Atomics)
+      Atomics.store(this.sharedEventCount, 0, this.eventBatchCount);
+      Atomics.notify(this.sharedEventCount, 0, 1);
+      this.eventBatchCount = 0;
+      return;
+    }
+    // Fallback: Transferable Float64Array (zero-copy transfer, but allocates the array)
     const events = new Float64Array(this.eventBatchCount * EVENT_SIZE);
     events.set(this.eventBatch.subarray(0, this.eventBatchCount * EVENT_SIZE));
     this.node.port.postMessage({ type: 'events', events }, [events.buffer]);
     this.eventBatchCount = 0;
+  }
+
+  // ADR-009: SharedArrayBuffer for lock-free event transfer
+  private sharedEventBuffer: SharedArrayBuffer | null = null;
+  private sharedEventCount: Int32Array | null = null;
+  private static readonly SHARED_BUFFER_EVENTS = 1024;
+
+  /**
+   * Initialize SharedArrayBuffer for lock-free event transfer.
+   * Call this after init() if SharedArrayBuffer is available.
+   */
+  initSharedBuffer(): boolean {
+    if (typeof SharedArrayBuffer === 'undefined') return false;
+    if (!this.node) return false;
+    const bytes = Psy4EngineNode.SHARED_BUFFER_EVENTS * EVENT_SIZE * 8; // Float64 = 8 bytes
+    this.sharedEventBuffer = new SharedArrayBuffer(bytes);
+    this.sharedEventCount = new Int32Array(new SharedArrayBuffer(4));
+    // Send the shared buffer to the worklet (one-time setup)
+    this.node.port.postMessage({
+      type: 'initSharedBuffer',
+      buffer: this.sharedEventBuffer,
+      countBuffer: this.sharedEventCount.buffer,
+    });
+    return true;
   }
 
   /** Immediate single trigger (for UI actions like "Drop"). */
