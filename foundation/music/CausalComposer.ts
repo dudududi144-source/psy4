@@ -288,6 +288,10 @@ export class CausalComposer {
         events.push({ at: barStart, note: 72, velocity: 0.2, duration: 4 * beatDur, channel: 'atmosphere' });
         // Generate texture (evolving)
         events.push({ at: barStart, note: padRoot + 4, velocity: 0.15, duration: 4 * beatDur, channel: 'texture' });
+        // Riser building into the breakdown (tension)
+        events.push({ at: barStart, note: 72, velocity: 0.3, duration: 2 * beatDur, channel: 'riser' });
+        // Drone (sustained root for tonal anchor)
+        events.push({ at: barStart, note: this.opts.rootPc + 24, velocity: 0.2, duration: 4 * beatDur, channel: 'drone' });
         break;
       }
 
@@ -303,8 +307,9 @@ export class CausalComposer {
         // Re-add groove layers
         this.activeVoices.add('hat-closed');
         this.activeVoices.add('percussion');
-        // Impact on callback
+        // Impact + crash on callback (section markers)
         events.push({ at: barStart, note: 36, velocity: 0.9, duration: 0.3, channel: 'impact' });
+        events.push({ at: barStart, note: 49, velocity: 0.7, duration: 0.5, channel: 'crash' });
         // Generate callback (register-shifted up an octave)
         const root = this.opts.rootPc + 72;
         const steps = [0, 4, 8, 12];
@@ -350,6 +355,7 @@ export class CausalComposer {
     const stepDur = beatDur / 4;
     const barStart = bar * 4 * beatDur;
     const bassRoot = this.opts.rootPc + 33;
+    const subRoot = this.opts.rootPc + 24; // sub octave
 
     // Kick on beats 0, 1, 2, 3 (4-on-floor)
     for (let beat = 0; beat < 4; beat++) {
@@ -363,6 +369,12 @@ export class CausalComposer {
       events.push({ at: barStart + step * stepDur, note: bassRoot, velocity: isAfterKick ? 0.6 : 0.8, duration: stepDur * 0.9, channel: 'bass' });
     }
 
+    // Sub-bass: sustained root under bass (when groove established)
+    if (this.state.grooveStability > 0.5) {
+      this.activeVoices.add('sub');
+      events.push({ at: barStart, note: subRoot, velocity: 0.4, duration: 4 * beatDur, channel: 'sub' });
+    }
+
     // Snare/clap on beats 2 and 4 (backbeat) — only when groove is established
     if (this.state.grooveStability > 0.4) {
       this.activeVoices.add('snare');
@@ -371,6 +383,20 @@ export class CausalComposer {
       // Clap layered on snare
       events.push({ at: barStart + beatDur, note: 39, velocity: 0.4, duration: stepDur * 0.3, channel: 'clap' });
       events.push({ at: barStart + 3 * beatDur, note: 39, velocity: 0.4, duration: stepDur * 0.3, channel: 'clap' });
+    }
+
+    // Ride on every beat when fully established (shimmer layer)
+    if (this.state.grooveStability > 0.8) {
+      this.activeVoices.add('ride');
+      for (let beat = 0; beat < 4; beat++) {
+        events.push({ at: barStart + beat * beatDur + stepDur * 0.5, note: 59, velocity: 0.2, duration: stepDur * 0.3, channel: 'ride' });
+      }
+    }
+
+    // Phrase-end fill (bar 7 of phrase)
+    if (bar % 8 === 7) {
+      events.push({ at: barStart + 3 * beatDur + stepDur * 2, note: 45, velocity: 0.5, duration: stepDur * 0.4, channel: 'fill' });
+      events.push({ at: barStart + 3 * beatDur + stepDur * 3, note: 50, velocity: 0.6, duration: stepDur * 0.3, channel: 'fill' });
     }
 
     // Track groove material
