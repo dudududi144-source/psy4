@@ -7389,3 +7389,229 @@ Stage Summary:
 - V1 midrange sparseness is a MUSICAL MODEL GAP, not a mixing gap — the WHAT-layer doesn't name midrange roles.
 - V2 design validation (paper encoding) is the next step IF user approves — separate decision.
 - HARD STOP observed. Awaiting user review of design audit.
+
+---
+Task ID: RESEARCH-B
+Agent: research sub-agent (general-purpose)
+Task: Deep research on psytrance ARRANGEMENT and LONG-FORM STRUCTURE. Complement to RESEARCH-A (which covered role taxonomy + WHAT-layer gap). Focus: 6-8 min track structure, section transitions, phrase conventions, subgenre differences, motif development over long durations, breakdown/build/drop mechanics, transition elements, negative space. No code changes. Pure research.
+
+Work Log:
+- Read worklog tail (last 150 lines) for PSY4 V1 context and PSY4-MUSICAL-WHAT-LAYER-DESIGN-AUDIT stage summary.
+- Read RESEARCH-A-PSYTRANCE-MUSICAL-MODEL.md (490 lines) to avoid duplicating role taxonomy / WHAT-layer gap content. Confirmed RESEARCH-A covered: 12-14 roles across 4 functional groups; kick+bass as coupled engine; motif accents/odd-time cycles; basic section model with bar counts; per-section role-activity mask concept.
+- Ran 14 z-ai web_search queries: arrangement structure, energy arcs, phrase structure, layering order, breakdown mechanics, drop mechanics, subgenre differences (full-on/progressive/dark/goa/forest/hitech), hitech 180bpm arrangement, motif development, transitions FX, negative space, EDM energy arc, darkpsy structure, full-on arrangement, goa arrangement.
+- Ran 15 z-ai page_reader fetches: myloops (trance structure), edm-ghost-production (electronic song structure), idmmag (psytrance build-ups/breaks/drops), alienchaosmusic (hitech), melodigging forest, melodigging hitech, psytranceguide.com, edmprod (build-ups guide), medium findwondrland (modular composition), eclipmusic (motif rhythms), clubreadydjschool (DJ psy mixing), dancecult (Vitos 2009 darkpsy academic), melodigging goa, melodigging progressive, scribd psytrance masterclass.
+- Cleaned HTML to text via Python (stripped scripts/styles/nav/header/footer; entity-decoded).
+- Synthesised 18 cited sources into 11-section report at /home/z/my-project/audit-reports/RESEARCH-B-PSYTRANCE-ARRANGEMENT-STRUCTURE.md (551 lines).
+
+Key Findings:
+
+1. TYPICAL 6-8 MINUTE ARRANGEMENT (Section 1): 9-12 sections in conventional order: INTRO (32-64 bars) → GROOVE (16-32) → STATEMENT (32-64) → DEVELOPMENT 1 (32-64) → BREAKDOWN 1 (16-32) → BUILD (8-16) → DROP 1 (32-64) → DEVELOPMENT 2 (32-64) → (BREAKDOWN 2 → BUILD 2 →) DROP 2 (32-64) → OUTRO (32-64). At 140 BPM, 7 min ≈ 245 bars. Cross-referenced 4+ sources (MYL, EDMGHOST, WIKI, MEL-GOA, MEL-PROG, REDDIT-PSY). MYL gives explicit intro timeline (0-16 kick+perc, 16-32 hats, 32-48 pads, 48-64 full perc+FX). 6-min tracks often have ONE breakdown+drop+second-drop; 8-min tracks have TWO full cycles.
+
+2. ENERGY/TENSION ARC (Section 2): Multi-arc WAVE pattern (2-3 peaks), NOT single arc. EDMGHOST: "two waves of tension and release." HYPERBITS: breakdown = "momentary pause and an opportunity to reset the energy level." Three temporal levels: MACRO (section, 32-64 bars), MESO (phrase, 8-32 bars), MICRO (bar/beat, 1-8 bars — crash cymbals, kick removal at end of 8 bars).
+
+3. PHRASE STRUCTURE (Section 3): Standard phrase = 8 bars (32 beats). Multiples: 4/8/16/32. EDMGHOST-BARS: "standard phrase is 8 bars." VIBESDJ: "multiples of four bars, often 8, 16, or 32." MYL: "8-bar smooth transitions, 16-bar momentum." Boundary events: crash/impact on phrase 1 downbeat; layer add/remove; filter sweep reset; kick removal at end of 8 bars; riser peaks on phrase downbeat; motif 1-2 note variation in second 4 bars of phrase.
+
+4. LAYER ENTRY CADENCE (Section 4): 8-bar cadence (MYL: "Add new sounds or layers every 8 bars"). Conventional order: kick → bass → hats/shakers/rides → mid-percussion → pads/atmosphere → lead/acid → counterline/plucks/arps → FX (risers/sweeps/impacts). Subgenre-varying: forest layers foley earlier; goa layers arpeggios earlier; progressive fewer layers + more gradual; hitech layers in 16-32 bar modular episodes.
+
+5. BREAKDOWN MECHANICS (Section 5): Psytrance-specific (IDM/Dash Glitch): bassline + kick DROP OUT (defining removal); pads/drones/texture SUSTAIN (foreground); FX risers/low-end thumps/retrigger-glitch FX ENTER (these would clash with bass normally); main melodic hook often PREVIEWED. Length: 16-32 bars (~30s-1min+). Retrigger tools: LoopMash, Beat-Repeat, Gross Beat, dBlue Glitch, Tantra. Filter sweeps "Find me a Psytrance track that doesn't have this effect somewhere in it, and I will be impressed!" Re-entry build: high-passed kicks → snare rolls + risers → filter cutoffs open → delay feedback expand → optional bar of silence → drop.
+
+6. DROP MECHANICS (Section 6): "Sudden change of rhythm or bassline... preceded by build-up and a break... loudest portion" (EDMGHOST/Wikipedia). Full ensemble re-enters SIMULTANEOUSLY on drop downbeat: kick + bass + full percussion + lead/main motif + counterline + (sustained) atmosphere + impact/crash. Second drop VARIES first (changed hook/bassline/drum pattern). Drop impact contingent on preceding breakdown, not on drop alone. Subgenre character varies: full-on=maximalist; progressive=groovy; goa=gradual; forest/darkpsy=no euphoric drop; hitech=rupture events.
+
+7. SUBGENRE DIFFERENCES TABLE (Section 7): 6 subgenres compared on BPM, arrangement, role set, energy, motif. Key axes: (a) song-form strength (full-on strong → hitech weak); (b) breakdown presence (full-on/goa/prog clear → darkpsy/forest brief → hitech micro); (c) drop drama (full-on maximalist → hitech rupture); (d) motif type (full-on melodic hooks → hitech metallic glitches); (e) layer count (progressive fewest → hitech densest).
+
+8. MOTIF DEVELOPMENT (Section 8): E-Clip 3-axis framework: ACCENTS (strong/offbeat/syncopated/dynamic), ODD-TIME CYCLES (3/5/7 against 4/4), REPETITION-WITH-VARIATION (1-2 note change per 4 bars). Variation axes: pitch, rhythm, register, velocity, timbre (filter/FM/wavefolding/formant), effect modulation, harmonic context, contour. Cadence: bar-level (1-2 notes/4 bars), phrase-level (filter automation 8-32 bars), section-level (transformed at 2nd drop), macro-level (reshaped across arrangement). Callback/recapitulation: motif dissolves into pad at breakdown, returns varied at 2nd drop, recurs stripped in outro.
+
+9. TRANSITION ELEMENTS (Section 9): Inventory of 14 FX types with function+placement: risers (pre-drop 8-16 bars), impacts (drop downbeat), sweeps (section boundaries), reverses, down-lifters, white-noise sweeps, snare rolls (last 8 bars build), kick rolls, filter sweeps, retrigger/glitch FX (in breakdown — psytrance-specific), crash cymbal (phrase boundary), bar of silence, delay throws, glitches. Distinguished: STRUCTURAL transition FX (musical role, scheduled entry) vs DECORATIVE FX (PSY4 synthesis discretion).
+
+10. NEGATIVE SPACE (Section 10): Where: breakdown, outro, intro (first 16-32 bars), bar of silence pre-drop, kick removal at end of 8-bar phrase, sparse moments in forest/darkpsy. Formulaic at section level (breakdown/outro are conventional); free at sub-phrase level; subgenre-parameterised (forest/darkpsy/hitech use less structural negative space than full-on/goa/prog). MED-MOD: atmospheric layers "should drift and evolve on their own... Some may last thirty seconds. Some may stretch for a minute or more" — temporal freedom, not just absence. Refines RESEARCH-A's role-activity mask: section-typed + subgenre-parameterised + phrase-aware.
+
+11. FACT vs INDUSTRY PRACTICE vs COMMON CONVENTION vs INFERENCE (Section 11): All high-stakes claims tagged. 17 claims tagged across the 4 categories. Key FACTS: 6-9 min track length, breakdown removes bass+kick in psytrance, forest has "almost no breakdowns", hitech arrangements "fluid and unpredictable", goa 8-12min with 1-3 breakdowns, darkpsy "organic evolution and breakdown of distorted and interwoven sound layers" (Vitos 2009). Key INDUSTRY PRACTICE: layer entry order, retrigger FX in breakdown, filter sweeps universal, motif 1-2 note/4 bar variation, odd-time cycles, 2nd drop varies 1st. Key COMMON CONVENTION: 8-bar phrase, 16-32 bar breakdown, wave-like multi-arc energy. Key INFERENCES: 9-12 section count, Foundation SectionRole lacks section-type, negative space subgenre-parameterised.
+
+Caveats documented:
+- Sources are producer tutorials, not statistical analyses of released tracks.
+- Trance vs psytrance conflation in MYL (titled "Trance Song Structure"); some EDMGHOST bar counts reflect generic EDM not psytrance.
+- Subgenre boundaries fuzzy (Night Full-on vs Twilight; Forest vs Darkpsy).
+- One producer's workflow ≠ universal law (MED-MOD modular, IDM work-backwards, ECLIP 4-bar rule).
+- Only 1 academic source found (Vitos 2009).
+- Bar-count arithmetic assumes 140 BPM; subgenres 130-200+ BPM yield different clock times for same bar count.
+
+Bottom Line for orchestrator:
+The current Foundation WHAT-layer describes section-purpose (ESTABLISH/DEVELOPMENT/PEAK/RELEASE) and phrase-purpose (INTRO/STATEMENT/BUILD/RELEASE) and bar-level energy/tension/density scalars. It does NOT yet describe 10 arrangement-level items that this research identifies as necessary for long-form psytrance generation:
+1. Section-TYPE (INTRO/GROOVE/BREAKDOWN/BUILD/DROP/OUTRO) — distinct from section-purpose
+2. Multi-arc energy profile (wave with 2-3 peaks, not single arc)
+3. Multi-level tension (macro/meso/micro with explicit primitives)
+4. Phrase-boundary events (crash/impact/riser schedule)
+5. Layer entry cadence (8-bar cadence with conventional order)
+6. Breakdown role-activity mask (kick+bass OUT, pads+texture SUSTAIN, FX ENTER, hook preview)
+7. Drop role-activity mask (full ensemble simultaneous re-entry)
+8. Transition role schedule (riser enters bar X, peaks bar Y; impact on drop downbeat)
+9. Forward-looking motif development plan (variation/register-shift/callback schedule)
+10. Subgenre-parameterised arrangement profile (full-on multi-arc vs forest continuous vs hitech modular)
+
+These 10 items are the arrangement-level complement to RESEARCH-A's 8 WHAT-layer items. Together they form the minimum complete WHAT-layer for long-form psytrance generation.
+
+Artifacts produced:
+- /home/z/my-project/audit-reports/RESEARCH-B-PSYTRANCE-ARRANGEMENT-STRUCTURE.md (551 lines, 11 sections + 2 appendices, 18 cited sources).
+
+No code modified. No Foundation changes. No renderer changes. No architecture approval. Research-only output for orchestrator/user review.
+
+---
+Task ID: RESEARCH-C
+Agent: research sub-agent (general-purpose)
+Task: Deep research on psytrance MOTIF DEVELOPMENT, CALL/RESPONSE, and ROLE INTERACTIONS at the MUSICAL MATERIAL level. Complementary to RESEARCH-A (role taxonomy) and RESEARCH-B (arrangement). Focus on: motif behavior over time, call/response patterns and delays, repetition/variation mechanics, callback/recapitulation, kick↔bass relationship (deep — timing/pitch/energy/sidechain-as-musical-parameter), acid line behavior, percussion layering, pad/atmosphere, counterline, motif transformation operators. NO code changes. Pure research.
+
+Work Log:
+- Read worklog tail (lines 7240-7391) for context: confirmed V1 vertical validation, RESEARCH-A findings, PSY4-MUSICAL-WHAT-LAYER-DESIGN-AUDIT.
+- Read full RESEARCH-A report (490 lines) to avoid duplication. RESEARCH-A covered role taxonomy, kick+bass at high level, motif parameters at high level, arrangement, energy/density, identity profile.
+- RESEARCH-C scope: go DEEPER on musical material behavior (motif development, call/response, repetition/variation, recapitulation, acid line, percussion layering, pad/drones, counterline, motif transformation operators) with emphasis on kick↔bass and the sidechain-as-musical-parameter question.
+- Ran 11 web searches via z-ai web_search: motif development, call response, acid 303, kick bass K-B-B-B, percussion layering, pad atmosphere, lead vs techno/trance, motif transformation, recapitulation, sidechain musical, FM lead.
+- Fetched 13 full pages via z-ai page_reader: Myloops (kick+bass frequency lock-in), Safe&Sound Mastering (KbBB notation + 3 grooves in one unit), dsokolovskiy (bass synthesis), EDMProd (call/response), Roland (TB-303 acid behavior), PointBlank (percussion layering), Polarity (textures/drones), Melodigging Goa (call-and-response arpeggios), Motifkit (retrograde/inversion/transformation operators), Outerverse (psytrance scales/modes), Bluezone (drone vs pad vs texture functional distinction), Medium modular composition (Themes/Flow/Psy domains).
+- Wrote 569-line, 11-section report at /home/z/my-project/audit-reports/RESEARCH-C-PSYTRANCE-MOTIF-INTERACTION.md.
+
+Key Findings:
+
+1. MOTIF BEHAVIOR (Section 1):
+   - Psytrance motifs are RHYTHMIC/TIMBRAL before melodic (E-Clip, Melodigging minimal/progressive/Goa).
+   - Two simultaneous cycle lengths: bar-aligned (4/8/16) AND odd-time (3/5/7) drifting against 4/4.
+   - Variation rate: 4-bar micro (1-2 notes per 4 bars, E-Clip), 8-bar structural (Wikipedia), 16-64-bar evolution (Melodigging), 4-8 bar layer entry.
+   - Psytrance motif vs techno motif vs trance motif: psy = rhythmic/timbral riff, modal minor, micro-variation; techno = one tight loop; trance = singable melodic hook. Distinguishing feature is the OPERATING PROFILE, not the motif itself.
+
+2. CALL/RESPONSE (Section 2):
+   - Appears at multiple role boundaries: lead↔counterline, lead↔acid, motif↔FX, arpeggio↔arpeggio (Goa).
+   - EDMProd general rule: 4-bar pattern (call bars 1-2, response bars 3-4) extended to 8 bars. Reddit: "turn around on the 4th bar."
+   - Psytrance compresses EDM's 4-bar call/response to 1-bar or 2-beat at riff level (inferred from tempo).
+   - Differentiation: pitch + intensity + timbre. In psytrance the role boundary IS the differentiation (lead calls, acid answers with different timbre).
+
+3. REPETITION/VARIATION (Section 3) — "hypnotic without static":
+   - Five concurrent variation axes on different timescales: pitch micro (4-bar), rhythmic displacement (4-bar), velocity/dynamic (per-bar), effect modulation (8-64 bar), layer entry/exit (4-8 bar cadence, 16-32 bar section).
+   - Filter movement as narrative (YGP, Goa, Roland acid, Polarity drones).
+   - Medium modular composition insight: motif meaning depends on Flow (rhythm) and Psy (atmosphere) context. "A motif that feels weak under one flow pattern suddenly becomes powerful under another." Supports RESEARCH-A's call for explicit Interaction abstraction.
+   - Odd-time cycles generate long-phase perceptual evolution from short fixed material (mathematical variation).
+
+4. CALLBACK/RECAPITULATION (Section 4):
+   - No source uses classical term "recapitulation" but behavior is described: Wikipedia "new pattern over constant bass," YGP "transformed lead at re-entry," Goa "reshaped recurring motifs," Medium "themes are a palette, not a sequence."
+   - Psytrance recapitulation = TRANSFORMATION, not restatement. Return of motif = different filter state, different octave, different rhythmic placement, different Flow/Psy backdrop.
+   - Typical return points: drop (filter opened, full layers), re-entry after breakdown (transformed), outro (stripped).
+   - Foundation needs DevelopmentPlan.variations[] AND callbacks[] (RESEARCH-A §5 proposed; confirmed required).
+
+5. KICK↔BASS RELATIONSHIP (Section 5) — DEEP:
+   a) Pattern: K-b-B-B per beat (Safe&Sound "KbBB" notation; kick + 3 x 16th bass pulses, first bass note ~30% lower velocity or ducked). Myloops describes as "kick on quarter, bass on offbeat eighth." These are the same pattern at different granularities.
+   b) Pitch: kick fundamental 50-70 Hz, bass root tuned to kick IN CENTS (target beat rate <1 cycle/sec). Keys F/F#/G common (Myloops). Bass tunes to kick, not vice versa.
+   c) Frequency split: kick 30-90 Hz, bass 90-250 Hz (hard split, HPF bass at 90 Hz 24 dB/oct). This is MIX, not musical.
+   d) Bass envelope: A=0, D=60-90ms, S=0, R=20-40ms — self-terminating stabs. Oscillator phase reset/retrigger MANDATORY (Safe&Sound + dsokolovskiy).
+   e) Timing offset: bass nudged +5 to +15 ms late (Myloops).
+   f) Sidechain: Myloops explicitly says psytrance uses a VOLUME SHAPER, not a slow compressor. Curve: drop to silence on beat, hold 30-50 ms, ramp back to unity over 60-80 ms. Applied to bass, sub, pads, drones, atmospheres — "whole low-mid range should breathe with the kick as one system." On sustains: deeper recovery. On 16th rolls: shorter recovery (50-60 ms).
+   g) Energy coupling: kick+bass is ONE instrument ("Not a sidechained pair — one instrument" per Myloops saturation). 3 grooves in one unit (Safe&Sound): listener can switch focus between kick pattern and 3-bass pattern. Tracks open with 8-16 bars of pure KbBB to lock in trance.
+   h) Kick is CONSTANT; bass VARIES (sustain, triplet fill, 16th roll, silence for tension — Myloops). They change together only at section boundaries.
+   
+   *** ANSWER TO USER'S QUESTION ***: YES, "bass yields to kick" CAN be a MUSICAL parameter. The Foundation can express sidechainIntent = {active, depth (none/subtle/moderate/deep/full-duck), holdMs (short/medium/long or range), recoveryMs (fast/medium/slow or range), scope (list of role names: bass/sub/pad/drone/atmosphere), exceptions (sustained/roll special cases)} WITHOUT prescribing compressor threshold, ratio, attack, release, knee, or implementation choice. PSY4 picks the actual compressor/volume-shaper settings within the band. The musical fact is "the bass yields to the kick with this much depth and this recovery shape, applied to these roles"; the mix fact is "achieve this via volume-shaper curve X or compressor settings Y."
+   
+   MUSICAL vs MIX boundary for kick↔bass:
+   - MUSICAL (Foundation): pattern (KbBB), pitch co-tuning, bass timing offset (+5-15ms), sidechainIntent (banded), energy coupling (continuous-until-breakdown), bass variation operators (sustain/triplet-fill/16th-roll/silence).
+   - MIX/SYNTHESIS (PSY4): frequency split HPF values, bass ADSR values, oscillator type, filter topology, compressor threshold/ratio/attack/release, volume-shaper curve coordinates, saturation amount.
+
+6. ACID LINE BEHAVIOR (Section 6):
+   - Acid is BOTH synthesis decision (TB-303 architecture: saw/square osc, 24 dB/oct resonant LP filter, accent + slide circuits) AND musical role (midrange counter-melodic voice distinct from bass and lead).
+   - Six behaviors (Roland): acid bassline (saw + 16-step slides + cutoff low/res high + slowly open), liquid slides/legato (square + long slides + mid cutoff + low resonance), resonant filter sweeps as texture (high octave + high resonance + slow sweep + delay/reverb), percussive clicks (short decay + zero sustain + high cutoff + low resonance), sub-bass rumbles (square + cutoff closed + low resonance + glide), zaps/chirps/bubbles (maxed resonance + manual cutoff + random accents).
+   - Acid embodies "hypnotic without static": note pattern fixed for 16+ bars while filter state evolves continuously.
+   - Musical function: counter-melodic (answers lead), tension-generation (slow filter sweep = rising tension), psychedelic-motion (FM/PM/resonant sweeps), layered density (Goa: stacked acid voices).
+   - Foundation should model acid as motif with note pattern + filter trajectory (musical: startCutoff, endCutoff, durationBars, contour) + accent pattern + slide/legato pattern. Filter trajectory is MUSICAL MATERIAL, not synthesis.
+
+7. PERCUSSION LAYERING (Section 7):
+   - Three-tier frequency/functional model (PointBlank): Low (kick/toms), Mid (snare/clap/congas), High (hats/shakers/tambourines).
+   - Core (kick/snare/hats) vs Secondary (shakers/tambourines/congas/bongos/rimshots/woodblocks/claps).
+   - Complementary densities: no two roles compete in same register at same time (MUSICAL fact); EQ carving is MIX.
+   - Psytrance-specific: closed hat steady 16th or offbeat 8th; open hat on "and" of 2 and 4; ride sustained upper-mid texture; clap/snare as backbeat OR section-transition accent; mid percussion (rimshot/wood/metal/ghost notes) as micro-variation layer; ghost notes "humanise."
+   - Drum layer swap (YGP) = swapping which percussion sample plays a given role at section boundary. Foundation models as roleSoundState change per section.
+
+8. PAD/ATMOSPHERE (Section 8):
+   - Functional distinction (Bluezone, Polarity): DRONE = sustained structural foundation (defined by duration/continuity/role, not source); PAD = harmonic color, wide background layer; TEXTURE = grain/density/noise; ATMOSPHERE = umbrella term.
+   - Defining characteristic is FUNCTION not SOURCE (Bluezone: same recording can be drone/texture/ambience/event depending on processing).
+   - Musical function in psytrance: continuity (alive when not much rhythmic happening), section connection, harmonic anchor (sustains modal root/fifth), psychedelic motion engine.
+   - Slow variation is the rule (Polarity: small modulation > dramatic changes; Bluezone: long durations evolve slowly; Medium modular: "outside the 8-bar grid, drift and evolve on their own, 30s-1min+").
+   - Pad/atmosphere is SECOND sidechain target (Myloops: apply duck to bass/sub/pads/drones/atmospheres — anything below 500 Hz). Foundation expresses via sidechainIntent.scope.
+   - Pad typically sustains root or fifth of modal center against which lead/acid move. Foundation: sustainedHarmony parameter on pad role.
+
+9. COUNTERLINE (Section 9):
+   - Yes, there is typically a counterline, but rarely classical counterpoint. Three patterns: call/response (most common — counterline answers lead with different timbre, usually acid voice or delayed echo), parallel-motion (rare, brief section device), contrary-motion (sparing, transitional).
+   - Relationship to lead: lower register or higher (rarely same — masking), lower density, different timbre, often delay-derived.
+   - "Delay as counterline" pattern (YGP "delay throws"): producer tunes delay (e.g., dotted-quarter at BPM) so echoes fall on rhythmic positions that complement lead. Foundation can model as derivedCounterline interaction (sourceRole=lead, derivation=delay, timing=dotted-quarter, feedback=3 echoes) without composing counterline notes.
+
+10. MOTIF TRANSFORMATION OPERATORS (Section 10):
+    - Classical toolkit (Motifkit): Prime, Retrograde, Inversion, Retrograde Inversion, Transposition, Augmentation, Diminution, Sequence, Fragmentation, Change of mode.
+    - Psytrance usage map:
+      * USED: Transposition (octave shift — E-Clip), Fragmentation (1-2 note fragment as stab/acid answer), Rhythmic displacement (16th shift, syncopation), Register shift (octave up at drop), Augmentation (rare, breakdown), Diminution (Goa ornamented leads), Sequence (8-bar build), Interval substitution (Phrygian ♭2), Change of mode (modal interchange at section boundary, Nitzhonot).
+      * RARE/ABSENT: Inversion (rare Goa mirror), Retrograde (essentially absent as compositional device; appears as AUDIO reverse FX), Retrograde Inversion (absent), Twelve-tone (not used), Classical counterpoint (not used).
+    - TWO PSYTRANCE-SPECIFIC OPERATORS not in classical toolkit:
+      * Filter-state-transform: same notes/rhythm, different filter cutoff/resonance state. Primary recapitulation mechanism.
+      * Layer-context-transform: same motif placed against different Flow (rhythm) or Psy (atmosphere) backdrop. Perceived intensity changes without motif change.
+    - Foundation's DevelopmentPlan.operators should include both classical AND psytrance-specific operators.
+
+11. FACT vs INDUSTRY PRACTICE vs COMMON CONVENTION vs INFERENCE (Section 11):
+    - FACT: K-b-B-B pattern, 90 Hz frequency split, bass ADSR values, oscillator phase reset mandatory, sidechain-as-volume-shaper preference, acid = TB-303 architecture, drone defined by function not source, first bass note ~30% lower velocity.
+    - INDUSTRY PRACTICE: bass nudged 5-15ms late, bass tuned to kick in cents, saturation on bass/kick bus, tracks open with 8-16 bars pure KbBB, acid evolves via slow filter sweep, pad drifts outside 8-bar grid, layer entry every 4-8 bars.
+    - COMMON CONVENTION: keys F#m/Em/Dm, Phrygian/Dorian/harmonic/Hungarian minor scales, call/response 4-bar with response on bar 3, open hat on offbeat 8th, drone = tambura parallel, 3/5/7 odd-time cycles, mono bass+kick, saturation tools (Decapitator/Saturn).
+    - INFERENCE (clearly marked): psytrance compresses call/response to 1-bar/2-beat at riff level (inferred from tempo); recapitulation = transformation (synthesised from YGP+Goa+Medium); counterline is delay-derived (inferred from YGP+Goa); sidechain as banded musical parameter (inferred from Myloops intent vs implementation separation); filter-state-transform and layer-context-transform as signature psytrance operators (inferred from Roland+Medium+YGP); 3-grooves-in-one-unit perceptual coupling (Safe&Sound describes listener experience); kick constant + bass varies (derived from Myloops+Wikipedia).
+
+Honest Qualifications:
+- No source explicitly uses the classical term "recapitulation" for psytrance. Section 4 is inferred from arrangement literature + Goa's "reshaped recurring motifs."
+- Section 5 (kick↔bass) is the HIGHEST-confidence section — three independent producer sources (Myloops, Safe&Sound, dsokolovskiy) corroborate every major claim with implementation detail.
+- Section 6 (acid) is HIGH confidence on TB-303 behavior (Roland authoritative) but MEDIUM-HIGH on the role-distinction inference (no single source explicitly says "acid is a distinct role from bass and lead" — synthesised from Roland + Goa + YGP).
+- Sections 1-4, 7-10 are MEDIUM-HIGH confidence — synthesised from multiple sources but with inference clearly marked where psytrance-specific literature is silent.
+- Sidechain-as-musical-parameter claim is well-supported by Myloops' explicit separation of musical intent ("fast gated duck") from mix implementation (volume-shaper curve OR compressor settings) but the specific banded parameter schema proposed is an INFERENCE about how the Foundation should model it, not a producer-stated convention.
+
+Artifacts produced:
+- /home/z/my-project/audit-reports/RESEARCH-C-PSYTRANCE-MOTIF-INTERACTION.md (569 lines, 11 sections + sources + fact/convention/inference matrix)
+
+Bottom Line for the orchestrator:
+Motifs in psytrance develop through CONCURRENT SLOW VARIATION ON 5 AXES (pitch micro 4-bar, rhythmic displacement 4-bar, velocity/dynamic per-bar, effect modulation 8-64 bar, layer entry/exit 4-8 bar) rather than through classical melodic development. Recapitulation is always TRANSFORMATIONAL (filter-state change, octave shift, layer-context change) rather than literal restatement. The kick↔bass relationship is a COUPLED ENGINE with 5 separable musical parameters (KbBB pattern, pitch co-tuning, bass timing offset, sidechainIntent, energy coupling) that the Foundation can express WITHOUT prescribing synthesis details. "Sidechain intent" CAN be a musical parameter — expressed as banded values (depth/hold/recovery/scope/exceptions) — with PSY4 picking the actual compressor/volume-shaper settings within the band. Two signature psytrance motif operators (filter-state-transform, layer-context-transform) are not in the classical transformation toolkit and should be added to the Foundation's DevelopmentPlan.operators. The current Foundation's motif model is missing: (1) the 5-axis variation vocabulary, (2) the transformation-based recapitulation model, (3) the sidechainIntent as a banded musical parameter, (4) the acid line's filter-trajectory as musical material, (5) the layer-context-transform operator, (6) the derivedCounterline (delay-as-counterline) interaction. No code changed. No Foundation changes. No renderer changes. HARD STOP observed. Awaiting user review.
+
+---
+Task ID: PSY4-MUSICAL-MODEL-REDESIGN (orchestrator)
+Agent: z-ai-code (main)
+Task: Redesign the musical model itself before deciding V2. No code, no Foundation changes, no PSY4 changes, no audio, no V1 rerun, no architecture approval, no V2 schema yet. Answer: what is the minimum complete musical representation for PSY4 to receive a genuine Psytrance composition?
+
+Work Log:
+- User instruction: STOP. Reframe the design before V2. Do NOT jump to schema. Build musical model from first principles, validate against full 6-8 minute paper composition, boundary audit, GO/NO-GO for V2 design.
+- Dispatched 2 parallel research agents:
+  * RESEARCH-B: deep psytrance arrangement + long-form structure + subgenre differences (18 sources, 551 lines, audit-reports/RESEARCH-B-PSYTRANCE-ARRANGEMENT-STRUCTURE.md)
+  * RESEARCH-C: motif development + call/response + kick↔bass interaction + sidechain-as-musical-parameter (569 lines, audit-reports/RESEARCH-C-PSYTRANCE-MOTIF-INTERACTION.md)
+- Combined with existing RESEARCH-A (490 lines, 17 sources, role taxonomy).
+- Total research base: 3 reports, ~1610 lines, 35+ sources.
+- Wrote audit-reports/PSY4-MUSICAL-MODEL-REDESIGN.md with 14 sections:
+
+Section 1 — Musical Role Ontology (first principles): role = musical function, NOT instrument. Candidate taxonomy: ~17 roles across 4 functional groups (rhythmic-foundation: KICK, BASS, KICK_BASS, CLAP/SNARE, CLOSED_HAT, OPEN_HAT, RIDE, CYMBAL, PERCUSSION, GHOST_PERC, FILLS; midrange-melodic: LEAD, ACID, PLUCK, STAB, ARPEGGIO, COUNTERLINE, CALL, RESPONSE, MOTIF_LAYER; sustained-harmonic: PAD, DRONE, ATMOSPHERE, TEXTURE, HARMONIC_BED; transition-structural: RISER, IMPACT, DOWNLIFTER, REVERSE, TRANSITION_PERC, BUILD_ELEMENT, BREAK_ELEMENT). Each labeled FACT/INDUSTRY PRACTICE/COMMON CONVENTION/INFERENCE. NOT a final enum — open set.
+
+Section 2 — Role Hierarchy: 4-level hierarchy (functionalGroup → semanticRole → materialInstance → lifecycleState). Example: rhythmic-foundation → percussion → closed-hat → instance "hat-pattern-A" → lifecycle entering@16/sustaining@32/thinning@48/muted@64. Default 2-level (group+role); 4-level for explicit material+lifecycle tracking. Musical, not synth-specific.
+
+Section 3 — Complete Vertical Stack: representative DROP section with 17 roles, classified essential (KICK, BASS, KICK_BASS_RELATION, CLOSED_HAT, LEAD) / optional (CLAP, RIDE, PERC, ACID, COUNTERLINE, PLUCK, ARPEGGIO, PAD, ATMOSPHERE, TEXTURE) / derived (RISER/IMPACT residual). Midrange problem diagnosed: V1 3-4% midrange = only LEAD in midrange (4-role skeleton). Fix = composition must CONTAIN midrange material (ACID, COUNTERLINE, PLUCK, PERC, PAD), NOT EQ/saturation/midrangeDensity field. MUSICAL MODEL GAP, not MIXING GAP.
+
+Section 4 — Negative Space: 10 lifecycle states (absent/introduced/active/sparse/dense/transforming/thinning/muted/returning/removed). Per-section role-activity mask. BREAKDOWN vs DRIVE vs DROP examples. This IS the musical representation of negative space. Not synthesis.
+
+Section 5 — Relationship Model: kick+bass = ONE system (not two arrays). 5 musical parameters (pattern=KbBB, kickFundamentalPitch+bass co-tuned, bassTimingOffset+5-15ms, sidechainIntent={active,depth,holdMs,recoveryMs,scope,exceptions}, energyCoupling). sidechainIntent IS a musical parameter (RESEARCH-C confirms: "bass yields to kick" is separable from compressor implementation). Foundation expresses banded/qualitative; PSY4 maps to actual dB/ms. Other interactions: bass↔percussion, lead↔counterline, percussion↔energy, FX↔transition, harmony↔melody, rhythm↔motif.
+
+Section 6 — Motif Development: 5-axis variation (pitch, rhythm, velocity, effect, layer-context). 2 psytrance-specific operators (filter-state-transform, layer-context-transform). Odd-time cycles (3/5/7 against 4/4). Forward-looking DevelopmentPlan (variations[], callbacks[], lineage[], phrasePurposes[]). Example: motif A over 96 bars (introduce@33, vary@41/49/57, exit@65, callback@97, layer-context-transform@105).
+
+Section 7 — Arrangement: multi-level (TRACK→SECTION→PHRASE→BAR→EVENT). 9-12 sections over 6-8 min. Typical: INTRO→GROOVE→STATEMENT→DEV1→BREAKDOWN1→BUILD→DROP1→DEV2→BREAKDOWN2→BUILD2→DROP2→OUTRO. Section TYPE (INTRO/GROOVE/BREAKDOWN/BUILD/DROP/OUTRO) vs section PURPOSE (current SectionRole ESTABLISH/DEVELOP/...). Multi-arc energy (2-3 peaks, macro/meso/micro). Layer entry cadence 8 bars, conventional order. Breakdown mechanics (kick+bass OUT, pad+texture SUSTAIN, FX ENTER, hook previewed). Drop mechanics (full ensemble simultaneous re-entry, 2nd drop varies 1st). 6-subgenre comparison table (Full-on/Progressive/Dark/Goa/Forest/HiTech).
+
+Section 8 — Style/Subgenre Profile: "psytrance" ≠ BPM+scale. StyleProfile with constraints (rollingLowEnd, hypnoticRepetition, evolvingMotifs, layeredPercussion, tensionReleaseStructure, psychedelicTexture, oddTimeCycles, continuousGroove, modularEpisodes), arrangementConventions (typicalLength, sectionOrder, breakdownCount, dropCount, layerEntryCadence, phraseLength), roleTendencies, motifBehavior. Musical constraints only — NO oscillator/filter/FM/sample/saturation/stereo/EQ/compression/LUFS.
+
+Section 9 — Midrange Problem: V1 3-4% midrange = MUSICAL MODEL GAP. 9 roles responsible for midrange (ACID, LEAD, PLUCK, STAB, COUNTERLINE, ARPEGGIO, PERCUSSION, PAD, TEXTURE). Fix = composition must CONTAIN midrange material when arrangement calls for it. NOT midrangeDensity field, NOT EQ boost, NOT saturation.
+
+Section 10 — Complete Representative Track: 7-minute Full-On track "Nightfall Drive" (145 BPM, E phrygian-dominant, 254 bars). 12 sections (INTRO 0-47, GROOVE 48-79, STATEMENT 80-111, DEV1 112-143, BREAKDOWN1 144-175, BUILD 176-191, DROP1 192-223, DEV2 224-255, BREAKDOWN2 256-287, BUILD2 288-303, DROP2 304-335, OUTRO 336-383). Motif A development schedule (introduce@80, vary@120/128/136, exit@144, callback@192 register-shift, layer-context-transform@224, callback@304 fragment). Kick↔bass relationship throughout (KbBB, 50Hz/65Hz, +8ms offset, sidechainIntent deep/fast, coupling suspended in breakdowns). Interactions (lead↔counterline call-response, percussion↔energy, FX↔transition). Multi-arc energy. Negative space verified. Model describes this cleanly — validation passed.
+
+Section 11 — Boundary Audit: WHAT/HOW/MIX classification for ~30 concepts. 6 fields cross boundaries (PresetPayload=synthesis, TexturePayload.partials=synthesis, FXGesturePayload.durationSec=seconds→bars, Motif.role=free string→semanticRole, Material.metadata.role=free string→semanticRole, DrumPatternPayload.tracks=free string keys→semanticRole).
+
+Section 12 — NO V2 Schema Yet: this document does NOT propose V2 schema. Previous audit jumped too fast. V2 schema must be DERIVED from the model + paper composition, not invented first. Next step (if GO) is formal V2 schema design — separate document.
+
+Section 13 — Research Requirement: fulfilled. 3 reports (RESEARCH-A/B/C), ~1610 lines, 35+ sources. Cross-checked 12 topics. FACT/INDUSTRY PRACTICE/COMMON CONVENTION/INFERENCE labeled throughout. No single producer workflow presented as universal law.
+
+Section 14 — GO / NO-GO for V2 Design: GO for V2 design, NO-GO for V2 implementation. Musical model sufficiently understood (12 items validated). Paper composition validates model can express full track (12 sections, 8 simultaneous roles, 2 motifs with development+callbacks, kick↔bass coupled engine, percussion evolution, midrange material, harmonic/sustained, transitions, negative space, multi-arc energy, breakdowns/drops). Next step = formal V2 schema design document (separate, derived from this model, validated against paper composition, boundary-audited, reviewed before implementation). Does NOT decide: whether Foundation should change, what V2 schema looks like, whether V2 will pass vertical proof, whether PSY4 can realize V2 model, any architecture approval.
+
+Stage Summary:
+- Musical model redesign document written: audit-reports/PSY4-MUSICAL-MODEL-REDESIGN.md (~700 lines, 14 sections).
+- No code modified. No Foundation changes. No PSY4 changes. No audio rendered. No V1 rerun. No architecture approved. No V2 schema proposed. No V2 implementation started.
+- KEY ANSWER: the WHAT-layer must express 8 things: (1) complete role ontology ~12-14 roles, (2) role hierarchy (group→role→instance→lifecycle), (3) complete vertical stack (17 roles in drop), (4) negative space as first-class (10 lifecycle states, per-section mask), (5) relationship model (kick+bass as coupled engine with 5 musical parameters including sidechainIntent), (6) forward-looking motif development (5-axis, psytrance-specific operators, callbacks), (7) multi-level arrangement (track→section→phrase→bar→event, 9-12 sections, multi-arc energy), (8) style/subgenre profile (musical constraints only).
+- Midrange problem = MUSICAL MODEL GAP, not mixing gap. Fix = composition must CONTAIN midrange material (acid/counterline/pluck/perc/pad), NOT EQ/saturation/midrangeDensity field.
+- Paper composition "Nightfall Drive" (7-min Full-On, 12 sections) validates the model can express a complete track.
+- Verdict: GO for V2 design. NO-GO for V2 implementation. Next step (if approved) = formal V2 schema design document, separate from this redesign.
