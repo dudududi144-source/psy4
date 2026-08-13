@@ -301,6 +301,15 @@ export class PsyLive {
   onState: ((s: LiveState) => void) | null = null;
   get analyserNode() { return this.analyser; }
   get radioAnalyserNode() { return this.radioAnalyser; }
+  /** Expose AudioContext for shared use with external devices (e.g. SamplerDevice). */
+  get audioContext(): AudioContext | null { return this.ctx; }
+  /**
+   * Expose the engineBus input node for external devices to connect to.
+   * When a sampler device connects its output → engineBus, it goes through
+   * PSY4's master chain (comp → master → safetyLimiter → destination).
+   * This enables shared master/limiter/ducking.
+   */
+  get engineBusInput(): AudioNode | null { return this.engineBus ?? null; }
   getPresets() { return PRESETS; }
   getStreams() { return STREAMS; }
   getPreset() { return PRESETS.find(p => p.id === this.presetId)!; }
