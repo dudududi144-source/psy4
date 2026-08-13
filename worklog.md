@@ -7994,3 +7994,62 @@ Stage Summary:
 - VERDICT: GO. Family architecture CAN support sample-based realization device cleanly. All 10 decision rules satisfied. All 10 adversarial questions pass. No blockers.
 - Minimum path: Phase 1 = minimal headless SamplerDevice implementing PsyDevice, consuming NoteEvent, using 6 verified PSY3 samples + procedural, deterministic LCG selection, main-thread AudioBufferSourceNode (RT-safe by construction), no composition logic, no Foundation changes, headless tests.
 - Awaiting user decision: GO/NO-GO for Phase 1 implementation.
+
+---
+Task ID: PSY-SAMPLER-PRE-IMPLEMENTATION-PROOF (orchestrator)
+Agent: z-ai-code (main)
+Task: Final narrow pre-implementation proof gate. NO CODE. Prove Phase 1 can be implemented without hidden architectural contradiction. Trace one event. Prove Sampler isn't scheduler. Prove main-thread v1. Define late-event semantics. Prove determinism. Provenance isolation. PSY4 independence. Headless operation. GO/CONDITIONAL GO/NO-GO.
+
+Work Log:
+- User instruction: Architecture Gate accepted. But don't jump to implementation. One final narrow proof gate. Trace one event from origin to sound. Prove Sampler isn't scheduler. Prove main-thread v1 decision. Define late-event semantics. Prove deterministic selection. Prove missing-material isn't composition. Prove provenance isolation. Prove PSY4 independence. Prove headless. Define minimal Phase 1 surface. Define acceptance test. "Do not build yet" list. GO/CONDITIONAL GO/NO-GO.
+- Read actual Foundation source to trace event path:
+  * packages/device-sdk/src/host.ts — DeviceHost.startEventRouting: channel.subscribe → for each device: device.onEvent(event). Verified event routing.
+  * packages/scheduler/src/scheduler.ts — schedule() produces ScheduledEvent[] with at: AudioTime (originAudioTime + bar/step offsets). Verified timing ownership.
+  * packages/transport/src/transport.ts + types.ts — TransportClock tracks origin: { audioTime, beatIndex, bpm }. beatTime computed from origin. Verified audio clock anchor.
+- Tested AudioBufferSourceNode.start(when) with web-audio-api OfflineAudioContext:
+  * Source at t=0.5s → audio plays at exactly 0.5s (RMS 0.00 before, 0.11 during, 0.00 after)
+  * Source at t=0.1s → audio plays at exactly 0.1s
+  * stop(when) works sample-accurately
+  * Proven: sample-accurate scheduling against audio clock works in web-audio-api
+- Wrote audit-reports/PSY-SAMPLER-PRE-IMPLEMENTATION-PROOF.md with 15 sections:
+
+Section 0 — Verdict: GO. Architecture sufficient. Phase 1 can begin without modification. Evidence: event path traced from source, AudioBufferSourceNode.start(when) proven, no contradictions, no Foundation changes, no PSY4 coupling.
+
+Section 1 — Architecture Frozen: Architecture Gate frozen. Not reopening Foundation/PSY4/ontology/repository structure. If contradiction discovered during Phase 1, STOP and report. None discovered.
+
+Section 2 — One Complete Event Trace (from actual code): full path Composition→scheduler→ScheduledEvent.at (AudioTime)→Channel.publish→DeviceHost routes→device.onEvent→Sampler selection→AudioBufferSourceNode.start(event.at)→Web Audio→output. Per-transition ownership table (who owns event/timing/transforms/forwards). Where sample selection performed (Sampler). Where audio scheduling performed (Sampler via source.start). Where audio clock enters (event.at passed to source.start). Where latency introduced (main-thread jitter 5-20ms mitigated by 100ms lookahead, buffer decode at load time not playback). Smallest adapter required: NONE — existing family traces path cleanly.
+
+Section 3 — Sampler Is NOT Scheduler: explicit table. Scheduler owns WHEN (next event/beat/bar/phrase/timing/causality/arrangement/transport progression). Sampler owns HOW (which sample/pitch/velocity/voice allocation/start-stop scheduling against event.at/deterministic variation/device-local state). Sampler receives event with AudioTime, schedules source.start(event.at) — realization not scheduling. Does NOT decide next event, advance transport, generate material.
+
+Section 4 — Main-Thread v1 Proven: operations breakdown (load/decode/manifest at bank load = main, not playback path; selection/createBufferSource/connect/start at event receipt = main; buffer reading/gain/mixing during playback = audio internal Web Audio). What if main stalls AFTER start (audio continues, no glitch, future events delayed). What if main stalls BEFORE start (event.at may pass, late-event semantics). Lookahead 100ms. Acceptable lateness (drop if >50ms late). Can schedule ahead: yes, source.start(when) accepts any when >= currentTime. Tested proof: AudioBufferSourceNode.start(when) sample-accurate in web-audio-api.
+
+Section 5 — Late-Event Semantics: policy = configurable tolerance, default drop-if-too-late. event.at > currentTime+lookahead → queue. currentTime <= at <= currentTime+lookahead → schedule. currentTime-tolerance <= at < currentTime → play immediately, report LATE_EVENT. at < currentTime-tolerance → drop, report EVENT_DROPPED_LATE. Stopped context → ignore. Suspended context → queue, apply late policy on resume. No undefined behavior.
+
+Section 6 — Deterministic Selection Proven: f(seed, channel, note, velocity, position, section, availableSamples) → selectedSample. All inputs deterministic. Same inputs → same output by construction (LCG seeded, round-robin counter rebuilt on seek, available samples sorted by manifest name). Does NOT depend on: object key order, filesystem ordering, network ordering, load completion ordering, Math.random, wall-clock. Round-robin = deterministic counter per (channel, section), rebuilt from event log on seek.
+
+Section 7 — Missing Material Is Not Composition: 5 failure scenarios (category empty → report+skip; sample not found → report+skip; all quarantined → report+skip; bank loading → queue then report+skip; pitch out of range → clamp+report). Device MUST NOT: generate replacement pattern, choose different role, invent substitute motif, ask another device, silently reinterpret composition. Device MAY: clamp pitch (realization HOW), skip, report. Never crosses into WHAT/WHEN.
+
+Section 8 — Sample Provenance Isolation: Phase 1 asset set frozen (6 PSY3 VERIFIED, procedural VERIFIED, 108 real QUARANTINED). Invariant: sample without approved provenance cannot become runtime material. Enforcement: bank loader checks manifest, unknown/rejected samples never enter runtime. No accidental loading: Sampler loads ONLY from manifest, does NOT scan directories, quarantined samples absent from manifest or marked unknown. Impossible to load accidentally.
+
+Section 9 — PSY4 Independence Proven: dependency audit. MUST NOT import: PSY4 React/page/composition/scheduler/global stores/UI/ontology/psy4-engine.js/psy4-dsp.js. Allowed: Foundation contracts, web-audio-api, sampleBank.ts (adapted), SAMPLE_MANIFEST.json format, multisampleGenerator.ts. If reusable module violates: extract needed logic into new module, don't import violation. Sampler is family device, not PSY4 feature disguised.
+
+Section 10 — Headless Operation Proven: constructible/testable without React/browser UI/MIDI/PSY4 page/user interaction. web-audio-api API support verified (OfflineAudioContext, createBuffer, createBufferSource, createGain, source.start(when), source.stop(when), connect, setValueAtTime, startRendering, getChannelData — all tested, all work). Tests verify: contract, capabilities, sample registration, deterministic selection, missing-material, event handling, timing, voice lifecycle, DeviceHost integration.
+
+Section 11 — Minimal Phase 1 Surface: implements ONLY SamplerDevice + sample-store + voice + selection + event handling + transport sync + diagnostics + missing-material reporting + headless tests. Does NOT implement: UI, MIDI, offline renderer, AudioWorklet, advanced keyzones, velocity layers, pitch correction, FX, browser, drag-drop, artist/style logic, composition logic, material inference. Phase 1 = prove canonical event → deterministic sample realization → audio scheduling.
+
+Section 12 — Phase 1 Acceptance Test: 12 criteria (Contract implements PsyDevice; Integration hosted beside devices; Event NoteEvent reaches Sampler; Selection same stream → same sequence; Timing scheduled against audio time; Missing material → explicit result, never invents; Assets only verified/procedural; Independence no PSY4 dep; Headless testable without UI; Boundary no WHAT/WHEN logic; Failure late/unloaded deterministic; Regression Foundation 250 tests still pass).
+
+Section 13 — Do Not Build Yet List: frozen for Phase 1 — Foundation mods, new NoteEvent fields, new composition concepts, new scheduling, MIDI, UI, offline renderer, AudioWorklet, 108 quarantined samples, advanced selection, FX, mixer, export. If something becomes necessary: STOP, classify as architectural requirement / implementation convenience / scope expansion. Do not silently add.
+
+Section 14 — Final Decision: GO. 12 evidence items all pass. No contradictions. Architecture consistent, event path clean, device boundary clear, platform provides what needed.
+
+Section 15 — Phase 1 Implementation Boundary + First Task: directory structure (src/lib/devices/sampler/{SamplerDevice,sample-store,voice,selection,types}.ts + tests/devices/sampler/*.test.ts). First implementation task = SamplerDevice skeleton + contract test (implements 5 PsyDevice methods + capabilities, onEvent logs NoteEvent, register with DeviceHost, publish NoteEvent, assert received, assert capabilities, assert lifecycle). Smallest vertical slice proving family integration. No audio playback yet. Subsequent tasks: sample-store, selection, voice, wire onEvent→selection→voice→audio, timing tests, missing-material tests, integration tests, headless suite.
+
+Stage Summary:
+- Pre-implementation proof document written: audit-reports/PSY-SAMPLER-PRE-IMPLEMENTATION-PROOF.md (~700 lines, 15 sections).
+- No code modified. No Foundation changes. No PSY4 changes. No implementation started.
+- KEY PROOF: traced one event from origin to sound through actual Foundation source (scheduler→Channel→DeviceHost→device.onEvent→Sampler→source.start(event.at)→Web Audio). Verified AudioBufferSourceNode.start(when) is sample-accurate in web-audio-api. No contradictions found.
+- VERDICT: GO. Architecture sufficient. Phase 1 can begin without architectural modification.
+- Phase 1 boundary: minimal headless SamplerDevice implementing PsyDevice, consuming NoteEvent, deterministic LCG selection, main-thread AudioBufferSourceNode, verified samples only, no composition logic, no Foundation changes, no PSY4 coupling.
+- First task: SamplerDevice skeleton + contract test (smallest vertical slice proving family integration, no audio yet).
+- Awaiting user go to begin Task 1.
