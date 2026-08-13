@@ -568,7 +568,7 @@ export class PsyLive {
     this.compositionWorker.onmessage = (e) => this.handleWorkerMessage(e.data);
     this.compositionWorker.postMessage({
       type: 'init',
-      opts: { bpm: 145, rootPc: 4, scaleName: 'phrygian-dominant', seed: 42 },
+      opts: { bpm: 145, rootPc: 4, scaleName: 'phrygian-dominant', seed: Math.floor(Math.random() * 1000000) },
     });
     // Keep causalComposer reference for getUserControls (worker sends state back)
     this.causalComposer = null; // Will be replaced by worker state
@@ -834,7 +834,6 @@ export class PsyLive {
     this.ensureAudio();
     if (this.playing) return;
     this.playing = true;
-    // Start AudioWorklet engine if available
     if (this.useWorklet && this.engineNode) {
       this.engineNode.play();
       this.engineNode.setBPM(145);
@@ -844,6 +843,19 @@ export class PsyLive {
     this.updateDelayTime();
     this.timer = setInterval(() => this.scheduler(), this.lookahead);
     this.startUITimer();
+    // CRITICAL: Send initial compose request immediately (don't wait for first scheduler tick)
+    if (this.workerReady) {
+      const snap = this.transport!.snapshot();
+      const beatDur = 60 / snap.bpm;
+      const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
+      this.lastWorkerComposeBar = -1;
+      this.compositionWorker?.postMessage({
+        type: 'compose',
+        targetBar: 3,
+        barOriginAudioTime,
+      });
+      this.lastWorkerComposeBar = 3;
+    }
     this.emit();
   }
 
