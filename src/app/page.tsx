@@ -48,6 +48,7 @@ function StateBar({ label, value, color, threshold }: { label: string; value: nu
     </div>
   );
 }
+const MemoStateBar = React.memo(StateBar);
 
 function MaterialChip({ material }: { material: string }) {
   const color = MATERIAL_COLORS[material] || '#64748b';
@@ -58,6 +59,7 @@ function MaterialChip({ material }: { material: string }) {
     </span>
   );
 }
+const MemoMaterialChip = React.memo(MaterialChip);
 
 function HistoryEntry({ entry }: { entry: { bar: number; action: string } }) {
   const color = ACTION_COLORS[entry.action] || '#64748b';
@@ -69,6 +71,7 @@ function HistoryEntry({ entry }: { entry: { bar: number; action: string } }) {
     </div>
   );
 }
+const MemoHistoryEntry = React.memo(HistoryEntry);
 
 export default function Page() {
   const engineRef = useRef<PsyLive | null>(null);
@@ -96,24 +99,6 @@ export default function Page() {
   const [showFx, setShowFx] = useState(false);
   const [showRadio, setShowRadio] = useState(false);
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-      switch (e.code) {
-        case 'Space': e.preventDefault(); togglePlay(); break;
-        case 'KeyB': triggerBreak(); break;
-        case 'KeyD': triggerDrop(); break;
-        case 'KeyU': triggerBuild(); break;
-        case 'KeyA': releaseSection(); break;
-        case 'KeyM': setShowMix(p => !p); break;
-        case 'KeyF': setShowFx(p => !p); break;
-        case 'KeyR': setShowRadio(p => !p); break;
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [s.playing, style, energy, tension]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
 
@@ -125,6 +110,58 @@ export default function Page() {
   }, []);
   useEffect(() => { init(); }, [init]);
 
+  // Ref mirror of playing state so togglePlay can read it without re-binding
+  const playingRef = useRef(false);
+  playingRef.current = s.playing;
+
+  const togglePlay = useCallback(() => {
+    const e = engineRef.current; if (!e) return;
+    if (playingRef.current) e.stop();
+    else { e.setStyle(style); e.setEnergy(energy); e.setTension(tension); e.play(); }
+  }, [style, energy, tension]);
+  // Use a ref so the keyboard handler always calls the latest togglePlay without re-binding
+  const togglePlayRef = useRef(togglePlay);
+  togglePlayRef.current = togglePlay;
+
+  const connectRadio = async () => { const e = engineRef.current; if (!e) return; const stream = STREAMS.find(x => x.id === streamId) || STREAMS[0]; await e.connectRadio(stream); };
+  const disconnectRadio = () => engineRef.current?.disconnectRadio();
+  const handleStyle = (st: MusicalStyle) => { setStyle(st); engineRef.current?.setStyle(st); };
+  const handleVol = (v: number) => { setVol(v); engineRef.current?.setVolume(v); };
+  const handleRadioVol = (v: number) => { setRadioVol(v); engineRef.current?.setRadioVolume(v); };
+  const handleEnergy = (v: number) => { setEnergy(v); engineRef.current?.setEnergy(v); };
+  const handleTension = (v: number) => { setTension(v); engineRef.current?.setTension(v); };
+  const triggerBreak = () => engineRef.current?.triggerBreak(4);
+  const triggerBuild = () => engineRef.current?.triggerBuild(4);
+  const triggerDrop = () => engineRef.current?.triggerDrop(4);
+  const releaseSection = () => engineRef.current?.releaseSection();
+
+  // Stable refs for keyboard handler — avoids re-binding the listener on every state change
+  const actionsRef = useRef({ triggerBreak, triggerBuild, triggerDrop, releaseSection, setShowMix, setShowFx, setShowRadio });
+  actionsRef.current = { triggerBreak, triggerBuild, triggerDrop, releaseSection, setShowMix, setShowFx, setShowRadio };
+
+  // Keyboard shortcuts — bound ONCE (empty dep array) thanks to refs
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      const a = actionsRef.current;
+      switch (e.code) {
+        case 'Space': e.preventDefault(); togglePlayRef.current(); break;
+        case 'KeyB': a.triggerBreak(); break;
+        case 'KeyD': a.triggerDrop(); break;
+        case 'KeyU': a.triggerBuild(); break;
+        case 'KeyA': a.releaseSection(); break;
+        case 'KeyM': a.setShowMix(p => !p); break;
+        case 'KeyF': a.setShowFx(p => !p); break;
+        case 'KeyR': a.setShowRadio(p => !p); break;
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // Visualizer canvas — RAF loop. Reuses a single Uint8Array buffer (no per-frame alloc).
+  // PERF: depends only on s.playing so it isn't torn down on every state update.
+  const visualBufRef = useRef<Uint8Array | null>(null);
   useEffect(() => {
     if (!s.playing) return;
     const canvas = canvasRef.current;
@@ -139,7 +176,10 @@ export default function Page() {
       if (!analyser || !ctx) { rafRef.current = requestAnimationFrame(draw); return; }
       const W = canvas.width = canvas.offsetWidth, H = canvas.height = canvas.offsetHeight;
       ctx.fillStyle = 'rgba(7,3,18,0.4)'; ctx.fillRect(0, 0, W, H);
-      const buf = new Uint8Array(analyser.frequencyBinCount);
+      if (!visualBufRef.current || visualBufRef.current.length !== analyser.frequencyBinCount) {
+        visualBufRef.current = new Uint8Array(analyser.frequencyBinCount);
+      }
+      const buf = visualBufRef.current;
       analyser.getByteFrequencyData(buf);
       const bars = 48, bw = W / bars;
       for (let i = 0; i < bars; i++) {
@@ -154,23 +194,6 @@ export default function Page() {
     rafRef.current = requestAnimationFrame(draw);
     return () => { active = false; cancelAnimationFrame(rafRef.current); };
   }, [s.playing]);
-
-  const togglePlay = () => {
-    const e = engineRef.current; if (!e) return;
-    if (s.playing) e.stop();
-    else { e.setStyle(style); e.setEnergy(energy); e.setTension(tension); e.play(); }
-  };
-  const connectRadio = async () => { const e = engineRef.current; if (!e) return; const stream = STREAMS.find(x => x.id === streamId) || STREAMS[0]; await e.connectRadio(stream); };
-  const disconnectRadio = () => engineRef.current?.disconnectRadio();
-  const handleStyle = (st: MusicalStyle) => { setStyle(st); engineRef.current?.setStyle(st); };
-  const handleVol = (v: number) => { setVol(v); engineRef.current?.setVolume(v); };
-  const handleRadioVol = (v: number) => { setRadioVol(v); engineRef.current?.setRadioVolume(v); };
-  const handleEnergy = (v: number) => { setEnergy(v); engineRef.current?.setEnergy(v); };
-  const handleTension = (v: number) => { setTension(v); engineRef.current?.setTension(v); };
-  const triggerBreak = () => engineRef.current?.triggerBreak(4);
-  const triggerBuild = () => engineRef.current?.triggerBuild(4);
-  const triggerDrop = () => engineRef.current?.triggerDrop(4);
-  const releaseSection = () => engineRef.current?.releaseSection();
 
   const syncMeta = SYNC_META[s.syncStatus] || SYNC_META.idle;
   const actionColor = ACTION_COLORS[s.causalAction] || '#64748b';
@@ -245,11 +268,11 @@ export default function Page() {
                 <Activity className="w-3.5 h-3.5 text-slate-400" />
                 <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">State</span>
               </div>
-              <StateBar label="Tension" value={s.causalTension} color="#ef4444" threshold={THRESHOLDS.tension} />
-              <StateBar label="Contrast" value={s.causalContrastDebt} color="#f59e0b" threshold={THRESHOLDS.contrast} />
-              <StateBar label="Anticip." value={s.causalAnticipation} color="#a855f7" threshold={THRESHOLDS.anticipation} />
-              <StateBar label="Groove" value={s.causalGrooveStability} color="#00ffc8" threshold={THRESHOLDS.groove} />
-              <StateBar label="Expect." value={s.causalExpectation} color="#06b6d4" threshold={THRESHOLDS.expectation} />
+              <MemoStateBar label="Tension" value={s.causalTension} color="#ef4444" threshold={THRESHOLDS.tension} />
+              <MemoStateBar label="Contrast" value={s.causalContrastDebt} color="#f59e0b" threshold={THRESHOLDS.contrast} />
+              <MemoStateBar label="Anticip." value={s.causalAnticipation} color="#a855f7" threshold={THRESHOLDS.anticipation} />
+              <MemoStateBar label="Groove" value={s.causalGrooveStability} color="#00ffc8" threshold={THRESHOLDS.groove} />
+              <MemoStateBar label="Expect." value={s.causalExpectation} color="#06b6d4" threshold={THRESHOLDS.expectation} />
             </div>
 
             {/* CONTROLS */}
@@ -315,7 +338,7 @@ export default function Page() {
                 {s.causalActiveMaterials.length === 0 ? (
                   <span className="text-[10px] text-slate-600">No materials active — engine building groove</span>
                 ) : (
-                  s.causalActiveMaterials.map(m => <MaterialChip key={m} material={m} />)
+                  s.causalActiveMaterials.map(m => <MemoMaterialChip key={m} material={m} />)
                 )}
               </div>
             </div>
@@ -330,7 +353,7 @@ export default function Page() {
                 {s.causalHistory.length === 0 ? (
                   <span className="text-[10px] text-slate-600">—</span>
                 ) : (
-                  s.causalHistory.slice().reverse().map((h, i) => <HistoryEntry key={i} entry={h} />)
+                  s.causalHistory.slice().reverse().map((h, i) => <MemoHistoryEntry key={i} entry={h} />)
                 )}
               </div>
             </div>

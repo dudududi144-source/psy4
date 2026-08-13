@@ -315,6 +315,12 @@ export class PsyLive {
   private kickIntervals: number[] = [];
   private subBassHistory: number[] = [];
   private radioFreqBuf: Uint8Array | null = null;
+  // PERF: reused engine analyser buffer (was allocated per-detect-tick)
+  private engineFreqBuf: Uint8Array | null = null;
+  // PERF: track last buffered bass freq to skip duplicate pushes
+  private lastBufferedBassFreq = 0;
+  // PERF: counter to throttle session.observeRadioTick (every 5th detect tick = 500ms)
+  private sessionTickCounter = 0;
 
   // Learning
   private learningData: LearningData | null = null;
@@ -322,6 +328,18 @@ export class PsyLive {
 
   // UI timer
   private uiTimer: ReturnType<typeof setInterval> | null = null;
+
+  // ── PERF: throttled heavy-work timers ──
+  // Learning derivation (scale detection, tempo stats) — 1 Hz (was: every beat ≈ 2.4 Hz)
+  private learnTimer: ReturnType<typeof setInterval> | null = null;
+  // localStorage persistence — 0.2 Hz (every 5s; was: every beat)
+  private persistTimer: ReturnType<typeof setInterval> | null = null;
+  // Pending kicks/notes accumulated between learn ticks (avoids per-beat array spreads)
+  private pendingKickBpms: number[] = [];
+  private pendingBassFreqs: number[] = [];
+  private learningDirty = false;          // set when learningData mutated, cleared on persist
+  private cachedInsights: ReturnType<typeof getInsights> | null = null;
+  private insightsDirty = true;           // recompute only when learning changed
 
   onState: ((s: LiveState) => void) | null = null;
   get analyserNode() { return this.analyser; }
@@ -360,8 +378,14 @@ export class PsyLive {
   }
 
   private emit(): void {
-    const learned = this.learningData ? getInsights(this.learningData) : null;
+    // PERF: use cached insights (recomputed only when learning changed — see learnTick)
+    if (this.insightsDirty) {
+      this.cachedInsights = this.learningData ? getInsights(this.learningData) : null;
+      this.insightsDirty = false;
+    }
+    const learned = this.cachedInsights;
     const transportBpm = this.transport ? this.transport.snapshot().bpm : 145;
+    // PERF: radioLayer.getSnapshot() just returns lastSnapshot (no alloc) — safe to call.
     const radioSnap = this.radioLayer?.getSnapshot();
     // CAUSAL: Extract causal state for UI
     const cs = this.currentCausalBar?.stateAfter as Record<string, unknown> | undefined;
@@ -776,7 +800,10 @@ export class PsyLive {
     this.playing = false;
     if (this.engineNode) this.engineNode.stop();
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    this.stopUITimer();
+    // PERF: only stop UI timer if radio is also off. When radio is still connected,
+    // the UI must keep updating syncStatus/occupancy — startDetection() started the
+    // uiTimer and will own it until disconnectRadio().
+    if (!this.radioOn) this.stopUITimer();
     this.emit();
   }
 
@@ -1204,7 +1231,8 @@ export class PsyLive {
     this.harmonicRoot = 0;
     this.kickIntervals = [];
     this.subBassHistory = [];
-    if (this.detectTimer) { clearInterval(this.detectTimer); this.detectTimer = null; }
+    // PERF: stop detection AND throttled learn/persist timers (was: only detectTimer)
+    this.stopDetection();
     // F13/R1: Reset session on disconnect so learned motifs/style/phrase state
     // don't leak across reconnects.
     this.session?.reset();
@@ -1255,9 +1283,30 @@ export class PsyLive {
   }
 
   // ── Detection (100ms tick — was 200ms, too slow for beat tracking) ──
+  // PERF: detect() is now LIGHT — FFT + radio layer process + state machine + occupancy.
+  // Heavy work (deriveInsights, saveLearning, emit) moved to dedicated throttled timers.
   private startDetection(): void {
     if (this.detectTimer) clearInterval(this.detectTimer);
     this.detectTimer = setInterval(() => this.detect(), 100);
+    // PERF: learning derivation at 1 Hz (scale detection over 12 roots × 9 scales = ~1300 iters)
+    if (!this.learnTimer) this.learnTimer = setInterval(() => this.learnTick(), 1000);
+    // PERF: localStorage persistence at 0.2 Hz (JSON.stringify + setItem is sync & blocking)
+    if (!this.persistTimer) this.persistTimer = setInterval(() => this.persistTick(), 5000);
+    // PERF: ensure UI updates even when engine isn't playing (radio-only mode).
+    // Previously detect() called emit() every 100 ms — that was the stutter source.
+    // Now the 250 ms uiTimer is the only emit path, started here for radio-only mode.
+    if (!this.uiTimer) this.startUITimer();
+  }
+
+  private stopDetection(): void {
+    if (this.detectTimer) { clearInterval(this.detectTimer); this.detectTimer = null; }
+    if (this.learnTimer) { clearInterval(this.learnTimer); this.learnTimer = null; }
+    if (this.persistTimer) { clearInterval(this.persistTimer); this.persistTimer = null; }
+    // Final flush of any pending learning data
+    if (this.learningDirty) this.persistTick();
+    // PERF: only stop the UI timer if the engine isn't playing. When engine is playing,
+    // play() owns the uiTimer and will stop it on stop().
+    if (!this.playing) this.stopUITimer();
   }
 
   private detect(): void {
@@ -1327,7 +1376,13 @@ export class PsyLive {
     // F8 — Feed radio observations into MusicalSession (LEGACY — not used by CausalComposer)
     // This is kept for learning data collection only. CausalComposer doesn't read from session.
     // Skip if no radio signal to save CPU.
-    if (this.session && radioSnap.signal.state !== 'NO_SIGNAL' && this.radioOn) {
+    // PERF: throttle session.observeRadioTick to 2 Hz (every 5th detect tick).
+    // extractSpectralFeatures inside is heavy (full FFT loop + centroid/flatness/rolloff).
+    // 100ms × 5 = 500ms cadence is plenty for grammar learning.
+    this.sessionTickCounter++;
+    const runSessionTick = this.sessionTickCounter >= 5;
+    if (runSessionTick) this.sessionTickCounter = 0;
+    if (runSessionTick && this.session && radioSnap.signal.state !== 'NO_SIGNAL' && this.radioOn) {
       const radioBpm = radioSnap.beat?.estimatedBpm ?? transportSnap.bpm;
       const pitchClass = radioSnap.pitch?.pitchClass ?? null;
       const pitchConfidence = radioSnap.pitch?.confidence ?? 0;
@@ -1420,26 +1475,77 @@ export class PsyLive {
     }
 
     // ── LEARNING (record kicks when locked) ──
-    // F5: transportSnap already declared above
+    // PERF: heavy work moved out of detect(). Only buffer the BPM for the 1 Hz learnTick.
+    // This was the #1 source of audio stutter: every radio beat fired
+    // recordKick + deriveInsights (1296-iter scale scan) + saveLearning (JSON.stringify
+    // + localStorage.setItem — synchronous, blocks main thread 10-30ms).
     if (transportSnap.locked && radioSnap.beat) {
       if (this.learningData) {
-        this.learningData = recordKick(this.learningData, Math.round(transportSnap.bpm));
-        this.learningData = deriveInsights(this.learningData);
-        saveLearning(this.learningData);
+        // Buffer — learnTick() will batch-record these into learningData
+        this.pendingKickBpms.push(Math.round(transportSnap.bpm));
       }
       this.updateDelayTime();
       this.updateMixMode();
     }
 
-    // Engine level
+    // PERF: buffer bass freq observations too (cheap to push, expensive to process)
+    if (this.bassFreq > 0 && this.bassFreq !== this.lastBufferedBassFreq) {
+      this.pendingBassFreqs.push(this.bassFreq);
+      this.lastBufferedBassFreq = this.bassFreq;
+      if (this.pendingBassFreqs.length > 64) this.pendingBassFreqs.shift();
+    }
+
+    // Engine level (light: 1 FFT pull + sum)
     if (this.analyser) {
-      const d = new Uint8Array(this.analyser.frequencyBinCount);
+      // Reuse buffer to avoid per-tick allocation
+      if (!this.engineFreqBuf || this.engineFreqBuf.length !== this.analyser.frequencyBinCount) {
+        this.engineFreqBuf = new Uint8Array(this.analyser.frequencyBinCount);
+      }
+      const d = this.engineFreqBuf;
       this.analyser.getByteFrequencyData(d);
       let s = 0; for (let i = 0; i < d.length; i++) s += d[i];
       this.engineLevel = s / (d.length * 255);
     }
 
-    this.emit();
+    // PERF: emit() NO LONGER called from detect(). The 250 ms uiTimer handles UI updates.
+    // Calling emit() here caused React to re-render the studio UI 10×/sec, which
+    // competed with the audio thread for main-thread time and produced the
+    // characteristic "jump every (round) second" stutter the user reported.
+  }
+
+  // PERF: 1 Hz learning derivation. Replaces per-beat deriveInsights() call.
+  // Batch-processes pending kick BPMs and bass freqs, then runs scale detection once.
+  private learnTick(): void {
+    if (!this.learningData) return;
+    if (this.pendingKickBpms.length === 0 && this.pendingBassFreqs.length === 0) {
+      // Nothing new — but still mark insights dirty in case learningData was loaded fresh.
+      if (this.insightsDirty) {
+        // cachedInsights will be recomputed on next emit()
+      }
+      return;
+    }
+    // Batch-record pending kicks (single deriveInsights at the end, not per-kick)
+    for (const bpm of this.pendingKickBpms) {
+      this.learningData = recordKick(this.learningData, bpm);
+    }
+    this.pendingKickBpms.length = 0;
+    // Batch-record pending bass freqs
+    for (const f of this.pendingBassFreqs) {
+      this.learningData = recordBassNote(this.learningData, f);
+    }
+    this.pendingBassFreqs.length = 0;
+    // Single deriveInsights per second (was per beat ≈ 2.4×/sec at 145 BPM)
+    this.learningData = deriveInsights(this.learningData);
+    this.learningDirty = true;
+    this.insightsDirty = true; // emit() will recompute cachedInsights lazily
+  }
+
+  // PERF: 0.2 Hz localStorage persistence. Replaces per-beat saveLearning() call.
+  // JSON.stringify + localStorage.setItem is synchronous and blocks the main thread.
+  private persistTick(): void {
+    if (!this.learningDirty || !this.learningData) return;
+    saveLearning(this.learningData);
+    this.learningDirty = false;
   }
 
   // F2.5: onKick() REMOVED — RadioObservationLayer handles beat detection internally.
