@@ -227,20 +227,10 @@ export class Psy4EngineNode {
    */
   flushEvents() {
     if (!this.node || this.eventBatchCount === 0) return;
-    // ADR-009: Try SharedArrayBuffer first (zero-copy, no allocation)
-    if (typeof SharedArrayBuffer !== 'undefined' && this.sharedEventBuffer) {
-      // Copy events directly into the shared buffer (no new allocation)
-      const sharedView = new Float64Array(this.sharedEventBuffer);
-      sharedView.set(this.eventBatch.subarray(0, this.eventBatchCount * EVENT_SIZE));
-      // Signal the worklet that new events are available (via Atomics)
-      Atomics.store(this.sharedEventCount, 0, this.eventBatchCount);
-      Atomics.notify(this.sharedEventCount, 0, 1);
-      this.eventBatchCount = 0;
-      return;
-    }
-    // Fallback: Transferable Float64Array (zero-copy transfer, but allocates the array)
+    // FIX: Disabled SharedArrayBuffer — was causing race conditions.
     const events = new Float64Array(this.eventBatchCount * EVENT_SIZE);
     events.set(this.eventBatch.subarray(0, this.eventBatchCount * EVENT_SIZE));
+    console.log(`[FLUSH] Sending ${this.eventBatchCount} events to worklet`);
     this.node.port.postMessage({ type: 'events', events }, [events.buffer]);
     this.eventBatchCount = 0;
   }

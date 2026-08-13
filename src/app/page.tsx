@@ -108,13 +108,29 @@ export default function Page() {
 
   const init = useCallback(async () => {
     if (engineRef.current) return;
+    const w = window as any;
+    // CRITICAL: Reuse singleton ONLY if AudioContext is still alive
+    // If ctx was closed (by old HMR cleanup), the worklet can't receive messages
+    if (w.__psyLive && w.__psyLive.audioContext && w.__psyLive.audioContext.state !== 'closed') {
+      engineRef.current = w.__psyLive;
+      engineRef.current.onState = setS;
+      console.log('[PSY4] Reusing singleton PsyLive (ctx state:', w.__psyLive.audioContext.state, ')');
+      return;
+    }
+    // Singleton is dead — create new one
+    if (w.__psyLive) {
+      console.log('[PSY4] Singleton dead (ctx closed), creating new PsyLive');
+      delete w.__psyLive;
+    }
     const e = new PsyLive();
     e.onState = setS;
     engineRef.current = e;
-    // PSY Sampler integration REMOVED — was causing syntax errors (export in script tag)
-    // and adding unwanted sounds. PSY4 now uses ONLY its own AudioWorklet engine.
+    w.__psyLive = e;
   }, []);
-  useEffect(() => { init(); }, [init]);
+  useEffect(() => {
+    init();
+    // Don't destroy on unmount — keep singleton alive for HMR
+  }, [init]);
 
   // Ref mirror of playing state so togglePlay can read it without re-binding
   const playingRef = useRef(false);

@@ -587,8 +587,8 @@ self.onmessage = function(e) {
       break;
     }
     case 'compose': {
-      // Compose bars from lastComposedBar+1 up to msg.targetBar
-      if (!composer) return;
+      console.log('[WORKER] Received compose request, targetBar:', msg.targetBar);
+      if (!composer) { console.log('[WORKER] ERROR: composer not initialized'); return; }
       const barOriginAudioTime = msg.barOriginAudioTime;
       const beatDur = 60 / composer.opts.bpm;
       const allEvents = [];

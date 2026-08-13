@@ -843,8 +843,8 @@ export class PsyLive {
     this.updateDelayTime();
     this.timer = setInterval(() => this.scheduler(), this.lookahead);
     this.startUITimer();
-    // CRITICAL: Send initial compose request immediately (don't wait for first scheduler tick)
-    if (this.workerReady) {
+    // CRITICAL: Send initial compose request only if worklet is ready
+    if (this.workerReady && this.useWorklet && this.engineNode) {
       const snap = this.transport!.snapshot();
       const beatDur = 60 / snap.bpm;
       const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
@@ -1235,6 +1235,8 @@ export class PsyLive {
   // Policy for tab suspension: DROP STALE EVENTS.
   private scheduler(): void {
     if (!this.ctx || !this.transport || !this.workerReady) return;
+    // CRITICAL FIX: Don't compose until worklet is also ready
+    if (!this.useWorklet || !this.engineNode) return;
     try {
       const now = this.ctx.currentTime;
       const snap = this.transport.snapshot();
@@ -1263,6 +1265,7 @@ export class PsyLive {
         this.workerReady = true;
         break;
       case 'events': {
+        console.log(`[PSY4] handleWorkerMessage: received ${msg.count} events, useWorklet=${this.useWorklet}, engineNode=${!!this.engineNode}`);
         // msg.events is a Float64Array (Transferable) with [at, note, velocity, duration, voiceId, param] per event
         // Forward directly to AudioWorklet (zero-copy from worker → main → worklet)
         if (this.useWorklet && this.engineNode && msg.count > 0) {

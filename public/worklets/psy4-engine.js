@@ -2019,6 +2019,13 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
   }
 
   handleMessage(msg) {
+    if (!msg || !msg.type) return;
+    // DEBUG: log first few messages to see if ANY arrive
+    if (this._msgCount === undefined) this._msgCount = 0;
+    if (this._msgCount < 3) {
+      this._msgCount++;
+      console.log(`[WORKLET] handleMessage: type=${msg.type}`);
+    }
     switch (msg.type) {
       case 'play':
         this.playing = true;
@@ -2083,6 +2090,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'events':
         // Batch of events from main thread
+        console.log(`[WORKLET] Received ${msg.events.length / EVENT_SIZE} events`);
         this.enqueueEvents(msg.events);
         break;
       case 'initSharedBuffer':
@@ -2429,6 +2437,13 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 
     // Process events that are due (time <= current audio time)
     const currentAudioTime = currentFrame / sr;
+    // DEBUG: log first few process() calls to see what's happening
+    if (this._debugCount === undefined) this._debugCount = 0;
+    if (this._debugCount < 5 && this.eventCount > 0) {
+      this._debugCount++;
+      const firstEventTime = this.eventBuffer[this.eventReadIdx * EVENT_SIZE];
+      console.log(`[WORKLET DEBUG] process: currentAudioTime=${currentAudioTime.toFixed(3)} eventCount=${this.eventCount} firstEventTime=${firstEventTime.toFixed(3)} diff=${(firstEventTime - currentAudioTime).toFixed(3)}`);
+    }
 
     // ADR-009: Check SharedArrayBuffer for new events (lock-free, zero-allocation)
     if (this.sharedEventCount) {
