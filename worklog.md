@@ -6832,3 +6832,41 @@ Stage Summary:
 - No code modified. No engine installed. No tests written.
 - HARD STOP observed — awaiting user decision on recommendation + experiment.
 - Key insight communicated to user: the immediate crisis is parameter bugs (fixable in 2 days), the deeper crisis is architectural (Web Audio CAN do FM/wavetable but psyLive.ts doesn't use them), and 8.3k LoC of better synth code ALREADY EXISTS in the repo but is dead. The recommendation sequences bug-fix → wire-dead-code → reference-pipeline → SC-escalation, with a 4-hour 3-way A/B/C experiment as the proving step.
+
+---
+Task ID: PSY4-MIDI-COMPILER-DESIGN (orchestrator)
+Agent: z-ai-code (main)
+Task: Design document for MIDI → Commercial Audio Compiler. NO CODE. Answer 10 specific questions, challenge the idea, find architectural failure modes.
+
+Work Log:
+- Read worklog tail for context (post-AUDIT-A/B/C verdict).
+- Read foundation/music/SoundDNA.ts (head) — confirmed 25+ feature vocabulary already exists (brightness, harmonicity, transientSharpness, fmAmount, stereoMotion, etc.) — reusable as target/descriptor per user's instruction.
+- Read src/lib/studio/engine/commercialReference.ts (head) — confirmed per-genre targets exist (LUFS, truePeak, crestFactor, 7-band spectral balance, per-voice params). Dead code, reusable.
+- Read foundation/music/MusicalObservation.ts (head) — confirmed per-tick and per-phrase feature extraction exists.
+- Synthesized design document at audit-reports/PSY4-MIDI-COMPILER-DESIGN.md answering the user's 10 questions:
+  1. Feasibility: YES for kick/bass, PARTIALLY for lead, NO for full mix without human checkpoint. Three caveats: critic is bottleneck (not synth), search space enormous without strong priors, Goodhart's law will eat the loop.
+  2. Architecture: 7-layer pipeline (MI → PI → SI → SG → Render → Critic → Mutator) with hierarchical search (mutate ONE layer at a time, chosen by weakest dimension).
+  3. Source of truth: MusicalIntent (not MIDI, not critic, not SoundIntent). MIDI is one realization; critic measures convergence. MusicalIntent invariant in the loop unless user enables "auto-improve MIDI" mode.
+  4. How system knows B > A: multi-dimensional critic with targeted weak-dimension reporting. B accepted if: improves targeted dim ≥5%, no other dim regresses >10%, all constraints satisfied, aggregate ≥ A. CriticReport data structure defined with per-dim scores, weakest dim, constraints, explanation.
+  5. Deterministic vs search: 80% deterministic (analysis + codebook + render + DSP critic), 20% search (synth params + sample selection + optional performance). Never search MusicalIntent by default. DDSP considered and rejected (overkill, loses assets).
+  6. Synthesis engine: Web Audio for inner loop (fast, deterministic, integrated, AdvancedSynthVoice already supports fm/wavetable/supersaw). SuperCollider only for final premium render or if Web Audio quality ceiling hit on lead voice. VST3 hosting (pedalboard) too slow for loop.
+  7. Existing asset reuse: ~70% exists. Table of 16 components mapped to existing assets (MusicalObservation, HarmonicState, PhraseEngine, GrooveState, TensionState, AdvancedSynthVoice, multisampleGenerator, layerEngine, commercialReference, AudioFeatureExtractor, real samples, wavetable.ts, MusicalSession, f22-audio-reality renderer). 8.3k LoC of dead synth code reusable. 130+ real drum samples reusable.
+  8. What's missing: ~2400 LoC total. Closed-loop controller (500), Sound Intent→SynthFamily codebook (300), multi-dim critic extensions (400), mutation operators (300), articulation model (200), phrase-level automation (200), Pareto tracker (200), MusicalIntent extractor (200), SynthesisGraph schema (150), CriticReport schema (150). NOT 10,000 LoC.
+  9. Smallest MVP: MVP-1 kick sample selection loop (~300 LoC, 1-2 days). Proves architecture end-to-end. Uses existing 130 real samples + AudioFeatureExtractor + OfflineAudioContext + new loop controller. MVP ladder: MVP-1 (kick) → MVP-2 (bass) → MVP-3 (kick+bass) → MVP-4 (add lead).
+  10. Can we reach commercial quality: kick/bass YES (high confidence), lead PARTIALLY (medium — critic weak on musicality), full mix 70-80% automatic (low for fully auto, human checkpoint needed). Honest claim: automatic improvement on measurable dimensions + heuristic generation for musical dimensions + human checkpoint for musicality. NOT "fully automatic commercial quality".
+
+- Challenged the idea with 10 architectural failure modes: critic-Goodhart (F22 repeat), search space explosion, local optima, critic non-determinism, render non-determinism, over-engineered codebook, MIDI is wrong input, reference dependency, stale commercial targets, loop too slow for interactive.
+
+- Considered 5 alternative approaches: Intent-first (better for PSY4 radio-follower but worse for MIDI input use case — support both), DDSP (overkill, loses assets), imitation learning (no training data), pure sample-based (loses controllability), VST3 hosting (too slow for loop). All rejected for documented reasons; proposed architecture is better.
+
+- Ended with 3 challenge questions for the user:
+  1. Are you OK with human checkpoints? (Determines if fully-automatic claim is on the table)
+  2. Are you OK with MusicalIntent invariant? (Determines compiler vs co-producer)
+  3. Are you OK with Web Audio for inner loop? (Determines 1-2 week MVP vs 4-6 week SC bet)
+
+Stage Summary:
+- Design document written: audit-reports/PSY4-MIDI-COMPILER-DESIGN.md (~700 lines).
+- No code modified. No engine installed. No tests written.
+- HARD STOP observed — awaiting user decision on architecture + MVP ladder + 3 challenge questions.
+- Key communicated insight: the architecture is feasible IF the user accepts (a) human checkpoints for musicality, (b) MusicalIntent invariant in loop, (c) Web Audio for inner loop. The smallest proof is MVP-1 (kick sample selection, 1-2 days, ~300 LoC) which uses only existing assets + minimal new loop controller code. If MVP-1 works, MVP-2/3/4 follow naturally. If MVP-1 fails, architecture is wrong and we rethink.
+- Key challenge: the critic is the bottleneck, not the synth. The previous F22 failure was critic-Goodhart (DSP metrics passed, sound didn't improve). The proposed multi-dimensional critic with targeted weak-dimension mutation + constraint thresholds on musical dimensions + human checkpoint is the mitigation. But the user must accept that "fully automatic commercial quality" is not achievable with current critic technology — the honest claim is "automatic improvement on measurable dimensions + human checkpoint for musicality".
