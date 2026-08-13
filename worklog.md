@@ -7141,3 +7141,85 @@ Stage Summary:
 - Verdict: APPROVE — IMPLEMENT THE VERTICAL VALIDATION ONLY.
 - No code written. No Foundation changes. No architecture ratified. Protocol frozen.
 - Awaiting user's final go to begin implementation.
+
+---
+Task ID: PSY4-PRE-RENDER-SNAPSHOT (orchestrator)
+Agent: z-ai-code (main)
+Task: Save FROZEN pre-render snapshot. Protocol immutable after this. Then START IMPLEMENTATION.
+
+Work Log:
+- User gave FINAL LOCK-IN: protocol approved as final. No changes before or during experiment. Start implementation within locked protocol. No further architecture approval needed.
+- Saved FROZEN pre-render snapshot at audit-reports/PSY4-PRE-RENDER-SNAPSHOT.md containing:
+  * Experimental design: n=9 units (3 compositions × 3 seeds), 45 renders, paired comparisons.
+  * Compositions: comp-1 (Foundation 4-bar), comp-2 (Foundation 8-bar), comp-3 (hand-encoded rolling_bass 4-bar).
+  * Seeds: 1, 2, 3.
+  * Variants: A (current psyLive), B (refactored backend + raw input), C (B + CompositionEvent→VoiceSpec), D (C + performance realization), E (D + acoustic compilation).
+  * 11 quality metrics + 4 guardrails with raw/direction/normalization/target/classification.
+  * Aggregate = mean(11 quality), secondary/summary only.
+  * H1-H6 frozen decision rules with thresholds.
+  * 5 Foundation GAPs confirmed unfilled.
+  * Same-input guarantee.
+  * Reference WAV (for reference_similarity metric only).
+  * Renderer config (44100Hz mono, Web Audio OfflineAudioContext, AdvancedSynthVoice + samples + refactored voices).
+  * Blind listening protocol (45 unlabeled renders, pairwise agreement).
+  * 3-step reporting structure (effect → interpretation → approval decision).
+  * Hard boundaries (no Foundation changes, no optimizer/Mutator/Decision/SC/UI, no architecture ratification, no threshold changes after render #1).
+- Created TodoWrite list with 13 implementation tasks.
+- Implementation begins now. No protocol changes permitted.
+
+Stage Summary:
+- Pre-render snapshot saved: audit-reports/PSY4-PRE-RENDER-SNAPSHOT.md.
+- Protocol is FROZEN. No changes before or during experiment.
+- Verdict: APPROVE — START IMPLEMENTATION within locked protocol.
+- Next: build CompositionEvent + VoiceSpec validation types, generate 9 experimental units, build A/B/C/D/E renderers, render 45 WAVs, build critic (11 quality + 4 guardrail + aggregate + pairwise), build blind listening protocol, run critic, produce 3-step report.
+
+---
+Task ID: PSY4-VERTICAL-VALIDATION-IMPLEMENTATION (orchestrator)
+Agent: z-ai-code (main)
+Task: Implement the vertical validation under locked protocol. Render 45 WAVs, run critic, produce effect report. NO architecture changes, NO Foundation changes.
+
+Work Log:
+- Created validation/ directory structure: src/, results/, listening/, renders/.
+- Built validation/src/types.ts: CompositionEvent (6 fields, validation contract), VoiceSpecification (validation DTO), ExperimentalUnit, Variant. All marked EXPERIMENTAL SCHEMA, NOT ARCHITECTURE.
+- Built validation/src/audio-utils.ts: OfflineAudioContext setup, master chain, WAV encoder, deterministic noise buffer, mtof.
+- Built validation/src/sample-bank.ts: loads real kick/hat/perc samples from public/samples/real/.
+- Built validation/src/variant-a.ts: current psyLive voice functions (exact copy from psyLive.ts lines 481-674), adapted for OfflineAudioContext. Hardcoded params.
+- Built validation/src/voice-backend.ts: refactored voices accepting VoiceSpecification. Kick = hybrid (sample + synth sub). Bass = 3-layer (sub + mid osc + character). Lead = AdvancedSynthVoice (FM/wavetable/supersaw). Hat = real sample.
+- Built validation/src/voice-spec-builders.ts: 4 builders (B/C/D/E) producing VoiceSpecification[] from same CompositionEvent[]. B=codebook defaults (flat perf, flat acoustic). C=same as B (path overhead test). D=realized performance (velocity from tension, articulation from velocity threshold). E=compiled acoustic (BPM-aware envelopes, voiceGroup masking budgets).
+- Built validation/src/variant-bcde.ts: renderer for B/C/D/E using voice-backend.
+- Built validation/src/render-all.ts: master script rendering all 45 WAVs.
+- Built validation/src/generate-units.ts: generates 9 frozen experimental units (3 compositions × 3 seeds). comp-1=Foundation 4-bar, comp-2=Foundation 8-bar, comp-3=hand-encoded rolling_bass 4-bar. Saved to validation/results/frozen-units.json.
+- Generated 9 frozen units: comp-1 (67-74 events), comp-2 (140-143 events), comp-3 (93 events each).
+- Rendered all 45 WAVs to validation/renders/. Deterministic, seeded. All renders verified as real PCM (2.16s for 4-bar, 4.16s for 8-bar).
+- Fixed bass voice to consume acousticTargets.envelope (was only reading synthGraph defaults) — ensures D and E produce different audio.
+- Built validation/src/critic.py: Python script measuring 11 quality + 4 guardrail metrics on all 45 renders. Computes H1-H6 per frozen decision rules. Outputs metrics.json + hypotheses.json.
+- Ran critic on all 45 renders. Results:
+  * H1 (B vs A): FAIL 0/9 units. B regressed 2-3 metrics, violated 3 guardrails (masking>0.5, midrange<5%, timbral_movement>0.9). Aggregate dropped 9.5%.
+  * H2 (C vs B): FAIL 0/9 (by design — C≡B identical, path overhead test shows no difference).
+  * H3 (D vs C): FAIL 0/9. D regressed 1 metric (loudness), improved 0.
+  * H4 (E vs D): FAIL 0/9. E improved 1 metric (not enough, needs ≥2), no regressions.
+  * H5 (evaluator/perception): PENDING — requires blind listening.
+  * H6 (E vs A): FAIL 0/9. E is 5.8-14.5% WORSE than A across all units.
+- Built validation/listening/setup-blind-listening.py: creates 45 blind renders (SHA-hashed filenames), randomized playlist, rating sheet, instructions, secret key.
+- Ran blind listening setup: 45 blind renders created, playlist randomized (seed 20260812), rating-sheet.csv ready.
+- Built validation/listening/analyze-listening.py: computes H5 (pairwise agreement) and H6 human component from completed rating sheet.
+- Produced STEP 1 Effect Report at validation/results/effect-report.md.
+
+Stage Summary:
+- 45 WAVs rendered (validation/renders/).
+- 9 frozen units saved (validation/results/frozen-units.json).
+- Metrics measured (validation/results/metrics.json).
+- Hypotheses computed (validation/results/hypotheses.json).
+- Effect report written (validation/results/effect-report.md).
+- Blind listening protocol ready (validation/listening/).
+- KEY FINDING: All hypotheses (H1-H4, H6) FAILED. E is measurably WORSE than A by 5.8-14.5%. The refactored backend (B) has higher masking, lower pitch_correctness, lower loudness than current psyLive. The contract path (C≡B) adds zero value. Performance realization (D) regresses loudness. Acoustic compilation (E) improves 1 metric but not enough.
+- Guardrail violations consistent across B-E: masking 0.58-0.62 (>0.5 hard fail), midrange_density 3.7-4.1% (<5% hard fail), timbral_movement 0.88-0.97 (>0.9 hard fail for B/C).
+- This is HONEST experimental result under frozen protocol. No threshold adjustment. No architecture ratification.
+- H5 (evaluator/perception agreement) and H6 human component PENDING — require blind listening session by user.
+- STEP 2 (architectural interpretation) and STEP 3 (approval decision) deferred until user reviews effect report and completes blind listening.
+
+Artifacts produced:
+- validation/src/types.ts, audio-utils.ts, sample-bank.ts, variant-a.ts, voice-backend.ts, voice-spec-builders.ts, variant-bcde.ts, render-all.ts, generate-units.ts, critic.py (~1400 LoC total)
+- validation/listening/setup-blind-listening.py, analyze-listening.py, INSTRUCTIONS.md, rating-sheet.csv, playlist.m3u, key.json, blind-renders/ (45 WAVs)
+- validation/results/frozen-units.json, metrics.json, hypotheses.json, effect-report.md
+- validation/renders/ (45 WAVs)

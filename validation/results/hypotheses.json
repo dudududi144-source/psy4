@@ -1,0 +1,554 @@
+{
+  "H1": {
+    "name": "backend effect (B vs A)",
+    "comparison": "B vs A, 9 paired units",
+    "rule": ">=6/9 units: B improves >=3/11 quality metrics by >=10% AND no regression >10% AND no guardrail violation",
+    "passing_units": 0,
+    "required": 6,
+    "passes": false,
+    "summary": "0/9 units pass",
+    "details": [
+      {
+        "unit": "comp-1-seed1",
+        "improved": 0,
+        "regressed": 2,
+        "guardrail_violations": [
+          "masking=0.619 > 0.5",
+          "midrange_density=4.0% out of [5,25]",
+          "timbral_movement=0.97 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-1-seed2",
+        "improved": 0,
+        "regressed": 2,
+        "guardrail_violations": [
+          "masking=0.597 > 0.5",
+          "midrange_density=4.0% out of [5,25]",
+          "timbral_movement=0.97 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-1-seed3",
+        "improved": 0,
+        "regressed": 2,
+        "guardrail_violations": [
+          "masking=0.616 > 0.5",
+          "midrange_density=3.9% out of [5,25]",
+          "timbral_movement=0.97 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed1",
+        "improved": 0,
+        "regressed": 3,
+        "guardrail_violations": [
+          "masking=0.580 > 0.5",
+          "midrange_density=3.7% out of [5,25]",
+          "timbral_movement=0.93 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed2",
+        "improved": 1,
+        "regressed": 2,
+        "guardrail_violations": [
+          "masking=0.579 > 0.5",
+          "midrange_density=3.8% out of [5,25]",
+          "timbral_movement=0.92 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed3",
+        "improved": 1,
+        "regressed": 3,
+        "guardrail_violations": [
+          "masking=0.601 > 0.5",
+          "midrange_density=3.9% out of [5,25]",
+          "timbral_movement=0.90 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed1",
+        "improved": 2,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.559 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed2",
+        "improved": 2,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.559 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed3",
+        "improved": 2,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.559 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      }
+    ]
+  },
+  "H2": {
+    "name": "representation-path effect (C vs B)",
+    "comparison": "C vs B, 9 paired units",
+    "rule": ">=6/9 units: C improves >=2/11 quality metrics by >=5% AND no regression >10% AND no guardrail violation",
+    "passing_units": 0,
+    "required": 6,
+    "passes": false,
+    "summary": "0/9 units pass",
+    "details": [
+      {
+        "unit": "comp-1-seed1",
+        "improved": 0,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.619 > 0.5",
+          "midrange_density=4.0% out of [5,25]",
+          "timbral_movement=0.97 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-1-seed2",
+        "improved": 0,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.597 > 0.5",
+          "midrange_density=4.0% out of [5,25]",
+          "timbral_movement=0.97 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-1-seed3",
+        "improved": 0,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.616 > 0.5",
+          "midrange_density=3.9% out of [5,25]",
+          "timbral_movement=0.97 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed1",
+        "improved": 0,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.580 > 0.5",
+          "midrange_density=3.7% out of [5,25]",
+          "timbral_movement=0.93 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed2",
+        "improved": 0,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.579 > 0.5",
+          "midrange_density=3.8% out of [5,25]",
+          "timbral_movement=0.92 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed3",
+        "improved": 0,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.601 > 0.5",
+          "midrange_density=3.9% out of [5,25]",
+          "timbral_movement=0.90 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed1",
+        "improved": 0,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.559 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed2",
+        "improved": 0,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.559 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed3",
+        "improved": 0,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.559 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      }
+    ]
+  },
+  "H3": {
+    "name": "performance realization effect (D vs C)",
+    "comparison": "D vs C, 9 paired units",
+    "rule": ">=6/9 units: D improves >=2/11 quality metrics by >=5% AND no regression >10% AND no guardrail violation",
+    "passing_units": 0,
+    "required": 6,
+    "passes": false,
+    "summary": "0/9 units pass",
+    "details": [
+      {
+        "unit": "comp-1-seed1",
+        "improved": 0,
+        "regressed": 1,
+        "guardrail_violations": [
+          "masking=0.619 > 0.5",
+          "midrange_density=4.1% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-1-seed2",
+        "improved": 0,
+        "regressed": 1,
+        "guardrail_violations": [
+          "masking=0.600 > 0.5",
+          "midrange_density=4.1% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-1-seed3",
+        "improved": 0,
+        "regressed": 1,
+        "guardrail_violations": [
+          "masking=0.617 > 0.5",
+          "midrange_density=4.0% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed1",
+        "improved": 0,
+        "regressed": 1,
+        "guardrail_violations": [
+          "masking=0.583 > 0.5",
+          "midrange_density=3.8% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed2",
+        "improved": 0,
+        "regressed": 1,
+        "guardrail_violations": [
+          "masking=0.584 > 0.5",
+          "midrange_density=4.0% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed3",
+        "improved": 0,
+        "regressed": 1,
+        "guardrail_violations": [
+          "masking=0.606 > 0.5",
+          "midrange_density=4.0% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed1",
+        "improved": 0,
+        "regressed": 1,
+        "guardrail_violations": [
+          "masking=0.562 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed2",
+        "improved": 0,
+        "regressed": 1,
+        "guardrail_violations": [
+          "masking=0.562 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed3",
+        "improved": 0,
+        "regressed": 1,
+        "guardrail_violations": [
+          "masking=0.562 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      }
+    ]
+  },
+  "H4": {
+    "name": "acoustic realization effect (E vs D)",
+    "comparison": "E vs D, 9 paired units",
+    "rule": ">=6/9 units: E improves >=2/11 quality metrics by >=5% AND no regression >10% AND no guardrail violation",
+    "passing_units": 0,
+    "required": 6,
+    "passes": false,
+    "summary": "0/9 units pass",
+    "details": [
+      {
+        "unit": "comp-1-seed1",
+        "improved": 1,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.617 > 0.5",
+          "midrange_density=4.0% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-1-seed2",
+        "improved": 1,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.599 > 0.5",
+          "midrange_density=4.0% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-1-seed3",
+        "improved": 1,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.617 > 0.5",
+          "midrange_density=3.9% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed1",
+        "improved": 1,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.581 > 0.5",
+          "midrange_density=3.7% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed2",
+        "improved": 1,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.581 > 0.5",
+          "midrange_density=3.9% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed3",
+        "improved": 1,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.601 > 0.5",
+          "midrange_density=3.9% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed1",
+        "improved": 0,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.560 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed2",
+        "improved": 0,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.560 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed3",
+        "improved": 0,
+        "regressed": 0,
+        "guardrail_violations": [
+          "masking=0.560 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      }
+    ]
+  },
+  "H5": {
+    "name": "evaluator/perception agreement",
+    "comparison": "human ranking vs DSP ranking, 90 pairs across 9 units",
+    "rule": "mean per-unit pairwise agreement >=70% AND >=7/9 units >=60%",
+    "passes": false,
+    "summary": "PENDING: requires blind listening data",
+    "note": "Run validation/listening/analyze-listening.py after blind listening session"
+  },
+  "H6": {
+    "name": "end-to-end outcome (E vs A + human commercial rating)",
+    "comparison": "E vs A, 9 paired units + human \"commercial\" rating",
+    "rule": ">=6/9 units: E aggregate > A by >=10% AND listener rates E >=4 \"commercial\" for >=2/3 compositions AND no guardrail violation",
+    "passing_units": 0,
+    "required": 6,
+    "aggregate_passes": false,
+    "human_passes": null,
+    "passes": false,
+    "summary": "0/9 units pass aggregate criterion; human criterion PENDING",
+    "details": [
+      {
+        "unit": "comp-1-seed1",
+        "a_aggregate": 0.5392396579242448,
+        "e_aggregate": 0.5079964867049866,
+        "improvement_pct": -5.7939305390716145,
+        "guardrail_violations": [
+          "masking=0.617 > 0.5",
+          "midrange_density=4.0% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-1-seed2",
+        "a_aggregate": 0.5540615743554766,
+        "e_aggregate": 0.5078823082260618,
+        "improvement_pct": -8.334681246057132,
+        "guardrail_violations": [
+          "masking=0.599 > 0.5",
+          "midrange_density=4.0% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-1-seed3",
+        "a_aggregate": 0.5391668164907356,
+        "e_aggregate": 0.5081484368959757,
+        "improvement_pct": -5.753020891873254,
+        "guardrail_violations": [
+          "masking=0.617 > 0.5",
+          "midrange_density=3.9% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed1",
+        "a_aggregate": 0.5909746678282312,
+        "e_aggregate": 0.5055111091180019,
+        "improvement_pct": -14.461458902172359,
+        "guardrail_violations": [
+          "masking=0.581 > 0.5",
+          "midrange_density=3.7% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed2",
+        "a_aggregate": 0.5639506976673663,
+        "e_aggregate": 0.5040885009858518,
+        "improvement_pct": -10.614792557065488,
+        "guardrail_violations": [
+          "masking=0.581 > 0.5",
+          "midrange_density=3.9% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-2-seed3",
+        "a_aggregate": 0.5831708992629726,
+        "e_aggregate": 0.5041584229578393,
+        "improvement_pct": -13.548768706564651,
+        "guardrail_violations": [
+          "masking=0.601 > 0.5",
+          "midrange_density=3.9% out of [5,25]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed1",
+        "a_aggregate": 0.5369399557774357,
+        "e_aggregate": 0.6098925001158203,
+        "improvement_pct": 13.586722975897104,
+        "guardrail_violations": [
+          "masking=0.560 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed2",
+        "a_aggregate": 0.5369399557774357,
+        "e_aggregate": 0.6098925001158203,
+        "improvement_pct": 13.586722975897104,
+        "guardrail_violations": [
+          "masking=0.560 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      },
+      {
+        "unit": "comp-3-seed3",
+        "a_aggregate": 0.5369399557774357,
+        "e_aggregate": 0.6098925001158203,
+        "improvement_pct": 13.586722975897104,
+        "guardrail_violations": [
+          "masking=0.560 > 0.5",
+          "midrange_density=2.3% out of [5,25]",
+          "timbral_movement=1.00 out of [0.2,0.9]"
+        ],
+        "passes": false
+      }
+    ],
+    "note": "Human criterion requires blind listening data"
+  }
+}
