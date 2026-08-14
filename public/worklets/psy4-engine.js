@@ -1706,7 +1706,7 @@ class StereoWidener {
 
 class MasterChain {
   constructor() {
-    this.gain = 1.0;
+    this.gain = 0.7;  // FIX: was 1.0. Reduce overall output to prevent clipping.
     this.ceiling = 0.85;     // FIX: was 0.89. Lower ceiling = more headroom = less clipping.
 
     // Multiband compressor (3-band: low <180Hz, mid 180-4000Hz, high >4000Hz)
