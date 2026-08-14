@@ -2070,6 +2070,65 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       case 'macros':
         this.macros = { ...this.macros, ...msg.macros };
         break;
+      // שלב 4.2: Render single voice offline (for synthesis matching)
+      case 'renderVoice': {
+        // msg: { voiceClass, params, triggerArgs, duration }
+        try {
+          const voices = (typeof globalThis !== 'undefined') ? globalThis.__PSY4_VOICES : null;
+          if (!voices) {
+            this.port.postMessage({ type: 'renderVoiceDone', buffer: null, error: 'No __PSY4_VOICES' });
+            break;
+          }
+          const VC = voices[msg.voiceClass];
+          if (!VC) {
+            this.port.postMessage({ type: 'renderVoiceDone', buffer: null, error: 'Unknown voice: ' + msg.voiceClass });
+            break;
+          }
+          const voice = new VC();
+          if (msg.params) {
+            for (const k of Object.keys(msg.params)) voice[k] = msg.params[k];
+          }
+          const sr = sampleRate;
+          const ta = msg.triggerArgs || {};
+          if (msg.voiceClass === 'KickVoice') {
+            voice.trigger(0, ta.amp ?? 1.0, ta.fund ?? 50, ta.decay ?? 0.2, sr);
+          } else if (msg.voiceClass === 'BassVoice') {
+            voice.trigger(0, ta.freq ?? 80, ta.dur ?? 0.2, ta.amp ?? 0.5, ta.acid ?? false, sr, ta.params ?? null);
+          } else if (msg.voiceClass === 'LeadVoice') {
+            voice.trigger(0, ta.freq ?? 440, ta.amp ?? 0.5, sr);
+          } else if (msg.voiceClass === 'HatVoice') {
+            voice.trigger(0, ta.open ?? false, ta.amp ?? 0.5, sr);
+          } else if (msg.voiceClass === 'PercVoice') {
+            voice.trigger(0, ta.freq ?? 200, ta.amp ?? 0.5, sr);
+          } else if (msg.voiceClass === 'AcidVoice') {
+            voice.trigger(0, ta.freq ?? 110, ta.amp ?? 0.5, sr);
+          } else if (msg.voiceClass === 'PadVoice') {
+            voice.trigger(0, ta.freq ?? 220, ta.amp ?? 0.3, sr);
+          } else if (msg.voiceClass === 'ClapVoice') {
+            voice.trigger(0, ta.amp ?? 0.5, sr);
+          } else if (msg.voiceClass === 'ShakerVoice') {
+            voice.trigger(0, ta.amp ?? 0.5, sr);
+          } else if (msg.voiceClass === 'FMVoice') {
+            voice.trigger(0, ta.freq ?? 440, ta.amp ?? 0.5, sr);
+          } else {
+            this.port.postMessage({ type: 'renderVoiceDone', buffer: null, error: 'No trigger for: ' + msg.voiceClass });
+            break;
+          }
+          const duration = msg.duration ?? 0.08;
+          const numSamples = Math.ceil(duration * sr);
+          const buffer = new Float32Array(numSamples);
+          for (let i = 0; i < numSamples; i++) {
+            const out = voice.render(i / sr, sr);
+            if (out.length >= 2) buffer[i] = (out[0] + out[1]) * 0.5;
+            else buffer[i] = out[0];
+            if (!voice.active && i > sr * 0.001) break;
+          }
+          this.port.postMessage({ type: 'renderVoiceDone', buffer, error: null }, [buffer.buffer]);
+        } catch (err) {
+          this.port.postMessage({ type: 'renderVoiceDone', buffer: null, error: String(err && err.message ? err.message : err) });
+        }
+        break;
+      }
       case 'world':
         this.worldParams = { ...this.worldParams, ...msg.params };
         break;
@@ -2769,3 +2828,14 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 }
 
 registerProcessor('psy4-engine', Psy4EngineProcessor);
+
+// ─── שלב 4.2: Expose voice classes for offline synthesis matching ──────────
+// מאפשר ל-OfflineVoiceRenderer ליצור instances של ה-voice classes
+// רק ב-worklet scope — לא משפיע על ה-engine החי
+if (typeof globalThis !== 'undefined') {
+  (globalThis).__PSY4_VOICES = {
+    KickVoice, BassVoice, LeadVoice, AcidVoice, PadVoice,
+    HatVoice, ClapVoice, PercVoice, ShakerVoice, FMVoice,
+    TextureVoice, FXVoice, SampleVoice,
+  };
+}

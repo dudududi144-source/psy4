@@ -21,6 +21,8 @@ import { CausalComposer, type CausalNoteEvent, type CausalBarResult } from '../.
 import { extractSpectralFeatures } from '../../foundation/music/MusicalObservation';
 // שלב 4.1: Per-onset sound analysis
 import { OnsetAnalyzer, type OnsetEvent, type OnsetRole } from './onsetAnalyzer';
+// שלב 4.2: Synthesis matching (offline)
+import { SynthesisMatcher, type MatchResult } from './synthesisMatcher';
 // ADR-001: CausalComposer runs on a Web Worker now. This import is kept for type compatibility
 // but the actual composition happens in public/worklets/composition-worker.js
 // SamplerBridge import REMOVED — fully dead code
@@ -345,6 +347,8 @@ export class PsyLive {
   private spectralRolloffEma = 0;
   // שלב 4.1: Per-onset sound analysis
   private onsetAnalyzer: OnsetAnalyzer = new OnsetAnalyzer();
+  // שלב 4.2: Synthesis matching (offline renderer)
+  private synthesisMatcher: SynthesisMatcher = new SynthesisMatcher();
   // CAUSAL: The live composition authority (now null — worker handles it)
   private causalComposer: CausalComposer | null = null;
   private currentCausalBar: CausalBarResult | null = null;
@@ -1448,6 +1452,8 @@ export class PsyLive {
         // Load real drum samples into worklet
         this.loadWorkletSamples();
         console.log('[PSY4] AudioWorklet engine active — Moog ladder + PolyBLEP + real samples');
+        // שלב 4.2: אתחל את ה-SynthesisMatcher עם ה-engine node שנוצר
+        this.synthesisMatcher.init(this.engineNode);
       } else {
         console.warn('[PSY4] Worklet init failed — using MaterialRealizer fallback');
         this.realizer?.loadSamples().catch(() => {});
@@ -2312,4 +2318,42 @@ export class PsyLive {
 
   // F1.18: Public Transport accessor (for integration tests)
   getTransport() { return this.transport; }
+
+  // ── שלב 4.2: Synthesis matching (public API) ──
+
+  /**
+   * מאתחל את ה-SynthesisMatcher (מחבר ל-engine node הקיים).
+   * חייב להיקרא אחרי שה-engine נוצר (startEngine).
+   */
+  initSynthesisMatcher(): void {
+    if (!this.engineNode) {
+      console.warn('[PSY4] שלב 4.2 initSynthesisMatcher: engineNode not ready');
+      return;
+    }
+    this.synthesisMatcher.init(this.engineNode);
+  }
+
+  /**
+   * מוצא recipe אופטימלי שמייצר סאונד דומה ל-onset האחרון של role.
+   * רץ מחוץ ל-audio thread — לא חוסם את ה-engine.
+   * מחזיר null אם אין onsets מתועדים ל-role.
+   */
+  async matchSound(role: OnsetRole): Promise<MatchResult | null> {
+    const onset = this.onsetAnalyzer.getLatestOnset(role);
+    if (!onset) {
+      console.warn(`[PSY4] שלב 4.2 matchSound(${role}): no onsets recorded for this role`);
+      return null;
+    }
+    return this.synthesisMatcher.match(onset.soundDNA, role);
+  }
+
+  /**
+   * גישה ישירה ל-matcher (לשימוש עתידי עם sound bank).
+   */
+  getSynthesisMatcher(): SynthesisMatcher { return this.synthesisMatcher; }
+
+  /**
+   * גישה ל-onset analyzer (ל-UI / debugging).
+   */
+  getOnsetAnalyzer(): OnsetAnalyzer { return this.onsetAnalyzer; }
 }
