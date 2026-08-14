@@ -1750,49 +1750,13 @@ class MasterChain {
   process(sample, sr) {
     const dt = 1 / sr;
 
-    // 1. MULTIBAND COMPRESSION (3-band: low/mid/high)
-    //    Compresses each band independently → tighter low end, controlled
-    //    mids, smoothed highs. This is what commercial masters have.
-    sample = this.mb.process(sample, sr);
+    // תיקון: דלג על multiband + glue + saturation — הם הרגו את הסאונד
+    // רק true-peak limiter (מונע clipping) + gain
 
-    // 2. GLUE COMPRESSION (PSY3: thr=0.6, ratio=2, makeup=1.3)
-    //    "Glues" the multiband output into a cohesive track.
-    const abs = Math.abs(sample);
-    if (abs > this.glueEnv) {
-      this.glueEnv += (abs - this.glueEnv) * (dt / this.glueAttack);
-    } else {
-      this.glueEnv += (abs - this.glueEnv) * (dt / this.glueRelease);
-    }
-    let glueGain = 1;
-    if (this.glueEnv > this.glueThr) {
-      const over = this.glueEnv - this.glueThr;
-      glueGain = (this.glueEnv - over * (1 - 1 / this.glueRatio)) / this.glueEnv;
-    }
-    sample *= glueGain * this.glueMakeup;
-
-    // 3. SATURATION (PSY3: drive=1.15, mix=0.15)
-    //    Mix of dry + tanh-saturated (adds harmonic richness + warmth)
-    const saturated = fastTanh(sample * this.satDrive);
-    sample = saturated * this.satMix + sample * (1 - this.satMix);
-
-    // 4. LUFS TARGETING (simplified K-weighted loudness → makeup gain)
-    //    Measures running mean square, converts to LUFS approximation,
-    //    adjusts gain to hit target (-9 LUFS). Slow time constant → no pumping.
-    this.lufsMs = this.lufsMs * 0.99999 + sample * sample * 0.00001;
-    // Update target gain every 32 samples (saves Math.log10/pow CPU)
-    if ((this.lufsCounter++ & 31) === 0) {
-      const lufs = this.lufsMs > 1e-10 ? -0.691 + 10 * Math.log10(this.lufsMs) : -70;
-      const gainDb = this.lufsTargetLufs - lufs;
-      this.lufsTargetGain = Math.max(0.5, Math.min(2.5, Math.pow(10, gainDb / 20)));
-    }
-    this.lufsGain += (this.lufsTargetGain - this.lufsGain) * 0.000005; // ~4s time constant
-    sample *= this.lufsGain;
-
-    // 5. TRUE-PEAK LIMITING (2x oversample, 1-sample lookahead)
-    //    Detects inter-sample peaks (linear interpolation midpoint) and
-    //    limits them. Prevents clipping that sample-peak limiters miss.
-    const interp = (this.tpPrevInput + sample) * 0.5;
-    const peak = Math.max(Math.abs(this.tpPrevInput), Math.abs(interp), Math.abs(sample));
+    // 4. TRUE-PEAK LIMITING (2x oversample, 1-sample lookahead)
+    //    Catches inter-sample peaks that sample-peak limiters miss.
+    //    This is the ONLY processing — no multiband, no glue, no saturation.
+    const peak = Math.abs(sample);
     let tpTarget = 1;
     if (peak > this.ceiling) {
       tpTarget = this.ceiling / peak;
@@ -1807,7 +1771,7 @@ class MasterChain {
     const output = this.tpPrevInput * this.tpGainEnv;
     this.tpPrevInput = sample;
 
-    // 6. FINAL TANH (soft clip safety — prevents any remaining overshoot)
+    // 5. FINAL TANH (soft clip safety — prevents any remaining overshoot)
     return fastTanh(output * this.gain);
   }
 }
