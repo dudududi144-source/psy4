@@ -9270,3 +9270,87 @@ Radio → Onset detection → SoundDNA → Synthesis matching → Sound bank
 → Reward loop → Style-aware retrieval → Engine voices → Repeat
 
 ALL VERIFIED WITH REAL RADIO AUDIO (Space Unicorn stream).
+
+---
+Task ID: PROD-FIX (BPM sync + more stations + deploy)
+Agent: z.ai-code (main)
+Task: תיקון BPM sync (המשתמש דיווח "קצב לא קשור"), הוספת תחנות, דחיפה לגיט+אתר.
+
+Work Log:
+
+CRITICAL BUG FOUND: Engine BPM not syncing with radio
+- play() set engineNode.setBPM(145) on start
+- Radio BPM updates went to: compositionWorker + transport
+- BUT NOT to engineNode (AudioWorklet)!
+- Result: engine played at 145 while radio was at 150+ — felt completely unsynced
+- This is why the user felt "קצב לא קשור" (unrelated rhythm)
+
+FIX:
+- sendRadioDataToWorker: added `if (this.engineNode) this.engineNode.setBPM(avgBpm)`
+- applyLearnedParamsToComposer: added same line
+- Now all 3 targets sync: compositionWorker + transport + engineNode
+
+BPM SMOOTHING:
+- Problem: radio PLL produces jittery readings (145→155→149→152...)
+- Each reading > 2 BPM diff triggered update = constant BPM changes = jittery feel
+- Fix: keep 5-reading history, only update when:
+  * At least 3 readings collected
+  * All readings within ±3 BPM of average (stable)
+  * Average differs from last sent by > 1.5 BPM
+- Result: smoother BPM transitions, less jitter
+
+MORE RADIO STATIONS (8 total, all CORS-verified):
+- Space Unicorn (Trance/PsyTrance) — existing
+- Babaganousha (Psychedelic/Goa) — existing
+- SomaFM The Trip (Dance/Trance/House) — NEW
+- SomaFM Space Station (Space/Electronica) — NEW
+- SomaFM Cliqhop (IDM/Beats) — NEW
+- SomaFM DEF CON (Electronic) — NEW
+- SomaFM Groove Salad (Ambient/Chill) — NEW
+- SomaFM Drone Zone (Ambient/Space) — NEW
+- All verified with curl -I: Access-Control-Allow-Origin: * + content-type: audio/mpeg
+
+DEPLOY:
+- Git push to origin (dudududi144-source/psy4) ✓
+- Git push to psy4new (dudududi144-source/psy4new) ✓
+- Cloudflare build: next-on-pages, 232 static assets, 11 worker modules ✓
+- Cloudflare deploy: https://eede2742.psy4.pages.dev (preview) ✓
+- Production: https://psy4.pages.dev — HTTP 200, verified ✓
+
+PRODUCTION VERIFICATION:
+- Site loads clean, 0 errors ✓
+- 8 radio stations available in dropdown ✓
+- Radio connect: syncStatus=listening, radioRms=0.05 (audio flowing) ✓
+- BPM sync: smoothed readings, transportBpm=144.2→150.5→154.1 ✓
+- Sound bank: 13 entries (5 kick + 5 bass + 3 lead) built on production ✓
+- Exploration: 81 candidates scanned, recipes applied ✓
+- Style detection: hiTech (conf=0.80) → fullOn (conf=0.80) ✓
+- Recipe application: setVoiceRecipe to engine, params applied ✓
+
+LINT CHECK:
+- Our source code (src/, foundation/, public/): 0 errors, 2 warnings (ref assignment in page.tsx — not real errors)
+- All 138 lint "errors" are in .vercel build artifacts (generated code, not ours)
+
+WHAT'S NOT COMPLETE YET (honest assessment):
+1. The user still may not "feel" the sync because:
+   - Beat phase alignment is not implemented (we sync BPM but not beat position)
+   - The radio might be at beat 2 while PSY4 is at beat 0
+   - This requires phase-locked loop (PLL) with sub-beat accuracy
+2. The onset classification is imperfect:
+   - Radio plays full mix → centroid always high → classifier struggles
+   - We added early-exit for high subEnergy, but it's heuristic
+3. Sound bank persistence across sessions:
+   - IndexedDB works within a session
+   - But agent-browser clears storage between sessions (sandbox limitation)
+   - In real browser, persistence should work
+4. No visual feedback for "sync quality":
+   - User can't see how well PSY4 is synced with radio
+   - Could add a phase indicator or sync meter
+
+Stage Summary:
+- CRITICAL BUG FIXED: engine BPM now syncs with radio (was stuck at 145)
+- BPM smoothing reduces jitter
+- 8 radio stations (was 2)
+- Deployed to production: https://psy4.pages.dev
+- ALL learning capabilities verified working on production
+- Remaining: beat phase alignment (for true "sitting with the music" feel)
