@@ -398,25 +398,33 @@ export default function Page() {
               <span className="text-[10px] text-slate-500 ml-auto">למידה מקובץ אודיו</span>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <label className="flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer transition-all hover:scale-105"
-                style={{ background: s.playing ? 'rgba(245,158,11,0.2)' : 'rgba(255,255,255,0.05)', color: s.playing ? '#f59e0b' : '#64748b', border: '1px solid rgba(245,158,11,0.3)' }}>
-                <input
-                  type="file"
-                  accept="audio/*,.mp3,.wav,.ogg,.m4a"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (!file || !engineRef.current) return;
-                    const ok = await engineRef.current.loadLoopFile(file);
-                    if (!ok) {
-                      alert('פורמט קובץ לא נתמך. נסה MP3, WAV, או OGG.');
-                    }
-                    e.target.value = ''; // אפשר להעלות שוב את אותו קובץ
-                  }}
-                  disabled={!s.playing}
-                  className="hidden"
-                />
-                <span className="text-[10px] font-bold">העלה קובץ אודיו</span>
-              </label>
+              <input
+                type="file"
+                accept="audio/*,.mp3,.wav,.ogg,.m4a"
+                id="loop-file-input"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file || !engineRef.current) return;
+                  const ok = await engineRef.current.loadLoopFile(file);
+                  if (!ok) {
+                    alert('פורמט קובץ לא נתמך. נסה MP3, WAV, או OGG.');
+                  }
+                  e.target.value = '';
+                }}
+                disabled={!s.playing}
+                style={{ display: 'none' }}
+              />
+              <button
+                onClick={() => {
+                  const input = document.getElementById('loop-file-input') as HTMLInputElement;
+                  if (input) input.click();
+                }}
+                disabled={!s.playing}
+                className="px-4 py-2 rounded-lg text-[10px] font-bold transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: s.playing ? 'rgba(245,158,11,0.2)' : 'rgba(255,255,255,0.05)', color: s.playing ? '#f59e0b' : '#64748b', border: '1px solid rgba(245,158,11,0.3)' }}
+              >
+                העלה קובץ אודיו
+              </button>
               <button
                 onClick={() => engineRef.current?.stopLoop()}
                 disabled={!s.playing || !engineRef.current?.isLoopRunning()}

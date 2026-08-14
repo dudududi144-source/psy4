@@ -93,16 +93,20 @@ interface Stream { id: string; name: string; url: string; genre: string; bitrate
 // CORS-enabled stations remain.
 export const STREAMS: Stream[] = [
   // תחנות שנבדקו עם CORS (Access-Control-Allow-Origin: *) ו-audio/mpeg
-  // חשוב: crossOrigin='anonymous' דורש CORS מהשרת, אחרת הדפדפן חוסם לחלוטין.
   // סדר: הכי פסייטראנס/טראנס קודם.
   { id: 'spaceunicorn', name: 'Space Unicorn', url: 'https://spaceunicorn.radio/stream', genre: 'Trance · PsyTrance', bitrate: 192 },
   { id: 'babaganousha', name: 'Babaganousha', url: 'https://babaganousha.net:8443/stream/1/', genre: 'Psychedelic · Goa', bitrate: 128 },
   { id: 'somafm-trip', name: 'SomaFM The Trip', url: 'https://ice1.somafm.com/thetrip-128-mp3', genre: 'Dance · Trance · House', bitrate: 128 },
+  { id: 'somafm-trip-256', name: 'SomaFM The Trip (256k)', url: 'https://ice1.somafm.com/thetrip-256-mp3', genre: 'Dance · Trance · House', bitrate: 256 },
   { id: 'somafm-spacestation', name: 'SomaFM Space Station', url: 'https://ice1.somafm.com/spacestation-128-mp3', genre: 'Space · Electronica', bitrate: 128 },
-  { id: 'somafm-cliqhop', name: 'SomaFM Cliqhop', url: 'https://ice1.somafm.com/cliqhop-256-mp3', genre: 'IDM · Beats', bitrate: 256 },
-  { id: 'somafm-defcon', name: 'SomaFM DEF CON', url: 'https://ice1.somafm.com/defcon-128-mp3', genre: 'Electronic · Hacking', bitrate: 128 },
+  { id: 'somafm-spacestation-256', name: 'SomaFM Space Station (256k)', url: 'https://ice1.somafm.com/spacestation-256-mp3', genre: 'Space · Electronica', bitrate: 256 },
+  { id: 'somafm-cliqhop', name: 'SomaFM Cliqhop', url: 'https://ice1.somafm.com/cliqhop-128-mp3', genre: 'IDM · Beats', bitrate: 128 },
+  { id: 'somafm-cliqhop-2', name: 'SomaFM Cliqhop (mirror)', url: 'https://ice2.somafm.com/cliqhop-128-mp3', genre: 'IDM · Beats', bitrate: 128 },
+  { id: 'somafm-defcon', name: 'SomaFM DEF CON', url: 'https://ice1.somafm.com/defcon-256-mp3', genre: 'Electronic · Hacking', bitrate: 256 },
+  { id: 'somafm-defcon-2', name: 'SomaFM DEF CON (mirror)', url: 'https://ice2.somafm.com/defcon-256-mp3', genre: 'Electronic · Hacking', bitrate: 256 },
   { id: 'somafm-groovesalad', name: 'SomaFM Groove Salad', url: 'https://ice1.somafm.com/groovesalad-256-mp3', genre: 'Ambient · Chill', bitrate: 256 },
   { id: 'somafm-dronezone', name: 'SomaFM Drone Zone', url: 'https://ice1.somafm.com/dronezone-256-mp3', genre: 'Ambient · Space', bitrate: 256 },
+  { id: 'radioparadise', name: 'Radio Paradise', url: 'https://stream.radioparadise.com/mp3-320', genre: 'Eclectic · Mixed', bitrate: 320 },
 ];
 
 // 4 DISTINCT presets — each with unique BPM, root, patterns, and variants
@@ -1186,7 +1190,8 @@ export class PsyLive {
 
       if (this._bpmHistory.length >= 3) {
         const avgBpm = this._bpmHistory.reduce((a, b) => a + b, 0) / this._bpmHistory.length;
-        const stable = this._bpmHistory.every(b => Math.abs(b - avgBpm) < 2);
+        // תיקון: הרחב את הטווח ל-±4 BPM (רדיו PLL לא תמיד מדויק)
+        const stable = this._bpmHistory.every(b => Math.abs(b - avgBpm) < 4);
 
         if (this._bpmLocked) {
           // BPM נעול — בדוק רק drift גדול
