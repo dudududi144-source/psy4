@@ -133,14 +133,22 @@ export class SoundBank {
 
   /**
    * קבל את ה-entry הטוב ביותר ל-role לפי context.
-   * אם יש entries עם אותו sourceStyle, העדף אותם.
-   * אחרת, החזיר את ה-entry עם ה-reward הגבוה ביותר.
+   * שלב 4.5: Preferential retrieval — העדף entries עם reward גבוה.
+   * - אם יש entry עם reward > 0.8 ("proven") → החזר אותו תמיד
+   * - אחרת, אם יש entries עם אותו sourceStyle → החזר את הטוב ביותר מהם (לפי reward)
+   * - אחרת, החזר את ה-entry עם ה-reward הגבוה ביותר
    * מחזיר null אם ה-bank ריק ל-role.
    */
   async get(role: OnsetRole, context?: { style?: string }): Promise<SoundBankEntry | null> {
     await this.init();
     const all = await this.all(role);
     if (all.length === 0) return null;
+    // שלב 4.5: אם יש entry "proven" (reward > 0.8) → החזר אותו תמיד
+    const proven = all.filter(e => e.reward > 0.8);
+    if (proven.length > 0) {
+      proven.sort((a, b) => b.reward - a.reward);
+      return proven[0];
+    }
     // אם יש context.style, העדף entries עם אותו sourceStyle
     if (context?.style) {
       const matching = all.filter(e => e.sourceStyle === context.style);

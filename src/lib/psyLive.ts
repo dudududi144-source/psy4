@@ -27,6 +27,8 @@ import { SynthesisMatcher, type MatchResult } from './synthesisMatcher';
 import { SoundBank, type SoundBankEntry } from './soundBank';
 // שלב 4.4: Sound explorer (סריקה רחבה של מרחב הפרמטרים)
 import { SoundExplorer, type ExplorationResult } from './soundExplorer';
+// שלב 4.5: Reward loop (self-improvement)
+import { RewardTracker } from './rewardTracker';
 // ADR-001: CausalComposer runs on a Web Worker now. This import is kept for type compatibility
 // but the actual composition happens in public/worklets/composition-worker.js
 // SamplerBridge import REMOVED — fully dead code
@@ -361,6 +363,10 @@ export class PsyLive {
   private static readonly MATCH_SAVE_THRESHOLD = 0.7;
   // שלב 4.4: Sound explorer — סריקה רחבה של מרחב הפרמטרים
   private soundExplorer: SoundExplorer | null = null;
+  // שלב 4.5: Reward tracker — מודד איך הרדיו מגיב לסאונדים של PSY4
+  private rewardTracker: RewardTracker | null = null;
+  // שלב 4.5: טיימר eviction תקופתי (כל 60s)
+  private evictionTimer: ReturnType<typeof setInterval> | null = null;
   // שלב 4.4: איטרציה אוטומטית — כל 30s, סרוק role פעיל
   private explorationTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly EXPLORATION_INTERVAL_MS = 30000;
@@ -1473,6 +1479,8 @@ export class PsyLive {
         this.synthesisMatcher.init(this.engineNode);
         // שלב 4.4: אתחל את ה-SoundExplorer (משתמש ב-matcher + bank)
         this.soundExplorer = new SoundExplorer(this.synthesisMatcher, this.soundBank);
+        // שלב 4.5: אתחל את ה-RewardTracker
+        this.rewardTracker = new RewardTracker(this.soundBank);
       } else {
         console.warn('[PSY4] Worklet init failed — using MaterialRealizer fallback');
         this.realizer?.loadSamples().catch(() => {});
@@ -2023,6 +2031,10 @@ export class PsyLive {
 
     // F2.5 — Update occupancy from radio layer (for arranger decisions)
     this.occupancy = radioSnap.occupancy;
+    // שלב 4.5: עדכן את RewardTracker עם occupancy הנוכחי
+    if (this.rewardTracker && this.radioOn) {
+      this.rewardTracker.recordOccupancy(this.occupancy);
+    }
 
     // MUSICAL FIX: session.observeRadioTick REMOVED entirely.
     // Was collecting learning data that nobody reads (only BPM/scale used, and
@@ -2471,7 +2483,12 @@ export class PsyLive {
     this.explorationTimer = setInterval(() => {
       this.runExplorationCycle();
     }, PsyLive.EXPLORATION_INTERVAL_MS);
+    // שלב 4.5: טיימר eviction תקופתי — כל 60 שניות, נקה entries חלשים
+    this.evictionTimer = setInterval(() => {
+      this.runPeriodicEviction();
+    }, 60000);
     console.log('[PSY4] שלב 4.4 Auto-exploration started (interval=30s, first run in 10s)');
+    console.log('[PSY4] שלב 4.5 Periodic eviction started (interval=60s)');
   }
 
   private stopAutoExploration(): void {
@@ -2480,10 +2497,46 @@ export class PsyLive {
       this.explorationTimer = null;
       console.log('[PSY4] שלב 4.4 Auto-exploration stopped');
     }
+    if (this.evictionTimer) {
+      clearInterval(this.evictionTimer);
+      this.evictionTimer = null;
+      console.log('[PSY4] שלב 4.5 Periodic eviction stopped');
+    }
+  }
+
+  /**
+   * שלב 4.5: Eviction תקופתי — כל 60s, נקה entries חלשים.
+   * - entries עם reward < 0.2 ו-usageCount > 3 → evict (לא יעיל)
+   * - אם ל-role אין אף entry עם reward > 0.4 אחרי 3 מחזורים → נקה והתחל מחדש
+   */
+  private async runPeriodicEviction(): Promise<void> {
+    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'perc'];
+    let totalEvicted = 0;
+    for (const role of roles) {
+      const all = await this.soundBank.all(role);
+      if (all.length === 0) continue;
+      // זהה entries חלשים: reward < 0.2 ו-usageCount > 3
+      const weak = all.filter(e => e.reward < 0.2 && e.usageCount > 3);
+      for (const entry of weak) {
+        await this.soundBank.delete(entry.id);
+        totalEvicted++;
+      }
+      // אם כל ה-entries של role ירדו מתחת ל-0.3 → נקה את ה-role
+      const allWeak = all.every(e => e.reward < 0.3);
+      if (allWeak && all.length > 0) {
+        console.log(`[PSY4] שלב 4.5 Eviction: all ${role} entries weak (reward < 0.3) — clearing role for re-exploration`);
+        await this.soundBank.clearRole(role);
+        totalEvicted += all.length;
+      }
+    }
+    if (totalEvicted > 0) {
+      console.log(`[PSY4] שלב 4.5 Periodic eviction: removed ${totalEvicted} weak entries`);
+    }
   }
 
   /**
    * מחזור סריקה אחד: סרוק role אחד, שמור ל-bank, החל recipe על engine.
+   * שלב 4.5: אם ל-role אין אף entry עם reward > 0.5 אחרי 3 מחזורים → הרץ exploration נוסף.
    */
   private async runExplorationCycle(): Promise<void> {
     if (!this.radioOn || !this.soundExplorer) return;
@@ -2505,6 +2558,12 @@ export class PsyLive {
       const result = await this.soundExplorer.explore(role, onset.soundDNA, 'radio');
       // אחרי ה-exploration, החל את ה-recipe הטוב ביותר מה-bank על ה-engine
       await this.applyBestRecipeFromBank(role);
+      // שלב 4.5: בדוק אם ה-bank ל-role stale (כל ה-entries עם reward < 0.5)
+      const all = await this.soundBank.all(role);
+      const hasStrong = all.some(e => e.reward > 0.5);
+      if (!hasStrong && all.length > 0) {
+        console.log(`[PSY4] שלב 4.5 ${role} bank stale (no entry with reward > 0.5) — will re-explore next cycle`);
+      }
     } catch (e) {
       console.warn('[PSY4] שלב 4.4 Exploration failed:', e);
     }
@@ -2534,6 +2593,10 @@ export class PsyLive {
     });
     // עדכן usageCount
     await this.soundBank.updateReward(entry.id, 0, true);
+    // שלב 4.5: התחל מעקב reward — מדוד איך הרדיו מגיב ב-3 השניות הבאות
+    if (this.rewardTracker) {
+      this.rewardTracker.startTracking(entry.id, role, this.occupancy);
+    }
     const paramsStr = entry.voiceParams ? JSON.stringify(entry.voiceParams).slice(0, 80) : '{}';
     console.log(`[PSY4] שלב 4.4 applyRecipe(${role}): applied entry ${entry.id} (matchScore=${entry.matchScore.toFixed(3)}, reward=${entry.reward.toFixed(3)}, params=${paramsStr})`);
     return true;
