@@ -386,17 +386,28 @@ class CausalComposerWorker {
   }
 
   // ARRANGEMENT: Returns section name based on bar number, or null for free composition
+  // תיקון: מערך ארוך ומתפתח (64 תיבות = ~106s) במקום 32 קבוע
   getArrangementSection(bar) {
-    const phrasePos = bar % 32;  // 32-bar cycle = ~53s at 145 BPM
+    const phrasePos = bar % 64;  // 64-bar cycle = ~106s at 145 BPM (was 32)
+    // Half 1 (0-31): standard arrangement
     if (phrasePos === 0) return 'INTRO_START';
     if (phrasePos === 8) return 'GROOVE_START';
     if (phrasePos === 16) return 'DROP_START';
     if (phrasePos === 24) return 'BREAKDOWN_START';
     if (phrasePos === 28) return 'REBUILD_START';
+    // Half 2 (32-63): VARIATION — different from first half
+    if (phrasePos === 32) return 'DROP_START';      // Jump straight to drop
+    if (phrasePos === 40) return 'BREAKDOWN_START'; // Breakdown
+    if (phrasePos === 44) return 'REBUILD_START';   // Rebuild
+    if (phrasePos === 52) return 'DROP_START';      // Final drop
+    if (phrasePos === 60) return 'BREAKDOWN_START'; // Outro breakdown
     // Within sections: ensure layers stay active
     if (phrasePos >= 8 && phrasePos < 16) return 'GROOVE_MAINTAIN';
     if (phrasePos >= 16 && phrasePos < 24) return 'DROP_MAINTAIN';
-    if (phrasePos >= 28) return 'REBUILD_MAINTAIN';
+    if (phrasePos >= 28 && phrasePos < 32) return 'REBUILD_MAINTAIN';
+    if (phrasePos >= 32 && phrasePos < 40) return 'DROP_MAINTAIN';
+    if (phrasePos >= 44 && phrasePos < 52) return 'REBUILD_MAINTAIN';
+    if (phrasePos >= 52 && phrasePos < 60) return 'DROP_MAINTAIN';
     return null;  // intro: free composition
   }
 

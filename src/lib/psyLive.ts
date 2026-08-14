@@ -344,6 +344,11 @@ export class PsyLive {
   private _radioToWorkerCounter = 0;
   private _lastSentRadioBpm = 0;
   private _bpmHistory: number[] = []; // תיקון: smoothing ל-BPM
+  // תיקון: BPM LOCK — מונע בריחת BPM
+  private _bpmLocked = false;
+  private _lockedBpm = 0;
+  private _bpmStableTime = 0;
+  private _bpmDriftTime = 0;
   private _lastSentRoot = -1;
   private _lastSentScale = '';
   private _lastSentStyle = '';
@@ -1167,27 +1172,55 @@ export class PsyLive {
   private sendRadioDataToWorker(radioSnap: any, transportSnap: any): void {
     if (!this.compositionWorker || !this.workerReady || !this.radioOn) return;
 
-    // 1.1.1 BPM — שלח אם confidence > 0.5 ושינוי > 2 BPM
-    // תיקון: smoothing — רק עדכן אם ה-BPM הממוצע של 3 הקריאות האחרונות יציב
+    // 1.1.1 BPM — LOCK מלא אחרי ייצוב
+    // תיקון קריטי: ה-BPM היה בורח כל שניה. עכשיו:
+    // 1. אסוף 5 קריאות
+    // 2. אם כולן בטווח ±2 BPM → ה-BPM "יציב"
+    // 3. אם יציב ברצף למשך 10 שניות → LOCK (לא מעדכן יותר!)
+    // 4. רק אם יש drift > 5 BPM למשך 5 שניות → UNLOCK
     const radioBpm = radioSnap.beat?.estimatedBpm ?? 0;
     const beatConfidence = radioSnap.beat?.confidence ?? 0;
     if (beatConfidence > 0.5 && radioBpm > 0) {
-      // שמור היסטוריית BPM ל-smoothing
       this._bpmHistory.push(radioBpm);
       if (this._bpmHistory.length > 5) this._bpmHistory.shift();
-      // חשב ממוצע רק אם יש לפחות 3 קריאות
+
       if (this._bpmHistory.length >= 3) {
         const avgBpm = this._bpmHistory.reduce((a, b) => a + b, 0) / this._bpmHistory.length;
-        // רק עדכן אם הממוצע יציב (כל הקריאות בטווח ±3 BPM מהממוצע)
-        const stable = this._bpmHistory.every(b => Math.abs(b - avgBpm) < 3);
-        if (stable && Math.abs(avgBpm - this._lastSentRadioBpm) > 1.5) {
-          this.compositionWorker.postMessage({ type: 'setBPM', bpm: avgBpm });
-          if (this.transport) this.transport.setTempo(avgBpm, 'radio');
-          if (this.engineNode) this.engineNode.setBPM(avgBpm);
-          this._lastSentRadioBpm = avgBpm;
-          // שלב 5: שמור BPM לזיכרון
-          this.saveMemoryBpm(avgBpm);
-          console.log(`[PSY4] Radio→Worker: BPM=${avgBpm.toFixed(1)} (conf=${beatConfidence.toFixed(2)}, smoothed from ${this._bpmHistory.length} readings)`);
+        const stable = this._bpmHistory.every(b => Math.abs(b - avgBpm) < 2);
+
+        if (this._bpmLocked) {
+          // BPM נעול — בדוק רק drift גדול
+          if (Math.abs(avgBpm - this._lockedBpm) > 5) {
+            this._bpmDriftTime = (this._bpmDriftTime || 0) + 2; // כל tick = ~2s
+            if (this._bpmDriftTime >= 5) {
+              console.log(`[PSY4] BPM UNLOCK: drift > 5 for 5s (locked=${this._lockedBpm.toFixed(1)}, radio=${avgBpm.toFixed(1)})`);
+              this._bpmLocked = false;
+              this._bpmStableTime = 0;
+              this._bpmDriftTime = 0;
+            }
+          } else {
+            this._bpmDriftTime = 0;
+          }
+        } else {
+          // BPM לא נעול — בדוק יציבות
+          if (stable) {
+            this._bpmStableTime = (this._bpmStableTime || 0) + 2;
+            if (this._bpmStableTime >= 10) {
+              // LOCK!
+              this._bpmLocked = true;
+              this._lockedBpm = avgBpm;
+              this._bpmStableTime = 0;
+              this._bpmDriftTime = 0;
+              this.compositionWorker.postMessage({ type: 'setBPM', bpm: avgBpm });
+              if (this.transport) this.transport.setTempo(avgBpm, 'radio');
+              if (this.engineNode) this.engineNode.setBPM(avgBpm);
+              this._lastSentRadioBpm = avgBpm;
+              this.saveMemoryBpm(avgBpm);
+              console.log(`[PSY4] 🔒 BPM LOCKED at ${avgBpm.toFixed(1)} (stable for 10s)`);
+            }
+          } else {
+            this._bpmStableTime = 0;
+          }
         }
       }
     }
