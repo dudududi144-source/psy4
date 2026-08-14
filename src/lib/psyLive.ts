@@ -646,8 +646,10 @@ export class PsyLive {
     // F1.18 — Initialize MusicalTransport (the SINGLE source of truth for musical time)
     // All beat/bar/phase/bpm reads come from transport.snapshot().
     // The PLL is an observer that feeds observations to Transport.
+    // תיקון: טען savedBpm מ-localStorage (לא 145 hardcode)
+    const transportInitBpm = this.loadMemoryBpm();
     this.transport = new MusicalTransport(() => this.ctx!.currentTime, {
-      initialBpm: PRESETS[0].bpm,
+      initialBpm: transportInitBpm,
     });
     // F13/R1: TransportAdapter removed — was instantiated but 0 methods ever called.
 
@@ -666,9 +668,11 @@ export class PsyLive {
     // The worker handles all composition — main thread only forwards events to AudioWorklet
     this.compositionWorker = new Worker('/worklets/composition-worker.js');
     this.compositionWorker.onmessage = (e) => this.handleWorkerMessage(e.data);
+    // תיקון קריטי: טען savedBpm מ-localStorage ב-init (לא 145 hardcode)
+    const initBpm = this.loadMemoryBpm();
     this.compositionWorker.postMessage({
       type: 'init',
-      opts: { bpm: 145, rootPc: 4, scaleName: 'phrygian-dominant', seed: Math.floor(Math.random() * 1000000) },
+      opts: { bpm: initBpm, rootPc: 4, scaleName: 'phrygian-dominant', seed: Math.floor(Math.random() * 1000000) },
     });
     // Keep causalComposer reference for getUserControls (worker sends state back)
     this.causalComposer = null; // Will be replaced by worker state
