@@ -920,19 +920,23 @@ export class PsyLive {
     // wait for it before starting playback. Otherwise events are dropped.
     if (this.useWorklet && this.engineNode) {
       this.engineNode.play();
-      this.engineNode.setBPM(145);
+      // שלב 5: אל תתחיל עם 145 hardcode — טען את ה-BPM האחרון מזיכרון
+      const savedBpm = this.loadMemoryBpm();
+      this.engineNode.setBPM(savedBpm);
+      // טען מיד את ה-learned params מזיכרון (לא חכה 30 שניות!)
+      this.loadLearnedParamsFromMemory();
     } else {
       // Worklet not ready — poll until it is, then start
       const checkReady = setInterval(() => {
         if (this.useWorklet && this.engineNode) {
           clearInterval(checkReady);
           this.engineNode.play();
-          this.engineNode.setBPM(145);
-          // Now send initial compose
+          const savedBpm = this.loadMemoryBpm();
+          this.engineNode.setBPM(savedBpm);
+          this.loadLearnedParamsFromMemory();
           this.sendInitialCompose();
         }
       }, 50);
-      // Timeout after 5s
       setTimeout(() => clearInterval(checkReady), 5000);
     }
     this.transport!.start();
@@ -1151,9 +1155,10 @@ export class PsyLive {
         if (stable && Math.abs(avgBpm - this._lastSentRadioBpm) > 1.5) {
           this.compositionWorker.postMessage({ type: 'setBPM', bpm: avgBpm });
           if (this.transport) this.transport.setTempo(avgBpm, 'radio');
-          // תיקון קריטי: עדכן גם את ה-engine node (AudioWorklet)
           if (this.engineNode) this.engineNode.setBPM(avgBpm);
           this._lastSentRadioBpm = avgBpm;
+          // שלב 5: שמור BPM לזיכרון
+          this.saveMemoryBpm(avgBpm);
           console.log(`[PSY4] Radio→Worker: BPM=${avgBpm.toFixed(1)} (conf=${beatConfidence.toFixed(2)}, smoothed from ${this._bpmHistory.length} readings)`);
         }
       }
@@ -2534,17 +2539,15 @@ export class PsyLive {
    */
   private startAutoExploration(): void {
     if (this.explorationTimer) clearInterval(this.explorationTimer);
-    // הרצה ראשונה אחרי 10 שניות (כדי שיהיו onsets)
-    setTimeout(() => this.runExplorationCycle(), 10000);
-    // ואז כל 30 שניות
+    // שלב 5: התחל מהר (3s) וכל 15s — עדכון תכוף יותר
+    setTimeout(() => this.runExplorationCycle(), 3000);
     this.explorationTimer = setInterval(() => {
       this.runExplorationCycle();
-    }, PsyLive.EXPLORATION_INTERVAL_MS);
-    // שלב 4.5: טיימר eviction תקופתי — כל 60 שניות, נקה entries חלשים
+    }, 15000); // 15s במקום 30s
     this.evictionTimer = setInterval(() => {
       this.runPeriodicEviction();
     }, 60000);
-    console.log('[PSY4] שלב 4.4 Auto-exploration started (interval=30s, first run in 10s)');
+    console.log('[PSY4] שלב 4.4 Auto-exploration started (interval=15s, first run in 3s)');
     console.log('[PSY4] שלב 4.5 Periodic eviction started (interval=60s)');
   }
 
@@ -2617,6 +2620,8 @@ export class PsyLive {
       const result = await this.soundExplorer.explore(role, onset.soundDNA, sourceStyle);
       // אחרי ה-exploration, החל את ה-recipe הטוב ביותר מה-bank על ה-engine
       await this.applyBestRecipeFromBank(role);
+      // שלב 5: שמור זיכרון אחרי כל cycle — המנוע יתחיל מכאן בפעם הבאה
+      await this.persistLearnedParamsToMemory();
       // שלב 4.5: בדוק אם ה-bank ל-role stale (כל ה-entries עם reward < 0.5)
       const all = await this.soundBank.all(role);
       const hasStrong = all.some(e => e.reward > 0.5);
@@ -2670,6 +2675,107 @@ export class PsyLive {
     const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'perc'];
     for (const role of roles) {
       await this.applyBestRecipeFromBank(role);
+    }
+  }
+
+  // ── שלב 5: MEMORY — זיכרון בין סשנים ──
+  // המנוע חייב לזכור מה למד בפעם הקודמת ולהתחיל משם, לא מאפס.
+
+  private static readonly MEMORY_KEY_PARAMS = 'psy4-learned-params';
+  private static readonly MEMORY_KEY_BPM = 'psy4-learned-bpm';
+
+  /**
+   * שומר את ה-learned params ל-localStorage (נקרא אחרי כל עדכון).
+   */
+  private saveLearnedParamsToMemory(params: Record<string, Record<string, number>>): void {
+    try {
+      localStorage.setItem(PsyLive.MEMORY_KEY_PARAMS, JSON.stringify(params));
+      console.log('[PSY4] שלב 5 MEMORY: saved learned params to localStorage');
+    } catch (e) {
+      console.warn('[PSY4] MEMORY save failed:', e);
+    }
+  }
+
+  /**
+   * טוען את ה-learned params מ-localStorage ושולח ל-engine.
+   * נקרא מיד ב-play() — המנוע מתחיל עם מה שלמד בפעם הקודמת.
+   */
+  private loadLearnedParamsFromMemory(): void {
+    try {
+      const json = localStorage.getItem(PsyLive.MEMORY_KEY_PARAMS);
+      if (!json) {
+        console.log('[PSY4] שלב 5 MEMORY: no saved params — starting fresh');
+        return;
+      }
+      const params = JSON.parse(json) as Record<string, Record<string, number>>;
+      if (!this.engineNode) return;
+      // שלח כל voiceClass ל-engine
+      for (const [voiceClass, recipe] of Object.entries(params)) {
+        this.engineNode.node.port.postMessage({
+          type: 'setVoiceRecipe',
+          voiceClass,
+          recipe,
+        });
+      }
+      console.log('[PSY4] שלב 5 MEMORY: loaded learned params from localStorage:', Object.keys(params).join(', '));
+    } catch (e) {
+      console.warn('[PSY4] MEMORY load failed:', e);
+    }
+  }
+
+  /**
+   * שומר BPM ל-localStorage.
+   */
+  private saveMemoryBpm(bpm: number): void {
+    try {
+      localStorage.setItem(PsyLive.MEMORY_KEY_BPM, String(bpm));
+    } catch {}
+  }
+
+  /**
+   * טוען BPM מ-localStorage (או 145 אם אין).
+   */
+  private loadMemoryBpm(): number {
+    try {
+      const v = localStorage.getItem(PsyLive.MEMORY_KEY_BPM);
+      if (v) {
+        const bpm = parseFloat(v);
+        if (bpm > 60 && bpm < 200) {
+          console.log(`[PSY4] שלב 5 MEMORY: loaded BPM ${bpm} from localStorage`);
+          return bpm;
+        }
+      }
+    } catch {}
+    return 145;
+  }
+
+  /**
+   * שומר את ה-learned params הנוכחיים מה-engine ל-localStorage.
+   * נקרא אחרי כל exploration cycle.
+   */
+  async persistLearnedParamsToMemory(): Promise<void> {
+    if (!this.engineNode) return;
+    try {
+      const params = await new Promise<Record<string, Record<string, number>>>((resolve) => {
+        const handler = (e: MessageEvent) => {
+          if (e.data.type === 'debugResult' && e.data.query === 'learnedVoiceParams') {
+            this.engineNode!.node.port.removeEventListener('message', handler);
+            resolve(e.data.data || {});
+          }
+        };
+        this.engineNode!.node.port.addEventListener('message', handler);
+        this.engineNode!.node.port.postMessage({ type: 'debug', query: 'learnedVoiceParams' });
+        // Timeout 2s
+        setTimeout(() => {
+          this.engineNode!.node.port.removeEventListener('message', handler);
+          resolve({});
+        }, 2000);
+      });
+      if (Object.keys(params).length > 0) {
+        this.saveLearnedParamsToMemory(params);
+      }
+    } catch (e) {
+      console.warn('[PSY4] persistLearnedParams failed:', e);
     }
   }
 
