@@ -258,6 +258,12 @@ class CausalComposerWorker {
     this.forcedSection = null;
     this.forcedBarsRemaining = 0;
     this.rng = mulberry32(opts.seed || 42);
+    // שלב 3.1: דפוס kick נלמד — null עד שמגיע דפוס מהרדיו
+    this.learnedKickPattern = null;
+    // שלב 3.2: היסטוגרמת מרווחי bass — null עד שמגיעה מהרדיו
+    this.learnedBassIntervals = null;
+    // שלב 3.3: היסטוגרמת מרווחי melodic — null עד שמגיעה מהרדיו
+    this.learnedMelodicIntervals = null;
   }
 
   setEnergy(v) { this.userEnergy = Math.max(0, Math.min(1, v)); }
@@ -272,6 +278,36 @@ class CausalComposerWorker {
   setBPM(bpm) { this.opts.bpm = Math.max(60, Math.min(200, bpm)); }
   setRoot(rootPc) { this.opts.rootPc = ((Math.round(rootPc) % 12) + 12) % 12; }
   setScale(scaleName) { this.opts.scaleName = scaleName; }
+  // שלב 3.1: דפוס kick נלמד מהרדיו (16 ערכים 0..1)
+  setKickPattern(pattern) {
+    if (!Array.isArray(pattern) || pattern.length !== 16) return;
+    this.learnedKickPattern = pattern.slice();
+  }
+  // שלב 3.2: היסטוגרמת מרווחי bass נלמדה (25 ערכים 0..1, index 12 = 0 semitones)
+  setBassIntervals(histogram) {
+    if (!Array.isArray(histogram) || histogram.length !== 25) return;
+    this.learnedBassIntervals = histogram.slice();
+  }
+  // שלב 3.3: היסטוגרמת מרווחי melodic נלמדה (25 ערכים 0..1, index 12 = 0 semitones)
+  setMelodicIntervals(histogram) {
+    if (!Array.isArray(histogram) || histogram.length !== 25) return;
+    this.learnedMelodicIntervals = histogram.slice();
+  }
+  // שלב 3.3: בנה 4 מרווחי motif מתוך ההיסטוגרמה הנלמדת (לשימוש ב-INTRODUCE_LEAD/VARY_MOTIF)
+  // מחזיר [0, +i1, +i2, +i3] — root + 3 מרווחים חיוביים מובילים
+  getLearnedMotifIntervals() {
+    if (!this.learnedMelodicIntervals) return null;
+    const candidates = this.learnedMelodicIntervals
+      .map((v, i) => ({ v, interval: i - 12 }))
+      .filter(x => x.interval > 0 && x.interval <= 12 && x.v > 0.25)
+      .sort((a, b) => b.v - a.v)
+      .slice(0, 3)
+      .map(x => x.interval);
+    if (candidates.length < 2) return null; // לא מספיק מרווחים — השתמש ב-grammar default
+    // motif shape: [0, first, second, first] — חזרה על המרווח הראשון יוצרת צורה מוטיבית
+    while (candidates.length < 3) candidates.push(candidates[0]);
+    return [0, candidates[0], candidates[1], candidates[0]];
+  }
 
   composeBar(bar) {
     onBarAdvance(this.state, bar);
@@ -483,7 +519,8 @@ class CausalComposerWorker {
         onMaterialPlayed(this.state, 'motif-A', bar);
         const root = this.opts.rootPc + 60;
         const steps = grammar.motifSteps;
-        const intervals = grammar.motifIntervals;
+        // שלב 3.3: השתמש במרווחים הנלמדים מהרדיו אם זמינים, אחרת grammar default
+        const intervals = this.getLearnedMotifIntervals() || grammar.motifIntervals;
         for (let i = 0; i < steps.length; i++) {
           events.push({ at: barStart + steps[i] * stepDur, note: root + intervals[i], velocity: Math.min(1, 0.6 * velScale), duration: stepDur * 2, channel: 'lead' });
         }
@@ -502,7 +539,8 @@ class CausalComposerWorker {
         onMaterialVaried(this.state, 'motif-A');
         const root = this.opts.rootPc + 60 + shift;
         const steps = grammar.motifSteps;
-        const intervals = grammar.motifIntervals;
+        // שלב 3.3: השתמש במרווחים הנלמדים גם ב-VARY_MOTIF (עם shift נוסף)
+        const intervals = this.getLearnedMotifIntervals() || grammar.motifIntervals;
         for (let i = 0; i < steps.length; i++) {
           events.push({ at: barStart + steps[i] * stepDur, note: root + intervals[i], velocity: Math.min(1, 0.65 * velScale), duration: stepDur * 2, channel: 'lead' });
         }
@@ -547,7 +585,8 @@ class CausalComposerWorker {
         // COMMERCIAL FIX: Removed 'impact' — was an unwanted sound that didn't fit
         const root = this.opts.rootPc + 72;
         const steps = grammar.motifSteps;
-        const intervals = grammar.motifIntervals;
+        // שלב 3.3: השתמש במרווחים הנלמדים ב-callback (חזרה לmotif המקורי)
+        const intervals = this.getLearnedMotifIntervals() || grammar.motifIntervals;
         for (let i = 0; i < steps.length; i++) {
           events.push({ at: barStart + steps[i] * stepDur, note: root + intervals[i], velocity: Math.min(1, 0.7 * velScale), duration: stepDur * 2, channel: 'lead' });
         }
@@ -624,8 +663,25 @@ class CausalComposerWorker {
     const velScale = 0.8 + this.userEnergy * 0.4;
     const grammar = STYLE_GRAMMARS[this.userStyle] || STYLE_GRAMMARS.FULL_ON;
 
+    // ── שלב 3.1: KICK — 4-on-the-floor + ghost kicks מהדפוס הנלמד ──
+    // סטנדרטי: steps 0, 4, 8, 12 (always high velocity)
     for (let beat = 0; beat < 4; beat++) {
       events.push({ at: barStart + beat * beatDur, note: 36, velocity: Math.min(1, (beat === 0 ? 0.95 : 0.88) * velScale), duration: beatDur * 0.8, channel: 'kick' });
+    }
+    // GHOST KICKS: אם הרדיו מנגן kick ב-step לא-סטנדרטי, PSY4 מוסיף ghost kick (velocity נמוך)
+    // רק ב-DROP/REBUILD (phrasePos >= 4) — לא ב-INTRO כדי לא להרוס את הבנייה
+    const phrasePos8 = bar % 8;
+    if (this.learnedKickPattern && phrasePos8 >= 4) {
+      for (let step = 0; step < 16; step++) {
+        // דלג על steps סטנדרטיים (כבר מנגנים)
+        if (step % 4 === 0) continue;
+        const kickEnergy = this.learnedKickPattern[step];
+        if (kickEnergy > 0.5) {
+          // ghost kick — velocity נמוך יותר כדי לא להציף
+          const ghostVel = Math.min(1, 0.45 * kickEnergy * velScale);
+          events.push({ at: barStart + step * stepDur, note: 36, velocity: ghostVel, duration: beatDur * 0.5, channel: 'kick' });
+        }
+      }
     }
 
     const phrasePos = bar % 8;
@@ -635,8 +691,40 @@ class CausalComposerWorker {
     if (phrasePos >= 4) bassOffsets = [0, 7];
     if (phrasePos >= 6) bassOffsets = [0, 7, 12];
 
+    // ── שלב 3.2: אם יש היסטוגרמת מרווחי bass נלמדת, החלף את bassOffsets ──
+    // במקום [0, 7, 12] קבוע, בחר 3 מרווחים מובילים מתוך ההיסטוגרמה
+    // המרווחים בהיסטוגרמה הם יחסיים (semitone deltas), ואנחנו משתמשים בהם כ-offsets מה-root
+    if (this.learnedBassIntervals && phrasePos >= 4) {
+      // בחר את 3 המרווחים החזקים ביותר (לא שליליים — bass ב-psytrance נע למעלה מה-root)
+      const candidates = this.learnedBassIntervals
+        .map((v, i) => ({ v, interval: i - 12 }))
+        .filter(x => x.interval >= 0 && x.interval <= 12 && x.v > 0.2)
+        .sort((a, b) => b.v - a.v)
+        .slice(0, 3)
+        .map(x => x.interval);
+      // תמיד כלול את 0 (root) בתור ה-offset הראשון — bass צריך לחזור ל-root
+      if (candidates.length > 0 && !candidates.includes(0)) candidates.unshift(0);
+      if (candidates.length >= 2) {
+        bassOffsets = candidates.slice(0, phrasePos >= 6 ? 3 : 2);
+      }
+    }
+
+    // ── שלב 3.1: BASS — הימנע מ-steps עם kick energy גבוה (כדי לא למסך) ──
+    // אם יש דפוס נלמד ו-step ה-bass חופף ל-kick חזק (לא סטנדרטי), הזז אותו ב-1 step
     for (let i = 0; i < grammar.bassPattern.length; i++) {
-      const step = grammar.bassPattern[i];
+      let step = grammar.bassPattern[i];
+      // אם יש דפוס kick נלמד, וה-step הנוכחי הוא לא after-kick סטנדרטי, ויש kick energy גבוה — הזז
+      if (this.learnedKickPattern && step % 4 !== 1) {
+        const kickEnergyHere = this.learnedKickPattern[step] || 0;
+        if (kickEnergyHere > 0.6) {
+          // הזז ימינה (או שמאלה אם ימינה לא אפשרית)
+          const nextStep = (step + 1) % 16;
+          const prevStep = (step - 1 + 16) % 16;
+          const nextEnergy = this.learnedKickPattern[nextStep] || 0;
+          const prevEnergy = this.learnedKickPattern[prevStep] || 0;
+          step = nextEnergy < prevEnergy ? nextStep : prevStep;
+        }
+      }
       const isAfterKick = step % 4 === 1;
       const offset = bassOffsets[i % bassOffsets.length];
       events.push({ at: barStart + step * stepDur, note: bassRoot + offset, velocity: Math.min(1, (isAfterKick ? 0.6 : 0.8) * velScale), duration: stepDur * 0.9, channel: bassChannel });
@@ -762,6 +850,12 @@ self.onmessage = function(e) {
     case 'setBPM': { if (composer) composer.setBPM(msg.bpm); break; }
     case 'setRoot': { if (composer) composer.setRoot(msg.rootPc); break; }
     case 'setScale': { if (composer) composer.setScale(msg.scaleName); break; }
+    // שלב 3.1: דפוס kick נלמד מהרדיו
+    case 'setKickPattern': { if (composer) composer.setKickPattern(msg.pattern); break; }
+    // שלב 3.2: היסטוגרמת מרווחי bass נלמדה
+    case 'setBassIntervals': { if (composer) composer.setBassIntervals(msg.histogram); break; }
+    // שלב 3.3: היסטוגרמת מרווחי melodic נלמדה
+    case 'setMelodicIntervals': { if (composer) composer.setMelodicIntervals(msg.histogram); break; }
     case 'reset': {
       if (composer) {
         const opts = composer.opts;

@@ -17,6 +17,8 @@ import { MusicalTransport } from '../../foundation/transport/MusicalTransport';
 import { RadioObservationLayer } from '../../foundation/radio/RadioObservationLayer';
 import { DEFAULT_RADIO_CONFIG } from '../../foundation/radio/RadioObservationTypes';
 import { CausalComposer, type CausalNoteEvent, type CausalBarResult } from '../../foundation/music/CausalComposer';
+// שלב 3.4: חישוב תכונות ספקטרליות (centroid/flatness/rolloff) מתדרי הרדיו
+import { extractSpectralFeatures } from '../../foundation/music/MusicalObservation';
 // ADR-001: CausalComposer runs on a Web Worker now. This import is kept for type compatibility
 // but the actual composition happens in public/worklets/composition-worker.js
 // SamplerBridge import REMOVED — fully dead code
@@ -320,6 +322,25 @@ export class PsyLive {
   private _lastSentStyle = '';
   // שלב 2.3: השלמת תדרים
   private _freqBalanceCounter = 0;
+  // שלב 3.1: למידת kick pattern — תיעוד timestamps של פעימות רדיו
+  private radioKickTimes: number[] = [];
+  private _lastSentKickPatternSig = '';
+  // שלב 3.2: למידת bass intervals — היסטוגרמה של מרווחי סמיטונים
+  private radioBassFreqs: number[] = [];
+  private _lastSentBassIntervalsSig = '';
+  // שלב 3.3: למידת melodic intervals — תיעוד lead pitch → היסטוגרמה
+  private radioLeadPitches: number[] = [];
+  private _lastSentMelodicIntervalsSig = '';
+  // שלב 3.4: תכונות ספקטרליות — centroid/flatness/rolloff
+  private _lastSentSpectralSig = '';
+  // שלב 3.5: מעקב אנרגיה — לזיהוי עליה ולהעלות שכבות
+  private _lastSentEnergyFollowSig = '';
+  // שלב 3.4: cache אחרון של תכונות ספקטרליות (עדכון כל 100ms ב-detect)
+  private radioSpectral: { centroid: number; flatness: number; rolloff: number; low: number; mid: number; high: number } = { centroid: 0, flatness: 0, rolloff: 0, low: 0, mid: 0, high: 0 };
+  // EMA-smoothed spectral features (יציב יותר מערך נקודתי)
+  private spectralCentroidEma = 0;
+  private spectralFlatnessEma = 0;
+  private spectralRolloffEma = 0;
   // CAUSAL: The live composition authority (now null — worker handles it)
   private causalComposer: CausalComposer | null = null;
   private currentCausalBar: CausalBarResult | null = null;
@@ -1087,19 +1108,9 @@ export class PsyLive {
       }
     }
 
-    // 1.1.3 Energy — שלח אם שינוי > 20%
-    const spectralEnergy = radioSnap.signal?.spectralEnergy ?? 0;
-    if (spectralEnergy > 0) {
-      const lastEnergy = this.cachedUserControls.energy;
-      if (Math.abs(spectralEnergy - lastEnergy) > 0.2) {
-        this.compositionWorker.postMessage({
-          type: 'controls',
-          energy: spectralEnergy,
-        });
-        // אל תעדכן cachedUserControls — זה נתוני רדיו, לא משתמש
-        console.log(`[PSY4] Radio→Worker: energy=${spectralEnergy.toFixed(2)}`);
-      }
-    }
+    // 1.1.3 + שלב 3.5: Energy FOLLOW — שלח לפי שיפוע (slope), לא ערך אבסולוטי
+    // אם הרדיו עולה באנרגיה, PSY4 עוקב (מעלה layers). אם יורד — מוריד.
+    this.sendEnergyFollowToWorker(radioSnap);
 
     // 1.1.4 סגנון — שלח אם השתנה
     const detectedStyle = this.classifyStyle();
@@ -1112,6 +1123,216 @@ export class PsyLive {
       this._lastSentStyle = detectedStyle;
       console.log(`[PSY4] Radio→Worker: style=${mappedStyle}`);
     }
+
+    // שלב 3.1: חלץ דפוס kick 16-step מהרדיו ושלח ל-worker
+    this.sendKickPatternToWorker(transportSnap);
+    // שלב 3.2: חלץ היסטוגרמת מרווחי bass ושלח ל-worker
+    this.sendBassIntervalsToWorker();
+    // שלב 3.3: חלץ היסטוגרמת מרווחי melodic ושלח ל-worker
+    this.sendMelodicIntervalsToWorker();
+  }
+
+  // שלב 3.1: חילוץ דפוס kick 16-step מתוך radioKickTimes
+  // ממפה כל timestamp ל-step בתוך התיבה (0..15) ובונה היסטוגרמה מנורמלת
+  private sendKickPatternToWorker(transportSnap: any): void {
+    if (!this.compositionWorker || !this.workerReady) return;
+    if (!transportSnap || !transportSnap.locked) return;
+    // צריך לפחות 16 kicks (4 תיבות) כדי לבנות דפוס אמין
+    if (this.radioKickTimes.length < 16) return;
+
+    const bpm = transportSnap.bpm;
+    if (bpm < 60 || bpm > 200) return;
+    const beatDur = 60 / bpm;
+    const barDur = beatDur * 4;
+    const stepDur = barDur / 16;
+
+    // barTime = זמן תחילת התיבה הנוכחית (מ-Transport)
+    const barTime = transportSnap.barTime || 0;
+
+    // בנה היסטוגרמה של 16 תאים
+    const pattern = new Array(16).fill(0);
+    for (const t of this.radioKickTimes) {
+      // phaseInBar: 0..1 בתוך התיבה
+      let phaseInBar = (t - barTime) / barDur;
+      // עטוף ל-0..1 (יכול להיות שלילי אם t < barTime, או >1 אם מתיבה קודמת)
+      phaseInBar = phaseInBar - Math.floor(phaseInBar);
+      const step = Math.round(phaseInBar * 16) % 16;
+      pattern[step] += 1;
+    }
+
+    // נרמל ל-0..1 (max = 1)
+    const maxCount = Math.max(...pattern);
+    if (maxCount === 0) return;
+    for (let i = 0; i < 16; i++) pattern[i] /= maxCount;
+
+    // חתימה קצרה — שלח רק אם הדפוס השתנה משמעותית
+    const sig = pattern.map(v => v > 0.5 ? '1' : v > 0.15 ? '·' : '0').join('');
+    if (sig === this._lastSentKickPatternSig) return;
+    this._lastSentKickPatternSig = sig;
+
+    this.compositionWorker.postMessage({ type: 'setKickPattern', pattern });
+    console.log(`[PSY4] שלב 3.1 Radio→Worker: kickPattern=${sig} (n=${this.radioKickTimes.length})`);
+
+    // נקה את ה-buffer אחרי שליחה — נתונים ישנים כבר לא רלוונטיים
+    this.radioKickTimes.length = 0;
+  }
+
+  // שלב 3.2: חילוץ היסטוגרמת מרווחי bass מתוך radioBassFreqs
+  // ממיר freq → MIDI, מחשב מרווחים בין סמיטונים עוקבים, בונה היסטוגרמה 25 תאים (-12..+12)
+  private sendBassIntervalsToWorker(): void {
+    if (!this.compositionWorker || !this.workerReady) return;
+    // צריך לפחות 8 freqs כדי לבנות היסטוגרמה אמינה
+    if (this.radioBassFreqs.length < 8) return;
+
+    // המר כל freq ל-MIDI (round לסמיטון הקרוב)
+    const midis: number[] = [];
+    for (const f of this.radioBassFreqs) {
+      if (f < 30 || f > 500) continue; // סנן תדרים לא-ריאליסטיים
+      const midi = Math.round(12 * Math.log2(f / 440) + 69);
+      if (midi >= 24 && midi <= 72) midis.push(midi); // טווח bass תקין
+    }
+    if (midis.length < 8) return;
+
+    // חשב מרווחים עוקבים (semitone differences)
+    const histogram = new Array(25).fill(0); // index 0 = -12, index 12 = 0, index 24 = +12
+    let totalIntervals = 0;
+    for (let i = 1; i < midis.length; i++) {
+      const interval = midis[i] - midis[i - 1];
+      if (interval < -12 || interval > 12) continue; // דלג על קפיצות גדולות (octave errors)
+      const bin = interval + 12;
+      histogram[bin] += 1;
+      totalIntervals++;
+    }
+    if (totalIntervals === 0) return;
+
+    // נרמל ל-0..1 (max = 1)
+    const maxCount = Math.max(...histogram);
+    if (maxCount === 0) return;
+    for (let i = 0; i < 25; i++) histogram[i] /= maxCount;
+
+    // חתימה — שלח רק אם השתנה משמעותית
+    // הצג את 5 המרווחים החזקים ביותר
+    const top5 = histogram
+      .map((v, i) => ({ v, interval: i - 12 }))
+      .filter(x => x.v > 0.3)
+      .sort((a, b) => b.v - a.v)
+      .slice(0, 5)
+      .map(x => `${x.interval >= 0 ? '+' : ''}${x.interval}:${x.v.toFixed(2)}`)
+      .join(',');
+    const sig = top5;
+    if (sig === this._lastSentBassIntervalsSig) return;
+    this._lastSentBassIntervalsSig = sig;
+
+    this.compositionWorker.postMessage({ type: 'setBassIntervals', histogram, intervals: midis.length - 1 });
+    console.log(`[PSY4] שלב 3.2 Radio→Worker: bassIntervals top=${sig} (n=${midis.length})`);
+
+    // נקה את ה-buffer
+    this.radioBassFreqs.length = 0;
+  }
+
+  // שלב 3.3: חילוץ היסטוגרמת מרווחי melodic מתוך radioLeadPitches
+  // מחשב מרווחים בין סמיטונים עוקבים של lead pitches, בונה היסטוגרמה 25 תאים (-12..+12)
+  private sendMelodicIntervalsToWorker(): void {
+    if (!this.compositionWorker || !this.workerReady) return;
+    // צריך לפחות 6 pitches כדי לבנות היסטוגרמה אמינה של melodic movement
+    if (this.radioLeadPitches.length < 6) return;
+
+    // חשב מרווחים עוקבים (semitone differences) בין lead pitches
+    const histogram = new Array(25).fill(0); // index 0 = -12, index 12 = 0, index 24 = +12
+    let totalIntervals = 0;
+    for (let i = 1; i < this.radioLeadPitches.length; i++) {
+      const interval = this.radioLeadPitches[i] - this.radioLeadPitches[i - 1];
+      if (interval < -12 || interval > 12) continue; // דלג על קפיצות גדולות
+      const bin = interval + 12;
+      histogram[bin] += 1;
+      totalIntervals++;
+    }
+    if (totalIntervals === 0) return;
+
+    // נרמל ל-0..1 (max = 1)
+    const maxCount = Math.max(...histogram);
+    if (maxCount === 0) return;
+    for (let i = 0; i < 25; i++) histogram[i] /= maxCount;
+
+    // חתימה — 5 המרווחים החזקים ביותר
+    const top5 = histogram
+      .map((v, i) => ({ v, interval: i - 12 }))
+      .filter(x => x.v > 0.3)
+      .sort((a, b) => b.v - a.v)
+      .slice(0, 5)
+      .map(x => `${x.interval >= 0 ? '+' : ''}${x.interval}:${x.v.toFixed(2)}`)
+      .join(',');
+    const sig = top5;
+    if (sig === this._lastSentMelodicIntervalsSig) return;
+    this._lastSentMelodicIntervalsSig = sig;
+
+    this.compositionWorker.postMessage({ type: 'setMelodicIntervals', histogram, intervals: totalIntervals });
+    console.log(`[PSY4] שלב 3.3 Radio→Worker: melodicIntervals top=${sig} (n=${this.radioLeadPitches.length})`);
+
+    // נקה את ה-buffer
+    this.radioLeadPitches.length = 0;
+  }
+
+  // שלב 3.5: מעקב אנרגיה — אם הרדיו עולה באנרגיה, PSY4 עוקב (מעלה layers)
+  // משתמש ב-energyHistory (32 דגימות אחרונות, 3.2s) כדי לחשב שיפוע
+  // שיפוע חיובי → boost energy (מוסיף layers). שיפוע שלילי → reduce energy (מוריד layers)
+  // בנוסף: אנרגיה גבוהה מתמשכת → force DROP. אנרגיה נמוכה מתמשכת → force BREAK.
+  private sendEnergyFollowToWorker(radioSnap: any): void {
+    if (!this.compositionWorker || !this.workerReady || !this.radioOn) return;
+    // צריך לפחות 8 דגימות כדי לחשב שיפוע אמין
+    if (this.energyHistory.length < 8) return;
+
+    const recent = this.energyHistory.slice(-4).reduce((a, b) => a + b, 0) / 4;
+    const older = this.energyHistory.slice(-8, -4).reduce((a, b) => a + b, 0) / 4;
+    const slope = recent - older;
+    const absSlope = Math.abs(slope);
+
+    // ── בדיקה 1: אנרגיה מתמשכת גבוהה/נמוכה → force section (לפני בדיקת שיפוע) ──
+    // זה צריך לקרות גם כשהשיפוע יציב — אם הרדיו ב-DROP מתמשך, PSY4 צריך לעקוב
+    let forcedSectionSent: 'DROP' | 'BREAK' | null = null;
+    if (this.energyHistory.length >= 16) {
+      const sustainedRecent = this.energyHistory.slice(-8).reduce((a, b) => a + b, 0) / 8;
+      const sustainedOlder = this.energyHistory.slice(-16, -8).reduce((a, b) => a + b, 0) / 8;
+      // אנרגיה גבוהה מתמשכת (>0.65) — force DROP ל-4 תיבות
+      if (sustainedRecent > 0.65 && sustainedOlder > 0.55) {
+        if (this.cachedUserControls.forcedSection !== 'DROP') {
+          this.compositionWorker.postMessage({ type: 'controls', forcedSection: 'DROP', bars: 4 });
+          console.log(`[PSY4] שלב 3.5 Radio→Worker: force DROP (sustained high energy=${sustainedRecent.toFixed(2)})`);
+          forcedSectionSent = 'DROP';
+        }
+      }
+      // אנרגיה נמוכה מתמשכת (<0.30) — force BREAK ל-4 תיבות
+      else if (sustainedRecent < 0.30 && sustainedOlder < 0.40) {
+        if (this.cachedUserControls.forcedSection !== 'BREAK') {
+          this.compositionWorker.postMessage({ type: 'controls', forcedSection: 'BREAK', bars: 4 });
+          console.log(`[PSY4] שלב 3.5 Radio→Worker: force BREAK (sustained low energy=${sustainedRecent.toFixed(2)})`);
+          forcedSectionSent = 'BREAK';
+        }
+      }
+    }
+
+    // ── בדיקה 2: שיפוע אנרגיה → boost/reduce energy ──
+    const SLOPE_THRESHOLD = 0.08;
+    if (absSlope < SLOPE_THRESHOLD) return; // יציב — אל תשלח energy (אבל force section כבר נשלח אם צריך)
+
+    // חתימה — שלח רק אם השיפוע השתנה משמעותית מהשליחה האחרונה
+    const direction = slope > 0 ? 'rising' : 'falling';
+    const sig = `${direction}:${slope.toFixed(2)}:e${recent.toFixed(2)}`;
+    if (sig === this._lastSentEnergyFollowSig) return;
+    this._lastSentEnergyFollowSig = sig;
+
+    // חשב את ה-energy לשליחה:
+    // אם עולה — boost: recent + 0.15 (מעלה layers נוספים)
+    // אם יורד — reduce: recent - 0.15 (מוריד layers)
+    let targetEnergy: number;
+    if (slope > 0) {
+      targetEnergy = Math.min(1, recent + 0.15);
+    } else {
+      targetEnergy = Math.max(0, recent - 0.15);
+    }
+
+    this.compositionWorker.postMessage({ type: 'controls', energy: targetEnergy });
+    console.log(`[PSY4] שלב 3.5 Radio→Worker: energy FOLLOW ${direction} (slope=${slope.toFixed(2)}, recent=${recent.toFixed(2)}, target=${targetEnergy.toFixed(2)})`);
   }
 
   // F18.5: Apply learned timbre to synthesis parameters.
@@ -1640,6 +1861,15 @@ export class PsyLive {
     // F5: Get Transport snapshot early (needed for LiveComposer feed)
     const transportSnap = this.transport!.snapshot();
 
+    // שלב 3.4: חשב תכונות ספקטרליות (centroid/flatness/rolloff) מתדרי הרדיו
+    // משתמש ב-fd שכבר נמשך מה-radioAnalyser — אין עלות נוספת של FFT
+    // EMA smoothing (α=0.15) — ממתן רעש נקודתי ושומר על תגובה מהירה
+    const spec = extractSpectralFeatures(fd, this.ctx.sampleRate, this.radioAnalyser.fftSize);
+    this.radioSpectral = spec;
+    this.spectralCentroidEma = this.spectralCentroidEma * 0.85 + spec.centroid * 0.15;
+    this.spectralFlatnessEma = this.spectralFlatnessEma * 0.85 + spec.flatness * 0.15;
+    this.spectralRolloffEma = this.spectralRolloffEma * 0.85 + spec.rolloff * 0.15;
+
     // F2.5 — Feed beat observations to Transport (the ONLY crossing point)
     // RadioObservationLayer produces timestamped RadioBeatObservation.
     // Only { time, confidence, source } crosses into Transport.
@@ -1650,12 +1880,28 @@ export class PsyLive {
         source: 'radio',
       });
       this.kickCount++;
+      // שלב 3.1: תעד timestamp של kick מהרדיו (לחילוץ דפוס 16-step)
+      // משתמשים ב-estimatedAt (latency-corrected) ולא ב-observedAt
+      if (transportSnap.locked && radioSnap.beat.confidence > 0.4) {
+        this.radioKickTimes.push(radioSnap.beat.timestamp.estimatedAt);
+        // חותך ל-64 ערכים (~16 תיבות = 26s ב-145 BPM)
+        if (this.radioKickTimes.length > 64) this.radioKickTimes.shift();
+      }
       // F13/R5: Wire bassFreq from pitch observation for key detection.
       // radioSnap.pitch is produced by RadioObservationLayer's internal
       // MelodyObserver (now that signalState actually transitions).
       if (radioSnap.pitch && radioSnap.pitch.confidence > 0.5) {
         this.bassFreq = radioSnap.pitch.frequency;
+        // שלב 3.2: תעד bass freq להיסטוגרמת מרווחים (נפרד מ-bassFreq היחיד)
+        this.radioBassFreqs.push(radioSnap.pitch.frequency);
+        if (this.radioBassFreqs.length > 48) this.radioBassFreqs.shift();
       }
+    }
+    // שלב 3.3: תעד lead pitch (melodic band) — נפרד מ-bass
+    // רק אם ה-pitch במרחב ה-melodic (>250Hz, לא bass)
+    if (radioSnap.pitch && radioSnap.pitch.confidence > 0.5 && radioSnap.pitch.frequency > 250) {
+      this.radioLeadPitches.push(radioSnap.pitch.midi);
+      if (this.radioLeadPitches.length > 48) this.radioLeadPitches.shift();
     }
 
     // F13/R1 — Update syncStatus from RadioObservationLayer (single source)
@@ -1776,18 +2022,31 @@ export class PsyLive {
         this.leadDuck.gain.setTargetAtTime(leadDuckVal, now, 0.1);
         this.hatDuck.gain.setTargetAtTime(1.0, now, 0.1);
       }
-      // שלב 2.3: השלמת תדרים — עדכן brightness/energy ב-worklet לפי occupancy
+      // שלב 2.3 + 3.4: השלמת תדרים — עדכן synth params לפי תכונות ספקטרליות אמיתיות
+      // centroid = בהירות (Hz, 500-5000 אופייני), flatness = רעשיות (0=טונלי, 1=רעש), rolloff = ריכוז אנרגיה
       if (this.engineNode) {
         this._freqBalanceCounter = (this._freqBalanceCounter || 0) + 1;
         if (this._freqBalanceCounter >= 5) { // כל 500ms
           this._freqBalanceCounter = 0;
-          const radioLow = (this.occupancy.kick + this.occupancy.bass) / 2;
-          const radioMid = this.occupancy.lead;
-          // אם רדיו חזק ב-low, PSY4 משלים mid/high (brightness up)
-          const brightness = radioLow > 0.6 ? 0.9 : 0.5;
-          // אם רדיו חזק ב-mid, PSY4 משלים low (energy up)
-          const energy = radioMid > 0.6 ? 0.7 : 0.5;
-          this.engineNode.setMacros({ brightness, energy });
+          // שלב 3.4: מפה EMA-smoothed spectral features → worklet macros
+          // דרוש centroid Ema > 100Hz — אחרת אין סיגנל אמיתי ואל תשנה את הקבעי
+          if (this.spectralCentroidEma > 100) {
+            // brightness: centroid מנורמל ל-0..1 (centroid / 8000 Hz)
+            // טווח אופייני: 1000 Hz (חשוך) עד 6000 Hz (בהיר)
+            const brightness = Math.max(0, Math.min(1, this.spectralCentroidEma / 8000));
+            // darkness: הופכי של brightness (centroid נמוך = חשוך)
+            const darkness = 1 - brightness;
+            // aggression: flatness גבוהה = רועש/אגרסיבי (white-noise-like), flatness נמוך = טונלי
+            // ב-psytrance: lead אגרסיבי מאופיין ב-flatness בינוני-גבוה
+            const aggression = Math.max(0, Math.min(1, this.spectralFlatnessEma));
+            // energy: משלב spectral energy + occupancy (low+mid+high)
+            const radioLow = (this.occupancy.kick + this.occupancy.bass) / 2;
+            const radioMid = this.occupancy.lead;
+            const spectralEnergy = (spec.low + spec.mid + spec.high) / 3;
+            // energy = ממוצע משולב של occupancy ו-spectral energy
+            const energy = Math.max(0, Math.min(1, (radioLow * 0.4 + radioMid * 0.3 + spectralEnergy * 0.3)));
+            this.engineNode.setMacros({ brightness, darkness, aggression, energy });
+          }
         }
       }
     }
