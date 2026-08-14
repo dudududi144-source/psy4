@@ -1092,12 +1092,23 @@ export class PsyLive {
             console.warn(`[PSY4] AUDIO THREAD OVER BUDGET: processMs=${stats.processMs.toFixed(2)}ms cpuLoad=${(stats.cpuLoad*100).toFixed(0)}% voices=${stats.activeVoices}/${stats.voiceBudget}`);
           }
         });
-        // Connect worklet output through analyser (for visualizer)
+        // FIX: Connect worklet output directly to destination.
+        // The worklet has its OWN master chain (multiband + glue + true-peak).
+        // The legacy chain (engineBus → comp → EQ → master → safetyLimiter → analyser)
+        // was SUMMING with the worklet output = double signal = clipping.
+        // Now: worklet → analyser → destination (single path, worklet's master is the only master)
         const out = this.engineNode.outputNode;
         if (out && this.analyser) {
           out.disconnect();
           out.connect(this.analyser);
           // analyser already connected to destination
+        }
+        // FIX: Disconnect the legacy master chain from destination to prevent double output
+        if (this.safetyLimiter) {
+          this.safetyLimiter.disconnect();
+          // Reconnect only analyser to destination (worklet → analyser → destination)
+          this.analyser.disconnect();
+          this.analyser.connect(this.ctx.destination);
         }
         // Set default world params
         this.engineNode.setWorld({
