@@ -111,7 +111,11 @@ export class Psy4EngineNode {
         channelCountMode: 'explicit',
         channelInterpretation: 'speakers',
       });
-      this.node.connect(this.ctx.destination);
+      // FIX: Don't connect to destination here — psyLive.ts connects through analyser
+      // Was: this.node.connect(this.ctx.destination);
+      // This caused DOUBLE output: worklet→destination AND worklet→analyser→destination
+      // = clipping at 255 because signal was summed twice
+      // this.node.connect(this.ctx.destination);
       this.node.port.onmessage = (e) => {
         const msg = e.data;
         if (msg.type === 'stats' && this.statsCallback) {
