@@ -390,6 +390,46 @@ export default function Page() {
             )}
           </div>
 
+          {/* ═══ SOUND PACKAGE ═══ */}
+          <div className="rounded-xl p-4 space-y-3 md:col-span-2" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+            <div className="flex items-center gap-2 mb-1">
+              <Database className="w-4 h-4 text-emerald-400" />
+              <span className="text-xs uppercase tracking-wider font-bold text-slate-400">Sound Package</span>
+              <span className="text-[10px] text-slate-500 ml-auto">שלב 5</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <button onClick={() => engineRef.current?.exportSoundPackage()} disabled={!s.playing || totalBankEntries === 0}
+                className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: 'rgba(0,255,200,0.15)', color: '#00ffc8', border: '1px solid rgba(0,255,200,0.3)' }}>
+                Export Package
+              </button>
+              <button onClick={() => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = '.json,application/json';
+                input.onchange = async (e) => {
+                  const file = (e.target as HTMLInputElement).files?.[0];
+                  if (!file || !engineRef.current) return;
+                  const text = await file.text();
+                  await engineRef.current.importSoundPackage(text);
+                };
+                input.click();
+              }} disabled={!s.playing}
+                className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: 'rgba(185,103,255,0.15)', color: '#b967ff', border: '1px solid rgba(185,103,255,0.3)' }}>
+                Import Package
+              </button>
+              <button onClick={() => engineRef.current?.generateAllOriginalSounds()} disabled={!s.playing || totalBankEntries === 0}
+                className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: 'rgba(255,46,136,0.15)', color: '#ff2e88', border: '1px solid rgba(255,46,136,0.3)' }}>
+                Generate Originals
+              </button>
+            </div>
+            <div className="text-[10px] text-slate-500">
+              Export: download JSON with all learned sounds + patterns · Import: load previous package · Generate: create new variations from learned sounds
+            </div>
+          </div>
+
         </div>
       </main>
 

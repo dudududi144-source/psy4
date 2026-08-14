@@ -31,6 +31,10 @@ import { SoundExplorer, type ExplorationResult } from './soundExplorer';
 import { RewardTracker } from './rewardTracker';
 // שלב 4.6: Musical style classification
 import { StyleClassifier, type RadioStyle, type StyleFeatures, type ClassificationResult } from './styleClassifier';
+// שלב 5.1: Sound package (export/import)
+import { PackageExporter, PackageImporter, type SoundPackage, type PackagePattern, type PackageInsights } from './soundPackage';
+// שלב 5.2: Original synthesis generation
+import { SynthesisGenerator, type GenerationResult } from './synthesisGenerator';
 // ADR-001: CausalComposer runs on a Web Worker now. This import is kept for type compatibility
 // but the actual composition happens in public/worklets/composition-worker.js
 // SamplerBridge import REMOVED — fully dead code
@@ -378,6 +382,11 @@ export class PsyLive {
   private styleClassifier: StyleClassifier = new StyleClassifier();
   // שלב 4.6: תוצאת הסיווג האחרונה (ל-UI/debugging)
   private lastClassification: ClassificationResult | null = null;
+  // שלב 5.1: Package exporter/importer
+  private packageExporter: PackageExporter | null = null;
+  private packageImporter: PackageImporter | null = null;
+  // שלב 5.2: Synthesis generator (וריאציות מקוריות)
+  private synthesisGenerator: SynthesisGenerator | null = null;
   // שלב 4.5: טיימר eviction תקופתי (כל 60s)
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
   // שלב 4.4: איטרציה אוטומטית — כל 30s, סרוק role פעיל
@@ -1507,6 +1516,11 @@ export class PsyLive {
         this.soundExplorer = new SoundExplorer(this.synthesisMatcher, this.soundBank);
         // שלב 4.5: אתחל את ה-RewardTracker
         this.rewardTracker = new RewardTracker(this.soundBank);
+        // שלב 5.1: אתחל Package exporter/importer
+        this.packageExporter = new PackageExporter(this.soundBank);
+        this.packageImporter = new PackageImporter(this.soundBank);
+        // שלב 5.2: אתחל Synthesis generator
+        this.synthesisGenerator = new SynthesisGenerator(this.synthesisMatcher, this.soundBank);
       } else {
         console.warn('[PSY4] Worklet init failed — using MaterialRealizer fallback');
         this.realizer?.loadSamples().catch(() => {});
@@ -2657,5 +2671,121 @@ export class PsyLive {
     for (const role of roles) {
       await this.applyBestRecipeFromBank(role);
     }
+  }
+
+  // ── שלב 5.1: Package export/import ──
+
+  /**
+   * מייצא חבילת סאונד מלאה (JSON) ומוריד אותה.
+   */
+  async exportSoundPackage(): Promise<void> {
+    if (!this.packageExporter) {
+      console.warn('[PSY4] שלב 5.1 exportSoundPackage: exporter not ready');
+      return;
+    }
+    const detectedStyles = this.lastClassification
+      ? [this.lastClassification.style]
+      : ['unknown'];
+    const sourceStations = this.radioOn ? ['radio'] : [];
+    const insights: PackageInsights = {
+      bpm: this.transport ? this.transport.snapshot().bpm : 145,
+      bpmConfidence: this.transport ? this.transport.snapshot().confidence : 0,
+      rootPc: this.cachedInsights?.scale?.root ?? 0,
+      scaleName: this.cachedInsights?.scale?.name ?? 'unknown',
+      scaleMatchScore: this.cachedInsights?.scale?.matchScore ?? 0,
+    };
+    const patterns = this.collectPatternsForPackage();
+    await this.packageExporter.download(detectedStyles, sourceStations, insights, patterns);
+  }
+
+  /**
+   * טוען חבילת סאונד מ-JSON string.
+   */
+  async importSoundPackage(jsonString: string): Promise<SoundPackage> {
+    if (!this.packageImporter) {
+      throw new Error('PackageImporter not ready');
+    }
+    const pkg = await this.packageImporter.importJSON(jsonString);
+    // החל את ה-recipes מה-bank החדש
+    await this.applyAllRecipesFromBank();
+    return pkg;
+  }
+
+  /**
+   * אוסף דפוסים מה-learning data (kick pattern, bass intervals, etc.).
+   */
+  private collectPatternsForPackage(): PackagePattern[] {
+    const patterns: PackagePattern[] = [];
+    const bpm = this.transport ? this.transport.snapshot().bpm : 145;
+    const sourceStyle = this.styleClassifier.getSourceStyleForBank();
+    // Kick pattern — אם יש נתונים
+    if (this.radioKickTimes.length > 0) {
+      const pattern = this.extractKickPatternForExport();
+      if (pattern) {
+        patterns.push({
+          role: 'kick',
+          pattern,
+          bpm,
+          confidence: this.transport ? this.transport.snapshot().confidence : 0,
+          sourceStyle,
+        });
+      }
+    }
+    return patterns;
+  }
+
+  /**
+   * חילוץ kick pattern 16-step ליצוא (בלי שליחה ל-worker).
+   */
+  private extractKickPatternForExport(): number[] | null {
+    if (this.radioKickTimes.length < 16) return null;
+    if (!this.transport) return null;
+    const snap = this.transport.snapshot();
+    if (!snap.locked) return null;
+    const bpm = snap.bpm;
+    if (bpm < 60 || bpm > 200) return null;
+    const beatDur = 60 / bpm;
+    const barDur = beatDur * 4;
+    const barTime = snap.barTime || 0;
+    const pattern = new Array(16).fill(0);
+    for (const t of this.radioKickTimes) {
+      let phaseInBar = (t - barTime) / barDur;
+      phaseInBar = phaseInBar - Math.floor(phaseInBar);
+      const step = Math.round(phaseInBar * 16) % 16;
+      pattern[step] += 1;
+    }
+    const maxCount = Math.max(...pattern);
+    if (maxCount === 0) return null;
+    for (let i = 0; i < 16; i++) pattern[i] /= maxCount;
+    return pattern;
+  }
+
+  // ── שלב 5.2: Original synthesis generation ──
+
+  /**
+   * יוצר וריאציות מקוריות על entries קיימים.
+   * מוסיף entries חדשים עם sourceStyle='generated'.
+   */
+  async generateOriginalSounds(role: OnsetRole): Promise<GenerationResult | null> {
+    if (!this.synthesisGenerator) return null;
+    const onset = this.onsetAnalyzer.getLatestOnset(role);
+    if (!onset) {
+      console.warn(`[PSY4] שלב 5.2 generateOriginalSounds(${role}): no onsets for target`);
+      return null;
+    }
+    return this.synthesisGenerator.generate(role, onset.soundDNA);
+  }
+
+  /**
+   * יוצר וריאציות לכל ה-roles הפעילים.
+   */
+  async generateAllOriginalSounds(): Promise<GenerationResult[]> {
+    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'perc'];
+    const results: GenerationResult[] = [];
+    for (const role of roles) {
+      const result = await this.generateOriginalSounds(role);
+      if (result) results.push(result);
+    }
+    return results;
   }
 }
