@@ -16,6 +16,9 @@ export interface SoundBankEntry {
   role: OnsetRole;
   soundDNA: SoundDNA;
   recipe: SynthRecipe;
+  // שלב 4.4: ה-params הגולמיים של ה-voice (fund, subDecay, saturation, וכו')
+  // נשמרים בנפרד מ-recipe כי SynthRecipe לא כולל את כולם
+  voiceParams: Record<string, number>;
   matchScore: number;      // 0..1 (מה-match)
   reward: number;          // 0..1 (מתעדכן על-ידי composer ב-4.5)
   usageCount: number;      // כמה פעמים ה-composer השתמש בו
@@ -75,6 +78,7 @@ export class SoundBank {
     recipe: SynthRecipe,
     matchScore: number,
     sourceStyle: string,
+    voiceParams?: Record<string, number>,
   ): Promise<string> {
     await this.init();
     const id = `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -83,6 +87,7 @@ export class SoundBank {
       role,
       soundDNA,
       recipe,
+      voiceParams: voiceParams || {},
       matchScore,
       reward: 0.5, // default — יתעדכן על-ידי composer ב-4.5
       usageCount: 0,

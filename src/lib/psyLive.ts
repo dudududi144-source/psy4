@@ -25,6 +25,8 @@ import { OnsetAnalyzer, type OnsetEvent, type OnsetRole } from './onsetAnalyzer'
 import { SynthesisMatcher, type MatchResult } from './synthesisMatcher';
 // שלב 4.3: Sound bank (IndexedDB)
 import { SoundBank, type SoundBankEntry } from './soundBank';
+// שלב 4.4: Sound explorer (סריקה רחבה של מרחב הפרמטרים)
+import { SoundExplorer, type ExplorationResult } from './soundExplorer';
 // ADR-001: CausalComposer runs on a Web Worker now. This import is kept for type compatibility
 // but the actual composition happens in public/worklets/composition-worker.js
 // SamplerBridge import REMOVED — fully dead code
@@ -357,6 +359,13 @@ export class PsyLive {
   private soundBank: SoundBank = new SoundBank();
   // שלב 4.3: auto-save threshold — matchScore מעל זה נשמר אוטומטית
   private static readonly MATCH_SAVE_THRESHOLD = 0.7;
+  // שלב 4.4: Sound explorer — סריקה רחבה של מרחב הפרמטרים
+  private soundExplorer: SoundExplorer | null = null;
+  // שלב 4.4: איטרציה אוטומטית — כל 30s, סרוק role פעיל
+  private explorationTimer: ReturnType<typeof setInterval> | null = null;
+  private static readonly EXPLORATION_INTERVAL_MS = 30000;
+  // שלב 4.4: איזה role לסרוק הבא (round-robin)
+  private nextExploreRole: OnsetRole = 'kick';
   // CAUSAL: The live composition authority (now null — worker handles it)
   private causalComposer: CausalComposer | null = null;
   private currentCausalBar: CausalBarResult | null = null;
@@ -1462,6 +1471,8 @@ export class PsyLive {
         console.log('[PSY4] AudioWorklet engine active — Moog ladder + PolyBLEP + real samples');
         // שלב 4.2: אתחל את ה-SynthesisMatcher עם ה-engine node שנוצר
         this.synthesisMatcher.init(this.engineNode);
+        // שלב 4.4: אתחל את ה-SoundExplorer (משתמש ב-matcher + bank)
+        this.soundExplorer = new SoundExplorer(this.synthesisMatcher, this.soundBank);
       } else {
         console.warn('[PSY4] Worklet init failed — using MaterialRealizer fallback');
         this.realizer?.loadSamples().catch(() => {});
@@ -1728,8 +1739,16 @@ export class PsyLive {
     this.ensureAudio();
     if (!this.ctx) return false;
     try {
-      if (this.radioSource) { try { this.radioSource.disconnect(); } catch {} }
-      if (this.radioEl) { this.radioEl.pause(); this.radioEl.src = ''; }
+      // תיקון AbortError: אם יש radioEl קודם, נקה אותו לגמרי לפני יצירת חדש
+      if (this.radioSource) { try { this.radioSource.disconnect(); } catch {} this.radioSource = null; }
+      if (this.radioEl) {
+        // אל נסה pause() כש-play() עדיין רץ — זה גורם AbortError
+        // במקום: src='' עוצר את הטעינה, ואז pause() בטוח
+        try { this.radioEl.src = ''; } catch {}
+        try { this.radioEl.removeAttribute('src'); } catch {}
+        try { this.radioEl.load(); } catch {}
+        this.radioEl = null;
+      }
       this.radioEl = new Audio();
       // CORS חובה — בלי זה ה-analyser מקבל zeros ואי אפשר ללמוד מהרדיו
       this.radioEl.crossOrigin = 'anonymous';
@@ -1755,17 +1774,27 @@ export class PsyLive {
       const timeoutMs = 12000;
       const startTime = Date.now();
       let timedOut = false;
+      let playSettled = false;
       const timeoutId = setTimeout(() => {
         timedOut = true;
-        console.error(`[PSY4] Radio connect TIMEOUT after ${timeoutMs}ms — stream may be down or CORS-blocked: ${stream.url}`);
-        this.syncStatus = 'error';
-        this.emit();
+        if (!playSettled) {
+          console.error(`[PSY4] Radio connect TIMEOUT after ${timeoutMs}ms — stream may be down or CORS-blocked: ${stream.url}`);
+          this.syncStatus = 'error';
+          this.emit();
+        }
       }, timeoutMs);
 
       try {
         await this.radioEl.play();
-      } catch (playErr) {
-        // play() can reject if CORS blocks the resource — catch and report
+        playSettled = true;
+      } catch (playErr: any) {
+        playSettled = true;
+        // AbortError קורה כש-pause() נקרא באמצע play() — לא קריטי, זה אומר שהחיבור בוטל
+        if (playErr && playErr.name === 'AbortError') {
+          console.warn('[PSY4] Radio play() aborted (likely reconnect) — ignoring');
+          clearTimeout(timeoutId);
+          return false;
+        }
         if (!timedOut) {
           clearTimeout(timeoutId);
           console.error('[PSY4] Radio play() failed:', playErr, '— stream may not support CORS:', stream.url);
@@ -1775,12 +1804,14 @@ export class PsyLive {
           return false;
         }
       }
-      if (!timedOut) {
+      if (!timedOut && playSettled) {
         clearTimeout(timeoutId);
         this.radioOn = true;
         this.radioLayer!.markConnected();
         this.updateMixMode();
         this.startDetection();
+        // שלב 4.4: התחל exploration אוטומטי — סורק סאונדים מהרדיו ובונה את ה-bank
+        this.startAutoExploration();
         this.emit();
         console.log(`[PSY4] Radio connected: ${stream.name} (${stream.url}) — connectTime=${Date.now() - startTime}ms`);
         return true;
@@ -1795,8 +1826,14 @@ export class PsyLive {
   }
 
   disconnectRadio(): void {
-    if (this.radioEl) { this.radioEl.pause(); this.radioEl.src = ''; }
-    if (this.radioSource) { try { this.radioSource.disconnect(); } catch {} }
+    if (this.radioEl) {
+      // תיקון AbortError: src='' קודם, ואז load() — לא pause() באמצע play()
+      try { this.radioEl.src = ''; } catch {}
+      try { this.radioEl.removeAttribute('src'); } catch {}
+      try { this.radioEl.load(); } catch {}
+      this.radioEl = null;
+    }
+    if (this.radioSource) { try { this.radioSource.disconnect(); } catch {} this.radioSource = null; }
     // שלב 2.1: נתק גם את ה-radioAnalyser מ-destination
     if (this.radioAnalyser) { try { this.radioAnalyser.disconnect(); } catch {} }
     this.radioOn = false;
@@ -1811,6 +1848,8 @@ export class PsyLive {
     this.subBassHistory = [];
     // PERF: stop detection AND throttled learn/persist timers (was: only detectTimer)
     this.stopDetection();
+    // שלב 4.4: עצור exploration אוטומטי
+    this.stopAutoExploration();
     // F13/R1: Reset session on disconnect so learned motifs/style/phrase state
     // don't leak across reconnects.
     // MusicalSession.reset() REMOVED — dead code
@@ -2379,12 +2418,22 @@ export class PsyLive {
     // שלב 4.3: auto-save ל-sound bank אם matchScore > threshold
     if (result.matchScore >= PsyLive.MATCH_SAVE_THRESHOLD) {
       try {
+        // חלץ את ה-voiceParams מ-recipe (ה-buildRecipe שומר אותם בשדות ה-SynthRecipe)
+        const voiceParams: Record<string, number> = {};
+        const r = result.recipe as any;
+        if (r.subLevel !== undefined) voiceParams.subLevel = r.subLevel;
+        if (r.bodyLevel !== undefined) voiceParams.subLevel = r.bodyLevel;
+        if (r.harmonicLevel !== undefined) voiceParams.harmonicLevel = r.harmonicLevel;
+        if (r.saturationAmount !== undefined) voiceParams.saturation = r.saturationAmount;
+        if (r.filterCutoff !== undefined) voiceParams.cutoffStart = r.filterCutoff;
+        if (r.decayTime !== undefined) voiceParams.subDecay = r.decayTime;
         await this.soundBank.add(
           role,
           onset.soundDNA,
           result.recipe,
           result.matchScore,
-          'radio', // sourceStyle
+          'radio',
+          voiceParams,
         );
       } catch (e) {
         console.warn('[PSY4] שלב 4.3 auto-save failed:', e);
@@ -2403,5 +2452,100 @@ export class PsyLive {
    */
   async getSoundBankStats(): Promise<Record<OnsetRole, number>> {
     return await this.soundBank.getStats();
+  }
+
+  // ── שלב 4.4: Auto-exploration + recipe application ──
+
+  /**
+   * מתחיל exploration אוטומטי — כל EXPLORATION_INTERVAL_MS, סורק role פעיל.
+   * עובר round-robin על kick/bass/lead/perc (hat לא אופטימיזבילי).
+   * לוקח את ה-onset האחרון של אותו role כיעד, וסורק 81 קאנדידטים.
+   * שומר את 5 הטובים ביותר ל-bank.
+   * אחרי כל סריקה, מחיל את ה-recipe הטוב ביותר מה-bank על ה-engine.
+   */
+  private startAutoExploration(): void {
+    if (this.explorationTimer) clearInterval(this.explorationTimer);
+    // הרצה ראשונה אחרי 10 שניות (כדי שיהיו onsets)
+    setTimeout(() => this.runExplorationCycle(), 10000);
+    // ואז כל 30 שניות
+    this.explorationTimer = setInterval(() => {
+      this.runExplorationCycle();
+    }, PsyLive.EXPLORATION_INTERVAL_MS);
+    console.log('[PSY4] שלב 4.4 Auto-exploration started (interval=30s, first run in 10s)');
+  }
+
+  private stopAutoExploration(): void {
+    if (this.explorationTimer) {
+      clearInterval(this.explorationTimer);
+      this.explorationTimer = null;
+      console.log('[PSY4] שלב 4.4 Auto-exploration stopped');
+    }
+  }
+
+  /**
+   * מחזור סריקה אחד: סרוק role אחד, שמור ל-bank, החל recipe על engine.
+   */
+  private async runExplorationCycle(): Promise<void> {
+    if (!this.radioOn || !this.soundExplorer) return;
+    // בחר role round-robin
+    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'perc'];
+    const role = roles[this.nextExploreRole === 'kick' ? 0 : this.nextExploreRole === 'bass' ? 1 : this.nextExploreRole === 'lead' ? 2 : 3];
+    // קדם ל-role הבא
+    const nextIdx = (roles.indexOf(role) + 1) % roles.length;
+    this.nextExploreRole = roles[nextIdx];
+
+    // קבל את ה-onset האחרון ל-role
+    const onset = this.onsetAnalyzer.getLatestOnset(role);
+    if (!onset) {
+      console.log(`[PSY4] שלב 4.4 Exploration: no onsets for ${role} yet, skipping`);
+      return;
+    }
+
+    try {
+      const result = await this.soundExplorer.explore(role, onset.soundDNA, 'radio');
+      // אחרי ה-exploration, החל את ה-recipe הטוב ביותר מה-bank על ה-engine
+      await this.applyBestRecipeFromBank(role);
+    } catch (e) {
+      console.warn('[PSY4] שלב 4.4 Exploration failed:', e);
+    }
+  }
+
+  /**
+   * מושך את ה-recipe הטוב ביותר מה-bank ל-role ומחיל על ה-engine.
+   * נקרא אחרי כל מחזור exploration.
+   */
+  async applyBestRecipeFromBank(role: OnsetRole): Promise<boolean> {
+    if (!this.engineNode) return false;
+    const entry = await this.soundBank.get(role, { style: 'radio' });
+    if (!entry) {
+      console.log(`[PSY4] שלב 4.4 applyRecipe(${role}): no entry in bank`);
+      return false;
+    }
+    // שלח את ה-voiceParams הגולמיים ל-engine node
+    const voiceClass = role === 'kick' ? 'KickVoice'
+      : role === 'bass' ? 'BassVoice'
+      : role === 'lead' ? 'LeadVoice'
+      : role === 'hat' ? 'HatVoice'
+      : 'PercVoice';
+    this.engineNode.node.port.postMessage({
+      type: 'setVoiceRecipe',
+      voiceClass,
+      recipe: entry.voiceParams, // ה-params הגולמיים (fund, subDecay, saturation, וכו')
+    });
+    // עדכן usageCount
+    await this.soundBank.updateReward(entry.id, 0, true);
+    const paramsStr = entry.voiceParams ? JSON.stringify(entry.voiceParams).slice(0, 80) : '{}';
+    console.log(`[PSY4] שלב 4.4 applyRecipe(${role}): applied entry ${entry.id} (matchScore=${entry.matchScore.toFixed(3)}, reward=${entry.reward.toFixed(3)}, params=${paramsStr})`);
+    return true;
+  }
+
+  /**
+   * החל recipes מה-bank על כל ה-roles הפעילים (קריאה ידנית).
+   */
+  async applyAllRecipesFromBank(): Promise<void> {
+    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'perc'];
+    for (const role of roles) {
+      await this.applyBestRecipeFromBank(role);
+    }
   }
 }

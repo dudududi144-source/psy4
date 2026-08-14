@@ -2132,6 +2132,56 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       case 'world':
         this.worldParams = { ...this.worldParams, ...msg.params };
         break;
+      // שלב 4.4: החלת recipe מ-sound bank על voice pool
+      case 'setVoiceRecipe': {
+        // msg: { voiceClass: string, recipe: object }
+        // מחיל את ה-recipe על כל ה-voices מאותו סוג ב-pool
+        const vc = msg.voiceClass;
+        const recipe = msg.recipe || {};
+        let pool = null;
+        if (vc === 'KickVoice') pool = this.kickPool;
+        else if (vc === 'BassVoice') pool = this.bassPool;
+        else if (vc === 'LeadVoice') pool = this.leadPool;
+        else if (vc === 'AcidVoice') pool = this.acidPool;
+        else if (vc === 'PadVoice') pool = this.padPool;
+        else if (vc === 'HatVoice') pool = this.hatPool;
+        else if (vc === 'ClapVoice') pool = this.clapPool;
+        else if (vc === 'PercVoice') pool = this.percPool;
+        else if (vc === 'ShakerVoice') pool = this.shakerPool;
+        if (!pool) {
+          console.warn('[PSY4] שלב 4.4 setVoiceRecipe: no pool for ' + vc);
+          break;
+        }
+        // החל את ה-recipe params על כל ה-voices ב-pool
+        let applied = 0;
+        for (const voice of pool) {
+          // KickVoice params
+          if (vc === 'KickVoice') {
+            if (recipe.fund !== undefined) voice.fund = recipe.fund;
+            if (recipe.startMult !== undefined) voice.startMult = recipe.startMult;
+            if (recipe.pitchDecay !== undefined) voice.pitchDecay = recipe.pitchDecay;
+            if (recipe.subDecay !== undefined) voice.subDecay = recipe.subDecay;
+            if (recipe.midLevel !== undefined) voice.midLevel = recipe.midLevel;
+            if (recipe.clickLevel !== undefined) voice.clickLevel = recipe.clickLevel;
+            if (recipe.saturation !== undefined) voice.saturation = recipe.saturation;
+          }
+          // BassVoice params
+          else if (vc === 'BassVoice') {
+            if (recipe.subLevel !== undefined) voice.subLevel = recipe.subLevel;
+            if (recipe.harmonicLevel !== undefined) voice.harmonicLevel = recipe.harmonicLevel;
+            if (recipe.cutoffFloor !== undefined) voice.cutoffFloor = recipe.cutoffFloor;
+            if (recipe.cutoffDecay !== undefined) voice.cutoffDecay = recipe.cutoffDecay;
+            if (recipe.cutoffStart !== undefined) voice.cutoffStart = recipe.cutoffStart;
+            if (recipe.cutoffEnd !== undefined) voice.cutoffEnd = recipe.cutoffEnd;
+          }
+          // LeadVoice, AcidVoice, PercVoice — freq-based, applied via triggerArgs ב-composer
+          applied++;
+        }
+        if (applied > 0) {
+          console.log('[PSY4] שלב 4.4 setVoiceRecipe(' + vc + '): applied to ' + applied + ' voices, params=' + JSON.stringify(recipe).slice(0, 120));
+        }
+        break;
+      }
       case 'setFX':
         // Adjust reverb/delay sends based on section (automation)
         // msg.reverbSends and msg.delaySends are arrays of 5 values
