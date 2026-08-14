@@ -40,17 +40,18 @@
 // 256-slot ring buffer is PSY5's proven size — plenty for a 100ms lookahead
 // at 145 BPM (16th = 41ms, so 100ms = ~2.4 steps × ~12 voices/step ≈ 30 events).
 // 256 saves memory vs 1024 and is bounded (PSY6 RT contract: fixed arrays only).
-const MAX_VOICES = 32;        // was 64 — reduced to match pool size
+const MAX_VOICES = 24;        // FIX: was 32. Reduced for mobile/low-end devices.
+const VOICE_BUDGET_MIN = 6;   // FIX: was 8. Lower floor for budget drops.
 const EVENT_SIZE = 6;         // floats per event: [time, voice, note, vel, dur, param]
 const MAX_EVENTS = 1024;      // FIX: was 512. With 3s lookahead at 145 BPM = ~2 bars = ~60 events. 1024 gives huge headroom.
 
 // CPU-load monitoring (PSY5 dynamic voice budget). If process() exceeds the
 // budget, we drop the lowest-priority active voices to stay RT-safe. Reported
 // to the main thread every 30 blocks (~10 Hz at 128-sample blocks / 44.1 kHz).
-const PROCESS_BUDGET_MS = 3.0;        // PSY5: drop voices if process() > 3ms
-const STATS_REPORT_BLOCKS = 100;      // FIX: was 30 (~10Hz), now 100 (~3Hz). Less main-thread postMessage pressure.
-const VOICE_BUDGET_MIN = 8;           // never drop below 8 active voices
+const PROCESS_BUDGET_MS = 2.5;        // FIX: was 3.0. Tighter budget for mobile. Drop voices sooner.
+const STATS_REPORT_BLOCKS = 150;      // FIX: was 100. Even less frequent stats (~2Hz). Less main-thread pressure.
 const VOICE_BUDGET_DROP_PER_OVERAGE = 1; // drop 1 voice per 0.5ms overage
+// VOICE_BUDGET_MIN already defined above as 6
 
 // Voice IDs
 const V_KICK = 0, V_BASS = 1, V_LEAD = 2, V_ACID = 3, V_PAD = 4;
@@ -1845,18 +1846,19 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.texturePool = [];
     this.fxPool = [];
     this.fmPool = [];
-    for (let i = 0; i < 4; i++) this.kickPool.push(new KickVoice());    // was 8
-    for (let i = 0; i < 2; i++) this.bassPool.push(new BassVoice());    // was 4
-    for (let i = 0; i < 4; i++) this.leadPool.push(new LeadVoice());    // was 8
-    for (let i = 0; i < 2; i++) this.acidPool.push(new AcidVoice());    // was 4
-    for (let i = 0; i < 2; i++) this.padPool.push(new PadVoice());      // was 4
-    for (let i = 0; i < 4; i++) this.hatPool.push(new HatVoice());      // was 8
-    for (let i = 0; i < 2; i++) this.clapPool.push(new ClapVoice());    // was 4
-    for (let i = 0; i < 4; i++) this.percPool.push(new PercVoice());    // was 8
-    for (let i = 0; i < 2; i++) this.shakerPool.push(new ShakerVoice());// was 4
-    for (let i = 0; i < 2; i++) this.texturePool.push(new TextureVoice());// was 4
-    for (let i = 0; i < 4; i++) this.fxPool.push(new FXVoice());        // was 8
-    for (let i = 0; i < 2; i++) this.fmPool.push(new FMVoice());        // PSY3 FM acid voice
+    // FIX: Reduced pool sizes for mobile/low-end devices
+    for (let i = 0; i < 2; i++) this.kickPool.push(new KickVoice());    // was 4
+    for (let i = 0; i < 2; i++) this.bassPool.push(new BassVoice());    // was 2
+    for (let i = 0; i < 2; i++) this.leadPool.push(new LeadVoice());    // was 4
+    for (let i = 0; i < 1; i++) this.acidPool.push(new AcidVoice());    // was 2
+    for (let i = 0; i < 1; i++) this.padPool.push(new PadVoice());      // was 2
+    for (let i = 0; i < 2; i++) this.hatPool.push(new HatVoice());      // was 4
+    for (let i = 0; i < 1; i++) this.clapPool.push(new ClapVoice());    // was 2
+    for (let i = 0; i < 2; i++) this.percPool.push(new PercVoice());    // was 4
+    for (let i = 0; i < 1; i++) this.shakerPool.push(new ShakerVoice());// was 2
+    for (let i = 0; i < 1; i++) this.texturePool.push(new TextureVoice());// was 2
+    for (let i = 0; i < 2; i++) this.fxPool.push(new FXVoice());        // was 4
+    for (let i = 0; i < 1; i++) this.fmPool.push(new FMVoice());        // was 2
     // Total: 34 voices (was 64+28=92)
 
     // Sample voice pools — populated with SampleVoice instances
@@ -1866,12 +1868,12 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.kickSamplePool = [];
     this.hatSamplePool = [];
     this.clapSamplePool = [];
-    for (let i = 0; i < 4; i++) this.kickSamplePool.push(new SampleVoice());
-    for (let i = 0; i < 4; i++) this.hatSamplePool.push(new SampleVoice());
-    for (let i = 0; i < 2; i++) this.clapSamplePool.push(new SampleVoice());
+    for (let i = 0; i < 2; i++) this.kickSamplePool.push(new SampleVoice());  // was 4
+    for (let i = 0; i < 2; i++) this.hatSamplePool.push(new SampleVoice());   // was 4
+    for (let i = 0; i < 1; i++) this.clapSamplePool.push(new SampleVoice());  // was 2
     // SNARE sample pool — separate from clap (snare has sharper attack)
     this.snareSamplePool = [];
-    for (let i = 0; i < 2; i++) this.snareSamplePool.push(new SampleVoice());
+    for (let i = 0; i < 1; i++) this.snareSamplePool.push(new SampleVoice()); // was 2
 
     // Sample bank (loaded from main thread via ArrayBuffer transfer)
     this.samples = {};  // { name: { data, sampleRate, category } }
