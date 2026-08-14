@@ -86,11 +86,17 @@ interface Stream { id: string; name: string; url: string; genre: string; bitrate
 // psyndora-chill (TLS EOF), radiocaprice-psy (DNS dead). Only live,
 // CORS-enabled stations remain.
 export const STREAMS: Stream[] = [
-  // תיקון שלב 4: הסרנו את Psyndora (מת). השארנו רק streams שנבדקו עם CORS.
-  // חשוב: crossOrigin='anonymous' דורש Access-Control-Allow-Origin מהשרת.
-  // בלי CORS, הדפדפן חוסם את ה-stream לחלוטין (לא רק את ה-analysis).
+  // תחנות שנבדקו עם CORS (Access-Control-Allow-Origin: *) ו-audio/mpeg
+  // חשוב: crossOrigin='anonymous' דורש CORS מהשרת, אחרת הדפדפן חוסם לחלוטין.
+  // סדר: הכי פסייטראנס/טראנס קודם.
   { id: 'spaceunicorn', name: 'Space Unicorn', url: 'https://spaceunicorn.radio/stream', genre: 'Trance · PsyTrance', bitrate: 192 },
   { id: 'babaganousha', name: 'Babaganousha', url: 'https://babaganousha.net:8443/stream/1/', genre: 'Psychedelic · Goa', bitrate: 128 },
+  { id: 'somafm-trip', name: 'SomaFM The Trip', url: 'https://ice1.somafm.com/thetrip-128-mp3', genre: 'Dance · Trance · House', bitrate: 128 },
+  { id: 'somafm-spacestation', name: 'SomaFM Space Station', url: 'https://ice1.somafm.com/spacestation-128-mp3', genre: 'Space · Electronica', bitrate: 128 },
+  { id: 'somafm-cliqhop', name: 'SomaFM Cliqhop', url: 'https://ice1.somafm.com/cliqhop-256-mp3', genre: 'IDM · Beats', bitrate: 256 },
+  { id: 'somafm-defcon', name: 'SomaFM DEF CON', url: 'https://ice1.somafm.com/defcon-128-mp3', genre: 'Electronic · Hacking', bitrate: 128 },
+  { id: 'somafm-groovesalad', name: 'SomaFM Groove Salad', url: 'https://ice1.somafm.com/groovesalad-256-mp3', genre: 'Ambient · Chill', bitrate: 256 },
+  { id: 'somafm-dronezone', name: 'SomaFM Drone Zone', url: 'https://ice1.somafm.com/dronezone-256-mp3', genre: 'Ambient · Space', bitrate: 256 },
 ];
 
 // 4 DISTINCT presets — each with unique BPM, root, patterns, and variants
@@ -331,6 +337,7 @@ export class PsyLive {
   // שלב 1.1: נתוני רדיו → worker
   private _radioToWorkerCounter = 0;
   private _lastSentRadioBpm = 0;
+  private _bpmHistory: number[] = []; // תיקון: smoothing ל-BPM
   private _lastSentRoot = -1;
   private _lastSentScale = '';
   private _lastSentStyle = '';
@@ -1120,14 +1127,27 @@ export class PsyLive {
     if (!this.compositionWorker || !this.workerReady || !this.radioOn) return;
 
     // 1.1.1 BPM — שלח אם confidence > 0.5 ושינוי > 2 BPM
+    // תיקון: smoothing — רק עדכן אם ה-BPM הממוצע של 3 הקריאות האחרונות יציב
     const radioBpm = radioSnap.beat?.estimatedBpm ?? 0;
     const beatConfidence = radioSnap.beat?.confidence ?? 0;
-    if (beatConfidence > 0.5 && radioBpm > 0 && Math.abs(radioBpm - this._lastSentRadioBpm) > 2) {
-      this.compositionWorker.postMessage({ type: 'setBPM', bpm: radioBpm });
-      // עדכן גם את Transport
-      if (this.transport) this.transport.setTempo(radioBpm, 'radio');
-      this._lastSentRadioBpm = radioBpm;
-      console.log(`[PSY4] Radio→Worker: BPM=${radioBpm} (conf=${beatConfidence.toFixed(2)})`);
+    if (beatConfidence > 0.5 && radioBpm > 0) {
+      // שמור היסטוריית BPM ל-smoothing
+      this._bpmHistory.push(radioBpm);
+      if (this._bpmHistory.length > 5) this._bpmHistory.shift();
+      // חשב ממוצע רק אם יש לפחות 3 קריאות
+      if (this._bpmHistory.length >= 3) {
+        const avgBpm = this._bpmHistory.reduce((a, b) => a + b, 0) / this._bpmHistory.length;
+        // רק עדכן אם הממוצע יציב (כל הקריאות בטווח ±3 BPM מהממוצע)
+        const stable = this._bpmHistory.every(b => Math.abs(b - avgBpm) < 3);
+        if (stable && Math.abs(avgBpm - this._lastSentRadioBpm) > 1.5) {
+          this.compositionWorker.postMessage({ type: 'setBPM', bpm: avgBpm });
+          if (this.transport) this.transport.setTempo(avgBpm, 'radio');
+          // תיקון קריטי: עדכן גם את ה-engine node (AudioWorklet)
+          if (this.engineNode) this.engineNode.setBPM(avgBpm);
+          this._lastSentRadioBpm = avgBpm;
+          console.log(`[PSY4] Radio→Worker: BPM=${avgBpm.toFixed(1)} (conf=${beatConfidence.toFixed(2)}, smoothed from ${this._bpmHistory.length} readings)`);
+        }
+      }
     }
 
     // 1.1.2 סולם/מפתח — שלח אם matchScore > 0.6
@@ -2249,6 +2269,8 @@ export class PsyLive {
         this.causalComposer.setBPM(detectedBpm);
         // Also update transport so the audio clock matches
         if (this.transport) this.transport.setTempo(detectedBpm, 'radio');
+        // תיקון קריטי: עדכן גם את ה-engine node — אחרת הוא מנגן ב-BPM ישן
+        if (this.engineNode) this.engineNode.setBPM(detectedBpm);
         this.lastAppliedBpm = detectedBpm;
       }
     }
