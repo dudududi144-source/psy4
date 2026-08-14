@@ -2199,6 +2199,16 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     const mc = this.macros;
     const t = 0; // relative time — voice uses its own internal clock
 
+    // DEBUG: log voice triggers
+    if (!this._voiceLog) this._voiceLog = {};
+    this._voiceLog[voiceId] = (this._voiceLog[voiceId] || 0) + 1;
+    if (this._voiceLogCounter === undefined) this._voiceLogCounter = 0;
+    this._voiceLogCounter++;
+    if (this._voiceLogCounter >= 100) {
+      this.port.postMessage({ type: 'debugResult', query: 'voiceLog', data: this._voiceLog });
+      this._voiceLogCounter = 0;
+    }
+
     switch (voiceId) {
       case V_KICK: {
         // תיקון קריטי: השתמש ב-learned params מ-sound bank (אם יש)
