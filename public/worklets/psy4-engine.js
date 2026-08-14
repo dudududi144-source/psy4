@@ -1707,7 +1707,7 @@ class StereoWidener {
 class MasterChain {
   constructor() {
     this.gain = 1.0;
-    this.ceiling = 0.89;     // PSY3 true-peak ceiling
+    this.ceiling = 0.85;     // FIX: was 0.89. Lower ceiling = more headroom = less clipping.
 
     // Multiband compressor (3-band: low <180Hz, mid 180-4000Hz, high >4000Hz)
     this.mb = new MultibandComp(sampleRate);
@@ -1718,7 +1718,7 @@ class MasterChain {
     this.glueRatio = 2.0;      // PSY3 ratio
     this.glueAttack = 0.004;
     this.glueRelease = 0.12;
-    this.glueMakeup = 1.3;     // PSY3 makeup
+    this.glueMakeup = 1.1;  // FIX: was 1.3. Too much makeup gain caused clipping.     // PSY3 makeup
 
     // Saturation (PSY3: drive=1.15, mix=0.15)
     this.satDrive = 1.15;
@@ -1728,7 +1728,7 @@ class MasterChain {
     this.lufsMs = 0;           // running mean square
     this.lufsGain = 1.0;       // current applied gain
     this.lufsTargetGain = 1.0; // computed target gain
-    this.lufsTargetLufs = -9;  // target loudness (-8 to -10 LUFS)
+    this.lufsTargetLufs = -10;  // FIX: was -9. Lower target = less clipping.  // target loudness (-8 to -10 LUFS)
     this.lufsCounter = 0;      // update counter (every 32 samples)
 
     // True-peak limiter (2x oversample, 1-sample lookahead)
