@@ -328,7 +328,7 @@ class KickVoice {
     // SATURATION: Post-mix tanh (adds harmonics + punch — commercial kicks
     // always have saturation. Without it, the kick sounds flat and digital.)
     sample = fastTanh(sample * this.saturation);
-    sample *= this.amp * 0.8;
+    sample *= this.amp * 1.2;  // was 0.8 — too quiet
     out[0] = sample;
     return out;
   }
@@ -1713,8 +1713,8 @@ class StereoWidener {
 
 class MasterChain {
   constructor() {
-    this.gain = 0.7;  // FIX: was 1.0. Reduce overall output to prevent clipping.
-    this.ceiling = 0.85;     // FIX: was 0.89. Lower ceiling = more headroom = less clipping.
+    this.gain = 1.0;  // was 0.7 — too quiet. Full output.
+    this.ceiling = 0.95;     // was 0.85 — too much headroom killed the sound.
 
     // Multiband compressor (3-band: low <180Hz, mid 180-4000Hz, high >4000Hz)
     this.mb = new MultibandComp(sampleRate);
@@ -1914,7 +1914,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     // REBALANCED for proper mix: kick lower, music higher (lead+pad now audible)
     // FIX: Mix balance — kick should be loudest, bass under kick, lead audible
     // Commercial psytrance: kick 0dB, bass -3dB, lead -6dB, hats -12dB, pad -18dB
-    this.busGains = [1.0, 0.7, 0.9, 0.5, 0.7];  // drum=1.0, bass=0.7, music=0.9, atmos=0.5, fx=0.7
+    this.busGains = [1.0, 1.0, 0.9, 0.5, 0.7];  // drum=1.0, bass=1.0 (was 0.7), music=0.9, atmos=0.5, fx=0.7
 
     // ── BUS PROCESSORS — SEPARATE L and R instances ──
     // CRITICAL FIX: Previously L and R shared the same instance, which meant
