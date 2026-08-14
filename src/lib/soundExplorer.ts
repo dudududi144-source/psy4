@@ -41,25 +41,25 @@ interface ScanParam {
 
 const SCAN_PARAMS: Record<OnsetRole, ScanParam[]> = {
   kick: [
-    { name: 'fund', values: [45, 55, 65] },
-    { name: 'startMult', values: [2.5, 3.5, 5.0] },
-    { name: 'subDecay', values: [0.12, 0.20, 0.28] },
-    { name: 'saturation', values: [1.2, 1.8, 2.3] },
+    { name: 'fund', values: [38, 48, 58, 68] },
+    { name: 'startMult', values: [2.0, 3.0, 4.0, 5.5] },
+    { name: 'subDecay', values: [0.08, 0.15, 0.22, 0.30] },
+    { name: 'saturation', values: [1.0, 1.5, 2.0, 2.5] },
   ],
   bass: [
-    { name: 'subLevel', values: [0.35, 0.45, 0.55] },
-    { name: 'cutoffStart', values: [600, 900, 1200] },
-    { name: 'cutoffEnd', values: [150, 225, 300] },
-    { name: 'cutoffDecay', values: [0.025, 0.04, 0.06] },
+    { name: 'subLevel', values: [0.30, 0.40, 0.50, 0.60] },
+    { name: 'cutoffStart', values: [400, 700, 1000, 1500] },
+    { name: 'cutoffEnd', values: [100, 200, 300, 400] },
+    { name: 'cutoffDecay', values: [0.02, 0.04, 0.06, 0.08] },
   ],
   lead: [
-    { name: 'freq', values: [330, 440, 660] },
+    { name: 'freq', values: [220, 330, 440, 660, 880] },
   ],
   hat: [
     // HatVoice לא אופטימיזבילי — דלג
   ],
   perc: [
-    { name: 'freq', values: [150, 250, 350] },
+    { name: 'freq', values: [120, 200, 300, 400] },
   ],
 };
 
