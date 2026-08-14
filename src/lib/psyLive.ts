@@ -391,6 +391,11 @@ export class PsyLive {
   private synthesisGenerator: SynthesisGenerator | null = null;
   // שלב 5: Loop learner (למידה מקבצי אודיו)
   private loopLearner: LoopLearner | null = null;
+  // תיקון P0: מעקב אחר play() polling timers
+  private _playPollInterval: ReturnType<typeof setInterval> | null = null;
+  private _playPollTimeout: ReturnType<typeof setTimeout> | null = null;
+  // תיקון P1: מעקב אחר exploration timeout ראשוני
+  private _explorationTimeout: ReturnType<typeof setTimeout> | null = null;
   // שלב 4.5: טיימר eviction תקופתי (כל 60s)
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
   // שלב 4.4: איטרציה אוטומטית — כל 30s, סרוק role פעיל
@@ -920,20 +925,26 @@ export class PsyLive {
     this.ensureAudio();
     if (this.playing) return;
     this.playing = true;
-    // CRITICAL FIX: If worklet isn't ready yet (async init still running),
-    // wait for it before starting playback. Otherwise events are dropped.
+    // תיקון P0: מנעון נגד play() כפול + ניקוי polling קודם
+    if (this._playPollInterval) {
+      clearInterval(this._playPollInterval);
+      this._playPollInterval = null;
+    }
+    if (this._playPollTimeout) {
+      clearTimeout(this._playPollTimeout);
+      this._playPollTimeout = null;
+    }
     if (this.useWorklet && this.engineNode) {
       this.engineNode.play();
-      // שלב 5: אל תתחיל עם 145 hardcode — טען את ה-BPM האחרון מזיכרון
       const savedBpm = this.loadMemoryBpm();
       this.engineNode.setBPM(savedBpm);
-      // טען מיד את ה-learned params מזיכרון (לא חכה 30 שניות!)
       this.loadLearnedParamsFromMemory();
     } else {
-      // Worklet not ready — poll until it is, then start
-      const checkReady = setInterval(() => {
-        if (this.useWorklet && this.engineNode) {
-          clearInterval(checkReady);
+      // Worklet not ready — poll until it is
+      this._playPollInterval = setInterval(() => {
+        if (this.useWorklet && this.engineNode && this.playing) {
+          if (this._playPollInterval) clearInterval(this._playPollInterval);
+          this._playPollInterval = null;
           this.engineNode.play();
           const savedBpm = this.loadMemoryBpm();
           this.engineNode.setBPM(savedBpm);
@@ -941,7 +952,13 @@ export class PsyLive {
           this.sendInitialCompose();
         }
       }, 50);
-      setTimeout(() => clearInterval(checkReady), 5000);
+      // Timeout after 5s
+      this._playPollTimeout = setTimeout(() => {
+        if (this._playPollInterval) {
+          clearInterval(this._playPollInterval);
+          this._playPollInterval = null;
+        }
+      }, 5000);
     }
     this.transport!.start();
     this.lastScheduledBeatIndex = -1;
@@ -971,6 +988,13 @@ export class PsyLive {
 
   stop(): void {
     this.playing = false;
+    // תיקון P0: נקה play() polling timers
+    if (this._playPollInterval) { clearInterval(this._playPollInterval); this._playPollInterval = null; }
+    if (this._playPollTimeout) { clearTimeout(this._playPollTimeout); this._playPollTimeout = null; }
+    // תיקון P0: עצור loop learner אם פעיל
+    if (this.loopLearner && this.loopLearner.isRunning()) {
+      this.loopLearner.stop();
+    }
     if (this.engineNode) this.engineNode.stop();
     if (this.engineNode) this.engineNode.panic(); // CRITICAL: clear all events + voices
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
@@ -2545,29 +2569,34 @@ export class PsyLive {
    */
   private startAutoExploration(): void {
     if (this.explorationTimer) clearInterval(this.explorationTimer);
-    // שלב 5: התחל מהר (3s) וכל 15s — עדכון תכוף יותר
-    setTimeout(() => this.runExplorationCycle(), 3000);
+    // תיקון P1: נקה timeout קודם אם קיים
+    if (this._explorationTimeout) clearTimeout(this._explorationTimeout);
+    // שלב 5: התחל מהר (3s) וכל 15s
+    this._explorationTimeout = setTimeout(() => this.runExplorationCycle(), 3000);
     this.explorationTimer = setInterval(() => {
       this.runExplorationCycle();
-    }, 15000); // 15s במקום 30s
+    }, 15000);
     this.evictionTimer = setInterval(() => {
       this.runPeriodicEviction();
     }, 60000);
     console.log('[PSY4] שלב 4.4 Auto-exploration started (interval=15s, first run in 3s)');
-    console.log('[PSY4] שלב 4.5 Periodic eviction started (interval=60s)');
   }
 
   private stopAutoExploration(): void {
     if (this.explorationTimer) {
       clearInterval(this.explorationTimer);
       this.explorationTimer = null;
-      console.log('[PSY4] שלב 4.4 Auto-exploration stopped');
+    }
+    // תיקון P1: נקה את ה-timeout הראשוני
+    if (this._explorationTimeout) {
+      clearTimeout(this._explorationTimeout);
+      this._explorationTimeout = null;
     }
     if (this.evictionTimer) {
       clearInterval(this.evictionTimer);
       this.evictionTimer = null;
-      console.log('[PSY4] שלב 4.5 Periodic eviction stopped');
     }
+    console.log('[PSY4] שלב 4.4 Auto-exploration stopped');
   }
 
   /**

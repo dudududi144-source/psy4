@@ -395,28 +395,39 @@ export default function Page() {
             <div className="flex items-center gap-2 mb-1">
               <Activity className="w-4 h-4 text-amber-400" />
               <span className="text-xs uppercase tracking-wider font-bold text-slate-400">Loop Learner</span>
-              <span className="text-[10px] text-slate-500 ml-auto">למידה מקובץ</span>
+              <span className="text-[10px] text-slate-500 ml-auto">למידה מקובץ אודיו</span>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <input
-                type="file"
-                accept="audio/*,.mp3,.wav,.ogg,.m4a"
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  if (!file || !engineRef.current) return;
-                  await engineRef.current.loadLoopFile(file);
-                }}
-                disabled={!s.playing}
-                className="text-[10px] text-slate-300 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-amber-400/20 file:text-amber-300 hover:file:bg-amber-400/30 file:cursor-pointer"
-              />
+              <label className="flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer transition-all hover:scale-105"
+                style={{ background: s.playing ? 'rgba(245,158,11,0.2)' : 'rgba(255,255,255,0.05)', color: s.playing ? '#f59e0b' : '#64748b', border: '1px solid rgba(245,158,11,0.3)' }}>
+                <input
+                  type="file"
+                  accept="audio/*,.mp3,.wav,.ogg,.m4a"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file || !engineRef.current) return;
+                    const ok = await engineRef.current.loadLoopFile(file);
+                    if (!ok) {
+                      alert('פורמט קובץ לא נתמך. נסה MP3, WAV, או OGG.');
+                    }
+                    e.target.value = ''; // אפשר להעלות שוב את אותו קובץ
+                  }}
+                  disabled={!s.playing}
+                  className="hidden"
+                />
+                <span className="text-[10px] font-bold">העלה קובץ אודיו</span>
+              </label>
               <button
                 onClick={() => engineRef.current?.stopLoop()}
                 disabled={!s.playing || !engineRef.current?.isLoopRunning()}
                 className="px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all disabled:opacity-30 hover:scale-105"
                 style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}
               >
-                Stop Loop
+                עצור לופ
               </button>
+              {engineRef.current?.isLoopRunning() && (
+                <span className="text-[10px] text-amber-400 font-bold">● לופ פעיל</span>
+              )}
               <div className="flex items-center gap-2 flex-1 min-w-[120px]">
                 <Volume2 className="w-3 h-3 text-slate-400" />
                 <input
@@ -434,7 +445,7 @@ export default function Page() {
             </div>
             <div className="text-[10px] text-slate-500">
               העלה קובץ אודיו (MP3/WAV/OGG) — המנוע ינגן אותו בלולאה וילמד ממנו.
-              עובד עם כל קובץ, כולל הקלטות שהורדת.
+              עובד עם כל קובץ, כולל הקלטות שהורדת מ-YouTube.
             </div>
           </div>
 

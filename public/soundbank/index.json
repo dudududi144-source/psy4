@@ -1,0 +1,86 @@
+{
+  "format": "psy4-soundbank",
+  "version": "1.0.0",
+  "description": "PSY4 default sound bank — psytrance oriented, small files only",
+  "license": "All samples procedurally generated — no copyright restriction",
+  "categories": {
+    "kicks": {
+      "description": "Kick drums — 4-on-the-floor psytrance kicks",
+      "files": [
+        { "name": "default", "file": "../samples/kick.wav", "character": ["deep", "punchy"], "bpmRange": [120, 160] },
+        { "name": "deep", "file": "../samples/kick_deep.wav", "character": ["deep", "sub"], "bpmRange": [120, 150] },
+        { "name": "punchy", "file": "../samples/kick_punchy.wav", "character": ["punchy", "bright"], "bpmRange": [125, 145] }
+      ]
+    },
+    "bass": {
+      "description": "Bass synths — rolling psytrance bass",
+      "files": [
+        { "name": "default", "file": "../samples/bass_A.wav", "character": ["rolling", "warm"], "bpmRange": [130, 150] },
+        { "name": "deep", "file": "../samples/bass_deep.wav", "character": ["deep", "sub"], "bpmRange": [120, 145] }
+      ]
+    },
+    "leads": {
+      "description": "Lead synths — psychedelic leads",
+      "files": [
+        { "name": "default", "file": "../samples/lead.wav", "character": ["squely", "acid"], "bpmRange": [135, 150] }
+      ]
+    },
+    "perc": {
+      "description": "Percussion — hats, claps, shakers, toms",
+      "files": [
+        { "name": "hat-closed", "file": "../samples/hat_closed.wav", "character": ["closed", "tight"] },
+        { "name": "hat-open", "file": "../samples/hat_open.wav", "character": ["open", "sustained"] },
+        { "name": "clap", "file": "../samples/clap.wav", "character": ["snappy", "bright"] },
+        { "name": "snare", "file": "../samples/snare.wav", "character": ["snappy", "bright"] },
+        { "name": "shaker", "file": "../samples/shaker.wav", "character": ["soft", "short"] },
+        { "name": "tom", "file": "../samples/tom.wav", "character": ["tonal", "deep"] },
+        { "name": "ride", "file": "../samples/ride.wav", "character": ["metallic", "sustained"] },
+        { "name": "perc-1", "file": "../samples/perc_1.wav", "character": ["tonal", "short"] },
+        { "name": "perc-2", "file": "../samples/perc_2.wav", "character": ["metallic", "short"] }
+      ]
+    },
+    "fx": {
+      "description": "FX — sweeps, textures, impacts",
+      "files": [
+        { "name": "sweep", "file": "../samples/fx_sweep.wav", "character": ["sweep", "atmospheric"] },
+        { "name": "texture-pad", "file": "../samples/texture_pad.wav", "character": ["atmospheric", "dark"] }
+      ]
+    }
+  },
+  "presets": {
+    "full-on": {
+      "description": "Full-On Psytrance — 145 BPM, bright, energetic",
+      "bpm": 145,
+      "style": "FULL_ON",
+      "kick": "punchy",
+      "bass": "default",
+      "lead": "default",
+      "hat": "hat-closed"
+    },
+    "dark-prog": {
+      "description": "Dark Progressive — 138 BPM, deep, hypnotic",
+      "bpm": 138,
+      "style": "DARK",
+      "kick": "deep",
+      "bass": "deep",
+      "lead": "default",
+      "hat": "hat-closed"
+    },
+    "acid": {
+      "description": "Acid Psytrance — 142 BPM, squelchy, resonant",
+      "bpm": 142,
+      "style": "ACID",
+      "kick": "punchy",
+      "bass": "default",
+      "lead": "default",
+      "hat": "hat-open"
+    }
+  },
+  "learningDefaults": {
+    "explorationInterval": 15000,
+    "maxEntriesPerRole": 20,
+    "matchSaveThreshold": 0.7,
+    "rewardWindow": 3000,
+    "memoryKey": "psy4-learned-params"
+  }
+}
