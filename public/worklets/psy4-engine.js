@@ -921,13 +921,14 @@ class HatVoice {
     this.t += 1 / sr;
     if (this.t > this.decay * 1.5) { this.active = false; out[0] = 0; return out; }
 
-    const n = this.noise.process();
-    // Highpass: one-pole filter (much louder than differentiation)
-    const hp = n - this.hpState * 0.95;
-    this.hpState = n;
+    // Use raw white noise (not pink) — much louder high-freq content
+    const n = this.noise.next();
+    // One-pole highpass: removes low frequencies, keeps highs
+    this.hpState = this.hpState + 0.5 * (n - this.hpState);
+    const hp = n - this.hpState;
     const env = Math.exp(-this.t / this.decay);
-    // Boost gain dramatically — was too quiet
-    const sample = hp * env * 5.0 * this.amp * this.brightness;
+    // 50x gain — was 5x, still too quiet. White noise * HP * env * amp * brightness
+    const sample = hp * env * 50.0 * this.amp * this.brightness;
     out[0] = Math.max(-1, Math.min(1, sample));
     return out;
   }
