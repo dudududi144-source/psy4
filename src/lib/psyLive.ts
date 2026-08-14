@@ -29,6 +29,8 @@ import { SoundBank, type SoundBankEntry } from './soundBank';
 import { SoundExplorer, type ExplorationResult } from './soundExplorer';
 // שלב 4.5: Reward loop (self-improvement)
 import { RewardTracker } from './rewardTracker';
+// שלב 4.6: Musical style classification
+import { StyleClassifier, type RadioStyle, type StyleFeatures, type ClassificationResult } from './styleClassifier';
 // ADR-001: CausalComposer runs on a Web Worker now. This import is kept for type compatibility
 // but the actual composition happens in public/worklets/composition-worker.js
 // SamplerBridge import REMOVED — fully dead code
@@ -365,6 +367,10 @@ export class PsyLive {
   private soundExplorer: SoundExplorer | null = null;
   // שלב 4.5: Reward tracker — מודד איך הרדיו מגיב לסאונדים של PSY4
   private rewardTracker: RewardTracker | null = null;
+  // שלב 4.6: Style classifier — מזהה סגנון מוזיקלי מהרדיו
+  private styleClassifier: StyleClassifier = new StyleClassifier();
+  // שלב 4.6: תוצאת הסיווג האחרונה (ל-UI/debugging)
+  private lastClassification: ClassificationResult | null = null;
   // שלב 4.5: טיימר eviction תקופתי (כל 60s)
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
   // שלב 4.4: איטרציה אוטומטית — כל 30s, סרוק role פעיל
@@ -2300,29 +2306,42 @@ export class PsyLive {
   }
 
   // ── Style classifier ──
-  // F1.18: BPM comes from Transport — single source of truth
+  // שלב 4.6: משתמש ב-StyleClassifier החדש (מבוסס templates + distance)
+  // במקום ה-if-else cascade הפרימיטיבי הישן.
   private classifyStyle(): Style | null {
-    const o = this.occupancy;
     const bpm = this.transport ? this.transport.snapshot().bpm : 145;
-
-    // Full On: high kick + high bass + high highs + fast
-    if (o.kick > 0.7 && o.bass > 0.6 && o.hats > 0.4 && bpm > 143) {
-      return 'fullOn';
+    const features: StyleFeatures = {
+      bpm,
+      occupancy: this.occupancy,
+      centroid: this.spectralCentroidEma,
+      flatness: this.spectralFlatnessEma,
+      energy: this.musicState.energy,
+      energySlope: this.musicState.energySlope,
+    };
+    const result = this.styleClassifier.classify(features);
+    this.lastClassification = result;
+    // מפה RadioStyle → Style הישן (ל-compatibility עם UI)
+    const styleMap: Record<RadioStyle, Style> = {
+      fullOn: 'fullOn',
+      dark: 'dark',
+      progressive: 'progressive',
+      acid: 'acid',
+      forest: 'fullOn',   // forest → fullOn (אין 'forest' ב-Style הישן)
+      hiTech: 'fullOn',   // hiTech → fullOn
+      unknown: 'fullOn',  // unknown → fullOn (default)
+    };
+    // לוג רק כש-style משתנה
+    if (result.style !== this._lastLoggedStyle) {
+      console.log(
+        `[PSY4] שלב 4.6 StyleClassifier: style=${result.style} ` +
+        `confidence=${result.confidence.toFixed(2)} distance=${result.distance.toFixed(2)} ` +
+        `sourceStyle=${this.styleClassifier.getSourceStyleForBank()}`,
+      );
+      this._lastLoggedStyle = result.style;
     }
-    // Dark: high bass + low highs + slow
-    if (o.bass > 0.6 && o.hats < 0.3 && bpm < 142) {
-      return 'dark';
-    }
-    // Progressive: moderate everything + stable energy
-    if (o.kick < 0.6 && o.bass > 0.4 && this.musicState.energySlope < 0.1) {
-      return 'progressive';
-    }
-    // Acid: mid-heavy + high energy
-    if (o.lead > 0.6 && this.musicState.energy > 0.5) {
-      return 'acid';
-    }
-    return null;
+    return styleMap[result.style];
   }
+  private _lastLoggedStyle: string = 'unknown';
 
   // ── Get current MusicState (for arranger) ──
   getMusicState(): MusicState {
@@ -2439,12 +2458,14 @@ export class PsyLive {
         if (r.saturationAmount !== undefined) voiceParams.saturation = r.saturationAmount;
         if (r.filterCutoff !== undefined) voiceParams.cutoffStart = r.filterCutoff;
         if (r.decayTime !== undefined) voiceParams.subDecay = r.decayTime;
+        // שלב 4.6: השתמש ב-sourceStyle מה-classifier (מזהה סגנון + unknown)
+        const sourceStyle = this.styleClassifier.getSourceStyleForBank();
         await this.soundBank.add(
           role,
           onset.soundDNA,
           result.recipe,
           result.matchScore,
-          'radio',
+          sourceStyle,
           voiceParams,
         );
       } catch (e) {
@@ -2555,7 +2576,9 @@ export class PsyLive {
     }
 
     try {
-      const result = await this.soundExplorer.explore(role, onset.soundDNA, 'radio');
+      // שלב 4.6: השתמש ב-sourceStyle מה-classifier (מזהה סגנון + unknown)
+      const sourceStyle = this.styleClassifier.getSourceStyleForBank();
+      const result = await this.soundExplorer.explore(role, onset.soundDNA, sourceStyle);
       // אחרי ה-exploration, החל את ה-recipe הטוב ביותר מה-bank על ה-engine
       await this.applyBestRecipeFromBank(role);
       // שלב 4.5: בדוק אם ה-bank ל-role stale (כל ה-entries עם reward < 0.5)
@@ -2575,7 +2598,9 @@ export class PsyLive {
    */
   async applyBestRecipeFromBank(role: OnsetRole): Promise<boolean> {
     if (!this.engineNode) return false;
-    const entry = await this.soundBank.get(role, { style: 'radio' });
+    // שלב 4.6: השתמש ב-sourceStyle מה-classifier (מזהה סגנון + unknown)
+    const sourceStyle = this.styleClassifier.getSourceStyleForBank();
+    const entry = await this.soundBank.get(role, { style: sourceStyle });
     if (!entry) {
       console.log(`[PSY4] שלב 4.4 applyRecipe(${role}): no entry in bank`);
       return false;
