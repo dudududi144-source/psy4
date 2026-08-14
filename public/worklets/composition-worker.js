@@ -349,24 +349,11 @@ class CausalComposerWorker {
       events.push(...this.generateGroove(bar));
     }
 
-    // FX: Add impact at DROP_START, riser at BREAKDOWN_START, sweep at REBUILD_START
+    // תיקון: הסרנו FX קשיחים (impact/riser/sweep) — הם יצרו "מצילה ארוכה" לא רצויה
+    // ה-FX יגיע מה-sound bank או מ-learning, לא hardcode
     const beatDur = 60 / this.opts.bpm;
     const barStart = bar * 4 * beatDur;
     const sectionType = this.getArrangementSection(bar);
-    if (sectionType === 'DROP_START') {
-      // IMPACT: big one-shot at the drop
-      events.push({ at: barStart, note: 36, velocity: 0.95, duration: 0.5, channel: 'impact' });
-      // Riser leading into the drop (2 bars before — but we're AT the drop, so it's a crash)
-      events.push({ at: barStart, note: 72, velocity: 0.6, duration: beatDur * 2, channel: 'riser' });
-    } else if (sectionType === 'BREAKDOWN_START') {
-      // SWEEP: downward sweep at breakdown
-      events.push({ at: barStart, note: 60, velocity: 0.4, duration: beatDur * 4, channel: 'sweep' });
-    } else if (sectionType === 'REBUILD_START') {
-      // RISER: upward riser at rebuild
-      events.push({ at: barStart, note: 48, velocity: 0.5, duration: beatDur * 2, channel: 'riser' });
-      // IMPACT: hit at the rebuild
-      events.push({ at: barStart + beatDur * 2, note: 36, velocity: 0.8, duration: 0.4, channel: 'impact' });
-    }
 
     if (decision.action !== 'BREAKDOWN') {
       if (this.activeVoices.has('lead')) onMaterialPlayed(this.state, 'motif-A', bar);
@@ -758,9 +745,7 @@ class CausalComposerWorker {
       }
       events.push({ at: barStart + 3 * beatDur + stepDur * 2, note: 45, velocity: Math.min(1, 0.6 * velScale), duration: stepDur * 0.4, channel: 'fill' });
       events.push({ at: barStart + 3 * beatDur + stepDur * 3, note: 50, velocity: Math.min(1, 0.7 * velScale), duration: stepDur * 0.3, channel: 'fill' });
-      if (bar % 16 === 15) {
-        events.push({ at: barStart, note: 72, velocity: Math.min(1, 0.4 * velScale), duration: 2 * beatDur, channel: 'riser' });
-      }
+      // תיקון: הסרנו riser ארוך — יצר "מצילה" לא רצויה
     }
 
     onMaterialPlayed(this.state, 'groove', bar);

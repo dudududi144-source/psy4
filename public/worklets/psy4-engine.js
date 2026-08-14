@@ -2132,54 +2132,23 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       case 'world':
         this.worldParams = { ...this.worldParams, ...msg.params };
         break;
+      // Debug query — מחזיר מידע פנימי ל-main thread
+      case 'debug': {
+        if (msg.query === 'learnedVoiceParams') {
+          this.port.postMessage({ type: 'debugResult', query: 'learnedVoiceParams', data: this.learnedVoiceParams || {} });
+        }
+        break;
+      }
       // שלב 4.4: החלת recipe מ-sound bank על voice pool
       case 'setVoiceRecipe': {
         // msg: { voiceClass: string, recipe: object }
-        // מחיל את ה-recipe על כל ה-voices מאותו סוג ב-pool
+        // תיקון קריטי: שמור את ה-params על ה-PROCESSOR (לא על ה-voice)
+        // כי trigger() דורס אותם. ה-scheduler יקרא אותם כשמפעיל voice.
         const vc = msg.voiceClass;
         const recipe = msg.recipe || {};
-        let pool = null;
-        if (vc === 'KickVoice') pool = this.kickPool;
-        else if (vc === 'BassVoice') pool = this.bassPool;
-        else if (vc === 'LeadVoice') pool = this.leadPool;
-        else if (vc === 'AcidVoice') pool = this.acidPool;
-        else if (vc === 'PadVoice') pool = this.padPool;
-        else if (vc === 'HatVoice') pool = this.hatPool;
-        else if (vc === 'ClapVoice') pool = this.clapPool;
-        else if (vc === 'PercVoice') pool = this.percPool;
-        else if (vc === 'ShakerVoice') pool = this.shakerPool;
-        if (!pool) {
-          console.warn('[PSY4] שלב 4.4 setVoiceRecipe: no pool for ' + vc);
-          break;
-        }
-        // החל את ה-recipe params על כל ה-voices ב-pool
-        let applied = 0;
-        for (const voice of pool) {
-          // KickVoice params
-          if (vc === 'KickVoice') {
-            if (recipe.fund !== undefined) voice.fund = recipe.fund;
-            if (recipe.startMult !== undefined) voice.startMult = recipe.startMult;
-            if (recipe.pitchDecay !== undefined) voice.pitchDecay = recipe.pitchDecay;
-            if (recipe.subDecay !== undefined) voice.subDecay = recipe.subDecay;
-            if (recipe.midLevel !== undefined) voice.midLevel = recipe.midLevel;
-            if (recipe.clickLevel !== undefined) voice.clickLevel = recipe.clickLevel;
-            if (recipe.saturation !== undefined) voice.saturation = recipe.saturation;
-          }
-          // BassVoice params
-          else if (vc === 'BassVoice') {
-            if (recipe.subLevel !== undefined) voice.subLevel = recipe.subLevel;
-            if (recipe.harmonicLevel !== undefined) voice.harmonicLevel = recipe.harmonicLevel;
-            if (recipe.cutoffFloor !== undefined) voice.cutoffFloor = recipe.cutoffFloor;
-            if (recipe.cutoffDecay !== undefined) voice.cutoffDecay = recipe.cutoffDecay;
-            if (recipe.cutoffStart !== undefined) voice.cutoffStart = recipe.cutoffStart;
-            if (recipe.cutoffEnd !== undefined) voice.cutoffEnd = recipe.cutoffEnd;
-          }
-          // LeadVoice, AcidVoice, PercVoice — freq-based, applied via triggerArgs ב-composer
-          applied++;
-        }
-        if (applied > 0) {
-          console.log('[PSY4] שלב 4.4 setVoiceRecipe(' + vc + '): applied to ' + applied + ' voices, params=' + JSON.stringify(recipe).slice(0, 120));
-        }
+        if (!this.learnedVoiceParams) this.learnedVoiceParams = {};
+        this.learnedVoiceParams[vc] = { ...this.learnedVoiceParams[vc], ...recipe };
+        console.log('[PSY4] שלב 4.4 setVoiceRecipe(' + vc + '): STORED on processor, params=' + JSON.stringify(recipe).slice(0, 100));
         break;
       }
       case 'setFX':
@@ -2301,77 +2270,55 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 
     switch (voiceId) {
       case V_KICK: {
-        // PHRASE-LOCKED KICK: Keep the same kick for 8 bars (sonic consistency)
-        // Commercial tracks don't change kick every hit — they keep it for phrases.
-        // The main thread sends 'newPhrase' messages at phrase boundaries to rotate.
-        if (this.samplesReady) {
-          const kickNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'kick');
-          const realKickNames = kickNames.filter(n => n.startsWith('nord') || n.startsWith('909') || n.startsWith('real'));
-          const selectedNames = realKickNames.length > 0 ? realKickNames : kickNames;
-
-          if (selectedNames.length > 0) {
-            // PHRASE LOCK: Use the same kick sample for the entire phrase
-            // Only rotate when this.phraseKickIdx changes (set by 'newPhrase' message)
-            if (this.phraseKickIdx === undefined || this.phraseKickIdx >= selectedNames.length) {
-              this.phraseKickIdx = 0;
-            }
-            const kickName = selectedNames[this.phraseKickIdx];
-            const v = this.getFreeVoice(this.kickSamplePool);
-            if (v) {
-              const samp = this.samples[kickName];
-              // Micro variation: ±0.3% pitch, ±3% gain (imperceptible but organic)
-              const microVar = (this.rrCounters.kick % 4 - 1.5);
-              const pitchVar = 1.0 + microVar * 0.002;
-              const gainVar = 1.0 + microVar * 0.03;
-              this.rrCounters.kick = (this.rrCounters.kick + 1) % 4;
-              v.trigger(samp.data, samp.sampleRate, pitchVar, velocity * gainVar, wp.kickDecay, 0);
-              // TRACK: which sample actually played
-              this.sampleUsage[kickName] = (this.sampleUsage[kickName] || 0) + 1;
-            }
-          } else {
-            const v = this.getFreeVoice(this.kickPool);
-            if (v) v.trigger(t, velocity, wp.kickFundamental, wp.kickDecay, sr);
-          }
-        } else {
-          const v = this.getFreeVoice(this.kickPool);
-          if (v) v.trigger(t, velocity, wp.kickFundamental, wp.kickDecay, sr);
+        // תיקון קריטי: השתמש ב-learned params מ-sound bank (אם יש)
+        // עוברים ל-SYNTH kick בלבד — samples יוצרים סאונד קבוע שלא משתנה
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.KickVoice) || {};
+        const kickFund = lp.fund ?? wp.kickFundamental;
+        const kickDecay = lp.subDecay ?? wp.kickDecay;
+        const v = this.getFreeVoice(this.kickPool);
+        if (v) {
+          v.trigger(t, velocity, kickFund, kickDecay, sr);
+          // אחרי trigger, החל learned params ש-trigger לא מקבל כערכים
+          if (lp.startMult !== undefined) v.startMult = lp.startMult;
+          if (lp.pitchDecay !== undefined) v.pitchDecay = lp.pitchDecay;
+          if (lp.midLevel !== undefined) v.midLevel = lp.midLevel;
+          if (lp.clickLevel !== undefined) v.clickLevel = lp.clickLevel;
+          if (lp.saturation !== undefined) v.saturation = lp.saturation;
         }
-        // Trigger sidechain — DEEPER duck for real psytrance groove
-        // 6dB depth (was ~3-4dB) — commercial psytrance has obvious pumping
+        // Trigger sidechain
         this.duckEnv = 1 - wp.duck * (0.5 + mc.aggression * 0.5);
-        // FIX: Ensure duckEnv never goes below 0.3 — was killing all audio when
-        // duck=0.6 and aggression=0.4: duckEnv = 1 - 0.6*0.7 = 0.58 (OK)
-        // But if aggression is high: 1 - 0.6*1.0 = 0.4 — still OK
-        // The real issue was lead ducking was NEW and the recovery was too slow
         this.duckEnv = Math.max(0.3, this.duckEnv);
         break;
       }
       case V_BASS: {
-        // PURE SYNTH BASS — rolling psytrance bass
+        // תיקון קריטי: השתמש ב-learned params מ-sound bank
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.BassVoice) || {};
         const v = this.getFreeVoice(this.bassPool);
         if (v) v.trigger(t, note, duration, velocity, false, sr, {
-          cutoffStart: 3000,      // FIX: was wp.bassCutoff * 4 = 1600. Too low — filter closes too fast.
-          cutoffEnd: 300,          // FIX: was wp.bassCutoff = 400. End at 300Hz for tighter bass.
-          resonance: 0.15,         // FIX: was wp.bassResonance = 4 (res = 4/20 = 0.2). Lower = less squelch, cleaner bass.
-          cutoffDecay: 0.08,       // FIX: was 0.04 (40ms). Doubled to 80ms — gives the pluck more body.
-          subLevel: 0.5,           // More sub for weight
-          harmonicLevel: 0.6,      // More harmonic for character
+          cutoffStart: lp.cutoffStart ?? 3000,
+          cutoffEnd: lp.cutoffEnd ?? 300,
+          resonance: lp.resonance ?? 0.15,
+          cutoffDecay: lp.cutoffDecay ?? 0.08,
+          subLevel: lp.subLevel ?? 0.5,
+          harmonicLevel: lp.harmonicLevel ?? 0.6,
+          cutoffFloor: lp.cutoffFloor ?? 80,
         });
         break;
       }
       case V_LEAD: {
-        // PURE SYNTH LEAD — supersaw + FM + Moog filter + LFO modulation
+        // תיקון קריטי: השתמש ב-learned params מ-sound bank
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.LeadVoice) || {};
         const v = this.getFreeVoice(this.leadPool);
         if (v) v.trigger(t, note, duration, velocity, sr, {
-          cutoff: 4000,                    // FIX: was ~2000. Too dark/muffled. 4000Hz = bright, audible lead.
-          detune: 12,                      // FIX: was ~10. Slightly more detune = wider supersaw.
-          resonance: 0.3,                  // FIX: was 2-5 (res = 0.1-0.25). Lower = cleaner, less squelch.
-          lfoRate: 2,                      // FIX: was 0.5-3.5. 2Hz = audible movement without being too fast.
-          lfoDepth: 0.4,                   // FIX: was 0-0.3. More movement = more psychedelic.
-          filterEnvAmount: 1.5,            // FIX: was 1.0. More dramatic filter sweep on each note.
-          fmDepth: 0.3,                    // FIX: was 0-0.8. Fixed at 0.3 = subtle metallic character.
-          fmRate: 3,                       // FIX: was 2-6. 3Hz = classic FM.
-          fmRatio: 2,                      // 2:1 = classic FM ratio
+          cutoff: lp.cutoff ?? 4000,
+          detune: lp.detune ?? 12,
+          resonance: lp.resonance ?? 0.3,
+          lfoRate: lp.lfoRate ?? 2,
+          lfoDepth: lp.lfoDepth ?? 0.4,
+          filterEnvAmount: lp.filterEnvAmount ?? 1.5,
+          fmDepth: lp.fmDepth ?? 0.3,
+          fmRate: lp.fmRate ?? 3,
+          fmRatio: lp.fmRatio ?? 2,
         });
         break;
       }
