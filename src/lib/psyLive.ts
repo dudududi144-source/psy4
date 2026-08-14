@@ -23,6 +23,8 @@ import { extractSpectralFeatures } from '../../foundation/music/MusicalObservati
 import { OnsetAnalyzer, type OnsetEvent, type OnsetRole } from './onsetAnalyzer';
 // שלב 4.2: Synthesis matching (offline)
 import { SynthesisMatcher, type MatchResult } from './synthesisMatcher';
+// שלב 4.3: Sound bank (IndexedDB)
+import { SoundBank, type SoundBankEntry } from './soundBank';
 // ADR-001: CausalComposer runs on a Web Worker now. This import is kept for type compatibility
 // but the actual composition happens in public/worklets/composition-worker.js
 // SamplerBridge import REMOVED — fully dead code
@@ -78,9 +80,11 @@ interface Stream { id: string; name: string; url: string; genre: string; bitrate
 // psyndora-chill (TLS EOF), radiocaprice-psy (DNS dead). Only live,
 // CORS-enabled stations remain.
 export const STREAMS: Stream[] = [
-  { id: 'psyndora', name: 'Psyndora', url: 'https://cast.magicstreams.gr:9111/stream/1/', genre: 'Psytrance · Full-On · Goa', bitrate: 128 },
-  { id: 'babaganousha', name: 'Babaganousha', url: 'https://babaganousha.net:8443/stream/1/', genre: 'Psychedelic · Goa', bitrate: 128 },
+  // תיקון שלב 4: הסרנו את Psyndora (מת). השארנו רק streams שנבדקו עם CORS.
+  // חשוב: crossOrigin='anonymous' דורש Access-Control-Allow-Origin מהשרת.
+  // בלי CORS, הדפדפן חוסם את ה-stream לחלוטין (לא רק את ה-analysis).
   { id: 'spaceunicorn', name: 'Space Unicorn', url: 'https://spaceunicorn.radio/stream', genre: 'Trance · PsyTrance', bitrate: 192 },
+  { id: 'babaganousha', name: 'Babaganousha', url: 'https://babaganousha.net:8443/stream/1/', genre: 'Psychedelic · Goa', bitrate: 128 },
 ];
 
 // 4 DISTINCT presets — each with unique BPM, root, patterns, and variants
@@ -349,6 +353,10 @@ export class PsyLive {
   private onsetAnalyzer: OnsetAnalyzer = new OnsetAnalyzer();
   // שלב 4.2: Synthesis matching (offline renderer)
   private synthesisMatcher: SynthesisMatcher = new SynthesisMatcher();
+  // שלב 4.3: Sound bank (IndexedDB)
+  private soundBank: SoundBank = new SoundBank();
+  // שלב 4.3: auto-save threshold — matchScore מעל זה נשמר אוטומטית
+  private static readonly MATCH_SAVE_THRESHOLD = 0.7;
   // CAUSAL: The live composition authority (now null — worker handles it)
   private causalComposer: CausalComposer | null = null;
   private currentCausalBar: CausalBarResult | null = null;
@@ -1723,6 +1731,7 @@ export class PsyLive {
       if (this.radioSource) { try { this.radioSource.disconnect(); } catch {} }
       if (this.radioEl) { this.radioEl.pause(); this.radioEl.src = ''; }
       this.radioEl = new Audio();
+      // CORS חובה — בלי זה ה-analyser מקבל zeros ואי אפשר ללמוד מהרדיו
       this.radioEl.crossOrigin = 'anonymous';
       this.radioEl.src = stream.url;
       this.radioSource = this.ctx.createMediaElementSource(this.radioEl);
@@ -1734,34 +1743,55 @@ export class PsyLive {
         this.radioAnalyser.smoothingTimeConstant = 0.2;
       }
       // שלב 2.1: רדיו → ערוץ נפרד ישירות ל-destination (לא דרך engineBus)
-      // WAS: radioSource → radioGain → radioAnalyser → engineBus → comp → master → destination
-      // PROBLEM: engineBus was disconnected when worklet is active (we disconnect legacy chain).
-      // So radio audio was going through a disconnected node = SILENT radio.
-      // FIX: radioSource → radioGain → radioAnalyser → destination (separate path)
       this.radioSource.connect(this.radioGain!);
       this.radioGain!.connect(this.radioAnalyser!);
       this.radioAnalyser!.disconnect(); // disconnect from engineBus
       this.radioAnalyser!.connect(this.ctx.destination); // direct to destination
 
-      // F13/R1 — THE CRITICAL FIX: wire RadioObservationLayer state machine.
-      // Before this fix, signalState was stuck at 'DISCONNECTED' (constructor
-      // default) because markConnected() was never called. This killed the
-      // entire beat-detection / pitch-observation / PLL pipeline.
-      // Now: CONNECTING → (play succeeds) → markConnected → NO_SIGNAL →
-      //   (signal arrives) → SIGNAL_PRESENT → STABLE_SIGNAL → FOLLOWING.
       this.radioLayer!.markConnecting();
       this.syncStatus = 'connecting';
 
-      try { await this.radioEl.play(); } catch {}
-      this.radioOn = true;
-      // Transition to NO_SIGNAL so updateSignalState() can promote it to
-      // SIGNAL_PRESENT when real audio arrives.
-      this.radioLayer!.markConnected();
-      this.updateMixMode();
-      this.startDetection();
+      // תיקון שלב 4: timeout — אם ה-stream לא מתחיל תוך 12 שניות, דווח שגיאה
+      const timeoutMs = 12000;
+      const startTime = Date.now();
+      let timedOut = false;
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        console.error(`[PSY4] Radio connect TIMEOUT after ${timeoutMs}ms — stream may be down or CORS-blocked: ${stream.url}`);
+        this.syncStatus = 'error';
+        this.emit();
+      }, timeoutMs);
+
+      try {
+        await this.radioEl.play();
+      } catch (playErr) {
+        // play() can reject if CORS blocks the resource — catch and report
+        if (!timedOut) {
+          clearTimeout(timeoutId);
+          console.error('[PSY4] Radio play() failed:', playErr, '— stream may not support CORS:', stream.url);
+          this.syncStatus = 'error';
+          this.radioOn = false;
+          this.emit();
+          return false;
+        }
+      }
+      if (!timedOut) {
+        clearTimeout(timeoutId);
+        this.radioOn = true;
+        this.radioLayer!.markConnected();
+        this.updateMixMode();
+        this.startDetection();
+        this.emit();
+        console.log(`[PSY4] Radio connected: ${stream.name} (${stream.url}) — connectTime=${Date.now() - startTime}ms`);
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error('[PSY4] connectRadio error:', e);
+      this.syncStatus = 'error';
       this.emit();
-      return true;
-    } catch (e) { console.error(e); return false; }
+      return false;
+    }
   }
 
   disconnectRadio(): void {
@@ -2336,6 +2366,7 @@ export class PsyLive {
   /**
    * מוצא recipe אופטימלי שמייצר סאונד דומה ל-onset האחרון של role.
    * רץ מחוץ ל-audio thread — לא חוסם את ה-engine.
+   * אם matchScore > 0.7, שומר אוטומטית ל-sound bank.
    * מחזיר null אם אין onsets מתועדים ל-role.
    */
   async matchSound(role: OnsetRole): Promise<MatchResult | null> {
@@ -2344,16 +2375,33 @@ export class PsyLive {
       console.warn(`[PSY4] שלב 4.2 matchSound(${role}): no onsets recorded for this role`);
       return null;
     }
-    return this.synthesisMatcher.match(onset.soundDNA, role);
+    const result = await this.synthesisMatcher.match(onset.soundDNA, role);
+    // שלב 4.3: auto-save ל-sound bank אם matchScore > threshold
+    if (result.matchScore >= PsyLive.MATCH_SAVE_THRESHOLD) {
+      try {
+        await this.soundBank.add(
+          role,
+          onset.soundDNA,
+          result.recipe,
+          result.matchScore,
+          'radio', // sourceStyle
+        );
+      } catch (e) {
+        console.warn('[PSY4] שלב 4.3 auto-save failed:', e);
+      }
+    }
+    return result;
   }
 
   /**
-   * גישה ישירה ל-matcher (לשימוש עתידי עם sound bank).
+   * גישה ישירה ל-sound bank (ל-UI / debugging / 4.4 integration).
    */
-  getSynthesisMatcher(): SynthesisMatcher { return this.synthesisMatcher; }
+  getSoundBank(): SoundBank { return this.soundBank; }
 
   /**
-   * גישה ל-onset analyzer (ל-UI / debugging).
+   * סטטיסטיקות sound bank — { kick: N, bass: N, ... }
    */
-  getOnsetAnalyzer(): OnsetAnalyzer { return this.onsetAnalyzer; }
+  async getSoundBankStats(): Promise<Record<OnsetRole, number>> {
+    return await this.soundBank.getStats();
+  }
 }

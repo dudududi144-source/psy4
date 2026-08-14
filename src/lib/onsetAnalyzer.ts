@@ -246,9 +246,19 @@ export class OnsetAnalyzer {
    * - lead: midEnergy דומיננטי + centroid 500-3000Hz
    * - hat: highEnergy דומיננטי + transientSharpness גבוה מאוד + centroid > 5000Hz
    * - perc: mid+high + transientSharpness גבוה + centroid 2000-5000Hz
+   *
+   * תיקון: כשהרדיו מנגן מיקס מלא, ה-centroid תמיד גבוה. לכן אם subEnergy גבוה
+   * מאוד (>0.7), ה-onset הוא כנראה kick/bass — לא hat — למרות centroid גבוה.
    */
   private classifyRole(dna: SoundDNA): OnsetRole {
     const centroidHz = dna.brightness * 8000;
+
+    // EARLY EXIT: אם subEnergy גבוה מאוד, זה kick או bass — לא hat/perc
+    if (dna.subEnergy > 0.7) {
+      // kick אם transient חד, bass אם חלק
+      return dna.transientSharpness > 0.6 ? 'kick' : 'bass';
+    }
+
     // דירוג per-role — הכי גבוה מנצח
     const scores: Record<OnsetRole, number> = {
       kick: 0,

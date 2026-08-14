@@ -93,7 +93,7 @@ export default function Page() {
     samplePalette: 'md',
   });
 
-  const [streamId, setStreamId] = useState('psyndora');
+  const [streamId, setStreamId] = useState('spaceunicorn');
   const [radioVol, setRadioVol] = useState(0.5);
   const [vol, setVol] = useState(0.9);
   const [style, setStyle] = useState<MusicalStyle>('FULL_ON');
