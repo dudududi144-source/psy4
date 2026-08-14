@@ -312,6 +312,12 @@ export class PsyLive {
     forcedSection: null as 'BREAK' | 'BUILD' | 'DROP' | null,
     forcedBarsRemaining: 0,
   };
+  // שלב 1.1: נתוני רדיו → worker
+  private _radioToWorkerCounter = 0;
+  private _lastSentRadioBpm = 0;
+  private _lastSentRoot = -1;
+  private _lastSentScale = '';
+  private _lastSentStyle = '';
   // CAUSAL: The live composition authority (now null — worker handles it)
   private causalComposer: CausalComposer | null = null;
   private currentCausalBar: CausalBarResult | null = null;
@@ -1048,6 +1054,64 @@ export class PsyLive {
     });
   }
 
+  // שלב 1.1: שלח נתוני רדיו ל-CausalComposerWorker
+  // (שדות _radioToWorkerCounter וכו' כבר מוגדרים למעלה)
+  private sendRadioDataToWorker(radioSnap: any, transportSnap: any): void {
+    if (!this.compositionWorker || !this.workerReady || !this.radioOn) return;
+
+    // 1.1.1 BPM — שלח אם confidence > 0.5 ושינוי > 2 BPM
+    const radioBpm = radioSnap.beat?.estimatedBpm ?? 0;
+    const beatConfidence = radioSnap.beat?.confidence ?? 0;
+    if (beatConfidence > 0.5 && radioBpm > 0 && Math.abs(radioBpm - this._lastSentRadioBpm) > 2) {
+      this.compositionWorker.postMessage({ type: 'setBPM', bpm: radioBpm });
+      // עדכן גם את Transport
+      if (this.transport) this.transport.setTempo(radioBpm, 'radio');
+      this._lastSentRadioBpm = radioBpm;
+      console.log(`[PSY4] Radio→Worker: BPM=${radioBpm} (conf=${beatConfidence.toFixed(2)})`);
+    }
+
+    // 1.1.2 סולם/מפתח — שלח אם matchScore > 0.6
+    if (this.cachedInsights?.scale && this.cachedInsights.scale.matchScore > 0.6) {
+      const rootPc = this.cachedInsights.scale.root;
+      const scaleName = this.cachedInsights.scale.name.toLowerCase().replace(' ', '-');
+      if (rootPc !== this._lastSentRoot) {
+        this.compositionWorker.postMessage({ type: 'setRoot', rootPc });
+        this._lastSentRoot = rootPc;
+        console.log(`[PSY4] Radio→Worker: root=${rootPc} scale=${scaleName} (match=${this.cachedInsights.scale.matchScore.toFixed(2)})`);
+      }
+      if (scaleName !== this._lastSentScale) {
+        this.compositionWorker.postMessage({ type: 'setScale', scaleName });
+        this._lastSentScale = scaleName;
+      }
+    }
+
+    // 1.1.3 Energy — שלח אם שינוי > 20%
+    const spectralEnergy = radioSnap.signal?.spectralEnergy ?? 0;
+    if (spectralEnergy > 0) {
+      const lastEnergy = this.cachedUserControls.energy;
+      if (Math.abs(spectralEnergy - lastEnergy) > 0.2) {
+        this.compositionWorker.postMessage({
+          type: 'controls',
+          energy: spectralEnergy,
+        });
+        // אל תעדכן cachedUserControls — זה נתוני רדיו, לא משתמש
+        console.log(`[PSY4] Radio→Worker: energy=${spectralEnergy.toFixed(2)}`);
+      }
+    }
+
+    // 1.1.4 סגנון — שלח אם השתנה
+    const detectedStyle = this.classifyStyle();
+    if (detectedStyle && detectedStyle !== this._lastSentStyle) {
+      const styleMap: Record<string, string> = {
+        fullOn: 'FULL_ON', dark: 'DARK', progressive: 'PROGRESSIVE', acid: 'ACID',
+      };
+      const mappedStyle = styleMap[detectedStyle] || 'FULL_ON';
+      this.compositionWorker.postMessage({ type: 'controls', style: mappedStyle });
+      this._lastSentStyle = detectedStyle;
+      console.log(`[PSY4] Radio→Worker: style=${mappedStyle}`);
+    }
+  }
+
   // F18.5: Apply learned timbre to synthesis parameters.
   // Called from detect() when timbre profile is available.
   // Maps learned spectral characteristics → synth params (wave, cutoff, saturation).
@@ -1628,22 +1692,9 @@ export class PsyLive {
       high: radioSnap.occupancy.hats,
     };
 
-    // ── F13/R3: MIXER OWNERSHIP FIX ──
-    // Role ducking NO LONGER clobbers bus.gain. Instead, we write to
-    // separate duckGain nodes (set in ensureAudio). User mixer sliders
-    // write to bus.gain directly. Final level = bus.gain × duckGain.
-    // Radio detection changes ducking only — user mix stays stable.
-    if (this.kickDuck && this.bassDuck && this.leadDuck && this.hatDuck && this.ctx) {
-      const now = this.ctx.currentTime;
-      const kickDuck = this.occupancy.kick > 0.7 ? 0.1 : 1.0;
-      this.kickDuck.gain.setTargetAtTime(kickDuck, now, 0.05);
-      const bassDuck = this.occupancy.bass > 0.75 ? 0.4 : 1.0;
-      this.bassDuck.gain.setTargetAtTime(bassDuck, now, 0.08);
-      const leadDuck = this.occupancy.lead > 0.85 ? 0.5 : 1.0;
-      this.leadDuck.gain.setTargetAtTime(leadDuck, now, 0.1);
-      const hatDuck = 1.0; // F13: no longer force hatBus to 0.6 — user owns it
-      this.hatDuck.gain.setTargetAtTime(hatDuck, now, 0.1);
-    }
+    // שלב 1.4: הימנעות מהתנגשויות — occupancy-based ducking
+    // (הקוד החדש כבר נמצא למעלה ב-detect(), זה הקוד הישן שמוחק)
+    // הקוד החדש משתמש בערכים עדינים יותר (0.3 במקום 0.1) ופועל רק כשרדיו מחובר
 
     // ── ENERGY HISTORY (for relative energy, not absolute) ──
     this.energyHistory.push(radioSnap.signal.spectralEnergy);
@@ -1687,17 +1738,39 @@ export class PsyLive {
     }
 
     // ── LEARNING (record kicks when locked) ──
-    // PERF: heavy work moved out of detect(). Only buffer the BPM for the 1 Hz learnTick.
-    // This was the #1 source of audio stutter: every radio beat fired
-    // recordKick + deriveInsights (1296-iter scale scan) + saveLearning (JSON.stringify
-    // + localStorage.setItem — synchronous, blocks main thread 10-30ms).
     if (transportSnap.locked && radioSnap.beat) {
       if (this.learningData) {
-        // Buffer — learnTick() will batch-record these into learningData
         this.pendingKickBpms.push(Math.round(transportSnap.bpm));
       }
       this.updateDelayTime();
       this.updateMixMode();
+    }
+
+    // ── שלב 1.1: שלח נתוני רדיו ל-CausalComposerWorker ──
+    // כל 2 שניות (כל 20 ticks של detect ב-100ms), שלח BPM/סולם/מפתח/energy/סגנון
+    this._radioToWorkerCounter = (this._radioToWorkerCounter || 0) + 1;
+    if (this._radioToWorkerCounter >= 20) {
+      this._radioToWorkerCounter = 0;
+      this.sendRadioDataToWorker(radioSnap, transportSnap);
+    }
+
+    // ── שלב 1.4: הימנעות מהתנגשויות — occupancy-based ducking ──
+    // אם הרדיו מנגן kick/bass/lead חזק, הורד את PSY4 באותו ערוץ
+    if (this.radioOn && this.playing) {
+      const now = this.ctx.currentTime;
+      // דאקינג דינמי לפי occupancy של הרדיו
+      if (this.kickDuck && this.bassDuck && this.leadDuck && this.hatDuck) {
+        // אם רדיו מנגן kick חזק, הורד PSY4 bass ב-70%
+        const kickDuckVal = this.occupancy.kick > 0.7 ? 0.3 : 1.0;
+        this.kickDuck.gain.setTargetAtTime(kickDuckVal, now, 0.05);
+        // אם רדיו מנגן bass חזק, הורד PSY4 bass ב-50%
+        const bassDuckVal = this.occupancy.bass > 0.75 ? 0.5 : 1.0;
+        this.bassDuck.gain.setTargetAtTime(bassDuckVal, now, 0.08);
+        // אם רדיו מנגן lead חזק, הורד PSY4 lead ב-50%
+        const leadDuckVal = this.occupancy.lead > 0.85 ? 0.5 : 1.0;
+        this.leadDuck.gain.setTargetAtTime(leadDuckVal, now, 0.1);
+        this.hatDuck.gain.setTargetAtTime(1.0, now, 0.1);
+      }
     }
 
     // PERF: buffer bass freq observations too (cheap to push, expensive to process)
