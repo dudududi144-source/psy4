@@ -947,6 +947,11 @@ export class PsyLive {
       this.engineNode.play();
       const savedBpm = this.loadMemoryBpm();
       this.engineNode.setBPM(savedBpm);
+      // תיקון קריטי: עדכן גם את transport + worker עם ה-BPM השמור
+      if (this.transport) this.transport.setTempo(savedBpm, 'internal');
+      if (this.compositionWorker && this.workerReady) {
+        this.compositionWorker.postMessage({ type: 'setBPM', bpm: savedBpm });
+      }
       this.loadLearnedParamsFromMemory();
     } else {
       // Worklet not ready — poll until it is
@@ -957,6 +962,10 @@ export class PsyLive {
           this.engineNode.play();
           const savedBpm = this.loadMemoryBpm();
           this.engineNode.setBPM(savedBpm);
+          if (this.transport) this.transport.setTempo(savedBpm, 'internal');
+          if (this.compositionWorker && this.workerReady) {
+            this.compositionWorker.postMessage({ type: 'setBPM', bpm: savedBpm });
+          }
           this.loadLearnedParamsFromMemory();
           this.sendInitialCompose();
         }
@@ -1222,6 +1231,16 @@ export class PsyLive {
               this._lastSentRadioBpm = avgBpm;
               this.saveMemoryBpm(avgBpm);
               console.log(`[PSY4] 🔒 BPM LOCKED at ${avgBpm.toFixed(1)} (stable for 10s)`);
+            } else {
+              // תיקון: שמור את ה-BPM גם לפני lock — כדי שיהיה זיכרון גם אם לא מתייצב
+              if (Math.abs(avgBpm - this._lastSentRadioBpm) > 2) {
+                this.compositionWorker.postMessage({ type: 'setBPM', bpm: avgBpm });
+                if (this.transport) this.transport.setTempo(avgBpm, 'radio');
+                if (this.engineNode) this.engineNode.setBPM(avgBpm);
+                this._lastSentRadioBpm = avgBpm;
+                this.saveMemoryBpm(avgBpm);
+                console.log(`[PSY4] BPM updated (pre-lock): ${avgBpm.toFixed(1)} (stable ${this._bpmStableTime}s/10s)`);
+              }
             }
           } else {
             this._bpmStableTime = 0;
