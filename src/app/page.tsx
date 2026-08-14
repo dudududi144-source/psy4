@@ -390,6 +390,54 @@ export default function Page() {
             )}
           </div>
 
+          {/* ═══ LOOP LEARNER ═══ */}
+          <div className="rounded-xl p-4 space-y-3 md:col-span-2" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+            <div className="flex items-center gap-2 mb-1">
+              <Activity className="w-4 h-4 text-amber-400" />
+              <span className="text-xs uppercase tracking-wider font-bold text-slate-400">Loop Learner</span>
+              <span className="text-[10px] text-slate-500 ml-auto">למידה מקובץ</span>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                type="file"
+                accept="audio/*,.mp3,.wav,.ogg,.m4a"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file || !engineRef.current) return;
+                  await engineRef.current.loadLoopFile(file);
+                }}
+                disabled={!s.playing}
+                className="text-[10px] text-slate-300 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-amber-400/20 file:text-amber-300 hover:file:bg-amber-400/30 file:cursor-pointer"
+              />
+              <button
+                onClick={() => engineRef.current?.stopLoop()}
+                disabled={!s.playing || !engineRef.current?.isLoopRunning()}
+                className="px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}
+              >
+                Stop Loop
+              </button>
+              <div className="flex items-center gap-2 flex-1 min-w-[120px]">
+                <Volume2 className="w-3 h-3 text-slate-400" />
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  defaultValue={0.5}
+                  onChange={e => engineRef.current?.setLoopVolume(parseFloat(e.target.value))}
+                  disabled={!s.playing}
+                  className="w-full accent-amber-400"
+                  style={{ height: '4px' }}
+                />
+              </div>
+            </div>
+            <div className="text-[10px] text-slate-500">
+              העלה קובץ אודיו (MP3/WAV/OGG) — המנוע ינגן אותו בלולאה וילמד ממנו.
+              עובד עם כל קובץ, כולל הקלטות שהורדת.
+            </div>
+          </div>
+
           {/* ═══ SOUND PACKAGE ═══ */}
           <div className="rounded-xl p-4 space-y-3 md:col-span-2" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
             <div className="flex items-center gap-2 mb-1">

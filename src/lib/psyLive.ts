@@ -35,6 +35,8 @@ import { StyleClassifier, type RadioStyle, type StyleFeatures, type Classificati
 import { PackageExporter, PackageImporter, type SoundPackage, type PackagePattern, type PackageInsights } from './soundPackage';
 // שלב 5.2: Original synthesis generation
 import { SynthesisGenerator, type GenerationResult } from './synthesisGenerator';
+// שלב 5: Loop learner (למידה מקבצי אודיו)
+import { LoopLearner } from './loopLearner';
 // ADR-001: CausalComposer runs on a Web Worker now. This import is kept for type compatibility
 // but the actual composition happens in public/worklets/composition-worker.js
 // SamplerBridge import REMOVED — fully dead code
@@ -387,6 +389,8 @@ export class PsyLive {
   private packageImporter: PackageImporter | null = null;
   // שלב 5.2: Synthesis generator (וריאציות מקוריות)
   private synthesisGenerator: SynthesisGenerator | null = null;
+  // שלב 5: Loop learner (למידה מקבצי אודיו)
+  private loopLearner: LoopLearner | null = null;
   // שלב 4.5: טיימר eviction תקופתי (כל 60s)
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
   // שלב 4.4: איטרציה אוטומטית — כל 30s, סרוק role פעיל
@@ -1526,6 +1530,8 @@ export class PsyLive {
         this.packageImporter = new PackageImporter(this.soundBank);
         // שלב 5.2: אתחל Synthesis generator
         this.synthesisGenerator = new SynthesisGenerator(this.synthesisMatcher, this.soundBank);
+        // שלב 5: אתחל Loop learner
+        this.loopLearner = new LoopLearner(this);
       } else {
         console.warn('[PSY4] Worklet init failed — using MaterialRealizer fallback');
         this.realizer?.loadSamples().catch(() => {});
@@ -2893,5 +2899,47 @@ export class PsyLive {
       if (result) results.push(result);
     }
     return results;
+  }
+
+  // ── שלב 5: Loop learner (למידה מקבצי אודיו) ──
+
+  /**
+   * טוען קובץ אודיו ומתחיל ללמוד ממנו בלולאה.
+   * הקובץ מתנגן ברקע וה-learning פועל עליו.
+   */
+  async loadLoopFile(file: File): Promise<boolean> {
+    if (!this.loopLearner) {
+      console.warn('[PSY4] LoopLearner not ready');
+      return false;
+    }
+    return this.loopLearner.loadFile(file);
+  }
+
+  /**
+   * עוצר את ה-loop.
+   */
+  stopLoop(): void {
+    this.loopLearner?.stop();
+  }
+
+  /**
+   * האם ה-loop פעיל.
+   */
+  isLoopRunning(): boolean {
+    return this.loopLearner?.isRunning() ?? false;
+  }
+
+  /**
+   * קובע עוצמת שמע ל-loop.
+   */
+  setLoopVolume(v: number): void {
+    this.loopLearner?.setVolume(v);
+  }
+
+  /**
+   * מחזיר את ה-LoopLearner (ל-UI).
+   */
+  getLoopLearner(): LoopLearner | null {
+    return this.loopLearner;
   }
 }
