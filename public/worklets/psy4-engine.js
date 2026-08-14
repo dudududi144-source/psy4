@@ -2227,7 +2227,12 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         }
         // Trigger sidechain — DEEPER duck for real psytrance groove
         // 6dB depth (was ~3-4dB) — commercial psytrance has obvious pumping
-        this.duckEnv = 1 - wp.duck * (0.5 + mc.aggression * 0.5);  // FIX: was *0.7 — deeper duck
+        this.duckEnv = 1 - wp.duck * (0.5 + mc.aggression * 0.5);
+        // FIX: Ensure duckEnv never goes below 0.3 — was killing all audio when
+        // duck=0.6 and aggression=0.4: duckEnv = 1 - 0.6*0.7 = 0.58 (OK)
+        // But if aggression is high: 1 - 0.6*1.0 = 0.4 — still OK
+        // The real issue was lead ducking was NEW and the recovery was too slow
+        this.duckEnv = Math.max(0.3, this.duckEnv);
         break;
       }
       case V_BASS: {
@@ -2581,7 +2586,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
 
       // Sidechain envelope recovery
       if (duckEnvRef.duckEnv < 1) {
-        duckEnvRef.duckEnv += (1 - duckEnvRef.duckEnv) * (dt / 0.25);
+        duckEnvRef.duckEnv += (1 - duckEnvRef.duckEnv) * (dt / 0.15);  // FIX: was 0.25 — faster recovery = less ducking overlap
       }
 
       // Mix all active voices into stereo buses (SINGLE LOOP)
