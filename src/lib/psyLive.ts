@@ -1203,8 +1203,8 @@ export class PsyLive {
 
       if (this._bpmHistory.length >= 3) {
         const avgBpm = this._bpmHistory.reduce((a, b) => a + b, 0) / this._bpmHistory.length;
-        // תיקון: הרחב את הטווח ל-±4 BPM (רדיו PLL לא תמיד מדויק)
-        const stable = this._bpmHistory.every(b => Math.abs(b - avgBpm) < 4);
+        // תיקון: הרחב את הטווח ל-±6 BPM (רדיו PLL קופץ הרבה)
+        const stable = this._bpmHistory.every(b => Math.abs(b - avgBpm) < 6);
 
         if (this._bpmLocked) {
           // BPM נעול — ודא שה-transport תמיד על ה-lockedBpm
