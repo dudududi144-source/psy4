@@ -2842,35 +2842,35 @@ export class PsyLive {
     if (json) return; // כבר יש params — לא צריך ליצור
     if (!this.engineNode) return;
 
-    // צור params אקראיים דרמטיים
+    // צור params אקראיים דרמטיים — טווחים רחבים לשינוי ברור
     const params: Record<string, Record<string, number>> = {
       KickVoice: {
-        fund: 38 + Math.floor(Math.random() * 20),  // 38-58
-        startMult: 2.0 + Math.random() * 3.5,       // 2.0-5.5
-        subDecay: 0.08 + Math.random() * 0.22,      // 0.08-0.30
-        saturation: 1.0 + Math.random() * 1.5,      // 1.0-2.5
-        pitchDecay: 0.015 + Math.random() * 0.025,  // 0.015-0.04
-        midLevel: 0.3 + Math.random() * 0.4,        // 0.3-0.7
-        clickLevel: 0.3 + Math.random() * 0.4,      // 0.3-0.7
+        fund: 35 + Math.floor(Math.random() * 35),   // 35-70 (was 38-58)
+        startMult: 1.5 + Math.random() * 4.0,        // 1.5-5.5
+        subDecay: 0.05 + Math.random() * 0.30,       // 0.05-0.35
+        saturation: 0.8 + Math.random() * 2.0,       // 0.8-2.8
+        pitchDecay: 0.010 + Math.random() * 0.035,   // 0.010-0.045
+        midLevel: 0.2 + Math.random() * 0.6,         // 0.2-0.8
+        clickLevel: 0.2 + Math.random() * 0.6,       // 0.2-0.8
       },
       BassVoice: {
-        subLevel: 0.30 + Math.random() * 0.30,      // 0.30-0.60
-        cutoffStart: 400 + Math.floor(Math.random() * 1100), // 400-1500
-        cutoffEnd: 100 + Math.floor(Math.random() * 300),    // 100-400
-        cutoffDecay: 0.02 + Math.random() * 0.06,   // 0.02-0.08
-        harmonicLevel: 0.4 + Math.random() * 0.3,   // 0.4-0.7
+        subLevel: 0.25 + Math.random() * 0.45,       // 0.25-0.70
+        cutoffStart: 200 + Math.floor(Math.random() * 2000), // 200-2200
+        cutoffEnd: 80 + Math.floor(Math.random() * 400),     // 80-480
+        cutoffDecay: 0.015 + Math.random() * 0.08,   // 0.015-0.095
+        harmonicLevel: 0.3 + Math.random() * 0.5,    // 0.3-0.8
       },
       LeadVoice: {
-        cutoff: 2000 + Math.floor(Math.random() * 3000), // 2000-5000
-        detune: 5 + Math.floor(Math.random() * 15),      // 5-20
+        cutoff: 1500 + Math.floor(Math.random() * 4000), // 1500-5500
+        detune: 3 + Math.floor(Math.random() * 25),      // 3-28
       },
       HatVoice: {
-        hatDecay: 0.02 + Math.random() * 0.06,       // 0.02-0.08
-        hatDecayOpen: 0.10 + Math.random() * 0.20,   // 0.10-0.30
-        hatBrightness: 0.5 + Math.random() * 1.5,    // 0.5-2.0
+        hatDecay: 0.015 + Math.random() * 0.08,      // 0.015-0.095
+        hatDecayOpen: 0.08 + Math.random() * 0.25,   // 0.08-0.33
+        hatBrightness: 0.3 + Math.random() * 2.5,    // 0.3-2.8
       },
       ClapVoice: {
-        clapDecay: 0.02 + Math.random() * 0.06,      // 0.02-0.08
+        clapDecay: 0.015 + Math.random() * 0.08,     // 0.015-0.095
       },
     };
 

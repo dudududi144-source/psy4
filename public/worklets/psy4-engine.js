@@ -1733,7 +1733,8 @@ class MasterChain {
     this.tpPrevInput = sample;
 
     // 5. FINAL TANH (soft clip safety — prevents any remaining overshoot)
-    return fastTanh(output * this.gain);
+    // Makeup gain 1.5x — boost overall level
+    return fastTanh(output * this.gain * 1.5);
   }
 }
 
@@ -2198,16 +2199,6 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     const wp = this.worldParams;
     const mc = this.macros;
     const t = 0; // relative time — voice uses its own internal clock
-
-    // DEBUG: log voice triggers
-    if (!this._voiceLog) this._voiceLog = {};
-    this._voiceLog[voiceId] = (this._voiceLog[voiceId] || 0) + 1;
-    if (this._voiceLogCounter === undefined) this._voiceLogCounter = 0;
-    this._voiceLogCounter++;
-    if (this._voiceLogCounter >= 100) {
-      this.port.postMessage({ type: 'debugResult', query: 'voiceLog', data: this._voiceLog });
-      this._voiceLogCounter = 0;
-    }
 
     switch (voiceId) {
       case V_KICK: {
