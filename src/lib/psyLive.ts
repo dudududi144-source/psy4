@@ -957,6 +957,8 @@ export class PsyLive {
         this.compositionWorker.postMessage({ type: 'setBPM', bpm: savedBpm });
       }
       this.loadLearnedParamsFromMemory();
+      // תיקון: אם אין params שמורים, צור defaults אקראיים כדי שלא יהיה אותו סאונד כל פעם
+      this.ensureDefaultLearnedParams();
     } else {
       // Worklet not ready — poll until it is
       this._playPollInterval = setInterval(() => {
@@ -971,6 +973,7 @@ export class PsyLive {
             this.compositionWorker.postMessage({ type: 'setBPM', bpm: savedBpm });
           }
           this.loadLearnedParamsFromMemory();
+          this.ensureDefaultLearnedParams();
           this.sendInitialCompose();
         }
       }, 50);
@@ -2827,6 +2830,54 @@ export class PsyLive {
     } catch (e) {
       console.warn('[PSY4] MEMORY load failed:', e);
     }
+  }
+
+  /**
+   * תיקון קריטי: אם אין params שמורים, צור defaults אקראיים.
+   * זה מבטיח שהמנוע לעולם לא מנגן את אותו הסאונד פעמיים.
+   * ה-params נשמרים ל-localStorage כדי שהפעם הבאה יהיה המשכיות.
+   */
+  private ensureDefaultLearnedParams(): void {
+    const json = localStorage.getItem(PsyLive.MEMORY_KEY_PARAMS);
+    if (json) return; // כבר יש params — לא צריך ליצור
+    if (!this.engineNode) return;
+
+    // צור params אקראיים דרמטיים
+    const params: Record<string, Record<string, number>> = {
+      KickVoice: {
+        fund: 38 + Math.floor(Math.random() * 20),  // 38-58
+        startMult: 2.0 + Math.random() * 3.5,       // 2.0-5.5
+        subDecay: 0.08 + Math.random() * 0.22,      // 0.08-0.30
+        saturation: 1.0 + Math.random() * 1.5,      // 1.0-2.5
+        pitchDecay: 0.015 + Math.random() * 0.025,  // 0.015-0.04
+        midLevel: 0.3 + Math.random() * 0.4,        // 0.3-0.7
+        clickLevel: 0.3 + Math.random() * 0.4,      // 0.3-0.7
+      },
+      BassVoice: {
+        subLevel: 0.30 + Math.random() * 0.30,      // 0.30-0.60
+        cutoffStart: 400 + Math.floor(Math.random() * 1100), // 400-1500
+        cutoffEnd: 100 + Math.floor(Math.random() * 300),    // 100-400
+        cutoffDecay: 0.02 + Math.random() * 0.06,   // 0.02-0.08
+        harmonicLevel: 0.4 + Math.random() * 0.3,   // 0.4-0.7
+      },
+      LeadVoice: {
+        cutoff: 2000 + Math.floor(Math.random() * 3000), // 2000-5000
+        detune: 5 + Math.floor(Math.random() * 15),      // 5-20
+      },
+    };
+
+    // שלח ל-engine
+    for (const [voiceClass, recipe] of Object.entries(params)) {
+      this.engineNode.node.port.postMessage({
+        type: 'setVoiceRecipe',
+        voiceClass,
+        recipe,
+      });
+    }
+
+    // שמור ל-localStorage
+    this.saveLearnedParamsToMemory(params);
+    console.log('[PSY4] יצירת params אקראיים ראשוניים (no saved params):', JSON.stringify(params).slice(0, 100));
   }
 
   /**
