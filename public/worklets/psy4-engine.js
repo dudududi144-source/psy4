@@ -1495,44 +1495,8 @@ class BusProcessor {
   }
 
   process(sample, sr) {
-    const dt = 1 / sr;
-
-    // 1. HP FILTER: Remove subsonic mud (configurable per bus)
-    if (this.config.hpFreq && this.config.hpFreq > 0) {
-      const hpA = (1 / sr) * 2 * Math.PI * this.config.hpFreq;
-      this.hpState += hpA * (sample - this.hpState) / (1 + hpA);
-      sample = sample - this.hpState;
-    }
-
-    // 2. COMPRESSION: Simple envelope-follower compressor
-    //    Drum bus: fast attack/release, moderate ratio (punchy)
-    //    Bass bus: medium attack/release, low ratio (controlled)
-    //    Music bus: slow attack/release, low ratio (glue)
-    if (this.config.compThr) {
-      const abs = Math.abs(sample);
-      const att = this.config.compAtt || 0.003;
-      const rel = this.config.compRel || 0.1;
-      if (abs > this.compEnv) {
-        this.compEnv += (abs - this.compEnv) * (dt / att);
-      } else {
-        this.compEnv += (abs - this.compEnv) * (dt / rel);
-      }
-      if (this.compEnv > this.config.compThr) {
-        const over = this.compEnv - this.config.compThr;
-        const ratio = this.config.compRatio || 2;
-        const reduction = over * (1 - 1 / ratio);
-        const compGain = (this.compEnv - reduction) / this.compEnv;
-        sample *= compGain;
-      }
-      // Makeup gain
-      sample *= this.config.compMakeup || 1.2;
-    }
-
-    // 3. SATURATION: Add warmth and harmonics
-    if (this.drive > 1.0) {
-      sample = fastTanh(sample * this.drive);
-    }
-
+    // תיקון: דלג על כל העיבוד — HP, compressor, saturation.
+    // רק gain ישיר. העיבוד הרג את הסאונד.
     return sample * this.gain;
   }
 }
