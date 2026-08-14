@@ -897,16 +897,18 @@ class HatVoice {
     this.t = 0;
     this.noise = new PinkNoise();
     this.prevNoise = 0;
-    // PERF-ZERO-ALLOC: preallocated output buffer
+    this.decay = 0.03;
+    this.brightness = 1.0;
     this._out = new Float32Array(2);
   }
 
-  trigger(time, open, amp, sr) {
+  trigger(time, open, amp, sr, params) {
     this.active = true;
     this.t = 0;
     this.open = open;
     this.amp = amp;
-    this.decay = open ? 0.22 : 0.03;
+    this.decay = (params && params.hatDecay) ? params.hatDecay : (open ? 0.22 : 0.03);
+    this.brightness = (params && params.hatBrightness) ? params.hatBrightness : 1.0;
     this.prevNoise = 0;
     this.noise.reset();
   }
@@ -2336,87 +2338,28 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_HAT: {
-        // PHRASE-LOCKED HAT: Same hat sample for entire phrase (sonic consistency)
-        if (this.samplesReady) {
-          const hatNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'hat');
-          const realHatNames = hatNames.filter(n => n.startsWith('md_') || n.startsWith('nord') || n.startsWith('909') || n.startsWith('real/'));
-          const names = realHatNames.length > 0 ? realHatNames : hatNames;
-          if (names.length > 0) {
-            if (this.phraseHatIdx === undefined || this.phraseHatIdx >= names.length) this.phraseHatIdx = 0;
-            const hatName = names[this.phraseHatIdx];
-            const v = this.getFreeVoice(this.hatSamplePool);
-            if (v) {
-              const samp = this.samples[hatName];
-              // Micro variation (not sample rotation)
-              const microVar = (this.rrCounters.hat % 4 - 1.5);
-              const pitchVar = 1.0 + microVar * 0.003;
-              const panVar = microVar * 0.03;
-              this.rrCounters.hat = (this.rrCounters.hat + 1) % 4;
-              v.trigger(samp.data, samp.sampleRate, pitchVar, velocity, 0.04, panVar);
-              this.sampleUsage[hatName] = (this.sampleUsage[hatName] || 0) + 1;
-            }
-          } else {
-            const v = this.getFreeVoice(this.hatPool);
-            if (v) v.trigger(t, false, velocity, sr);
-          }
-        } else {
-          const v = this.getFreeVoice(this.hatPool);
-          if (v) v.trigger(t, false, velocity, sr);
-        }
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.HatVoice) || {};
+        const v = this.getFreeVoice(this.hatPool);
+        if (v) v.trigger(t, false, velocity, sr, {
+          hatDecay: lp.hatDecay ?? 0.03,
+          hatBrightness: lp.hatBrightness ?? 1.0,
+        });
         break;
       }
       case V_HAT_OPEN: {
-        // Use REAL open hat sample — cycle through variants
-        if (this.samplesReady) {
-          const openNames = Object.keys(this.samples).filter(n => n.startsWith('hat_open'));
-          const names = openNames.length > 0 ? openNames : ['hat_open.wav'];
-          if (this.samples[names[0]]) {
-            const hatName = names[this.rrCounters.hat % names.length];
-            const v = this.getFreeVoice(this.hatSamplePool);
-            if (v) {
-              const samp = this.samples[hatName];
-              this.rrCounters.hat = (this.rrCounters.hat + 1) % Math.max(8, names.length);
-              const pitchVar = 1.0 + (this.rrCounters.hat % 8 - 3.5) * 0.005;
-              const panVar = (this.rrCounters.hat % 8 - 3.5) * 0.04;
-              v.trigger(samp.data, samp.sampleRate, pitchVar, velocity, 0.2, panVar);
-            }
-          } else {
-            const v = this.getFreeVoice(this.hatPool);
-            if (v) v.trigger(t, true, velocity, sr);
-          }
-        } else {
-          const v = this.getFreeVoice(this.hatPool);
-          if (v) v.trigger(t, true, velocity, sr);
-        }
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.HatVoice) || {};
+        const v = this.getFreeVoice(this.hatPool);
+        if (v) v.trigger(t, true, velocity, sr, {
+          hatDecay: lp.hatDecayOpen ?? 0.22,
+          hatBrightness: lp.hatBrightness ?? 1.0,
+        });
         break;
       }
       case V_CLAP: {
-        // PHRASE-LOCKED CLAP: Same clap/snare for entire phrase
-        if (this.samplesReady) {
-          const clapNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'clap');
-          const realClapNames = clapNames.filter(n => n.startsWith('nord') || n.startsWith('909') || n.startsWith('real') || n.startsWith('md_'));
-          const names = realClapNames.length > 0 ? realClapNames : clapNames;
-          if (names.length > 0) {
-            if (this.phraseClapIdx === undefined || this.phraseClapIdx >= names.length) this.phraseClapIdx = 0;
-            const clapName = names[this.phraseClapIdx];
-            const v = this.getFreeVoice(this.clapSamplePool);
-            if (v) {
-              const samp = this.samples[clapName];
-              const microVar = (this.rrCounters.clap % 4 - 1.5);
-              const pitchVar = 1.0 + microVar * 0.002;
-              const gainVar = 1.0 + microVar * 0.02;
-              this.rrCounters.clap = (this.rrCounters.clap + 1) % 4;
-              v.trigger(samp.data, samp.sampleRate, pitchVar, velocity * gainVar, 0.15, 0);
-              this.sampleUsage[clapName] = (this.sampleUsage[clapName] || 0) + 1;
-            }
-          } else {
-            const v = this.getFreeVoice(this.clapPool);
-            if (v) v.trigger(t, velocity, sr);
-          }
-        } else {
-          const v = this.getFreeVoice(this.clapPool);
-          if (v) v.trigger(t, velocity, sr);
-        }
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.ClapVoice) || {};
+        const v = this.getFreeVoice(this.clapPool);
+        if (v) v.trigger(t, velocity, sr);
+        if (lp.clapDecay !== undefined && v) v.decay = lp.clapDecay;
         break;
       }
       case V_SNARE: {

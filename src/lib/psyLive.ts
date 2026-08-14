@@ -2864,6 +2864,14 @@ export class PsyLive {
         cutoff: 2000 + Math.floor(Math.random() * 3000), // 2000-5000
         detune: 5 + Math.floor(Math.random() * 15),      // 5-20
       },
+      HatVoice: {
+        hatDecay: 0.02 + Math.random() * 0.06,       // 0.02-0.08
+        hatDecayOpen: 0.10 + Math.random() * 0.20,   // 0.10-0.30
+        hatBrightness: 0.5 + Math.random() * 1.5,    // 0.5-2.0
+      },
+      ClapVoice: {
+        clapDecay: 0.02 + Math.random() * 0.06,      // 0.02-0.08
+      },
     };
 
     // שלח ל-engine
