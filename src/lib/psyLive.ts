@@ -1289,6 +1289,9 @@ export class PsyLive {
         if (this.useWorklet && this.engineNode && msg.count > 0) {
           const flat = msg.events;
           const EVENT_SIZE = 6;
+          // FIX: Check if events are in the future — don't schedule past events
+          const now = this.ctx.currentTime;
+          let scheduled = 0;
           for (let i = 0; i < msg.count; i++) {
             const base = i * EVENT_SIZE;
             const at = flat[base];
@@ -1297,12 +1300,16 @@ export class PsyLive {
             const duration = flat[base + 3];
             const voiceId = flat[base + 4] as VoiceId;
             const param = flat[base + 5];
-            // Track kick count + bass freq for UI
+            // Skip events that are too far in the past (> 0.5s behind)
+            if (at < now - 0.5) continue;
             if (voiceId === VOICE.KICK) this.kickCount++;
             if (voiceId === VOICE.BASS && note > 0) this.bassFreq = mtof(note);
             this.engineNode.scheduleEvent(at, voiceId, note, velocity, duration, param);
+            scheduled++;
           }
-          this.engineNode.flushEvents();
+          if (scheduled > 0) {
+            this.engineNode.flushEvents();
+          }
         }
         break;
       }
