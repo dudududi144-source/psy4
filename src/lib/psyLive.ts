@@ -1207,7 +1207,17 @@ export class PsyLive {
         const stable = this._bpmHistory.every(b => Math.abs(b - avgBpm) < 4);
 
         if (this._bpmLocked) {
-          // BPM נעול — בדוק רק drift גדול
+          // BPM נעול — ודא שה-transport תמיד על ה-lockedBpm
+          const currentTransportBpm = this.transport ? this.transport.snapshot().bpm : 0;
+          if (Math.abs(currentTransportBpm - this._lockedBpm) > 0.5) {
+            if (this.transport) this.transport.setTempo(this._lockedBpm, 'internal');
+            if (this.engineNode) this.engineNode.setBPM(this._lockedBpm);
+            if (this.compositionWorker && this.workerReady) {
+              this.compositionWorker.postMessage({ type: 'setBPM', bpm: this._lockedBpm });
+            }
+            console.log(`[PSY4] BPM re-locked to ${this._lockedBpm.toFixed(1)} (transport was ${currentTransportBpm.toFixed(1)})`);
+          }
+          // בדוק drift גדול
           if (Math.abs(avgBpm - this._lockedBpm) > 5) {
             this._bpmDriftTime = (this._bpmDriftTime || 0) + 2; // כל tick = ~2s
             if (this._bpmDriftTime >= 5) {
