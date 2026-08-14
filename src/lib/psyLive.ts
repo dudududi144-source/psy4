@@ -736,47 +736,6 @@ export class PsyLive {
   // Kick: transient + pitch-drop body + sub body + controlled tail
   // Bass: sub + mid (harmonic pluck) + character (transient) — 80ms decay
 
-  private kick(t: number, velocity = 0.9): void {
-    if (!this.ctx || !this.kickBus) return;
-    const v = Math.max(0.1, Math.min(1, velocity));
-
-    // 1. TRANSIENT — sharp click (3ms)
-    if (this.noiseBuf) {
-      const click = this.ctx.createBufferSource(); click.buffer = this.noiseBuf;
-      const clickHp = this.ctx.createBiquadFilter(); clickHp.type = 'highpass'; clickHp.frequency.value = 5000;
-      const clickGain = this.ctx.createGain();
-      clickGain.gain.setValueAtTime(0.4 * v, t);
-      clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.003);
-      click.connect(clickHp); clickHp.connect(clickGain); clickGain.connect(this.kickBus);
-      click.start(t); click.stop(t + 0.005);
-    }
-
-    // 2. PITCH-DROP BODY — 120→48Hz in 15ms, 80ms decay (matches reference)
-    const body = this.ctx.createOscillator(); body.type = 'sine';
-    body.frequency.setValueAtTime(120, t);
-    body.frequency.exponentialRampToValueAtTime(48, t + 0.015);
-    const bodyGain = this.ctx.createGain();
-    bodyGain.gain.setValueAtTime(0, t);
-    bodyGain.gain.linearRampToValueAtTime(0.8 * v, t + 0.0005); // 0.5ms attack
-    bodyGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08); // 80ms decay
-    // F22 AUDIO FIX: Removed waveshaper from bus path.
-    // The waveshaper was on the shared kickBus, causing intermodulation
-    // distortion between kick and bass that created sustained bleed.
-    // Saturation is now applied PER-VOICE (each voice has its own shaper
-    // before connecting to the bus, not after).
-    body.connect(bodyGain); bodyGain.connect(this.kickBus);
-    body.start(t); body.stop(t + 0.09);
-
-    // 3. SUB BODY — 48Hz weight (100ms tail)
-    const sub = this.ctx.createOscillator(); sub.type = 'sine';
-    sub.frequency.setValueAtTime(48, t);
-    const subGain = this.ctx.createGain();
-    subGain.gain.setValueAtTime(0, t);
-    subGain.gain.linearRampToValueAtTime(0.5 * v, t + 0.003);
-    subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
-    sub.connect(subGain); subGain.connect(this.kickBus);
-    sub.start(t); sub.stop(t + 0.11);
-  }
 
   private hat(t: number, lvl: number, open = false): void {
     if (!this.ctx || !this.hatBus || !this.noiseBuf) return;
@@ -793,128 +752,8 @@ export class PsyLive {
   }
 
   // F22 P0-F: Convert learned TimbreProfile to SynthRecipe for voice functions
-  private timbreToRecipe(timbre: any): { oscType: OscillatorType; oscLayers: number; filterCutoff: number; filterResonance: number; saturationAmount: number; stereoWidth: number } {
-    const params = timbre.synthParams || {};
-    return {
-      oscType: (params.bassWave || params.leadWave || 'sawtooth') as OscillatorType,
-      oscLayers: timbre.harmonicity > 0.6 ? 3 : 2,
-      filterCutoff: params.bassCut || params.leadCut || 600,
-      filterResonance: 1 + (timbre.roughness ?? 0.3) * 6,
-      saturationAmount: params.bassSaturation ?? params.leadSaturation ?? 0.3,
-      stereoWidth: timbre.stereoWidth ?? 0.3,
-    };
-  }
 
-  private bass(t: number, freq: number, v: Variant, velocity = 0.85): void {
-    if (!this.ctx || !this.bassBus) return;
-    const vel = Math.max(0.1, Math.min(1, velocity));
-    // F22 P0-F: SoundDNA reaches audio graph.
-    // Voice function reads SynthRecipe from learned timbre, overriding
-    // the hardcoded preset variant. If no recipe, falls back to variant.
-    const timbre = null; // MusicalSession REMOVED — no timbre profile
-    const recipe = timbre ? this.timbreToRecipe(timbre) : null;
-    const oscType = recipe?.oscType ?? v.bassWave;
-    const layers = recipe?.oscLayers ?? 2;
-    const cutoff = recipe?.filterCutoff ?? v.bassCut;
-    const resonance = recipe?.filterResonance ?? v.bassQ;
-    const satAmount = recipe?.saturationAmount ?? 0.4;
 
-    // F22: Layered bass — sub + mid (harmonic pluck) + character (transient)
-    // KEY FIX: 65ms decay using LINEAR ramp (exponential never reaches silence)
-    // Reference: sub=0.4 peak, 65ms decay; mid=0.25 peak, 65ms decay
-    // 1. SUB — mono fundamental
-    const sub = this.ctx.createOscillator();
-    sub.type = 'sine';
-    sub.frequency.value = freq;
-    const subGain = this.ctx.createGain();
-    subGain.gain.setValueAtTime(0.0001, t);
-    subGain.gain.linearRampToValueAtTime(0.4 * vel, t + 0.001); // 1ms attack
-    subGain.gain.linearRampToValueAtTime(0.0, t + 0.065); // 65ms LINEAR decay to ZERO
-    sub.connect(subGain); subGain.connect(this.bassBus);
-    sub.start(t); sub.stop(t + 0.07);
-
-    // 2. MID — harmonic oscillator through rapidly closing LPF (the pluck)
-    const mid = this.ctx.createOscillator(); mid.type = oscType; mid.frequency.value = freq;
-    const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.Q.value = resonance;
-    // Filter starts open, closes fast — creates the psy bass pluck character
-    const fStart = Math.max(1000, cutoff);
-    const fEnd = Math.max(150, cutoff * 0.25);
-    filter.frequency.setValueAtTime(fStart, t);
-    filter.frequency.exponentialRampToValueAtTime(fEnd, t + 0.025); // 25ms filter close
-    const midGain = this.ctx.createGain();
-    midGain.gain.setValueAtTime(0.0001, t);
-    midGain.gain.linearRampToValueAtTime(0.25 * vel, t + 0.001); // 1ms attack
-    midGain.gain.linearRampToValueAtTime(0.0, t + 0.065); // 65ms LINEAR decay to ZERO
-    // F22 AUDIO FIX: Removed shared waveshaper — was causing intermodulation bleed
-    mid.connect(filter); filter.connect(midGain); midGain.connect(this.bassBus);
-
-    // 3. CHARACTER — short noise transient for attack definition
-    if (this.noiseBuf) {
-      const char = this.ctx.createBufferSource(); char.buffer = this.noiseBuf;
-      const charBp = this.ctx.createBiquadFilter(); charBp.type = 'bandpass';
-      charBp.frequency.value = freq * 4; charBp.Q.value = 2;
-      const charGain = this.ctx.createGain();
-      charGain.gain.setValueAtTime(0.15 * vel, t);
-      charGain.gain.exponentialRampToValueAtTime(0.001, t + 0.01); // 10ms transient
-      char.connect(charBp); charBp.connect(charGain); charGain.connect(this.bassBus);
-      char.start(t); char.stop(t + 0.012);
-    }
-
-    if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.06; midGain.connect(send); send.connect(this.delaySend); }
-    mid.start(t); mid.stop(t + 0.07);
-  }
-
-  private lead(t: number, freq: number, v: Variant, accent: boolean): void {
-    if (!this.ctx || !this.leadBus) return;
-    // F22 P0-F: SoundDNA reaches lead audio graph
-    const timbre = null; // MusicalSession REMOVED — no timbre profile
-    const recipe = timbre ? this.timbreToRecipe(timbre) : null;
-    const leadWave = recipe?.oscType ?? v.leadWave;
-    const leadCut = recipe?.filterCutoff ?? v.leadCut;
-    const leadSat = recipe?.saturationAmount ?? 0.2;
-    const stereoW = recipe?.stereoWidth ?? 0.6;
-
-    // F15: Unison lead — 3 detuned oscillators → LPF → stereo → saturation
-    const peakCut = Math.max(200, leadCut * (accent ? 1.2 : 1));
-    const oscs: OscillatorNode[] = [];
-    const detunes = [-7, 0, 7]; // cents — 3-voice unison
-    for (const det of detunes) {
-      const o = this.ctx.createOscillator();
-      o.type = leadWave;
-      o.frequency.value = freq;
-      o.detune.value = det;
-      oscs.push(o);
-    }
-    // F22 P0-F: Stereo width from recipe (was hardcoded ±0.6)
-    const merger = this.ctx.createGain();
-    const panL = this.ctx.createStereoPanner(); panL.pan.value = -stereoW;
-    const panC = this.ctx.createStereoPanner(); panC.pan.value = 0;
-    const panR = this.ctx.createStereoPanner(); panR.pan.value = stereoW;
-    oscs[0].connect(panL); panL.connect(merger);
-    oscs[1].connect(panC); panC.connect(merger);
-    oscs[2].connect(panR); panR.connect(merger);
-
-    // F15: Per-note filter envelope with movement
-    const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass';
-    filter.Q.value = Math.min(7, v.leadQ);
-    filter.frequency.setValueAtTime(300, t);
-    filter.frequency.exponentialRampToValueAtTime(peakCut, t + 0.03);
-    filter.frequency.exponentialRampToValueAtTime(Math.max(400, peakCut * 0.5), t + 0.3);
-    // F15: Longer sustain — notes are melodic, not just stabs
-    const gain = this.ctx.createGain();
-    const peak = Math.max(0.05, v.leadLvl * 0.7 * (accent ? 1 : 0.75));
-    gain.gain.setValueAtTime(0.0001, t);
-    gain.gain.exponentialRampToValueAtTime(peak, t + 0.015);
-    gain.gain.exponentialRampToValueAtTime(peak * 0.4, t + 0.15);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
-    // F15: Light saturation for character
-    // F22 P0-F: Saturation from recipe (was hardcoded k=2)
-    const sat = this.makeShaper(Math.round(leadSat * 10));
-    merger.connect(filter); filter.connect(gain); gain.connect(sat); sat.connect(this.leadBus);
-    if (this.delaySend) { const send = this.ctx.createGain(); send.gain.value = 0.15; gain.connect(send); send.connect(this.delaySend); }
-    if (this.reverbSend) { const rs = this.ctx.createGain(); rs.gain.value = 0.2; gain.connect(rs); rs.connect(this.reverbSend); }
-    for (const o of oscs) { o.start(t); o.stop(t + 0.42); }
-  }
 
   // F15: Waveshaper saturation — adds harmonic content for professional character
   private makeShaper(amount: number): WaveShaperNode {
@@ -1515,20 +1354,6 @@ export class PsyLive {
 
   // F18.5: Apply learned timbre to synthesis parameters.
   // Called from detect() when timbre profile is available.
-  // Maps learned spectral characteristics → synth params (wave, cutoff, saturation).
-  private applyLearnedTimbre(): void {
-    const timbre = null; // MusicalSession REMOVED — no timbre profile
-    if (!timbre || !this.ctx) return;
-    const params = timbre.synthParams;
-    // Apply to active preset variant — modify the variant in-place
-    const v = this.getVariant();
-    // Only override if user hasn't manually set (we check by comparing to defaults)
-    // F18: We override the variant's synth params with learned values
-    (v as any).bassWave = params.bassWave;
-    (v as any).bassCut = params.bassCut;
-    (v as any).leadWave = params.leadWave;
-    (v as any).leadCut = params.leadCut;
-  }
 
   // F18: Check if learning is active (for UI display)
   hasLearnedFromRadio(): boolean { return false; } // MusicalSession REMOVED
@@ -2194,13 +2019,8 @@ export class PsyLive {
     // Was collecting learning data that nobody reads (only BPM/scale used, and
     // those come from learnTick). This was running extractSpectralFeatures every
     // 500ms for nothing. Saves CPU + removes dead code path.
-    // The session field is kept for compatibility but observeRadioTick is never called.
 
-    // F18.5: Apply learned timbre to synthesis parameters
-    // Only when worklet is NOT active (worklet uses its own params via macros)
-    if (!this.useWorklet) {
-      this.applyLearnedTimbre();
-    }
+    // F18.5: applyLearnedTimbre REMOVED — worklet always active, uses learnedVoiceParams
 
     // Update radio level for UI
     this.radioLevel = radioSnap.signal.spectralEnergy;
