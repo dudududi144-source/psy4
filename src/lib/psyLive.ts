@@ -1103,13 +1103,22 @@ export class PsyLive {
           out.connect(this.analyser);
           // analyser already connected to destination
         }
-        // FIX: Disconnect the legacy master chain from destination to prevent double output
-        if (this.safetyLimiter) {
-          this.safetyLimiter.disconnect();
-          // Reconnect only analyser to destination (worklet → analyser → destination)
-          this.analyser.disconnect();
-          this.analyser.connect(this.ctx.destination);
-        }
+        // FIX: Disconnect the legacy master chain completely.
+        // The legacy buses (kickBus, bassBus, etc.) are NOT used by the worklet.
+        // The worklet has its own internal buses + master chain.
+        // But the legacy chain was still connected: engineBus → comp → EQ → master → safetyLimiter → analyser
+        // Even though no audio flows through it, the analyser was connected to BOTH
+        // the worklet AND the legacy chain. Disconnect everything legacy.
+        if (this.engineBus) this.engineBus.disconnect();
+        if (this.comp) this.comp.disconnect();
+        if (this.masterEqLow) this.masterEqLow.disconnect();
+        if (this.masterEqMid) this.masterEqMid.disconnect();
+        if (this.masterEqHigh) this.masterEqHigh.disconnect();
+        if (this.master) this.master.disconnect();
+        if (this.safetyLimiter) this.safetyLimiter.disconnect();
+        // Reconnect analyser to destination (clean path)
+        this.analyser.disconnect();
+        this.analyser.connect(this.ctx.destination);
         // Set default world params
         this.engineNode.setWorld({
           kickFundamental: 50, kickDecay: 0.15,
