@@ -924,8 +924,8 @@ class HatVoice {
     // Raw white noise — directly audible at high frequencies
     const n = this.noise.next();
     const env = Math.exp(-this.t / this.decay);
-    // Direct noise * envelope * gain — no filtering, maximum high-freq content
-    const sample = n * env * 20.0 * this.amp * this.brightness;
+    // 200x gain — hats must be LOUD
+    const sample = n * env * 200.0 * this.amp * this.brightness;
     out[0] = Math.max(-1, Math.min(1, sample));
     return out;
   }
