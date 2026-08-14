@@ -936,7 +936,12 @@ export class PsyLive {
   // scheduler reads transport.snapshot() for beat/bar/phase.
   play(): void {
     this.ensureAudio();
-    if (this.playing) return;
+    // תיקון קריטי: אם playing=true אבל ה-timer לא רץ (אחרי reload), אפס והתחל מחדש
+    if (this.playing && this.timer) return; // כבר מנגן תקין
+    if (this.playing && !this.timer) {
+      // playing=true אבל timer מת — אפס והתחל מחדש
+      this.playing = false;
+    }
     this.playing = true;
     // תיקון P0: מנעון נגד play() כפול + ניקוי polling קודם
     if (this._playPollInterval) {
