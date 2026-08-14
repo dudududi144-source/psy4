@@ -1073,10 +1073,32 @@ export class PsyLive {
     if (this.delay) this.delay.delayTime.value = this.stepDur() * 3;
   }
 
+  // ADAPTIVE QUALITY: Detect device capability
+  private detectDeviceQuality(): { tier: 'high' | 'medium' | 'low'; cores: number; memory: number; isMobile: boolean } {
+    const nav = navigator as any;
+    const cores = nav.hardwareConcurrency || 4;
+    const memory = nav.deviceMemory || 4; // GB
+    const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(nav.userAgent || '');
+    const isTouch = nav.maxTouchPoints > 0;
+
+    let tier: 'high' | 'medium' | 'low' = 'high';
+    if (isMobile || isTouch || cores <= 2 || memory <= 2) {
+      tier = 'low';
+    } else if (cores <= 4 || memory <= 4) {
+      tier = 'medium';
+    }
+
+    return { tier, cores, memory, isMobile };
+  }
+
   // ── AudioWorklet Engine Initialization ──
   private async initWorkletEngine(): Promise<void> {
     if (!this.ctx) return;
     try {
+      // ADAPTIVE QUALITY: Detect device capability and adjust settings
+      const deviceQuality = this.detectDeviceQuality();
+      console.log(`[PSY4] Device quality: ${deviceQuality.tier} (cores: ${deviceQuality.cores}, memory: ${deviceQuality.memory}GB, mobile: ${deviceQuality.isMobile})`);
+
       this.engineNode = new Psy4EngineNode(this.ctx);
       const ok = await this.engineNode.init();
       if (ok) {

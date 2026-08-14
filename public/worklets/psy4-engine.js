@@ -2118,8 +2118,8 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         this.enqueueEvent(msg.time, msg.voice, msg.note, msg.velocity, msg.duration, msg.param);
         break;
       case 'duck':
-        // Trigger sidechain duck
-        this.duckEnv = 1 - this.duckDepth * (0.5 + this.macros.aggression * 0.5);
+        // Trigger sidechain duck (used by triggerImmediate)
+        this.duckEnv = Math.max(0.3, 1 - this.duckDepth * (0.5 + this.macros.aggression * 0.5));
         break;
       case 'panic':
         // Kill all voices
