@@ -8807,3 +8807,50 @@ What CANNOT be verified in sandbox:
 - Needs a REAL browser with network access to the radio stream URL to verify end-to-end
 
 Honest assessment: The wiring is complete and the math is verified, but without live radio audio in the test environment, I cannot confirm the musical result sounds right. The user should test with a real radio stream in a real browser.
+
+---
+Task ID: STAGE-4.1 (per-onset sound analysis)
+Agent: z.ai-code (main)
+Task: שלב 4.1 — Per-onset sound analysis: onset detection → SoundDNA extraction → role classification → ring buffer.
+
+Work Log:
+- Created new file: src/lib/onsetAnalyzer.ts (280 lines) — OnsetAnalyzer class
+  * Onset detection via SPECTRAL FLUX: sum of positive bin-to-bin energy changes in FFT
+  * Cooldown: 80ms between onsets (prevents double-detection)
+  * Rolling baseline: EMA (α=0.05) of spectral flux for adaptive threshold
+  * Threshold: max(rolling × 2.5, minFlux × 1.5) — adapts to loud/quiet passages
+  * Min flux floor: 0.5 — prevents false positives in silence
+  * SoundDNA extraction: combines FFT features (brightness, harmonicity, noisiness, sub/body/mid/high energy) with time-domain features (peak, RMS, transient sharpness from 4-quarter RMS slope, attack/decay/sustain/release estimation)
+  * Role classification: weighted scoring across 5 roles (kick/bass/lead/hat/perc) based on centroid Hz + subEnergy + midEnergy + highEnergy + transientSharpness + noisiness
+  * Ring buffer: 32 onsets per role, 5 roles = 160 max entries
+
+- psyLive.ts: Imported OnsetAnalyzer + OnsetEvent + OnsetRole types
+- psyLive.ts: Added private onsetAnalyzer field (instantiated in-class)
+- psyLive.ts detect(): Calls onsetAnalyzer.process(tdBuf, fd, audioTime, sampleRate, fftSize) every tick (100ms) — reuses the same tdBuf/fd already pulled for radio analysis (ZERO additional FFT cost)
+- psyLive.ts detect(): When onset detected, logs full event:
+  "[PSY4] שלב 4.1 ONSET t=12.34 role=kick strength=0.65 centroid=234Hz transient=0.92 sub/mid/hi=0.85/0.10/0.05 total=42"
+
+Verification:
+- bun run lint → 0 errors in onsetAnalyzer.ts or psyLive.ts
+- Node unit tests (9 tests, all pass):
+  * Test 1 (silence, 50 ticks): 0 onsets ✓ (no false positives)
+  * Test 2 (steady tone, 50 ticks): 0 onsets ✓ (no positive flux = no onsets)
+  * Test 3 (single spike): 1 onset ✓ (correctly detected)
+  * Test 4 (multi-spike with 50ms + 150ms gaps): 2 onsets ✓ (cooldown worked — 50ms gap ignored, 150ms gap detected)
+  * Test 5a (kick DNA: sub=0.9, transient=0.9, centroid=160Hz): role=kick ✓
+  * Test 5b (bass DNA: sub=0.7, transient=0.3, centroid=400Hz): role=bass ✓
+  * Test 5c (lead DNA: mid=0.8, centroid=2000Hz): role=lead ✓
+  * Test 5d (hat DNA: high=0.9, centroid=6400Hz, noisy=0.8): role=hat ✓
+  * Test 5e (perc DNA: mid=0.6, high=0.7, transient=0.85, centroid=3200Hz): role=perc ✓
+- Agent Browser: page loads clean, onsetAnalyzer present (accessible via window.__psyLive.onsetAnalyzer), 15s stability test with engine running: 0 errors, 0 over-budget warnings, no jitter
+- HONEST LIMITATION: Sandbox browser cannot fetch external radio streams, so radioOn=true but no audio signal flows. onsetAnalyzer.process() runs every tick but spectral flux stays 0 (no signal = no flux = no onsets). The code path is correct and math is verified, but live verification requires real browser with radio stream.
+
+Stage Summary:
+- STAGE 4.1 COMPLETE: OnsetAnalyzer wired end-to-end
+- Detects onsets via spectral flux (positive bin energy changes) — standard MIR technique
+- Extracts full SoundDNA per onset (24 fields: brightness, harmonicity, noisiness, spectral slope, roughness, sub/body/mid/high energy, transient sharpness, attack/decay/sustain/release, saturation, distortion character, filter params, pitch/modulation, stereo)
+- Classifies into 5 roles via weighted scoring
+- Ring buffer: 32 per role
+- Zero additional cost (reuses existing FFT pull)
+- Math verified with 9 unit tests (silence/steady/spike/cooldown + 5 role classifications)
+- CANNOT verify live in sandbox (no audio stream)

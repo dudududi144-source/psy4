@@ -19,6 +19,8 @@ import { DEFAULT_RADIO_CONFIG } from '../../foundation/radio/RadioObservationTyp
 import { CausalComposer, type CausalNoteEvent, type CausalBarResult } from '../../foundation/music/CausalComposer';
 // שלב 3.4: חישוב תכונות ספקטרליות (centroid/flatness/rolloff) מתדרי הרדיו
 import { extractSpectralFeatures } from '../../foundation/music/MusicalObservation';
+// שלב 4.1: Per-onset sound analysis
+import { OnsetAnalyzer, type OnsetEvent, type OnsetRole } from './onsetAnalyzer';
 // ADR-001: CausalComposer runs on a Web Worker now. This import is kept for type compatibility
 // but the actual composition happens in public/worklets/composition-worker.js
 // SamplerBridge import REMOVED — fully dead code
@@ -341,6 +343,8 @@ export class PsyLive {
   private spectralCentroidEma = 0;
   private spectralFlatnessEma = 0;
   private spectralRolloffEma = 0;
+  // שלב 4.1: Per-onset sound analysis
+  private onsetAnalyzer: OnsetAnalyzer = new OnsetAnalyzer();
   // CAUSAL: The live composition authority (now null — worker handles it)
   private causalComposer: CausalComposer | null = null;
   private currentCausalBar: CausalBarResult | null = null;
@@ -1869,6 +1873,25 @@ export class PsyLive {
     this.spectralCentroidEma = this.spectralCentroidEma * 0.85 + spec.centroid * 0.15;
     this.spectralFlatnessEma = this.spectralFlatnessEma * 0.85 + spec.flatness * 0.15;
     this.spectralRolloffEma = this.spectralRolloffEma * 0.85 + spec.rolloff * 0.15;
+
+    // שלב 4.1: Per-onset analysis — זהה onsets וחלץ SoundDNA
+    // רץ כל tick (100ms) על אותו tdBuf/fd — אין עלות נוספת של FFT
+    const onset = this.onsetAnalyzer.process(
+      tdBuf, fd, audioTime, this.ctx.sampleRate, this.radioAnalyser.fftSize,
+    );
+    if (onset) {
+      const centroidHz = (onset.soundDNA.brightness * 8000).toFixed(0);
+      const ts = onset.soundDNA.transientSharpness.toFixed(2);
+      const sub = onset.soundDNA.subEnergy.toFixed(2);
+      const mid = onset.soundDNA.midEnergy.toFixed(2);
+      const hi = onset.soundDNA.highEnergy.toFixed(2);
+      console.log(
+        `[PSY4] שלב 4.1 ONSET t=${audioTime.toFixed(2)} role=${onset.role} ` +
+        `strength=${onset.strength.toFixed(2)} centroid=${centroidHz}Hz ` +
+        `transient=${ts} sub/mid/hi=${sub}/${mid}/${hi} ` +
+        `total=${this.onsetAnalyzer.getTotalOnsets()}`,
+      );
+    }
 
     // F2.5 — Feed beat observations to Transport (the ONLY crossing point)
     // RadioObservationLayer produces timestamped RadioBeatObservation.
