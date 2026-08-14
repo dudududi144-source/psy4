@@ -157,7 +157,7 @@ export default function Page() {
         if (cls) {
           setDetectedStyle({ style: cls.style, confidence: cls.confidence, distance: cls.distance });
         }
-      } catch {}
+      } catch (err) { console.warn('[PSY4] UI polling error:', err); }
     };
     updateLearning();
     const interval = setInterval(updateLearning, 2000);

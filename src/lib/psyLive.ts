@@ -2631,6 +2631,11 @@ export class PsyLive {
   getSoundBank(): SoundBank { return this.soundBank; }
 
   /**
+   * גישה ל-onset analyzer (ל-UI).
+   */
+  getOnsetAnalyzer(): OnsetAnalyzer { return this.onsetAnalyzer; }
+
+  /**
    * סטטיסטיקות sound bank — { kick: N, bass: N, ... }
    */
   async getSoundBankStats(): Promise<Record<OnsetRole, number>> {
