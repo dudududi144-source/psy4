@@ -9402,3 +9402,81 @@ WHAT'S DIFFERENT NOW:
 - כשה-explorer מוצא cutoffStart=600, ה-bass filter באמת נפתח ל-600Hz (לא 3000)
 - ה"מצילה" הוסרה — אין riser/sweep hardcode
 - הסאונד ישתנה ככל שה-bank גדל
+
+---
+Task ID: STAGE-5 (sound package + original synthesis)
+Agent: z.ai-code (main)
+Task: שלב 5 — יצירת חבילות סאונד מקוריות + סינטזה מקורית + יצוא/יבוא.
+
+Work Log:
+
+5.1 — SOUND PACKAGE FORMAT:
+- Created src/lib/soundPackage.ts (200 lines)
+- PackageExporter: collects bank entries + patterns + insights → JSON
+- PackageImporter: loads JSON → fills bank → applies recipes
+- Format: { metadata, voices, patterns, insights }
+- metadata: format='psy4-sound-package', version, createdAt, detectedStyles, sourceRadioStations
+- voices: [{ id, role, voiceParams, matchScore, reward, usageCount, sourceStyle, soundDNASummary }]
+- patterns: [{ role, pattern[16], bpm, confidence, sourceStyle }]
+- insights: { bpm, bpmConfidence, rootPc, scaleName, scaleMatchScore }
+
+5.2 — ORIGINAL SYNTHESIS GENERATION:
+- Created src/lib/synthesisGenerator.ts (150 lines) — SynthesisGenerator
+- לוקח את ה-entry הטוב ביותר לכל role (reward*0.6 + matchScore*0.4)
+- יוצר 3 וריאציות: משנה fund ±5Hz, saturation ±0.3, cutoffStart ±200Hz, וכו'
+- בודק distance ליעד — רק אם < 0.8 שומר כ-entry חדש
+- sourceStyle='generated' (לא 'radio') — מבדיל מסאונדים שהועתקו
+- אלגוריתם: render → extract features → compute distance → save if close
+
+5.3 — PATTERN LIBRARY:
+- collectPatternsForPackage() — אוסף kick pattern מ-radioKickTimes
+- extractKickPatternForExport() — 16-step histogram ללא שליחה ל-worker
+- patterns נשמרים בחבילה עם bpm + confidence + sourceStyle
+
+5.4 — PACKAGE DOWNLOAD:
+- exportSoundPackage() ב-psyLive.ts — יוצא JSON ומוריד קובץ
+- כפתור "Export Package" ב-UI
+- מוריד psy4-package-{timestamp}.json
+
+5.5 — PACKAGE IMPORT:
+- importSoundPackage(json) ב-psyLive.ts — טוען JSON חזרה
+- מנקה bank, ממלא מה-JSON, מחיל recipes
+- כפתור "Import Package" ב-UI — file picker
+
+UI (page.tsx):
+- פאנל "Sound Package" חדש עם 3 כפתורים:
+  * Export Package (cyan)
+  * Import Package (purple)
+  * Generate Originals (pink)
+
+VERIFICATION (ALL WITH REAL RADIO — production):
+- Bank: 10 entries from radio (fullOn) + 6 generated = 16 total ✓
+- Export: 16 voices exported to JSON, downloaded ✓
+- Generate: 3 kick variations + 3 bass variations in <20ms ✓
+- sourceStyle breakdown: 10 fullOn + 6 generated ✓
+- Engine debug query confirms learnedVoiceParams populated:
+  KickVoice: {fund:45, startMult:3.5, subDecay:0.12, saturation:1.2}
+  BassVoice: {subLevel:0.35, cutoffStart:600, cutoffEnd:150, cutoffDecay:0.025}
+- These DIFFER from old hardcoded defaults (fund=50, cutoffStart=3000) ✓
+- 0 errors
+
+PRODUCTION:
+- Git push: origin + psy4new ✓
+- Cloudflare deploy: https://eef5ee94.psy4.pages.dev ✓
+- Production verified: all buttons work, learning works, generation works ✓
+
+CRITICAL ACHIEVEMENT:
+PSY4 now:
+1. Learns from radio (onset → bank → exploration → reward) — שלב 4
+2. GENERATES original sounds (variations on learned sounds) — שלב 5.2
+3. EXPORTS packages (JSON with all sounds + patterns) — שלב 5.4
+4. IMPORTS packages (load previous learning) — שלב 5.5
+5. All verified on production with real radio
+
+The learned params ACTUALLY reach the audio output now (fix from 094553c).
+The user will hear DIFFERENT sounds as the bank grows.
+
+HONEST LIMITATION:
+- Beat phase alignment (5.6) not implemented yet — BPM syncs but beat position doesn't
+- This means PSY4 plays at the right TEMPO but not necessarily on the right BEAT
+- For true "sitting with the music" feel, phase alignment is needed
