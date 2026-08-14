@@ -2705,6 +2705,16 @@ export class PsyLive {
       PercVoice: {
         freq: 120 + Math.floor(Math.random() * 300),  // 120-420
       },
+      PadVoice: {
+        padCutoff: 300 + Math.floor(Math.random() * 800),  // 300-1100
+        padAttack: 0.1 + Math.random() * 0.5,               // 0.1-0.6
+        padDetune: 3 + Math.floor(Math.random() * 10),       // 3-13
+        padEvolveRate: 0.2 + Math.random() * 0.8,            // 0.2-1.0
+      },
+      AcidVoice: {
+        acidCutoff: 800 + Math.floor(Math.random() * 2000),  // 800-2800
+        acidResonance: 0.5 + Math.random() * 0.4,             // 0.5-0.9
+      },
     };
 
     // שלח ל-engine

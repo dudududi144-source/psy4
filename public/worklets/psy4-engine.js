@@ -2255,15 +2255,21 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_ACID: {
-        // Pass param as accent flag (param >= 0.5 = accent) for PSY3 analog modeling
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.AcidVoice) || {};
         const v = this.getFreeVoice(this.acidPool);
         if (v) v.trigger(t, note, duration, velocity, sr, param);
+        if (lp.acidCutoff !== undefined && v) v.cutoff = lp.acidCutoff;
+        if (lp.acidResonance !== undefined && v) v.resonance = lp.acidResonance;
         break;
       }
       case V_PAD: {
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.PadVoice) || {};
         const v = this.getFreeVoice(this.padPool);
         if (v) v.trigger(t, note, duration, velocity, sr, {
-          cutoff: wp.padCutoff, attack: wp.padAttack, detune: wp.padDetune, evolveRate: wp.padEvolveRate,
+          cutoff: lp.padCutoff ?? wp.padCutoff,
+          attack: lp.padAttack ?? wp.padAttack,
+          detune: lp.padDetune ?? wp.padDetune,
+          evolveRate: lp.padEvolveRate ?? wp.padEvolveRate,
         });
         break;
       }
