@@ -210,36 +210,65 @@ function resolveConflict(candidates) {
 }
 
 // ─── Style Grammars ──────────────────────────────────────────────────
+// תיקון: patterns מתייצרים אקראית בכל אתחול — לא קבועים
+function genBassPattern(rng, density) {
+  const pattern = [];
+  for (let i = 0; i < 16; i++) {
+    if (i === 0) { pattern.push(i); continue; } // always beat 1
+    if (i % 4 === 1) { pattern.push(i); continue; } // always after kick
+    if (rng() < density) pattern.push(i);
+  }
+  return pattern;
+}
+
+function genMotifIntervals(rng) {
+  const intervals = [0];
+  for (let i = 0; i < 3; i++) {
+    intervals.push(Math.floor(rng() * 8));
+  }
+  return intervals;
+}
+
+function genMotifSteps(rng) {
+  const steps = [];
+  let last = 0;
+  for (let i = 0; i < 4; i++) {
+    steps.push(last);
+    last += 2 + Math.floor(rng() * 6);
+  }
+  return steps;
+}
+
 const STYLE_GRAMMARS = {
   FULL_ON: {
     scaleName: 'phrygian-dominant',
-    motifIntervals: [0, 4, 7, 4],
-    motifSteps: [0, 4, 8, 12],
-    bassPattern: [1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15],
+    motifIntervals: genMotifIntervals(Math.random),
+    motifSteps: genMotifSteps(Math.random),
+    bassPattern: genBassPattern(Math.random, 0.7),
     acidBass: false,
     percussionDensity: 0.8,
   },
   DARK: {
     scaleName: 'phrygian',
-    motifIntervals: [0, 1, 3, 1],
-    motifSteps: [0, 6, 8, 14],
-    bassPattern: [0, 3, 6, 8, 11, 14],
+    motifIntervals: genMotifIntervals(Math.random),
+    motifSteps: genMotifSteps(Math.random),
+    bassPattern: genBassPattern(Math.random, 0.35),
     acidBass: false,
     percussionDensity: 0.4,
   },
   PROGRESSIVE: {
     scaleName: 'dorian',
-    motifIntervals: [0, 3, 5, 7],
-    motifSteps: [0, 4, 8, 12],
-    bassPattern: [1, 3, 5, 7, 9, 11, 13, 15],
+    motifIntervals: genMotifIntervals(Math.random),
+    motifSteps: genMotifSteps(Math.random),
+    bassPattern: genBassPattern(Math.random, 0.5),
     acidBass: false,
     percussionDensity: 0.6,
   },
   ACID: {
     scaleName: 'phrygian-dominant',
-    motifIntervals: [0, 1, 7, 1],
-    motifSteps: [0, 4, 8, 12],
-    bassPattern: [0, 3, 6, 9, 12, 15],
+    motifIntervals: genMotifIntervals(Math.random),
+    motifSteps: genMotifSteps(Math.random),
+    bassPattern: genBassPattern(Math.random, 0.4),
     acidBass: true,
     percussionDensity: 0.7,
   },
@@ -685,9 +714,9 @@ class CausalComposerWorker {
     const phrasePos = bar % 8;
     const bassChannel = grammar.acidBass ? 'acid' : 'bass';
     let bassOffsets = [0];
-    if (phrasePos >= 2) bassOffsets = [0, 0];
-    if (phrasePos >= 4) bassOffsets = [0, 7];
-    if (phrasePos >= 6) bassOffsets = [0, 7, 12];
+    if (phrasePos >= 2) bassOffsets = [0, Math.floor(Math.random() * 5) + 2];
+    if (phrasePos >= 4) bassOffsets = [0, Math.floor(Math.random() * 7) + 3, Math.floor(Math.random() * 5) + 7];
+    if (phrasePos >= 6) bassOffsets = [0, Math.floor(Math.random() * 7) + 3, Math.floor(Math.random() * 7) + 7];
 
     // ── שלב 3.2: אם יש היסטוגרמת מרווחי bass נלמדת, החלף את bassOffsets ──
     // במקום [0, 7, 12] קבוע, בחר 3 מרווחים מובילים מתוך ההיסטוגרמה

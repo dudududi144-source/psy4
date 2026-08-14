@@ -672,7 +672,7 @@ export class PsyLive {
     const initBpm = this.loadMemoryBpm();
     this.compositionWorker.postMessage({
       type: 'init',
-      opts: { bpm: initBpm, rootPc: 4, scaleName: 'phrygian-dominant', seed: Math.floor(Math.random() * 1000000) },
+      opts: { bpm: initBpm, rootPc: Math.floor(Math.random() * 12), scaleName: 'phrygian-dominant', seed: Math.floor(Math.random() * 1000000) },
     });
     // Keep causalComposer reference for getUserControls (worker sends state back)
     this.causalComposer = null; // Will be replaced by worker state
