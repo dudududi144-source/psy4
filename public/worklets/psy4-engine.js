@@ -2293,53 +2293,16 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_SNARE: {
-        // SNARE — separate from clap. Uses snare samples (sharper attack than clap).
-        if (this.samplesReady) {
-          const snareNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'snare');
-          if (snareNames.length > 0) {
-            const idx = (this.rrCounters.snare || 0) % snareNames.length;
-            this.rrCounters.snare = ((this.rrCounters.snare || 0) + 1) % snareNames.length;
-            const snareName = snareNames[idx];
-            const v = this.getFreeVoice(this.snareSamplePool);
-            if (v) {
-              const samp = this.samples[snareName];
-              v.trigger(samp.data, samp.sampleRate, 1.0, velocity, 0.15, 0);
-            }
-          } else {
-            // Fallback: use synth clap
-            const v = this.getFreeVoice(this.clapPool);
-            if (v) v.trigger(t, velocity, sr);
-          }
-        } else {
-          const v = this.getFreeVoice(this.clapPool);
-          if (v) v.trigger(t, velocity, sr);
-        }
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.ClapVoice) || {};
+        const v = this.getFreeVoice(this.clapPool);
+        if (v) v.trigger(t, velocity, sr);
+        if (lp.clapDecay !== undefined && v) v.decays = [lp.clapDecay, lp.clapDecay, lp.clapDecay, lp.clapDecay * 4];
         break;
       }
       case V_PERC: {
-        // Use REAL percussion samples when available (Nord Drum)
-        if (this.samplesReady) {
-          const percNames = Object.keys(this.samples).filter(n => this.samples[n].category === 'perc');
-          const realPercNames = percNames.filter(n => n.startsWith('nord') || n.startsWith('909') || n.startsWith('real'));
-          const names = realPercNames.length > 0 ? realPercNames : percNames;
-          if (names.length > 0) {
-            const percName = names[this.rrCounters.clap % names.length]; // reuse clap counter for perc RR
-            const v = this.getFreeVoice(this.kickSamplePool); // reuse sample voice pool for perc
-            if (v) {
-              const samp = this.samples[percName];
-              this.rrCounters.clap = (this.rrCounters.clap + 1) % Math.max(4, names.length);
-              v.trigger(samp.data, samp.sampleRate, 1.0, velocity, 0.1, 0.3);
-              // TRACK: which sample actually played
-              this.sampleUsage[percName] = (this.sampleUsage[percName] || 0) + 1;
-            }
-          } else {
-            const v = this.getFreeVoice(this.percPool);
-            if (v) v.trigger(t, note || 400, velocity, sr);
-          }
-        } else {
-          const v = this.getFreeVoice(this.percPool);
-          if (v) v.trigger(t, note || 400, velocity, sr);
-        }
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.PercVoice) || {};
+        const v = this.getFreeVoice(this.percPool);
+        if (v) v.trigger(t, note || 200, velocity, sr);
         break;
       }
       case V_SHAKER: {

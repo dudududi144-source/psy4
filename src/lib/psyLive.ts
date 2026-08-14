@@ -2882,6 +2882,9 @@ export class PsyLive {
       ClapVoice: {
         clapDecay: 0.015 + Math.random() * 0.08,     // 0.015-0.095
       },
+      PercVoice: {
+        freq: 120 + Math.floor(Math.random() * 300),  // 120-420
+      },
     };
 
     // שלח ל-engine
