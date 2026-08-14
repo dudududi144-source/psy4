@@ -897,6 +897,7 @@ class HatVoice {
     this.t = 0;
     this.noise = new PinkNoise();
     this.prevNoise = 0;
+    this.hpState = 0;
     this.decay = 0.03;
     this.brightness = 1.0;
     this._out = new Float32Array(2);
@@ -910,6 +911,7 @@ class HatVoice {
     this.decay = (params && params.hatDecay) ? params.hatDecay : (open ? 0.22 : 0.03);
     this.brightness = (params && params.hatBrightness) ? params.hatBrightness : 1.0;
     this.prevNoise = 0;
+    this.hpState = 0;
     this.noise.reset();
   }
 
@@ -920,12 +922,13 @@ class HatVoice {
     if (this.t > this.decay * 1.5) { this.active = false; out[0] = 0; return out; }
 
     const n = this.noise.process();
-    // Highpass via differentiation
-    const hp = n - this.prevNoise;
-    this.prevNoise = n;
+    // Highpass: one-pole filter (much louder than differentiation)
+    const hp = n - this.hpState * 0.95;
+    this.hpState = n;
     const env = Math.exp(-this.t / this.decay);
-    const sample = hp * env * 1.5 * this.amp * this.brightness / 0.12;
-    out[0] = sample;
+    // Boost gain dramatically — was too quiet
+    const sample = hp * env * 5.0 * this.amp * this.brightness;
+    out[0] = Math.max(-1, Math.min(1, sample));
     return out;
   }
 }
