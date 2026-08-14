@@ -9354,3 +9354,51 @@ Stage Summary:
 - Deployed to production: https://psy4.pages.dev
 - ALL learning capabilities verified working on production
 - Remaining: beat phase alignment (for true "sitting with the music" feel)
+
+---
+Task ID: CRITICAL-FIX (learned params reach audio)
+Agent: z.ai-code (main)
+Task: תיקון קריטי — הסאונדים שנלמדים לא הגיעו לאודיו. המשתמש שמע אותם סאונדים כל הזמן.
+
+HONEST CONFESSION:
+המשתמש צדק. בניתי את כל מערכת הלמידה (4.1-4.7), אבל הסאונדים שנלמדו אף פעם לא הגיעו לאודיו.
+הסיבה: setVoiceRecipe שם params על voice instances, אבל trigger() דרס אותם מיד עם hardcode.
+כל ה-learning היה על סרק — ה-bank נבנה, אבל ה-engine התעלם ממנו.
+
+ROOT CAUSE:
+- setVoiceRecipe: voice.fund = 48 (מ-sound bank)
+- trigger(): this.fund = fund (argument מ-scheduler = 50, hardcode)
+- תוצאה: voice.fund נדרס ל-50, ה-48 שנלמד אבד
+
+FIX:
+1. setVoiceRecipe עכשיו שומר על ה-PROCESSOR: this.learnedVoiceParams[voiceClass] = {...}
+2. ה-scheduler קורא מ-learnedVoiceParams:
+   - Kick: const lp = learnedVoiceParams.KickVoice; fund = lp.fund ?? wp.kickFundamental
+   - trigger(t, velocity, kickFund, kickDecay, sr) — משתמש ב-learned
+   - אחרי trigger: v.startMult = lp.startMult (כי trigger לא מקבל את זה)
+3. Bass: trigger params מגיעים מ-learnedVoiceParams עם ?? defaults
+4. Lead: trigger params מגיעים מ-learnedVoiceParams עם ?? defaults
+
+ALSO REMOVED (ה"מצילה הארוכה" שהמשתמש דיווח):
+- Hardcoded impact/riser/sweep FX at DROP_START/BREAKDOWN_START/REBUILD_START
+- Hardcoded riser at bar%16==15 (phrase endings)
+- אלה יצרו את ה"מצילה" שנכנסה משום מקום
+
+VERIFICATION:
+- Debug query to engine: learnedVoiceParams = {
+    KickVoice: {fund:45, startMult:3.5, subDecay:0.12, saturation:1.2},
+    BassVoice: {subLevel:0.35, cutoffStart:600, cutoffEnd:150, cutoffDecay:0.025}
+  }
+- אלה שונים מה-hardcode הישן (fund=50, cutoffStart=3000)
+- 0 שגיאות, 0 לוגים של riser/sweep/impact
+
+PRODUCTION:
+- Git push: origin + psy4new ✓
+- Cloudflare deploy: https://6f0e4507.psy4.pages.dev ✓
+- Production verified: psy4-engine.js contains learnedVoiceParams ✓
+
+WHAT'S DIFFERENT NOW:
+- כשה-explorer מוצא recipe עם fund=45, ה-kick באמת מנגן ב-45Hz (לא 50)
+- כשה-explorer מוצא cutoffStart=600, ה-bass filter באמת נפתח ל-600Hz (לא 3000)
+- ה"מצילה" הוסרה — אין riser/sweep hardcode
+- הסאונד ישתנה ככל שה-bank גדל
