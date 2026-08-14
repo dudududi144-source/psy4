@@ -924,7 +924,7 @@ class HatVoice {
     const hp = n - this.prevNoise;
     this.prevNoise = n;
     const env = Math.exp(-this.t / this.decay);
-    const sample = hp * env * 0.5 * this.amp / 0.12;
+    const sample = hp * env * 1.5 * this.amp * this.brightness / 0.12;
     out[0] = sample;
     return out;
   }
