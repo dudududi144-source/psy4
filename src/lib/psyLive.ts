@@ -318,6 +318,8 @@ export class PsyLive {
   private _lastSentRoot = -1;
   private _lastSentScale = '';
   private _lastSentStyle = '';
+  // שלב 2.3: השלמת תדרים
+  private _freqBalanceCounter = 0;
   // CAUSAL: The live composition authority (now null — worker handles it)
   private causalComposer: CausalComposer | null = null;
   private currentCausalBar: CausalBarResult | null = null;
@@ -1500,10 +1502,15 @@ export class PsyLive {
         this.radioAnalyser.fftSize = 512;
         this.radioAnalyser.smoothingTimeConstant = 0.2;
       }
-      // Radio → radioGain → radioAnalyser → engineBus (F10: comp applies)
+      // שלב 2.1: רדיו → ערוץ נפרד ישירות ל-destination (לא דרך engineBus)
+      // WAS: radioSource → radioGain → radioAnalyser → engineBus → comp → master → destination
+      // PROBLEM: engineBus was disconnected when worklet is active (we disconnect legacy chain).
+      // So radio audio was going through a disconnected node = SILENT radio.
+      // FIX: radioSource → radioGain → radioAnalyser → destination (separate path)
       this.radioSource.connect(this.radioGain!);
       this.radioGain!.connect(this.radioAnalyser!);
-      this.radioAnalyser!.connect(this.engineBus!);
+      this.radioAnalyser!.disconnect(); // disconnect from engineBus
+      this.radioAnalyser!.connect(this.ctx.destination); // direct to destination
 
       // F13/R1 — THE CRITICAL FIX: wire RadioObservationLayer state machine.
       // Before this fix, signalState was stuck at 'DISCONNECTED' (constructor
@@ -1529,6 +1536,8 @@ export class PsyLive {
   disconnectRadio(): void {
     if (this.radioEl) { this.radioEl.pause(); this.radioEl.src = ''; }
     if (this.radioSource) { try { this.radioSource.disconnect(); } catch {} }
+    // שלב 2.1: נתק גם את ה-radioAnalyser מ-destination
+    if (this.radioAnalyser) { try { this.radioAnalyser.disconnect(); } catch {} }
     this.radioOn = false;
     // F1.18: Transport enters holdover (no hard reset of BPM)
     this.transport!.loseSource();
@@ -1754,22 +1763,32 @@ export class PsyLive {
       this.sendRadioDataToWorker(radioSnap, transportSnap);
     }
 
-    // ── שלב 1.4: הימנעות מהתנגשויות — occupancy-based ducking ──
-    // אם הרדיו מנגן kick/bass/lead חזק, הורד את PSY4 באותו ערוץ
+    // ── שלב 1.4 + 2.3: הימנעות מהתנגשויות + השלמת תדרים ──
     if (this.radioOn && this.playing) {
       const now = this.ctx.currentTime;
       // דאקינג דינמי לפי occupancy של הרדיו
       if (this.kickDuck && this.bassDuck && this.leadDuck && this.hatDuck) {
-        // אם רדיו מנגן kick חזק, הורד PSY4 bass ב-70%
         const kickDuckVal = this.occupancy.kick > 0.7 ? 0.3 : 1.0;
         this.kickDuck.gain.setTargetAtTime(kickDuckVal, now, 0.05);
-        // אם רדיו מנגן bass חזק, הורד PSY4 bass ב-50%
         const bassDuckVal = this.occupancy.bass > 0.75 ? 0.5 : 1.0;
         this.bassDuck.gain.setTargetAtTime(bassDuckVal, now, 0.08);
-        // אם רדיו מנגן lead חזק, הורד PSY4 lead ב-50%
         const leadDuckVal = this.occupancy.lead > 0.85 ? 0.5 : 1.0;
         this.leadDuck.gain.setTargetAtTime(leadDuckVal, now, 0.1);
         this.hatDuck.gain.setTargetAtTime(1.0, now, 0.1);
+      }
+      // שלב 2.3: השלמת תדרים — עדכן brightness/energy ב-worklet לפי occupancy
+      if (this.engineNode) {
+        this._freqBalanceCounter = (this._freqBalanceCounter || 0) + 1;
+        if (this._freqBalanceCounter >= 5) { // כל 500ms
+          this._freqBalanceCounter = 0;
+          const radioLow = (this.occupancy.kick + this.occupancy.bass) / 2;
+          const radioMid = this.occupancy.lead;
+          // אם רדיו חזק ב-low, PSY4 משלים mid/high (brightness up)
+          const brightness = radioLow > 0.6 ? 0.9 : 0.5;
+          // אם רדיו חזק ב-mid, PSY4 משלים low (energy up)
+          const energy = radioMid > 0.6 ? 0.7 : 0.5;
+          this.engineNode.setMacros({ brightness, energy });
+        }
       }
     }
 
