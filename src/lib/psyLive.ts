@@ -2556,6 +2556,10 @@ export class PsyLive {
   /**
    * מושך את ה-recipe הטוב ביותר מה-bank ל-role ומחיל על ה-engine.
    * נקרא אחרי כל מחזור exploration.
+   *
+   * תיקון: מחליף את ה-params רק אם ה-entry הגיע ל-reward > 0.7 (proven).
+   * אחרת, שומר את ה-params שנטענו מ-localStorage (user-saved).
+   * זה מונע מה-bank לדרוס הגדרות שהמשתמש/למידה שמרה.
    */
   async applyBestRecipeFromBank(role: OnsetRole): Promise<boolean> {
     if (!this.engineNode) return false;
@@ -2566,17 +2570,21 @@ export class PsyLive {
       console.log(`[PSY4] שלב 4.4 applyRecipe(${role}): no entry in bank`);
       return false;
     }
-    // שלח את ה-voiceParams הגולמיים ל-engine node
-    const voiceClass = role === 'kick' ? 'KickVoice'
-      : role === 'bass' ? 'BassVoice'
-      : role === 'lead' ? 'LeadVoice'
-      : role === 'hat' ? 'HatVoice'
-      : 'PercVoice';
-    this.engineNode.node.port.postMessage({
-      type: 'setVoiceRecipe',
-      voiceClass,
-      recipe: entry.voiceParams, // ה-params הגולמיים (fund, subDecay, saturation, וכו')
-    });
+    // תיקון: רק אם reward > 0.7 (proven) — נדרוס את ה-params הנוכחיים.
+    // אחרת, נשאיר את מה שנטען מ-localStorage ורק נעדכן usageCount + נתחיל tracking.
+    const REWARD_OVERRIDE_THRESHOLD = 0.7;
+    if (entry.reward >= REWARD_OVERRIDE_THRESHOLD) {
+      const voiceClass = role === 'kick' ? 'KickVoice'
+        : role === 'bass' ? 'BassVoice'
+        : role === 'lead' ? 'LeadVoice'
+        : role === 'hat' ? 'HatVoice'
+        : 'PercVoice';
+      this.engineNode.node.port.postMessage({
+        type: 'setVoiceRecipe',
+        voiceClass,
+        recipe: entry.voiceParams,
+      });
+    }
     // עדכן usageCount
     await this.soundBank.updateReward(entry.id, 0, true);
     // שלב 4.5: התחל מעקב reward — מדוד איך הרדיו מגיב ב-3 השניות הבאות
@@ -2586,7 +2594,8 @@ export class PsyLive {
       this.rewardTracker.startTracking(entry.id, role, startOcc);
     }
     const paramsStr = entry.voiceParams ? JSON.stringify(entry.voiceParams).slice(0, 80) : '{}';
-    console.log(`[PSY4] שלב 4.4 applyRecipe(${role}): applied entry ${entry.id} (matchScore=${entry.matchScore.toFixed(3)}, reward=${entry.reward.toFixed(3)}, params=${paramsStr})`);
+    const overridden = entry.reward >= REWARD_OVERRIDE_THRESHOLD;
+    console.log(`[PSY4] שלב 4.4 applyRecipe(${role}): ${overridden ? 'applied' : 'tracking-only (reward<0.7, keeping user params)'} entry ${entry.id} (matchScore=${entry.matchScore.toFixed(3)}, reward=${entry.reward.toFixed(3)}, params=${paramsStr})`);
     return true;
   }
 
