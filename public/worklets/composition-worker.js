@@ -378,11 +378,18 @@ class CausalComposerWorker {
       events.push(...this.generateGroove(bar));
     }
 
-    // תיקון: הסרנו FX קשיחים (impact/riser/sweep) — הם יצרו "מצילה ארוכה" לא רצויה
-    // ה-FX יגיע מה-sound bank או מ-learning, לא hardcode
+    // FX Voices (Riser/Impact/Sweep) — musical timing based on arrangement section.
+    // These were removed in a previous commit because hardcoded FX created an
+    // unwanted "long tail". This version ties FX to section transitions so they
+    // only fire at musically meaningful moments:
+    //   - Riser:  1 bar before DROP_START (build tension into the drop)
+    //   - Impact: at DROP_START (punctuate the drop entrance)
+    //   - Sweep:  at BREAKDOWN_START (transition effect into the breakdown)
     const beatDur = 60 / this.opts.bpm;
     const barStart = bar * 4 * beatDur;
     const sectionType = this.getArrangementSection(bar);
+    const fxEvents = this.generateFX(bar, barStart, beatDur, sectionType);
+    events.push(...fxEvents);
 
     if (decision.action !== 'BREAKDOWN') {
       if (this.activeVoices.has('lead')) onMaterialPlayed(this.state, 'motif-A', bar);
@@ -676,6 +683,59 @@ class CausalComposerWorker {
       else if (barsSince === 2) ev.velocity *= 0.8;
       else if (barsSince === 3) ev.velocity *= 0.95;
     }
+  }
+
+  // FX Voices — Riser / Impact / Sweep, triggered at arrangement transitions.
+  // These are NOT hardcoded "every bar" — they fire only at section boundaries
+  // so they punctuate the arrangement instead of creating a constant tail.
+  //   - Riser (1 bar): fires on the bar BEFORE a DROP_START, building tension.
+  //     Duration = 1 bar (4 beats). Velocity moderate so it sits under the groove.
+  //   - Impact (short): fires ONCE at the first beat of DROP_START.
+  //     Duration = 0.3s. Velocity high so it punches through.
+  //   - Sweep (1 bar): fires at BREAKDOWN_START, sweeping down into the break.
+  //     Duration = 1 bar. Velocity moderate.
+  generateFX(bar, barStart, beatDur, section) {
+    const events = [];
+    const barDur = 4 * beatDur;
+
+    // RISER: fire on the bar BEFORE a DROP_START.
+    // We detect this by checking if the NEXT bar is a DROP_START.
+    const nextSection = this.getArrangementSection(bar + 1);
+    if (nextSection === 'DROP_START') {
+      // Riser spans the full bar leading into the drop.
+      // `note`/`param` are ignored by FXVoice for riser; duration is what matters.
+      events.push({
+        at: barStart,
+        note: 0,
+        velocity: 0.6,
+        duration: barDur,   // full bar riser
+        channel: 'riser',
+      });
+    }
+
+    // IMPACT: fire at the very start of DROP_START (beat 0).
+    if (section === 'DROP_START') {
+      events.push({
+        at: barStart,
+        note: 0,
+        velocity: 0.9,      // punchy
+        duration: 0.3,      // short boom
+        channel: 'impact',
+      });
+    }
+
+    // SWEEP: fire at BREAKDOWN_START, spans the bar.
+    if (section === 'BREAKDOWN_START') {
+      events.push({
+        at: barStart,
+        note: 0,
+        velocity: 0.5,
+        duration: barDur,   // full bar downward sweep
+        channel: 'sweep',
+      });
+    }
+
+    return events;
   }
 
   generateGroove(bar) {
