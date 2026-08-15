@@ -2119,7 +2119,7 @@ class MasterChain {
     const output = lufsOut * this.tpGainEnv;
 
     // ── 5. FINAL TANH ──
-    return fastTanh(output * this.gain * 1.5);
+    return fastTanh(output * this.gain * 1.0);  // was 1.5 — too hot
   }
 }
 
