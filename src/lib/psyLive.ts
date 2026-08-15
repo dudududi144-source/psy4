@@ -2208,6 +2208,14 @@ export class PsyLive {
       this.emit();
       // learnTick every tick (2000ms — was 1000ms, but nothing changes that fast)
       this.learnTick();
+      // שלב 4.5: Synthetic occupancy for RewardTracker when no radio.
+      // detect() only runs when radio is on, so without radio the RewardTracker
+      // never gets occupancy updates and reward stays at 0.5 forever. This feeds
+      // synthetic occupancy (derived from PSY4's own output) so reward can progress.
+      if (this.rewardTracker && this.playing && !this.radioOn) {
+        const synth = this.computeSyntheticOccupancy();
+        this.rewardTracker.recordOccupancy(synth);
+      }
       // persistTick every 3rd tick (6000ms — was 5000ms)
       if (this._mergedTickCounter % 3 === 0) {
         this.persistTick();
@@ -2569,7 +2577,9 @@ export class PsyLive {
     await this.soundBank.updateReward(entry.id, 0, true);
     // שלב 4.5: התחל מעקב reward — מדוד איך הרדיו מגיב ב-3 השניות הבאות
     if (this.rewardTracker) {
-      this.rewardTracker.startTracking(entry.id, role, this.occupancy);
+      // Use synthetic occupancy when no radio (so startOccupancy isn't 0)
+      const startOcc = this.radioOn ? this.occupancy : this.computeSyntheticOccupancy();
+      this.rewardTracker.startTracking(entry.id, role, startOcc);
     }
     const paramsStr = entry.voiceParams ? JSON.stringify(entry.voiceParams).slice(0, 80) : '{}';
     console.log(`[PSY4] שלב 4.4 applyRecipe(${role}): applied entry ${entry.id} (matchScore=${entry.matchScore.toFixed(3)}, reward=${entry.reward.toFixed(3)}, params=${paramsStr})`);
