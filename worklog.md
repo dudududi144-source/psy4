@@ -10801,3 +10801,51 @@ TOTAL BUGS FIXED IN THIS SESSION: 8
 
 PRODUCTION:
 - Deploy: https://010e3ab2.psy4.pages.dev
+
+---
+Task ID: DEEP-CHECK-2
+Agent: z.ai-code (main)
+
+2 MORE BUGS FOUND AND FIXED:
+
+1. PackageExporter only exported 5 roles (kick/bass/lead/hat/perc)
+   Missing: pad, acid, clap, shaker, texture
+   FIX: Added all 10 roles to export collection.
+   VERIFIED: Export now contains 10 roles, 79 voices (was 5 roles, 40 voices)
+
+2. createVariation only varied 5 roles (kick/bass/lead/hat/perc)
+   For pad/acid/clap/shaker/texture, it returned base params unchanged.
+   All 3 "variations" were identical.
+   FIX: Added variation logic for all 5 missing roles.
+   VERIFIED: texture variations now have different distances (0.589, 0.532, 0.597)
+
+ALSO VERIFIED:
+- Sidechain: duckEnv=0.54 applied to bass stereo channels ✅
+- Reverb/delay: sends non-zero, output added to mix ✅
+- ST_STEREO: bass/clap/shaker mixed as stereo ✅
+- Reset: bank cleared (13→0), new params created ✅
+- Generate Originals: 3 variations per role ✅
+- Export Package: 10 roles, 79 voices ✅
+
+FINAL AUDIO:
+- LUFS: -13.16
+- Peak: -2.80 dB
+- 0 errors
+- Audio working
+
+PRODUCTION:
+- Commit: b358c26
+- Deploy: https://6ae8eb4b.psy4.pages.dev
+
+TOTAL BUGS FIXED ACROSS ALL SESSIONS: 10+
+1. Hats/lead not playing after first bar
+2. Multiband killing high frequencies
+3. Excessive makeup gain
+4. Voice pools too small
+5. BREAKDAY causing silence
+6. LUFS EMA too slow
+7. LUFS clamp/smoothing/measurement issues
+8. renderVoice trigger args wrong for 7 voices
+9. Event timing 28.9s off
+10. PackageExporter missing 5 roles
+11. createVariation missing 5 roles
