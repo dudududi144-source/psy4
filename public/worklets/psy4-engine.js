@@ -2083,24 +2083,7 @@ class MasterChain {
     const compOut = mbOut * this.glueGain * this.glueMakeup;
 
     // ── 3.5. LUFS TARGETING (Phase 3.2) ──
-    // Measure running mean square (K-weighting simplified — no pre-filter)
-    // Update target gain every lufsUpdateRate samples
-    const sampleSq = compOut * compOut;
-    this.lufsMs = this.lufsMs * 0.9999 + sampleSq * 0.0001;  // 2s time constant (was 22s)
-    this.lufsCounter++;
-    if (this.lufsCounter >= this.lufsUpdateRate) {
-      this.lufsCounter = 0;
-      if (this.lufsMs > 1e-8) {
-        // LUFS = -0.691 + 10*log10(meanSquare)
-        const currentLUFS = -0.691 + 10 * Math.log10(this.lufsMs);
-        const lufsError = this.lufsTarget - currentLUFS;  // positive = too quiet
-        // Convert dB error to linear gain: 10^(error/20)
-        this.lufsTargetGain = Math.pow(10, lufsError / 20);
-        // Clamp to ±6dB range (0.5-2.0x) — need wider range for section transitions
-        this.lufsTargetGain = Math.max(0.5, Math.min(2.0, this.lufsTargetGain));
-      }
-    }
-    // Smooth gain transition — 500ms time constant (was 100ms — too fast, caused oscillation)
+    // Apply LUFS gain from PREVIOUS frame's measurement
     const lufsSmoothing = dt / 0.5;
     this.lufsAppliedGain += (this.lufsTargetGain - this.lufsAppliedGain) * Math.min(1, lufsSmoothing);
     const lufsOut = compOut * this.lufsAppliedGain;
@@ -2119,7 +2102,24 @@ class MasterChain {
     const output = lufsOut * this.tpGainEnv;
 
     // ── 5. FINAL TANH ──
-    return fastTanh(output * this.gain * 1.0);  // was 1.5 — too hot
+    const finalOut = fastTanh(output * this.gain * 1.0);
+
+    // Measure LUFS from FINAL output (after limiter + tanh)
+    // This feeds back to adjust lufsTargetGain for the next frame
+    const finalSq = finalOut * finalOut;
+    this.lufsMs = this.lufsMs * 0.9999 + finalSq * 0.0001;
+    this.lufsCounter++;
+    if (this.lufsCounter >= this.lufsUpdateRate) {
+      this.lufsCounter = 0;
+      if (this.lufsMs > 1e-8) {
+        const currentLUFS = -0.691 + 10 * Math.log10(this.lufsMs);
+        const lufsError = this.lufsTarget - currentLUFS;
+        this.lufsTargetGain = Math.pow(10, lufsError / 20);
+        this.lufsTargetGain = Math.max(0.5, Math.min(2.0, this.lufsTargetGain));
+      }
+    }
+
+    return finalOut;
   }
 }
 
