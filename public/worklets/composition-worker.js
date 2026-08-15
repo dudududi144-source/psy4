@@ -221,10 +221,24 @@ function genBassPattern(rng, density) {
   return pattern;
 }
 
-function genMotifIntervals(rng) {
-  const intervals = [0];
+// Phase 9.4: Scale-aware melody generation
+// Scale intervals (semitones from root) for each style
+const SCALE_INTERVALS = {
+  'phrygian-dominant': [0, 1, 4, 5, 7, 8, 11],
+  'phrygian': [0, 1, 3, 5, 7, 8, 10],
+  'dorian': [0, 2, 3, 5, 7, 9, 10],
+  'minor': [0, 2, 3, 5, 7, 8, 10],
+  'major': [0, 2, 4, 5, 7, 9, 11],
+  'harmonicMinor': [0, 2, 3, 5, 7, 8, 11],
+};
+
+function genMotifIntervals(rng, scaleName) {
+  const scale = SCALE_INTERVALS[scaleName] || SCALE_INTERVALS['phrygian-dominant'];
+  const intervals = [0];  // start on root
   for (let i = 0; i < 3; i++) {
-    intervals.push(Math.floor(rng() * 8));
+    // Pick from scale notes, prefer steps and thirds for melodic flow
+    const idx = Math.floor(rng() * scale.length);
+    intervals.push(scale[idx]);
   }
   return intervals;
 }
@@ -242,7 +256,7 @@ function genMotifSteps(rng) {
 const STYLE_GRAMMARS = {
   FULL_ON: {
     scaleName: 'phrygian-dominant',
-    motifIntervals: genMotifIntervals(Math.random),
+    motifIntervals: genMotifIntervals(Math.random, 'phrygian-dominant'),
     motifSteps: genMotifSteps(Math.random),
     bassPattern: genBassPattern(Math.random, 0.7),
     acidBass: false,
@@ -250,7 +264,7 @@ const STYLE_GRAMMARS = {
   },
   DARK: {
     scaleName: 'phrygian',
-    motifIntervals: genMotifIntervals(Math.random),
+    motifIntervals: genMotifIntervals(Math.random, 'phrygian'),
     motifSteps: genMotifSteps(Math.random),
     bassPattern: genBassPattern(Math.random, 0.35),
     acidBass: false,
@@ -258,7 +272,7 @@ const STYLE_GRAMMARS = {
   },
   PROGRESSIVE: {
     scaleName: 'dorian',
-    motifIntervals: genMotifIntervals(Math.random),
+    motifIntervals: genMotifIntervals(Math.random, 'dorian'),
     motifSteps: genMotifSteps(Math.random),
     bassPattern: genBassPattern(Math.random, 0.5),
     acidBass: false,
@@ -266,7 +280,7 @@ const STYLE_GRAMMARS = {
   },
   ACID: {
     scaleName: 'phrygian-dominant',
-    motifIntervals: genMotifIntervals(Math.random),
+    motifIntervals: genMotifIntervals(Math.random, 'phrygian-dominant'),
     motifSteps: genMotifSteps(Math.random),
     bassPattern: genBassPattern(Math.random, 0.4),
     acidBass: true,
@@ -279,7 +293,7 @@ const STYLE_GRAMMARS = {
 // entire session. (User feedback: "אותו מבנה קבוע" — same fixed structure.)
 function regenerateGrammar(styleName) {
   const g = STYLE_GRAMMARS[styleName] || STYLE_GRAMMARS.FULL_ON;
-  g.motifIntervals = genMotifIntervals(Math.random);
+  g.motifIntervals = genMotifIntervals(Math.random, g.scaleName);
   g.motifSteps = genMotifSteps(Math.random);
   const density = styleName === 'FULL_ON' ? 0.7 : styleName === 'DARK' ? 0.35 : styleName === 'ACID' ? 0.4 : 0.5;
   g.bassPattern = genBassPattern(Math.random, density);

@@ -2484,22 +2484,40 @@ export class PsyLive {
     for (const role of roles) {
       const all = await this.soundBank.all(role);
       if (all.length === 0) continue;
-      // זהה entries חלשים: reward < 0.2 ו-usageCount > 3
-      const weak = all.filter(e => e.reward < 0.2 && e.usageCount > 3);
+      // Phase 9.5: Improved eviction — 3 strategies:
+      // 1. Weak entries: reward < 0.3 AND usageCount > 3 (tried but not good)
+      const weak = all.filter(e => e.reward < 0.3 && e.usageCount > 3);
       for (const entry of weak) {
         await this.soundBank.delete(entry.id);
         totalEvicted++;
       }
-      // אם כל ה-entries של role ירדו מתחת ל-0.3 → נקה את ה-role
-      const allWeak = all.every(e => e.reward < 0.3);
-      if (allWeak && all.length > 0) {
-        console.log(`[PSY4] שלב 4.5 Eviction: all ${role} entries weak (reward < 0.3) — clearing role for re-exploration`);
+      // 2. Near-duplicates: same fund (±2Hz) — keep only the highest reward
+      const remaining = all.filter(e => !weak.includes(e));
+      const seen = new Map<number, string>();  // fund → best entry id
+      for (const entry of remaining) {
+        const fund = Math.round((entry.voiceParams?.fund ?? entry.voiceParams?.cutoffStart ?? 0) / 5) * 5;
+        const existing = seen.get(fund);
+        if (existing) {
+          const existingEntry = remaining.find(e => e.id === existing);
+          if (existingEntry && entry.reward < existingEntry.reward) {
+            await this.soundBank.delete(entry.id);
+            totalEvicted++;
+          }
+        } else {
+          seen.set(fund, entry.id);
+        }
+      }
+      // 3. All weak → clear for re-exploration
+      const stillRemaining = await this.soundBank.all(role);
+      const allWeak = stillRemaining.every(e => e.reward < 0.3);
+      if (allWeak && stillRemaining.length > 0) {
+        console.log(`[PSY4] Phase 9.5 Eviction: all ${role} entries weak — clearing for re-exploration`);
         await this.soundBank.clearRole(role);
-        totalEvicted += all.length;
+        totalEvicted += stillRemaining.length;
       }
     }
     if (totalEvicted > 0) {
-      console.log(`[PSY4] שלב 4.5 Periodic eviction: removed ${totalEvicted} weak entries`);
+      console.log(`[PSY4] Phase 9.5 Eviction: removed ${totalEvicted} weak/duplicate entries`);
     }
   }
 
