@@ -2848,6 +2848,10 @@ export class PsyLive {
         sweepResonance: 0.2 + Math.random() * 0.6,                    // 0.2-0.8
         sweepDrive: 1.0 + Math.random() * 2.5,                        // 1.0-3.5
       },
+      WavetableVoice: {
+        morphPos: Math.random(),           // 0-1 (sine to saw mix)
+        morphRate: 0.2 + Math.random() * 1.0,  // 0.2-1.2 Hz morph speed
+      },
     };
   }
 
