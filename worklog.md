@@ -9757,3 +9757,10 @@ Problem 4: Master chain — PARTIALLY FIXED
 - Result: LUFS varies -10 to -14 depending on section, peak -0.78 to -1.26
 - The variation is due to arrangement (intro=quiet, drop=loud), not master chain
 - Glue comp needs better tuning — left bypassed until Problem 5 (voice DSP) improves the source material
+
+Problem 5: Voice DSP — FIXED
+- Found that Lead (octave+air+FM), Pad (3-osc+sweep+stereo), Acid (bidirectional
+  LFO+analog modeling) were ALREADY improved in previous commits
+- The DEEP_ROAST document was written BEFORE those improvements
+- Added: Bass sustain mode (dur > 0.5s → hold at 0.6 + slow release)
+- Verified: audio works after change (RMS 0.33, peak 0.86, no errors)

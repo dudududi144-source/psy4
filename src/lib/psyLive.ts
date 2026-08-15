@@ -2859,6 +2859,65 @@ export class PsyLive {
     await this.packageExporter.download(detectedStyles, sourceStations, insights, patterns);
   }
 
+  // ── Audio Capture (MediaRecorder) ──
+  // Records the live output of PSY4 to a downloadable audio file.
+  private mediaRecorder: MediaRecorder | null = null;
+  private recordedChunks: Blob[] = [];
+
+  /**
+   * Start recording the live audio output.
+   * Creates a MediaStreamDestination and connects the master output to it.
+   */
+  startRecording(): boolean {
+    if (!this.ctx || !this.analyser) return false;
+    if (this.mediaRecorder) {
+      console.warn('[PSY4] Already recording');
+      return false;
+    }
+    try {
+      const dest = this.ctx.createMediaStreamDestination();
+      this.analyser.connect(dest);
+      this.mediaRecorder = new MediaRecorder(dest.stream, { mimeType: 'audio/webm' });
+      this.recordedChunks = [];
+      this.mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) this.recordedChunks.push(e.data);
+      };
+      this.mediaRecorder.start();
+      console.log('[PSY4] Recording started');
+      return true;
+    } catch (e) {
+      console.error('[PSY4] Recording failed:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Stop recording and download the audio file.
+   */
+  async stopRecording(): Promise<boolean> {
+    if (!this.mediaRecorder) return false;
+    const recorder = this.mediaRecorder;
+    this.mediaRecorder = null;
+    return new Promise<boolean>((resolve) => {
+      recorder.onstop = () => {
+        const blob = new Blob(this.recordedChunks, { type: 'audio/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `psy4-recording-${Date.now()}.webm`;
+        a.click();
+        URL.revokeObjectURL(url);
+        console.log(`[PSY4] Recording saved (${blob.size} bytes)`);
+        resolve(true);
+      };
+      recorder.stop();
+    });
+  }
+
+  isRecording(): boolean {
+    return this.mediaRecorder !== null && this.mediaRecorder.state === 'recording';
+  }
+
   /**
    * טוען חבילת סאונד מ-JSON string.
    */
@@ -2874,12 +2933,13 @@ export class PsyLive {
 
   /**
    * אוסף דפוסים מה-learning data (kick pattern, bass intervals, etc.).
+   * אם אין רדיו — מייצא דפוס סינתטי מה-composer (4-on-the-floor kick).
    */
   private collectPatternsForPackage(): PackagePattern[] {
     const patterns: PackagePattern[] = [];
     const bpm = this.transport ? this.transport.snapshot().bpm : 145;
     const sourceStyle = this.styleClassifier.getSourceStyleForBank();
-    // Kick pattern — אם יש נתונים
+    // Kick pattern — אם יש נתונים מהרדיו
     if (this.radioKickTimes.length > 0) {
       const pattern = this.extractKickPatternForExport();
       if (pattern) {
@@ -2891,6 +2951,26 @@ export class PsyLive {
           sourceStyle,
         });
       }
+    }
+    // Fallback: synthetic kick pattern (4-on-the-floor) when no radio data
+    if (patterns.length === 0) {
+      const synthKick = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
+      patterns.push({
+        role: 'kick',
+        pattern: synthKick,
+        bpm,
+        confidence: 0.5,
+        sourceStyle: 'synthetic',
+      });
+      // Also add a bass pattern (offbeat)
+      const synthBass = [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0];
+      patterns.push({
+        role: 'bass',
+        pattern: synthBass,
+        bpm,
+        confidence: 0.5,
+        sourceStyle: 'synthetic',
+      });
     }
     return patterns;
   }
@@ -2996,7 +3076,7 @@ export class PsyLive {
    * יוצר וריאציות לכל ה-roles הפעילים.
    */
   async generateAllOriginalSounds(): Promise<GenerationResult[]> {
-    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'perc'];
+    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'hat', 'perc'];
     const results: GenerationResult[] = [];
     for (const role of roles) {
       const result = await this.generateOriginalSounds(role);

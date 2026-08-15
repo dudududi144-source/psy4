@@ -67,6 +67,7 @@ export default function Page() {
 
   const [streamId, setStreamId] = useState('spaceunicorn');
   const [vol, setVol] = useState(0.9);
+  const [recording, setRecording] = useState(false);
   const [radioVol, setRadioVol] = useState(0.5);
   const [style, setStyle] = useState<MusicalStyle>('FULL_ON');
   const [energy, setEnergy] = useState(0.5);
@@ -489,6 +490,21 @@ export default function Page() {
                 className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
                 style={{ background: 'rgba(255,46,136,0.15)', color: '#ff2e88', border: '1px solid rgba(255,46,136,0.3)' }}>
                 Generate Originals
+              </button>
+              <button
+                onClick={() => {
+                  if (recording) {
+                    engineRef.current?.stopRecording();
+                    setRecording(false);
+                  } else {
+                    engineRef.current?.startRecording();
+                    setRecording(true);
+                  }
+                }}
+                disabled={!s.playing}
+                className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: recording ? 'rgba(255,46,136,0.3)' : 'rgba(255,255,255,0.05)', color: recording ? '#ff2e88' : '#94a3b8', border: recording ? '1px solid rgba(255,46,136,0.5)' : '1px solid rgba(255,255,255,0.1)' }}>
+                {recording ? '⏹ Stop Rec' : '● Record'}
               </button>
             </div>
             <div className="text-[10px] text-slate-500">

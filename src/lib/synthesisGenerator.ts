@@ -166,44 +166,66 @@ export class SynthesisGenerator {
   }
 
   /**
-   * יוצר וריאציה על-ידי שינוי פרמטרים ב-±VARIATION_RANGE.
+   * יוצר וריאציה על-ידי שינוי פרמטרים בטווחים רחבים + mutation types שונים.
+   * טווחים הורחבו מ-±5Hz ל-±15Hz (kick fund) וכו' כדי לקבל גיוון אמיתי.
+   * נוספו: waveType mutation (kick), detune mutation (lead), hatBrightness mutation.
    */
   private createVariation(base: Record<string, number>, role: OnsetRole): Record<string, number> {
     const variation: Record<string, number> = { ...base };
-    // שנה פרמטרים רלוונטיים לפי role
     if (role === 'kick') {
       if (variation.fund !== undefined) {
-        variation.fund = this.varyValue(variation.fund, 5, 40, 70); // ±5Hz
+        variation.fund = this.varyValue(variation.fund, 15, 35, 70); // ±15Hz (was ±5)
       }
       if (variation.saturation !== undefined) {
-        variation.saturation = this.varyValue(variation.saturation, 0.3, 1.0, 2.5);
+        variation.saturation = this.varyValue(variation.saturation, 0.5, 0.8, 2.8); // ±0.5 (was ±0.3)
       }
       if (variation.subDecay !== undefined) {
-        variation.subDecay = this.varyValue(variation.subDecay, 0.03, 0.1, 0.3);
+        variation.subDecay = this.varyValue(variation.subDecay, 0.08, 0.05, 0.35);
       }
       if (variation.startMult !== undefined) {
-        variation.startMult = this.varyValue(variation.startMult, 0.5, 2.0, 5.0);
+        variation.startMult = this.varyValue(variation.startMult, 1.5, 1.5, 5.5);
+      }
+      // NEW: waveType mutation — change waveform type for tonal variation
+      if (variation.waveType !== undefined && Math.random() < 0.3) {
+        variation.waveType = Math.floor(Math.random() * 4); // 0-3 (sine/tri/sq/saw)
+      }
+      // NEW: pitchDecay mutation
+      if (variation.pitchDecay !== undefined) {
+        variation.pitchDecay = this.varyValue(variation.pitchDecay, 0.015, 0.010, 0.045);
       }
     } else if (role === 'bass') {
       if (variation.cutoffStart !== undefined) {
-        variation.cutoffStart = this.varyValue(variation.cutoffStart, 200, 400, 1500);
+        variation.cutoffStart = this.varyValue(variation.cutoffStart, 500, 200, 2200); // ±500 (was ±200)
       }
       if (variation.cutoffEnd !== undefined) {
-        variation.cutoffEnd = this.varyValue(variation.cutoffEnd, 50, 100, 400);
+        variation.cutoffEnd = this.varyValue(variation.cutoffEnd, 100, 80, 480);
       }
       if (variation.subLevel !== undefined) {
-        variation.subLevel = this.varyValue(variation.subLevel, 0.1, 0.3, 0.6);
+        variation.subLevel = this.varyValue(variation.subLevel, 0.15, 0.25, 0.70);
       }
       if (variation.cutoffDecay !== undefined) {
-        variation.cutoffDecay = this.varyValue(variation.cutoffDecay, 0.02, 0.02, 0.08);
+        variation.cutoffDecay = this.varyValue(variation.cutoffDecay, 0.04, 0.015, 0.095);
       }
     } else if (role === 'lead') {
       if (variation.freq !== undefined) {
-        variation.freq = this.varyValue(variation.freq, 50, 220, 880);
+        variation.freq = this.varyValue(variation.freq, 100, 220, 880); // ±100 (was ±50)
+      }
+      if (variation.cutoff !== undefined) {
+        variation.cutoff = this.varyValue(variation.cutoff, 800, 1500, 5500); // NEW
+      }
+      if (variation.detune !== undefined) {
+        variation.detune = this.varyValue(variation.detune, 8, 3, 28); // NEW
+      }
+    } else if (role === 'hat') {
+      if (variation.hatDecay !== undefined) {
+        variation.hatDecay = this.varyValue(variation.hatDecay, 0.03, 0.015, 0.095); // NEW
+      }
+      if (variation.hatBrightness !== undefined) {
+        variation.hatBrightness = this.varyValue(variation.hatBrightness, 1.0, 0.3, 2.8); // NEW
       }
     } else if (role === 'perc') {
       if (variation.freq !== undefined) {
-        variation.freq = this.varyValue(variation.freq, 30, 100, 400);
+        variation.freq = this.varyValue(variation.freq, 80, 100, 420); // ±80 (was ±30)
       }
     }
     return variation;
