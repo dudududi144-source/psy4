@@ -372,6 +372,14 @@ class CausalComposerWorker {
     if (bar > 0 && bar % 32 === 0) {
       regenerateGrammar(this.userStyle);
     }
+    // Phase 7.2: Change root note every 64 bars (full arrangement cycle)
+    // Picks a compatible root from the current scale for harmonic variety
+    if (bar > 0 && bar % 64 === 0) {
+      const compatibleRoots = [0, 2, 3, 5, 7, 8, 10]; // minor-compatible roots
+      const newRoot = compatibleRoots[Math.floor(Math.random() * compatibleRoots.length)];
+      this.opts.rootPc = newRoot;
+      console.log(`[PSY4] Phase 7.2: Root note changed to ${newRoot} at bar ${bar}`);
+    }
     // Phase 6.3: Per-phrase variation — slight mutation every 4 bars
     if (bar > 0 && bar % 4 === 0) {
       varyGrammar(this.userStyle);

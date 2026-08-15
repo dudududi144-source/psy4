@@ -2589,9 +2589,10 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           if (lp.tailLevel !== undefined) v.tailLevel = lp.tailLevel;
           if (lp.tailDecay !== undefined) v.tailDecay = lp.tailDecay;
         }
-        // Trigger sidechain
-        this.duckEnv = 1 - wp.duck * (0.5 + mc.aggression * 0.5);
-        this.duckEnv = Math.max(0.3, this.duckEnv);
+        // Trigger sidechain — Phase 7.3: deeper ducking (0.25 min = -12dB)
+        // Commercial psytrance uses 6-8dB ducking for tight groove
+        this.duckEnv = 1 - wp.duck * (0.6 + mc.aggression * 0.4);
+        this.duckEnv = Math.max(0.25, this.duckEnv);
         break;
       }
       case V_BASS: {
@@ -2880,9 +2881,10 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < L.length; i++) {
       this.currentSample++;
 
-      // Sidechain envelope recovery
+      // Sidechain envelope recovery — Phase 7.3: exponential recovery (100ms)
+      // Smoother than linear, creates musical "pump" that sits under the kick
       if (duckEnvRef.duckEnv < 1) {
-        duckEnvRef.duckEnv += (1 - duckEnvRef.duckEnv) * (dt / 0.15);  // FIX: was 0.25 — faster recovery = less ducking overlap
+        duckEnvRef.duckEnv += (1 - duckEnvRef.duckEnv) * (dt / 0.10);
       }
 
       // Mix all active voices into stereo buses (SINGLE LOOP)
