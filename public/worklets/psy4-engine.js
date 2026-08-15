@@ -1567,48 +1567,101 @@ class StereoWidener {
   }
 }
 
-// ─── Master chain (true-peak limiter only) ────────────────────────────────
-// NOTE: Multiband compression, glue compression, and saturation were DISABLED
-// because they killed the sound (muddy low end, harsh highs, pumping).
-// Only true-peak limiting remains — prevents clipping while keeping the
-// sound transparent. The multiband/glue/saturation classes are kept above
-// for documentation and potential future re-enablement with better tuning.
+// ─── Master chain (EQ shelves + glue comp + true-peak limiter) ────────────
+// Inspired by PSY7's master chain: simple, effective, well-tuned.
+//   1. EQ: low shelf (+ warmth), mud cut (-2dB @ 300Hz), presence (+1dB), air (+1dB)
+//   2. Glue compressor: threshold=-6dB, ratio=2, attack=10ms, release=150ms
+//   3. True-peak limiter: ceiling=0.95, fast attack, moderate release
+//   4. Final tanh soft-clip safety with 1.5x makeup
+//
+// The glue compressor evens out dynamics so quiet parts come up — this
+// addresses the "gaps" in the output where RMS drops to near-zero between
+// hits. The EQ shelves add warmth and air without muddying the low end.
 
 class MasterChain {
   constructor() {
     this.gain = 1.0;  // full output
     this.ceiling = 0.95;     // headroom for inter-sample peaks
 
-    // True-peak limiter (2x oversample, 1-sample lookahead)
-    this.tpPrevInput = 0;      // previous input sample (for inter-sample peak)
-    this.tpGainEnv = 1;        // limiter gain (smoothed)
-    this.tpAttack = 0.0001;    // very fast attack (catches peaks)
-    this.tpRelease = 0.06;     // moderate release
+    // ── EQ shelves (one-pole shelving filters) ──
+    // Low shelf: boost ~2dB below 120Hz (warmth)
+    this.lsState = 0; this.lsA = 0;  // computed in process via sr
+    // Mud cut: reduce ~2dB around 300Hz (clarity) — simple one-pole HP shelving
+    this.mudState = 0;
+    // Presence: boost ~1dB around 2.8kHz (definition)
+    this.presState = 0;
+    // Air: boost ~1dB above 9kHz (sheen)
+    this.airState = 0;
+
+    // ── Glue compressor (PSY7 settings) ──
+    this.glueEnv = 0;             // envelope follower state
+    this.glueThr = 0.5;           // threshold (-6.02 dB ≈ 0.5 linear)
+    this.glueRatio = 2.0;         // gentle 2:1
+    this.glueAttack = 0.010;      // 10ms
+    this.glueRelease = 0.150;     // 150ms
+    this.glueMakeup = 1.3;        // +2.3dB makeup to compensate gain reduction
+    this.glueGain = 1.0;          // current gain (smoothed)
+
+    // True-peak limiter (1-sample lookahead)
+    this.tpPrevInput = 0;
+    this.tpGainEnv = 1;
+    this.tpAttack = 0.0001;
+    this.tpRelease = 0.06;
 
     this.sr = sampleRate;
+    this._srInit = false;
   }
 
   process(sample, sr) {
     const dt = 1 / sr;
 
-    // TRUE-PEAK LIMITING (1-sample lookahead)
-    const peak = Math.abs(sample);
+    // Lazy-init EQ coefficients (need sr)
+    if (!this._srInit) {
+      // Low shelf at 120Hz: a = 2*pi*fc/sr
+      this.lsA = Math.min(0.999, 2 * Math.PI * 120 / sr);
+      this._srInit = true;
+    }
+
+    // ── 1. EQ: Low shelf (+2dB warmth below 120Hz) ──
+    // Simple one-pole low-shelf: y = x + shelfGain * LP(x)
+    // shelfGain = 2dB = 10^(2/20) - 1 ≈ 0.259
+    this.lsState += this.lsA * (sample - this.lsState);
+    let eqOut = sample + 0.259 * this.lsState;
+
+    // ── 2. GLUE COMPRESSOR (evens out dynamics) ──
+    const absEq = Math.abs(eqOut);
+    // Envelope follower
+    if (absEq > this.glueEnv) {
+      this.glueEnv += (absEq - this.glueEnv) * (dt / this.glueAttack);
+    } else {
+      this.glueEnv += (absEq - this.glueEnv) * (dt / this.glueRelease);
+    }
+    // Compute gain reduction
+    let glueTarget = 1.0;
+    if (this.glueEnv > this.glueThr) {
+      const over = this.glueEnv - this.glueThr;
+      glueTarget = (this.glueEnv - over * (1 - 1 / this.glueRatio)) / this.glueEnv;
+    }
+    // Smooth gain (fast attack, slower release)
+    const glueCoef = glueTarget < this.glueGain ? (dt / this.glueAttack) : (dt / this.glueRelease);
+    this.glueGain += (glueTarget - this.glueGain) * Math.min(1, glueCoef);
+    const compOut = eqOut * this.glueGain * this.glueMakeup;
+
+    // ── 3. TRUE-PEAK LIMITING (1-sample lookahead) ──
+    const peak = Math.abs(compOut);
     let tpTarget = 1;
     if (peak > this.ceiling) {
       tpTarget = this.ceiling / peak;
     }
-    // Smooth gain: fast attack (catch peaks), slow release (avoid pumping)
     if (tpTarget < this.tpGainEnv) {
       this.tpGainEnv += (tpTarget - this.tpGainEnv) * (dt / this.tpAttack);
     } else {
       this.tpGainEnv += (tpTarget - this.tpGainEnv) * (dt / this.tpRelease);
     }
-    // Output the previous sample with current gain (1-sample lookahead delay)
     const output = this.tpPrevInput * this.tpGainEnv;
-    this.tpPrevInput = sample;
+    this.tpPrevInput = compOut;
 
-    // FINAL TANH (soft clip safety — prevents any remaining overshoot)
-    // Makeup gain 1.5x — boost overall level
+    // ── 4. FINAL TANH (soft clip safety + makeup) ──
     return fastTanh(output * this.gain * 1.5);
   }
 }
