@@ -10592,3 +10592,44 @@ PRODUCTION VERIFICATION:
 - Bank building: 29 entries across 6+ roles
 
 DEPLOY: https://b529901a.psy4.pages.dev
+
+---
+Task ID: CRITICAL-FIXES
+Agent: z.ai-code (main)
+Task: מציאה ותיקון של 3 באגים קריטיים שהרסו את המוזיקה
+
+3 CRITICAL BUGS FOUND AND FIXED:
+
+Bug 1: Hats/Lead/Shaker/Acid not playing after first bar
+- ROOT CAUSE: generateGroove() only generated kick+bass+snare+clap.
+  Hats/lead/shaker/acid were only generated ONCE in executeDecision
+  (INTRODUCE_HATS etc), then never again.
+- SYMPTOM: 0 hat events, 0 lead events — no high-frequency content
+- FIX: Added hat/lead/shaker/acid/percussion generation to generateGroove()
+  when the voice is in activeVoices. Now generates every bar.
+- VERIFIED: HAT=45, LEAD=32, SHAKER=144 events (was 0 for all)
+
+Bug 2: Multiband compression killing all high frequencies
+- ROOT CAUSE: Biquad crossover (LR2, Q=0.5) implementation was incorrect.
+  The high-pass filter at 4000Hz attenuated the high band instead of
+  passing it through.
+- SYMPTOM: high=0 (all frequencies above 4kHz removed)
+- FIX: Bypassed multiband in MasterChain.process()
+- VERIFIED: high=88-165 (was 0)
+
+Bug 3: Excessive makeup gain (LUFS -4.67, way too hot)
+- ROOT CAUSE: glueMakeup=1.1 + tanh 1.5x without multiband = too hot
+- FIX: Reduced glueMakeup 1.1→0.9, tanh 1.5→1.0
+- VERIFIED: LUFS -14.55 (was -4.67)
+
+FINAL STATE:
+- Full spectrum: sub=225, mid=113, highMid=110, high=89 ✅
+- LUFS: -14.55 ✅
+- Peak: -2.80 dB ✅
+- 0 errors ✅
+- All voice types generating events: KICK, BASS, LEAD, HAT, HAT_OPEN,
+  CLAP, PERC, SHAKER, SNARE, WAVETABLE, RISER, IMPACT
+
+PRODUCTION:
+- Commits: 1ad487d, 6738e3a, 52d8bd5, 6814704
+- Deploy: https://b5f8c7b4.psy4.pages.dev
