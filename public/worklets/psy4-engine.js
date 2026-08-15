@@ -2022,7 +2022,7 @@ class MasterChain {
     this.glueRatio = 1.5;
     this.glueAttack = 0.005;
     this.glueRelease = 0.250;
-    this.glueMakeup = 1.1;
+    this.glueMakeup = 0.9;  // was 1.1 — too hot without multiband
     this.glueGain = 1.0;
 
     // ── LUFS targeting (Phase 3.2) ──
