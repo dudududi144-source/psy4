@@ -799,10 +799,9 @@ class FMVoice {
   constructor() {
     this.active = false;
     this.t = 0;
-    this.carPhase = 0;
-    this.modPhase = 0;
     this.filter = new MoogLadder();
-    // PERF-ZERO-ALLOC: preallocated output buffer
+    // Phase 5.5: 4-operator FM with selectable algorithms
+    this.phases = [0, 0, 0, 0];  // 4 operator phases
     this._out = new Float32Array(2);
   }
 
@@ -812,13 +811,29 @@ class FMVoice {
     this.freq = freq;
     this.dur = dur;
     this.amp = amp;
-    this.carPhase = 0;
-    this.modPhase = 0;
-    this.ratio = (params && params.fmRatio) || 2.0;       // modulator:carrier ratio
-    this.depthStart = (params && params.fmDepth) || 6.0;   // modulation index (start)
-    this.depthEnd = (params && params.fmDepthEnd) || 0.5;  // modulation index (end)
-    this.cutoff = (params && params.cutoff) || 2200;
-    this.res = (params && params.resonance) || 0.4;
+    this.phases = [0, 0, 0, 0];
+    // Operator ratios: carrier=1, modulators at different ratios
+    this.ratios = [
+      1.0,           // Op1: carrier (fundamental)
+      2.0,           // Op2: modulator (2:1 = classic FM)
+      params?.fmRatio ?? 3.0,  // Op3: modulator (3:1 or user-set)
+      0.5,           // Op4: sub-modulator (0.5:1 = sub harmonic)
+    ];
+    // Modulation indices per operator
+    this.indices = [
+      0,             // Op1: carrier (no modulation input)
+      params?.fmDepth ?? 6.0,   // Op2: high index → bright
+      params?.fmDepth ? params.fmDepth * 0.6 : 3.6,  // Op3: medium
+      2.0,           // Op4: low → subtle sub
+    ];
+    // Algorithm: how operators are connected
+    // 0: Op2→Op1 (classic FM), Op3→Op4→Op1 (stacked)
+    // 1: Op2+Op3→Op1 (parallel modulators)
+    // 2: Op2→Op3→Op1 (series modulators)
+    this.algorithm = params?.fmAlgorithm ?? 0;
+    this.cutoff = params?.cutoff ?? 2200;
+    this.res = params?.resonance ?? 0.4;
+    this.depthEnd = params?.fmDepthEnd ?? 0.5;
     this.filter.reset();
   }
 
@@ -829,22 +844,39 @@ class FMVoice {
     this.t += dt;
     if (this.t > this.dur + 0.05) { this.active = false; out[0] = 0; return out; }
 
-    // Modulator: sine at freq * ratio, with envelope on modulation index
-    this.modPhase += 2 * Math.PI * this.freq * this.ratio * dt;
-    // Exponential index decay (PSY3 "accent thermal" — fast attack, exp decay)
-    const idx = (this.depthStart - this.depthEnd) * Math.exp(-this.t / 0.05) + this.depthEnd;
-    const modulator = Math.sin(this.modPhase) * this.freq * idx;
+    // Exponential index decay
+    const idxScale = (1.0 - this.depthEnd) * Math.exp(-this.t / 0.05) + this.depthEnd;
 
-    // Carrier: sine at freq + modulator
-    this.carPhase += 2 * Math.PI * (this.freq + modulator) * dt;
-    const carrier = Math.sin(this.carPhase);
+    // Advance all operator phases
+    for (let i = 0; i < 4; i++) {
+      this.phases[i] += 2 * Math.PI * this.freq * this.ratios[i] * dt;
+    }
 
-    // Through Moog ladder for warmth (PSY3 always filters FM)
-    const filtered = this.filter.process(carrier, this.cutoff, this.res, 1.4, sr);
-    // Saturation for grit
+    // Compute operator outputs based on algorithm
+    let opOut = [0, 0, 0, 0];
+    // Op4 (sub modulator) — always sine, no modulation input
+    opOut[3] = Math.sin(this.phases[3]) * this.indices[3] * idxScale * this.freq;
+
+    if (this.algorithm === 0) {
+      // Algorithm 0: Op2→Op1, Op3→Op4→Op1 (stacked)
+      opOut[1] = Math.sin(this.phases[1] + opOut[3]) * this.indices[1] * idxScale * this.freq;
+      opOut[2] = Math.sin(this.phases[2]) * this.indices[2] * idxScale * this.freq;
+      opOut[0] = Math.sin(this.phases[0] + opOut[1] + opOut[2]);
+    } else if (this.algorithm === 1) {
+      // Algorithm 1: Op2+Op3→Op1 (parallel modulators)
+      opOut[1] = Math.sin(this.phases[1]) * this.indices[1] * idxScale * this.freq;
+      opOut[2] = Math.sin(this.phases[2]) * this.indices[2] * idxScale * this.freq;
+      opOut[0] = Math.sin(this.phases[0] + opOut[1] + opOut[2]);
+    } else {
+      // Algorithm 2: Op2→Op3→Op1 (series)
+      opOut[1] = Math.sin(this.phases[1]) * this.indices[1] * idxScale * this.freq;
+      opOut[2] = Math.sin(this.phases[2] + opOut[1]) * this.indices[2] * idxScale * this.freq;
+      opOut[0] = Math.sin(this.phases[0] + opOut[2]);
+    }
+
+    // Through Moog ladder for warmth
+    const filtered = this.filter.process(opOut[0], this.cutoff, this.res, 1.4, sr);
     const saturated = fastTanh(filtered * 1.8);
-
-    // Amp envelope: 3ms attack + exp decay over dur
     const ampEnv = Math.min(1, this.t / 0.003) * Math.exp(-this.t / this.dur);
     out[0] = saturated * ampEnv * this.amp;
     return out;
@@ -1183,8 +1215,17 @@ class TextureVoice {
     this.filter = new MoogLadder();
     this.noise = new PinkNoise();
     this.morphPhase = 0;
-    this.noiseFilter = new MoogLadder(); // separate filter for noise layer
-    // PERF-ZERO-ALLOC: preallocated output buffer
+    this.noiseFilter = new MoogLadder();
+    // NEW: Granular synthesis — grain buffer + grain engine
+    this.grainBuf = new Float32Array(4410);  // 100ms grain source buffer
+    this.grainBufLen = 4410;
+    this.grainPos = 0;
+    this.grainRate = 20;       // grains per second
+    this.grainSize = 0.05;     // 50ms grain size
+    this.grainPitch = 1.0;     // pitch multiplier
+    this.grainJitter = 0.3;    // position jitter
+    this.activeGrains = [];    // array of {pos, rate, env, age, size}
+    this.lastGrainTime = 0;
     this._out = new Float32Array(2);
   }
 
@@ -1200,11 +1241,21 @@ class TextureVoice {
     this.filter.reset();
     this.noiseFilter.reset();
     this.noise.reset();
-    // Detuned oscillators — slow evolving bed
     const baseFreq = 110 + Math.random() * 220;
     this.saw1.setFreq(baseFreq);
-    this.saw2.setFreq(baseFreq * 1.01); // very slight detune
+    this.saw2.setFreq(baseFreq * 1.01);
     this.baseFreq = baseFreq;
+    // NEW: Initialize granular buffer with noise + osc content
+    if (type === 'granular') {
+      for (let i = 0; i < this.grainBufLen; i++) {
+        const t = i / sr;
+        const osc = Math.sin(2 * Math.PI * baseFreq * t) * 0.5
+                  + Math.sin(2 * Math.PI * baseFreq * 1.5 * t) * 0.3;
+        this.grainBuf[i] = osc + (Math.random() * 2 - 1) * 0.2;
+      }
+      this.activeGrains = [];
+      this.lastGrainTime = 0;
+    }
   }
 
   render(currentTime, sr) {
@@ -1217,26 +1268,68 @@ class TextureVoice {
     const env = Math.min(1, this.t / 0.5) * Math.min(1, (this.dur - this.t) / 0.5);
     if (env <= 0) { out[0] = 0; return out; }
 
-    // Layer 1: Detuned saw bed — provides harmonic content
+    if (this.type === 'granular') {
+      // ── GRANULAR SYNTHESIS (Phase 5.4) ──
+      // Spawn new grains at grainRate
+      const grainInterval = 1 / this.grainRate;
+      if (this.t - this.lastGrainTime >= grainInterval) {
+        this.lastGrainTime = this.t;
+        const jitter = (Math.random() - 0.5) * this.grainJitter * this.grainBufLen;
+        const startPos = Math.floor((this.grainPos + jitter + this.grainBufLen) % this.grainBufLen);
+        this.activeGrains.push({
+          startPos: startPos,
+          readPos: startPos,
+          rate: this.grainPitch * (0.9 + Math.random() * 0.2),  // ±10% pitch variation
+          age: 0,
+          size: this.grainSize * (0.8 + Math.random() * 0.4),    // ±20% size variation
+          pan: Math.random() * 2 - 1,  // -1 to 1 stereo pan
+        });
+      }
+      // Advance grain buffer write position
+      this.grainPos = (this.grainPos + 1) % this.grainBufLen;
+
+      // Render active grains
+      let grainOut = 0;
+      for (let i = this.activeGrains.length - 1; i >= 0; i--) {
+        const g = this.activeGrains[i];
+        g.age += dt;
+        if (g.age > g.size) {
+          this.activeGrains.splice(i, 1);
+          continue;
+        }
+        // Read from grain buffer with pitch
+        g.readPos += g.rate;
+        const idx = Math.floor(g.readPos) % this.grainBufLen;
+        const idxNext = (idx + 1) % this.grainBufLen;
+        const frac = g.readPos - Math.floor(g.readPos);
+        const sample = this.grainBuf[idx] * (1 - frac) + this.grainBuf[idxNext] * frac;
+        // Grain envelope: Hann window
+        const grainProgress = g.age / g.size;
+        const grainEnv = 0.5 - 0.5 * Math.cos(2 * Math.PI * grainProgress);
+        grainOut += sample * grainEnv;
+      }
+      // Normalize by expected grain count
+      grainOut *= 0.3;
+      // Apply morph filter
+      this.morphPhase += 0.3 * dt;
+      const morph = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.morphPhase);
+      const morphCutoff = 300 + morph * 2000;
+      const filtered = this.filter.process(grainOut, morphCutoff, 0.15, 1.2, sr);
+      out[0] = fastTanh(filtered * 1.3) * env * this.amp;
+      return out;
+    }
+
+    // ── Default: detuned saw + noise bed (existing) ──
     const inc = this.baseFreq / sr;
     let oscBed = (this.saw1.process(inc) + this.saw2.process(inc)) * 0.3;
-
-    // Layer 2: Filtered noise — provides "air" and texture
     const noiseSamp = this.noise.process();
     const noiseFiltered = this.noiseFilter.process(noiseSamp, 2000, 0.3, 1.0, sr) * 0.4;
-
-    // Layer 3: Slow filter morph — cutoff moves up and down
-    this.morphPhase += 0.3 * dt; // 0.3Hz morph
+    this.morphPhase += 0.3 * dt;
     const morph = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.morphPhase);
-    const morphCutoff = 300 + morph * 2000; // 300Hz to 2300Hz
-
-    // Mix layers and apply morph filter
+    const morphCutoff = 300 + morph * 2000;
     let mix = oscBed + noiseFiltered;
     mix = this.filter.process(mix, morphCutoff, 0.15, 1.2, sr);
-
-    // Saturation for warmth
     mix = fastTanh(mix * 1.3);
-
     out[0] = mix * env * this.amp;
     return out;
   }
