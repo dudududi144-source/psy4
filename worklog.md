@@ -10751,3 +10751,53 @@ AUDIO CHECK:
 NOTE: Shaker/Texture not playing is a minor issue — they're decorative
 voices. The core rhythm section (kick/bass/snare/clap/hats/lead/acid)
 is fully functional.
+
+---
+Task ID: SCHEDULER-LEARNING-FINAL-CHECK
+Agent: z.ai-code (main)
+
+SCHEDULER CHECK:
+- Event timing: avgDelta=5.6s (3 bars lookahead at 145 BPM) ✅
+- Was 28.9s before fix — events were 7 bars too far in future
+- 0 late events, 0 past events
+- All events scheduled correctly
+
+LEARNING PIPELINE CHECK:
+- Bank: 53 entries across 10 roles ✅
+- Rewards: 0.50-0.68 (rising from 0.50) ✅
+- Reward deltas: +0.020 to +0.050 (positive, quality-based) ✅
+- applyRecipe: applying entries to engine ✅
+- Engine params updated from bank ✅
+
+BUTTONS CHECK:
+- 11/11 buttons present ✅
+- All enabled when playing ✅
+
+AUDIO CHECK:
+- LUFS: -10.34 (target -10, nearly perfect!) ✅
+- Peak: -2.80 dB ✅
+- Full spectrum: sub=246, mid=78, high=34 ✅
+- 0 errors ✅
+
+ALL VOICES CHECK (renderVoice):
+- 12/12 voices render correctly (peak < 0.6) ✅
+- 0 tooLoud ✅
+- 0 errors ✅
+
+COMPOSER CHECK:
+- 13/15 channels active (KICK, BASS, LEAD, ACID, PAD, HAT, HAT_OPEN,
+  CLAP, PERC, SNARE, RISER, IMPACT, SWEEP, WAVETABLE) ✅
+- 439 events in 20s = ~22 events/sec ✅
+
+TOTAL BUGS FIXED IN THIS SESSION: 8
+1. Voice pools too small (shaker=1, etc.)
+2. BREAKDAY causing silence (generateGroove skipped)
+3. LUFS EMA too slow (22s → 2s)
+4. LUFS clamp too narrow (±3dB → ±6dB)
+5. LUFS smoothing too fast (100ms → 500ms)
+6. LUFS measurement in wrong place (before limiter → after)
+7. renderVoice trigger args wrong for 7 voices (LeadVoice amp=44100!)
+8. Event timing 28.9s off (barOriginAudioTime miscalculated)
+
+PRODUCTION:
+- Deploy: https://010e3ab2.psy4.pages.dev
