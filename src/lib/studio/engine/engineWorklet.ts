@@ -17,7 +17,7 @@ export const VOICE = {
   KICK: 0, BASS: 1, LEAD: 2, ACID: 3, PAD: 4,
   HAT: 5, HAT_OPEN: 6, CLAP: 7, PERC: 8, SHAKER: 9,
   TEXTURE: 10, RISER: 11, IMPACT: 12, SWEEP: 13,
-  ZAP: 14, BLIP: 15, DOWNLIFTER: 16,
+  ZAP: 14, BLIP: 15, DOWNLIFTER: 16, FM: 17, SNARE: 18, WAVETABLE: 19,
 } as const;
 
 export type VoiceId = typeof VOICE[keyof typeof VOICE];

@@ -57,7 +57,7 @@ const VOICE_BUDGET_DROP_PER_OVERAGE = 1; // drop 1 voice per 0.5ms overage
 const V_KICK = 0, V_BASS = 1, V_LEAD = 2, V_ACID = 3, V_PAD = 4;
 const V_HAT = 5, V_HAT_OPEN = 6, V_CLAP = 7, V_PERC = 8, V_SHAKER = 9;
 const V_TEXTURE = 10, V_RISER = 11, V_IMPACT = 12, V_SWEEP = 13;
-const V_ZAP = 14, V_BLIP = 15, V_DOWNLIFTER = 16, V_FM = 17, V_SNARE = 18;
+const V_ZAP = 14, V_BLIP = 15, V_DOWNLIFTER = 16, V_FM = 17, V_SNARE = 18, V_WAVETABLE = 19;
 
 // ─── Fast polynomial tanh (Pade approximation, PSY5 pattern) ───────────────
 // 10x cheaper than Math.tanh (no transcendental call, just multiply + add).
@@ -2039,6 +2039,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.texturePool = [];
     this.fxPool = [];
     this.fmPool = [];
+    this.wavetablePool = [];  // Phase 5.2: WavetableVoice pool
     // FIX: Reduced pool sizes for mobile/low-end devices
     for (let i = 0; i < 2; i++) this.kickPool.push(new KickVoice());    // was 4
     for (let i = 0; i < 2; i++) this.bassPool.push(new BassVoice());    // was 2
@@ -2052,6 +2053,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < 1; i++) this.texturePool.push(new TextureVoice());// was 2
     for (let i = 0; i < 2; i++) this.fxPool.push(new FXVoice());        // was 4
     for (let i = 0; i < 1; i++) this.fmPool.push(new FMVoice());        // was 2
+    for (let i = 0; i < 1; i++) this.wavetablePool.push(new WavetableVoice());  // Phase 5.2
     // Total: 34 voices (was 64+28=92)
 
     // Sample voice pools — populated with SampleVoice instances
@@ -2215,6 +2217,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       [this.leadPool,       2, this.ST_HAAS],
       [this.acidPool,       2, this.ST_MONO],
       [this.fmPool,         2, this.ST_MONO],
+      [this.wavetablePool,  2, this.ST_MONO],  // Phase 5.2: wavetable on music bus
       [this.padPool,        3, this.ST_PAD],
       [this.texturePool,    3, this.ST_PAN],
       [this.fxPool,         4, this.ST_MONO],
@@ -2254,7 +2257,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           Atomics.store(this.sharedEventCount, 0, 0);
         }
         // Deactivate all voices
-        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.fmPool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool, this.snareSamplePool]) {
+        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.fmPool, this.wavetablePool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool, this.snareSamplePool]) {
           for (const v of pool) v.active = false;
         }
         break;
@@ -2397,7 +2400,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'panic':
         // Kill all voices
-        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.fmPool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool, this.snareSamplePool]) {
+        for (const pool of [this.kickPool, this.bassPool, this.leadPool, this.acidPool, this.padPool, this.hatPool, this.clapPool, this.percPool, this.shakerPool, this.texturePool, this.fxPool, this.fmPool, this.wavetablePool, this.kickSamplePool, this.hatSamplePool, this.clapSamplePool, this.snareSamplePool]) {
           for (const v of pool) v.active = false;
         }
         break;
@@ -2621,6 +2624,19 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
             fmDepthEnd: 0.5,
             cutoff: 2200,
             resonance: 0.4,
+          });
+        }
+        break;
+      }
+      case V_WAVETABLE: {
+        // Phase 5.2: WavetableVoice — morphing synthesis
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.WavetableVoice) || {};
+        const v = this.getFreeVoice(this.wavetablePool);
+        if (v) {
+          const freq = note > 0 ? 440 * Math.pow(2, (note - 69) / 12) : 220;
+          v.trigger(t, freq, duration, velocity, sr, {
+            morphPos: lp.morphPos ?? 0.5,
+            morphRate: lp.morphRate ?? 0.5,
           });
         }
         break;

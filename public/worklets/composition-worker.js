@@ -407,6 +407,13 @@ class CausalComposerWorker {
     const fxEvents = this.generateFX(bar, barStart, beatDur, sectionType);
     events.push(...fxEvents);
 
+    // Phase 5.2: Wavetable voice — plays evolving morphing notes during DROP.
+    // Adds a psychedelic layer that morphs between sine and saw.
+    if (sectionType === 'DROP_MAINTAIN' || sectionType === 'DROP_START') {
+      const wtEvents = this.generateWavetable(bar, barStart, beatDur);
+      events.push(...wtEvents);
+    }
+
     if (decision.action !== 'BREAKDOWN') {
       if (this.activeVoices.has('lead')) onMaterialPlayed(this.state, 'motif-A', bar);
       if (this.activeVoices.has('acid')) onMaterialPlayed(this.state, 'acid-A', bar);
@@ -754,6 +761,33 @@ class CausalComposerWorker {
     return events;
   }
 
+  // Phase 5.2: Generate wavetable events — evolving morphing notes.
+  // Plays 2 long notes per bar during DROP, at root + fifth.
+  // The wavetable voice morphs between sine and saw, creating a psychedelic
+  // evolving texture that sits under the lead.
+  generateWavetable(bar, barStart, beatDur) {
+    const events = [];
+    const root = 60 + this.opts.rootPc;  // MIDI note for root
+    const velScale = 0.3 + this.userEnergy * 0.3;
+    // Note 1: root, long duration (2 beats)
+    events.push({
+      at: barStart,
+      note: root,
+      velocity: Math.min(1, 0.4 * velScale),
+      duration: beatDur * 2,
+      channel: 'wavetable',
+    });
+    // Note 2: fifth, offset by 2 beats
+    events.push({
+      at: barStart + beatDur * 2,
+      note: root + 7,  // perfect fifth
+      velocity: Math.min(1, 0.35 * velScale),
+      duration: beatDur * 2,
+      channel: 'wavetable',
+    });
+    return events;
+  }
+
   generateGroove(bar) {
     this.activeVoices.add('kick');
     this.activeVoices.add('bass');
@@ -911,7 +945,7 @@ self.onmessage = function(e) {
         acid: 3, pad: 4, 'hat-closed': 5, hat: 5, 'hat-open': 6, clap: 7, snare: 18,
         percussion: 8, tom: 8, fill: 8, rim: 8, shaker: 9, ride: 5, crash: 6,
         texture: 10, atmosphere: 10, riser: 11, impact: 12, sweep: 13, zap: 14,
-        blip: 15, downlifter: 16, drone: 4, chord: 2,
+        blip: 15, downlifter: 16, drone: 4, chord: 2, wavetable: 19,
       };
       const EVENT_SIZE = 6;
       const flat = new Float64Array(allEvents.length * EVENT_SIZE);

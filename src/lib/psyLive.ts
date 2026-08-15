@@ -61,6 +61,7 @@ const CHANNEL_TO_VOICE: Record<string, VoiceId> = {
   sweep: VOICE.SWEEP, reverse: VOICE.SWEEP,
   downlifter: VOICE.DOWNLIFTER,
   stab: VOICE.ZAP, chord: VOICE.FM,
+  wavetable: VOICE.WAVETABLE as VoiceId,
 };
 
 // F13/R1: Removed dead imports — BeatPLL, PatternMutator, MelodyObserver,
