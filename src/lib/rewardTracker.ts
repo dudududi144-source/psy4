@@ -29,7 +29,7 @@ interface ActiveTracking {
 }
 
 const REWARD_WINDOW_MS = 3000; // חלון מדידה: 3 שניות אחרי החלת recipe
-const REWARD_DELTA = 0.05;     // כמה reward להוסיף/להוריד per measurement
+const REWARD_DELTA = 0.10;     // was 0.05 — too slow to reach "proven" (0.8)
 const MAX_REWARD = 1.0;
 const MIN_REWARD = 0.0;
 

@@ -834,6 +834,8 @@ export class PsyLive {
     this.updateDelayTime();
     this.timer = setInterval(() => this.scheduler(), this.lookahead);
     this.startUITimer();
+    // תיקון: התחל exploration גם בלי רדיו — עם synthetic target DNA
+    this.startAutoExploration();
     // Send initial compose if worklet is already ready
     if (this.workerReady && this.useWorklet && this.engineNode) {
       this.sendInitialCompose();
@@ -1445,7 +1447,6 @@ export class PsyLive {
           aggression: 0.5, brightness: 0.6,
         });
         // Load real drum samples into worklet
-        this.loadWorkletSamples();
         console.log('[PSY4] AudioWorklet engine active — Moog ladder + PolyBLEP + real samples');
         // שלב 4.2: אתחל את ה-SynthesisMatcher עם ה-engine node שנוצר
         this.synthesisMatcher.init(this.engineNode);
@@ -2538,7 +2539,7 @@ export class PsyLive {
    * שלב 4.5: אם ל-role אין אף entry עם reward > 0.5 אחרי 3 מחזורים → הרץ exploration נוסף.
    */
   private async runExplorationCycle(): Promise<void> {
-    if (!this.radioOn || !this.soundExplorer) return;
+    if (!this.soundExplorer) return;
     // בחר role round-robin
     const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'perc'];
     const role = roles[this.nextExploreRole === 'kick' ? 0 : this.nextExploreRole === 'bass' ? 1 : this.nextExploreRole === 'lead' ? 2 : 3];
@@ -2546,17 +2547,42 @@ export class PsyLive {
     const nextIdx = (roles.indexOf(role) + 1) % roles.length;
     this.nextExploreRole = roles[nextIdx];
 
-    // קבל את ה-onset האחרון ל-role
-    const onset = this.onsetAnalyzer.getLatestOnset(role);
-    if (!onset) {
-      console.log(`[PSY4] שלב 4.4 Exploration: no onsets for ${role} yet, skipping`);
-      return;
+    // קבל את ה-onset האחרון ל-role — אם אין, צור synthetic target DNA
+    let onset = this.onsetAnalyzer.getLatestOnset(role);
+    let targetDNA;
+    if (onset) {
+      targetDNA = onset.soundDNA;
+    } else {
+      // אין onsets (בלי רדיו) — צור synthetic target DNA אקראית
+      targetDNA = {
+        role: 'fx' as const,
+        brightness: Math.random(),
+        harmonicity: Math.random(),
+        noisiness: Math.random(),
+        spectralSlope: -0.5,
+        roughness: Math.random() * 0.3,
+        subEnergy: 0.3 + Math.random() * 0.5,
+        bodyEnergy: 0.3 + Math.random() * 0.4,
+        midEnergy: 0.2 + Math.random() * 0.5,
+        highEnergy: 0.1 + Math.random() * 0.4,
+        transientSharpness: 0.5 + Math.random() * 0.4,
+        attackTime: 0.005,
+        decayTime: 0.15 + Math.random() * 0.15,
+        sustainLevel: 0.2,
+        releaseTime: 0.1,
+        saturation: 0.3 + Math.random() * 0.4,
+        distortionCharacter: 0.3,
+        filterCutoff: 0, filterResonance: 0, filterType: 'lowpass' as const, filterEnvelopeAmount: 0.3,
+        pitchModulation: 0, fmAmount: 0, detune: 0, stereoWidth: 0, stereoMotion: 0,
+        confidence: 0.5, usageCount: 0, reward: 0.5, sourceStyle: '', sourceContext: '',
+      };
+      console.log(`[PSY4] שלב 4.4 Exploration: no onsets for ${role}, using synthetic target`);
     }
 
     try {
       // שלב 4.6: השתמש ב-sourceStyle מה-classifier (מזהה סגנון + unknown)
       const sourceStyle = this.styleClassifier.getSourceStyleForBank();
-      const result = await this.soundExplorer.explore(role, onset.soundDNA, sourceStyle);
+      const result = await this.soundExplorer.explore(role, targetDNA, sourceStyle);
       // אחרי ה-exploration, החל את ה-recipe הטוב ביותר מה-bank על ה-engine
       await this.applyBestRecipeFromBank(role);
       // שלב 5: שמור זיכרון אחרי כל cycle — המנוע יתחיל מכאן בפעם הבאה
@@ -2715,6 +2741,12 @@ export class PsyLive {
       AcidVoice: {
         acidCutoff: 800 + Math.floor(Math.random() * 2000),  // 800-2800
         acidResonance: 0.5 + Math.random() * 0.4,             // 0.5-0.9
+      },
+      ShakerVoice: {
+        shakerDecay: 0.03 + Math.random() * 0.08,             // 0.03-0.11
+      },
+      TextureVoice: {
+        textureType: Math.floor(Math.random() * 2),            // 0=noise, 1=fm
       },
     };
 

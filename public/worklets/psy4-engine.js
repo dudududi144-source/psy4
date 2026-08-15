@@ -2313,11 +2313,16 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_SHAKER: {
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.ShakerVoice) || {};
         const v = this.getFreeVoice(this.shakerPool);
-        if (v) v.trigger(t, velocity, sr);
+        if (v) {
+          v.trigger(t, velocity, sr);
+          if (lp.shakerDecay !== undefined) v.decay = lp.shakerDecay;
+        }
         break;
       }
       case V_TEXTURE: {
+        const lp = (this.learnedVoiceParams && this.learnedVoiceParams.TextureVoice) || {};
         const v = this.getFreeVoice(this.texturePool);
         if (v) v.trigger(t, duration, velocity, param >= 0.5 ? 'noise' : 'fm', sr);
         break;
