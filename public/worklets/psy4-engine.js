@@ -1774,7 +1774,7 @@ class MasterChain {
     this.airState = 0;
 
     // ── Multiband compressor (3-band) ──
-    this.mb = null;  // initialized in process() when sr known
+    this.mb = null;
 
     // ── Glue compressor ──
     this.glueEnv = 0;
@@ -1784,6 +1784,16 @@ class MasterChain {
     this.glueRelease = 0.250;
     this.glueMakeup = 1.1;
     this.glueGain = 1.0;
+
+    // ── LUFS targeting (Phase 3.2) ──
+    // Measures running mean square, computes LUFS, adjusts makeup gain
+    // to hit target LUFS (-10 = streaming loud, -12 = dynamic)
+    this.lufsMs = 0;              // running mean square (smoothed)
+    this.lufsTargetGain = 1.0;    // computed target gain
+    this.lufsAppliedGain = 1.0;   // current applied gain (smoothed)
+    this.lufsTarget = -10.0;      // target LUFS
+    this.lufsCounter = 0;         // update counter
+    this.lufsUpdateRate = 256;    // update every 256 samples (~6ms at 44.1kHz)
 
     // True-peak limiter
     this.tpPrevInput = 0;
@@ -1809,8 +1819,7 @@ class MasterChain {
     this.lsState += this.lsA * (sample - this.lsState);
     let eqOut = sample + 0.259 * this.lsState;
 
-    // ── 2. MULTIBAND COMPRESSION (3-band) ──
-    // Gentle per-band compression for spectral balance
+    // ── 2. MULTIBAND COMPRESSION ──
     const mbOut = this.mb ? this.mb.process(eqOut, sr) : eqOut;
 
     // ── 3. GLUE COMPRESSOR ──
@@ -1829,8 +1838,31 @@ class MasterChain {
     this.glueGain += (glueTarget - this.glueGain) * Math.min(1, glueCoef);
     const compOut = mbOut * this.glueGain * this.glueMakeup;
 
+    // ── 3.5. LUFS TARGETING (Phase 3.2) ──
+    // Measure running mean square (K-weighting simplified — no pre-filter)
+    // Update target gain every lufsUpdateRate samples
+    const sampleSq = compOut * compOut;
+    this.lufsMs = this.lufsMs * 0.999 + sampleSq * 0.001;  // slow EMA
+    this.lufsCounter++;
+    if (this.lufsCounter >= this.lufsUpdateRate) {
+      this.lufsCounter = 0;
+      if (this.lufsMs > 1e-8) {
+        // LUFS = -0.691 + 10*log10(meanSquare)
+        const currentLUFS = -0.691 + 10 * Math.log10(this.lufsMs);
+        const lufsError = this.lufsTarget - currentLUFS;  // positive = too quiet
+        // Convert dB error to linear gain: 10^(error/20)
+        this.lufsTargetGain = Math.pow(10, lufsError / 20);
+        // Clamp to reasonable range (±6dB)
+        this.lufsTargetGain = Math.max(0.5, Math.min(2.0, this.lufsTargetGain));
+      }
+    }
+    // Smooth gain transition (avoid clicks) — 100ms time constant
+    const lufsSmoothing = dt / 0.1;
+    this.lufsAppliedGain += (this.lufsTargetGain - this.lufsAppliedGain) * Math.min(1, lufsSmoothing);
+    const lufsOut = compOut * this.lufsAppliedGain;
+
     // ── 4. TRUE-PEAK LIMITER (brick-wall) ──
-    const peak = Math.abs(compOut);
+    const peak = Math.abs(lufsOut);
     let tpTarget = 1;
     if (peak > this.ceiling) {
       tpTarget = this.ceiling / peak;
@@ -1840,7 +1872,7 @@ class MasterChain {
     } else {
       this.tpGainEnv += (tpTarget - this.tpGainEnv) * (dt / this.tpRelease);
     }
-    const output = compOut * this.tpGainEnv;
+    const output = lufsOut * this.tpGainEnv;
 
     // ── 5. FINAL TANH ──
     return fastTanh(output * this.gain * 1.5);
