@@ -222,8 +222,6 @@ export interface LiveState {
   userStyle: string;            // FULL_ON | DARK | PROGRESSIVE | ACID
   forcedSection: string | null; // BREAK | BUILD | DROP | null (AUTO)
   forcedBarsRemaining: number;  // how many bars left in forced section
-  // STAGE 5: current sample palette
-  samplePalette: string;        // 'md' | '909' | 'nord' | 'real'
 }
 
 // ─── MusicState (from architecture review) ────────────────────────────────
@@ -566,8 +564,6 @@ export class PsyLive {
       userStyle: uc?.style ?? 'FULL_ON',
       forcedSection: uc?.forcedSection ?? null,
       forcedBarsRemaining: uc?.forcedBarsRemaining ?? 0,
-      // STAGE 5: current sample palette
-      samplePalette: this.currentPalette,
     });
   }
 
@@ -1468,112 +1464,6 @@ export class PsyLive {
     } catch (e) {
       console.warn('[PSY4] Worklet error:', e, '— using MaterialRealizer fallback');
       this.realizer?.loadSamples().catch(() => {});
-    }
-  }
-
-  private async loadWorkletSamples(): Promise<void> {
-    // STAGE 5: Load default palette ('md' = MachineDrum). User can switch via setSamplePalette().
-    await this.loadPalette('md');
-  }
-
-  // STAGE 5: Current sample palette — 'md' (MachineDrum) | '909' (Roland) | 'nord' (Nord) | 'real' (mixed)
-  private currentPalette: 'md' | '909' | 'nord' | 'real' = 'md';
-
-  /**
-   * STAGE 5: Switch the drum sample palette at runtime.
-   * Each palette uses samples from a different drum machine:
-   *   'md'   — MachineDrum (default, 126 samples, punchy electronic)
-   *   '909'  — Roland TR-909 (5 samples, classic analog)
-   *   'nord' — Nord Drum (10 samples, synthetic percussion)
-   *   'real' — Mixed real samples (kick.wav, hat_closed.wav, etc.)
-   * Loads new samples into the worklet without restarting playback.
-   */
-  async setSamplePalette(palette: 'md' | '909' | 'nord' | 'real'): Promise<void> {
-    if (palette === this.currentPalette) return;
-    this.currentPalette = palette;
-    await this.loadPalette(palette);
-    console.log(`[PSY4] Sample palette switched to: ${palette}`);
-  }
-
-  getSamplePalette(): string { return this.currentPalette; }
-
-  // STAGE 5: Load a specific palette's samples into the worklet.
-  // Selects kick/hat/clap/snare samples matching the palette prefix.
-  private async loadPalette(palette: 'md' | '909' | 'nord' | 'real'): Promise<void> {
-    if (!this.engineNode || !this.ctx) return;
-
-    // Define which sample files to load per palette.
-    // Each palette picks 2 kicks + 2 hats + 2 claps + 1 snare for variety.
-    const paletteFiles: Record<string, Record<string, { category: string; sub: string }>> = {
-      md: {
-        'md_kick_Kicks_0051.wav': { category: 'kick', sub: 'main' },
-        'md_kick_Kicks_0007.wav': { category: 'kick', sub: 'alt' },
-        'md_snare_Snares_0000.wav': { category: 'snare', sub: 'main' },
-        'md_clap_Claps_0006.wav': { category: 'clap', sub: 'main' },
-        'md_clap_Claps_0000.wav': { category: 'clap', sub: 'alt' },
-        'md_hat_Hats_0008.wav': { category: 'hat', sub: 'closed' },
-        'md_hat_Hats_0012.wav': { category: 'hat', sub: 'closed' },
-        'md_hat_Hats_0015.wav': { category: 'hat', sub: 'open' },
-        'md_perc_Percs_0001.wav': { category: 'perc', sub: 'main' },
-        'md_perc_Percs_0000.wav': { category: 'perc', sub: 'alt' },
-        'md_tom_Toms_0000.wav': { category: 'perc', sub: 'tom' },
-        'md_ride_Cymbals_0000.wav': { category: 'perc', sub: 'ride' },
-      },
-      '909': {
-        '909_BD_02.wav': { category: 'kick', sub: 'main' },
-        '909_BD_04.wav': { category: 'kick', sub: 'alt' },
-        '909_BD_05.wav': { category: 'kick', sub: 'deep' },
-        '909_BD_06.wav': { category: 'kick', sub: 'punch' },
-        '909_BD_07.wav': { category: 'kick', sub: 'sub' },
-        // 909 has no hat/clap files in the bank — fall back to md for those
-        'md_hat_Hats_0008.wav': { category: 'hat', sub: 'closed' },
-        'md_hat_Hats_0015.wav': { category: 'hat', sub: 'open' },
-        'md_clap_Claps_0006.wav': { category: 'clap', sub: 'main' },
-        'md_snare_Snares_0000.wav': { category: 'snare', sub: 'main' },
-      },
-      nord: {
-        'nord_kick_punchy_67.wav': { category: 'kick', sub: 'main' },
-        'nord_kick_deep_68.wav': { category: 'kick', sub: 'deep' },
-        'nord_kick_sub_93.wav': { category: 'kick', sub: 'sub' },
-        'nord_kick_warm_45.wav': { category: 'kick', sub: 'warm' },
-        'nord_snare_Snare1.wav': { category: 'snare', sub: 'main' },
-        'nord_perc_Perc1.wav': { category: 'perc', sub: 'main' },
-        'nord_perc_Perc2.wav': { category: 'perc', sub: 'alt' },
-        // Nord has no hats/claps — fall back to md
-        'md_hat_Hats_0008.wav': { category: 'hat', sub: 'closed' },
-        'md_hat_Hats_0015.wav': { category: 'hat', sub: 'open' },
-        'md_clap_Claps_0006.wav': { category: 'clap', sub: 'main' },
-      },
-      real: {
-        'kick.wav': { category: 'kick', sub: 'main' },
-        'hat_closed.wav': { category: 'hat', sub: 'closed' },
-        'hat_open.wav': { category: 'hat', sub: 'open' },
-        'clap.wav': { category: 'clap', sub: 'main' },
-        'bass_A.wav': { category: 'bass', sub: 'main' },
-        'lead.wav': { category: 'lead', sub: 'main' },
-      },
-    };
-
-    const sampleFiles = paletteFiles[palette] || paletteFiles.md;
-    const samples: { name: string; category: string; subcategory: string; sampleRate: number; data: Float32Array }[] = [];
-    for (const [file, info] of Object.entries(sampleFiles)) {
-      try {
-        const path = file.includes('/') || file.includes('.') && !file.includes('_')
-          ? `/samples/${file}`  // real/ root samples (kick.wav, etc.)
-          : `/samples/real/${file}`;
-        const res = await fetch(path);
-        if (!res.ok) continue;
-        const buf = await res.arrayBuffer();
-        const decoded = await this.ctx.decodeAudioData(buf);
-        const data = decoded.getChannelData(0);
-        const copy = new Float32Array(data.length);
-        copy.set(data);
-        samples.push({ name: file, category: info.category, subcategory: info.sub, sampleRate: decoded.sampleRate, data: copy });
-      } catch (e) { /* skip */ }
-    }
-    if (samples.length > 0) {
-      this.engineNode.loadSamples(samples);
-      console.log(`[PSY4] Loaded ${samples.length} samples for palette '${palette}' into worklet`);
     }
   }
 
@@ -2748,6 +2638,23 @@ export class PsyLive {
       TextureVoice: {
         textureType: Math.floor(Math.random() * 2),            // 0=noise, 1=fm
       },
+      RiserVoice: {
+        riserStartCutoff: 80 + Math.floor(Math.random() * 120),     // 80-200
+        riserEndCutoff: 6000 + Math.floor(Math.random() * 8000),    // 6000-14000
+        riserResonance: 0.2 + Math.random() * 0.6,                   // 0.2-0.8
+        riserDrive: 1.0 + Math.random() * 3.0,                       // 1.0-4.0
+      },
+      ImpactVoice: {
+        impactSubFreq: 100 + Math.floor(Math.random() * 150),        // 100-250
+        impactSubDecay: 0.06 + Math.random() * 0.16,                 // 0.06-0.22
+        impactNoiseDecay: 0.02 + Math.random() * 0.06,               // 0.02-0.08
+      },
+      SweepVoice: {
+        sweepStartCutoff: 4000 + Math.floor(Math.random() * 6000),   // 4000-10000
+        sweepEndCutoff: 200 + Math.floor(Math.random() * 800),        // 200-1000
+        sweepResonance: 0.2 + Math.random() * 0.6,                    // 0.2-0.8
+        sweepDrive: 1.0 + Math.random() * 2.5,                        // 1.0-3.5
+      },
     };
 
     // שלח ל-engine
@@ -2910,17 +2817,72 @@ export class PsyLive {
   // ── שלב 5.2: Original synthesis generation ──
 
   /**
+   * בונה target DNA סינטטי כשאין onsets מהרדיו.
+   * מאפשר יצירת וריאציות גם ללא רדיו — לכל role יש פרופיל דיפולט.
+   */
+  private buildSyntheticTargetDNA(role: OnsetRole): import('../../foundation/music/SoundDNA').SoundDNA {
+    const base = {
+      confidence: 0.5,
+      usageCount: 0,
+      reward: 0.5,
+      sourceStyle: 'synthetic',
+      sourceContext: 'no-radio',
+      // Common defaults
+      harmonicity: 0.6,
+      noisiness: 0.2,
+      spectralSlope: -0.5,
+      roughness: 0.3,
+      sustainLevel: 0.3,
+      releaseTime: 0.1,
+      pitchModulation: 0.1,
+      fmAmount: 0.1,
+      detune: 5,
+      stereoWidth: 0.5,
+      stereoMotion: 0.2,
+      distortionCharacter: 0.4,
+    };
+    switch (role) {
+      case 'kick':
+        return { ...base, role: 'kick', brightness: 0.3, subEnergy: 0.9, bodyEnergy: 0.5,
+          midEnergy: 0.2, highEnergy: 0.1, transientSharpness: 0.9, attackTime: 0.001,
+          decayTime: 0.2, saturation: 0.7, filterCutoff: 200, filterResonance: 1,
+          filterType: 'lowpass', filterEnvelopeAmount: 0.8 };
+      case 'bass':
+        return { ...base, role: 'bass', brightness: 0.4, subEnergy: 0.7, bodyEnergy: 0.8,
+          midEnergy: 0.4, highEnergy: 0.1, transientSharpness: 0.6, attackTime: 0.005,
+          decayTime: 0.3, saturation: 0.5, filterCutoff: 800, filterResonance: 2,
+          filterType: 'lowpass', filterEnvelopeAmount: 0.6 };
+      case 'lead':
+        return { ...base, role: 'lead', brightness: 0.7, subEnergy: 0.2, bodyEnergy: 0.5,
+          midEnergy: 0.8, highEnergy: 0.6, transientSharpness: 0.5, attackTime: 0.01,
+          decayTime: 0.5, saturation: 0.4, filterCutoff: 3000, filterResonance: 3,
+          filterType: 'lowpass', filterEnvelopeAmount: 0.4 };
+      case 'hat':
+        return { ...base, role: 'hat', brightness: 0.9, subEnergy: 0.0, bodyEnergy: 0.1,
+          midEnergy: 0.4, highEnergy: 0.9, transientSharpness: 0.95, attackTime: 0.001,
+          decayTime: 0.08, saturation: 0.3, filterCutoff: 7000, filterResonance: 1,
+          filterType: 'highpass', filterEnvelopeAmount: 0.3, noisiness: 0.8, harmonicity: 0.2 };
+      case 'perc':
+        return { ...base, role: 'percussion', brightness: 0.6, subEnergy: 0.3, bodyEnergy: 0.6,
+          midEnergy: 0.6, highEnergy: 0.4, transientSharpness: 0.8, attackTime: 0.002,
+          decayTime: 0.15, saturation: 0.4, filterCutoff: 2000, filterResonance: 2,
+          filterType: 'bandpass', filterEnvelopeAmount: 0.5 };
+    }
+  }
+
+  /**
    * יוצר וריאציות מקוריות על entries קיימים.
    * מוסיף entries חדשים עם sourceStyle='generated'.
+   * אם אין onsets מהרדיו — משתמש ב-target DNA סינטטי.
    */
   async generateOriginalSounds(role: OnsetRole): Promise<GenerationResult | null> {
     if (!this.synthesisGenerator) return null;
     const onset = this.onsetAnalyzer.getLatestOnset(role);
+    const targetDNA = onset?.soundDNA ?? this.buildSyntheticTargetDNA(role);
     if (!onset) {
-      console.warn(`[PSY4] שלב 5.2 generateOriginalSounds(${role}): no onsets for target`);
-      return null;
+      console.log(`[PSY4] שלב 5.2 generateOriginalSounds(${role}): using synthetic target DNA (no radio onsets)`);
     }
-    return this.synthesisGenerator.generate(role, onset.soundDNA);
+    return this.synthesisGenerator.generate(role, targetDNA);
   }
 
   /**

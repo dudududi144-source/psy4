@@ -46,12 +46,41 @@ export class SynthesisGenerator {
   /**
    * יוצר וריאציות על entries קיימים.
    * לוקח את ה-entry עם ה-reward הגבוה ביותר לכל role ויוצר וריאציות.
+   * אם ה-bank ריק — יוצר פרמטרים מאפס על בסיס ה-target DNA.
    */
   async generate(role: OnsetRole, targetDNA: SoundDNA): Promise<GenerationResult> {
     const t0 = performance.now();
     const entries = await this.bank.all(role);
+
+    // אם ה-bank ריק — צור פרמטרים מאפס על בסיס ה-target DNA
     if (entries.length === 0) {
-      return { role, generated: 0, duration_ms: 0 };
+      console.log(`[PSY4] שלב 5.2 SynthesisGenerator(${role}): bank empty — generating from scratch using target DNA`);
+      let generated = 0;
+      for (let i = 0; i < MAX_VARIATIONS_PER_ENTRY; i++) {
+        const scratchParams = this.createScratchParams(role, targetDNA, i);
+        try {
+          const buffer = await (this.matcher as any).renderVoice(
+            ROLE_TO_VOICE[role],
+            scratchParams,
+            this.getDefaultTriggerArgs(role, scratchParams),
+          );
+          if (!buffer || buffer.length === 0) continue;
+          const candidateDNA = (this.matcher as any).extractFeaturesFromBuffer(buffer, 44100);
+          const distance = (this.matcher as any).computeDistance(targetDNA, candidateDNA);
+          if (distance < DISTANCE_THRESHOLD) {
+            const recipe = this.buildRecipe(role, scratchParams);
+            const matchScore = 1 / (1 + distance);
+            await this.bank.add(role, targetDNA, recipe, matchScore, 'generated', scratchParams);
+            generated++;
+            console.log(`[PSY4] שלב 5.2 SynthesisGenerator(${role}): created from scratch #${i + 1}, distance=${distance.toFixed(3)}`);
+          }
+        } catch {
+          continue;
+        }
+      }
+      const duration_ms = Math.round(performance.now() - t0);
+      console.log(`[PSY4] שלב 5.2 SynthesisGenerator(${role}) from-scratch done: ${generated} variations in ${duration_ms}ms`);
+      return { role, generated, duration_ms };
     }
 
     // בחר את ה-entry הטוב ביותר (reward גבוה + matchScore גבוה)
@@ -89,6 +118,51 @@ export class SynthesisGenerator {
     const duration_ms = Math.round(performance.now() - t0);
     console.log(`[PSY4] שלב 5.2 SynthesisGenerator(${role}) done: generated ${generated} variations in ${duration_ms}ms`);
     return { role, generated, duration_ms };
+  }
+
+  /**
+   * יוצר פרמטרים מאפס על בסיס ה-target DNA.
+   * משתמש ב-DNA characteristics כדי לקבוע ערכי התחלה הגיוניים.
+   */
+  private createScratchParams(role: OnsetRole, dna: SoundDNA, variantIndex: number): Record<string, number> {
+    const jitter = (range: number) => (Math.random() - 0.5) * 2 * range * (variantIndex + 1) / 3;
+    switch (role) {
+      case 'kick':
+        return {
+          fund: Math.max(35, Math.min(70, 50 + jitter(10))),
+          startMult: Math.max(1.5, Math.min(5.5, 3.0 + jitter(1.5))),
+          subDecay: Math.max(0.05, Math.min(0.35, (dna.decayTime || 0.2) + jitter(0.05))),
+          saturation: Math.max(0.8, Math.min(2.8, (dna.saturation || 0.7) * 2 + jitter(0.3))),
+          pitchDecay: Math.max(0.010, Math.min(0.045, 0.025 + jitter(0.010))),
+          midLevel: Math.max(0.2, Math.min(0.8, (dna.midEnergy || 0.3) + jitter(0.15))),
+          clickLevel: Math.max(0.2, Math.min(0.8, (dna.transientSharpness || 0.8) + jitter(0.15))),
+          waveType: Math.floor(Math.random() * 4),
+        };
+      case 'bass':
+        return {
+          subLevel: Math.max(0.25, Math.min(0.70, (dna.subEnergy || 0.5) + jitter(0.1))),
+          cutoffStart: Math.max(200, Math.min(2200, (dna.filterCutoff || 800) + jitter(200))),
+          cutoffEnd: Math.max(80, Math.min(480, 200 + jitter(100))),
+          cutoffDecay: Math.max(0.015, Math.min(0.095, (dna.decayTime || 0.1) * 0.3 + jitter(0.02))),
+          harmonicLevel: Math.max(0.3, Math.min(0.8, (dna.harmonicity || 0.5) + jitter(0.15))),
+        };
+      case 'lead':
+        return {
+          cutoff: Math.max(1500, Math.min(5500, (dna.filterCutoff || 3000) + jitter(500))),
+          detune: Math.max(3, Math.min(28, Math.floor((dna.detune || 10) + jitter(5)))),
+          freq: Math.max(220, Math.min(880, 440 + jitter(50))),
+        };
+      case 'hat':
+        return {
+          hatDecay: Math.max(0.015, Math.min(0.095, (dna.decayTime || 0.05) + jitter(0.02))),
+          hatDecayOpen: Math.max(0.08, Math.min(0.33, 0.2 + jitter(0.08))),
+          hatBrightness: Math.max(0.3, Math.min(2.8, (dna.brightness || 0.7) * 2 + jitter(0.5))),
+        };
+      case 'perc':
+        return {
+          freq: Math.max(120, Math.min(420, (dna.filterCutoff || 200) + jitter(50))),
+        };
+    }
   }
 
   /**

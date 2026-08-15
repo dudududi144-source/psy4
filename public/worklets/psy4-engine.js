@@ -1149,9 +1149,11 @@ class FXVoice {
     this.filter = new MoogLadder(); // filter for riser/sweep
     // PERF-ZERO-ALLOC: preallocated output buffer
     this._out = new Float32Array(2);
+    // Learned params (overwritten by setVoiceRecipe / trigger with params)
+    this.lp = null;
   }
 
-  trigger(type, time, dur, amp, sr) {
+  trigger(type, time, dur, amp, sr, params) {
     this.active = true;
     this.type = type;
     this.t = 0;
@@ -1160,6 +1162,7 @@ class FXVoice {
     this.phase = 0;
     this.noise.reset();
     this.filter.reset();
+    this.lp = params || null;  // learned params for this hit
   }
 
   render(currentTime, sr) {
@@ -1175,25 +1178,36 @@ class FXVoice {
       case V_RISER: {
         // Riser = noise through filter that opens up + amplitude rise
         // FIX: louder, more dramatic build, longer filter sweep
+        // Learned params: riserStartCutoff, riserEndCutoff, riserResonance, riserDrive
+        const lp = this.lp || {};
+        const startCutoff = lp.riserStartCutoff || 100;
+        const endCutoff = lp.riserEndCutoff || 10000;
+        const resonance = lp.riserResonance || 0.3;
+        const drive = lp.riserDrive || 2.0;
         const n = this.noise.process();
-        // Filter opens from 100Hz to 10000Hz over the duration — FIX: wider range
-        const cutoff = 100 + Math.pow(t / this.dur, 1.5) * 9900;  // FIX: exponential curve, wider range
-        const filtered = this.filter.process(n, cutoff, 0.3, 2.0, sr);  // FIX: more resonance, more drive
-        // Amplitude rises exponentially — FIX: louder, more dramatic
-        const env = Math.pow(t / this.dur, 3) * 0.6;  // FIX: was pow(2)*0.35 — steeper curve, louder
+        // Filter opens over the duration — FIX: exponential curve, wider range
+        const cutoff = startCutoff + Math.pow(t / this.dur, 1.5) * (endCutoff - startCutoff);
+        const filtered = this.filter.process(n, cutoff, resonance, drive, sr);
+        // Amplitude rises exponentially — FIX: steeper curve, louder
+        const env = Math.pow(t / this.dur, 3) * 0.6;
         sample = fastTanh(filtered * env * 4);  // FIX: was *3 — more saturation
         break;
       }
       case V_IMPACT: {
         // Impact = sub sine boom + noise burst (two layers)
-        // Sub boom: sine from 150Hz to 40Hz with exp decay — FIX: louder, deeper
-        const f = 150 * Math.exp(-t / 0.12) + 40;
+        // Learned params: impactSubFreq, impactSubDecay, impactNoiseDecay
+        const lp = this.lp || {};
+        const subFreqStart = lp.impactSubFreq || 150;
+        const subDecay = lp.impactSubDecay || 0.12;
+        const noiseDecay = lp.impactNoiseDecay || 0.04;
+        // Sub boom: sine from subFreqStart to 40Hz with exp decay — FIX: louder, deeper
+        const f = subFreqStart * Math.exp(-t / subDecay) + 40;
         this.phase += 2 * Math.PI * f * dt;
         const subEnv = Math.exp(-t / 0.25);
         const sub = Math.sin(this.phase) * subEnv * 0.9;  // FIX: was 0.7 — louder
         // Noise burst: short percussive crack — FIX: louder, longer
         const n = this.noise.process();
-        const noiseEnv = Math.exp(-t / 0.04);  // FIX: was 0.02 — 40ms crack instead of 20ms
+        const noiseEnv = Math.exp(-t / noiseDecay);
         const crack = n * noiseEnv * 0.5;  // FIX: was 0.3 — louder
         sample = sub + crack;
         sample = fastTanh(sample * 2.0);  // FIX: was 1.5 — more saturation = punchier
@@ -1201,12 +1215,18 @@ class FXVoice {
       }
       case V_SWEEP: {
         // Sweep = filtered noise with filter moving + amplitude curve
+        // Learned params: sweepStartCutoff, sweepEndCutoff, sweepResonance, sweepDrive
+        const lp = this.lp || {};
+        const startCutoff = lp.sweepStartCutoff || 6000;
+        const endCutoff = lp.sweepEndCutoff || 500;
+        const resonance = lp.sweepResonance || 0.4;
+        const drive = lp.sweepDrive || 1.8;
         // FIX: louder, more dramatic filter movement
         const n = this.noise.process();
         const sweepPos = t / this.dur;
         // Filter sweeps from high to low (downward) — FIX: clearer direction
-        const cutoff = 6000 - Math.pow(sweepPos, 1.5) * 5500 + 500;  // FIX: 6000→500, exponential
-        const filtered = this.filter.process(n, cutoff, 0.4, 1.8, sr);  // FIX: more resonance, more drive
+        const cutoff = startCutoff - Math.pow(sweepPos, 1.5) * (startCutoff - endCutoff);
+        const filtered = this.filter.process(n, cutoff, resonance, drive, sr);
         const env = Math.sin(Math.PI * sweepPos) * 0.5;  // FIX: was 0.2 — louder
         sample = fastTanh(filtered * env * 2.5);  // FIX: add saturation
         break;
@@ -1484,129 +1504,13 @@ class StereoDelay {
 class BusProcessor {
   constructor(config) {
     this.config = config;
-    // Compressor state
-    this.compEnv = 0;
-    // HP filter state (clean low end)
-    this.hpState = 0;
-    // Saturation drive
-    this.drive = config.drive || 1.0;
-    // Output gain
+    // Output gain (only gain is applied — HP/compressor/saturation were disabled
+    // because they killed the sound. Kept minimal for transparent bus routing.)
     this.gain = config.gain || 1.0;
   }
 
   process(sample, sr) {
-    // תיקון: דלג על כל העיבוד — HP, compressor, saturation.
-    // רק gain ישיר. העיבוד הרג את הסאונד.
     return sample * this.gain;
-  }
-}
-
-// ─── Biquad filter (RBJ cookbook, transposed direct form II) ───────────────
-// Used for multiband crossover filters in the master chain.
-
-class Biquad {
-  constructor() {
-    this.z1 = 0; this.z2 = 0;
-    this.b0 = 1; this.b1 = 0; this.b2 = 0;
-    this.a1 = 0; this.a2 = 0;
-  }
-  setLowpass(fc, sr, Q) {
-    const w0 = 2 * Math.PI * fc / sr;
-    const cw = Math.cos(w0), sw = Math.sin(w0);
-    const alpha = sw / (2 * Q);
-    const a0 = 1 + alpha;
-    this.b0 = ((1 - cw) / 2) / a0;
-    this.b1 = (1 - cw) / a0;
-    this.b2 = ((1 - cw) / 2) / a0;
-    this.a1 = (-2 * cw) / a0;
-    this.a2 = (1 - alpha) / a0;
-  }
-  setHighpass(fc, sr, Q) {
-    const w0 = 2 * Math.PI * fc / sr;
-    const cw = Math.cos(w0), sw = Math.sin(w0);
-    const alpha = sw / (2 * Q);
-    const a0 = 1 + alpha;
-    this.b0 = ((1 + cw) / 2) / a0;
-    this.b1 = -(1 + cw) / a0;
-    this.b2 = ((1 + cw) / 2) / a0;
-    this.a1 = (-2 * cw) / a0;
-    this.a2 = (1 - alpha) / a0;
-  }
-  process(x) {
-    // Transposed direct form II
-    const y = this.b0 * x + this.z1;
-    this.z1 = this.b1 * x - this.a1 * y + this.z2;
-    this.z2 = this.b2 * x - this.a2 * y;
-    return y;
-  }
-  reset() { this.z1 = 0; this.z2 = 0; }
-}
-
-// ─── Multiband Compressor (3-band: low <180Hz, mid 180-4000Hz, high >4000Hz) ──
-// PSY3 style_master.py master_pro() step 2: multiband compression.
-// Uses Linkwitz-Riley 2nd-order crossovers (Q=0.5) for flat summing.
-// Each band has independent compressor with per-band attack/release/ratio.
-
-class MultibandComp {
-  constructor(sr) {
-    // LR2 crossovers at 180Hz and 4000Hz
-    // 4 biquads: LP1(180), HP1(180), LP2(4000), HP2(4000)
-    this.lp1 = new Biquad(); this.lp1.setLowpass(180, sr, 0.5);
-    this.hp1 = new Biquad(); this.hp1.setHighpass(180, sr, 0.5);
-    this.lp2 = new Biquad(); this.lp2.setLowpass(4000, sr, 0.5);
-    this.hp2 = new Biquad(); this.hp2.setHighpass(4000, sr, 0.5);
-    // Per-band compressor envelope state
-    this.envLow = 0; this.envMid = 0; this.envHigh = 0;
-    // Per-band settings (PSY3-style: low=more ratio, high=faster)
-    this.lowThr = 0.5;  this.lowRatio = 3;   this.lowAtt = 0.005; this.lowRel = 0.15;  this.lowMakeup = 1.3;
-    this.midThr = 0.5;  this.midRatio = 2;   this.midAtt = 0.004; this.midRel = 0.12;  this.midMakeup = 1.2;
-    this.highThr = 0.45; this.highRatio = 2.5; this.highAtt = 0.002; this.highRel = 0.08; this.highMakeup = 1.2;
-  }
-
-  process(sample, sr) {
-    const dt = 1 / sr;
-
-    // ── Split into 3 bands (LR2 crossover = flat sum) ──
-    const low = this.lp1.process(sample);
-    const midHigh = this.hp1.process(sample);
-    const mid = this.lp2.process(midHigh);
-    const high = this.hp2.process(midHigh);
-
-    // ── Compress LOW band (controls bass energy) ──
-    const absLow = Math.abs(low);
-    if (absLow > this.envLow) this.envLow += (absLow - this.envLow) * (dt / this.lowAtt);
-    else this.envLow += (absLow - this.envLow) * (dt / this.lowRel);
-    let gainLow = 1;
-    if (this.envLow > this.lowThr) {
-      const over = this.envLow - this.lowThr;
-      gainLow = (this.envLow - over * (1 - 1 / this.lowRatio)) / this.envLow;
-    }
-    const cLow = low * gainLow * this.lowMakeup;
-
-    // ── Compress MID band (controls vocal/instrument presence) ──
-    const absMid = Math.abs(mid);
-    if (absMid > this.envMid) this.envMid += (absMid - this.envMid) * (dt / this.midAtt);
-    else this.envMid += (absMid - this.envMid) * (dt / this.midRel);
-    let gainMid = 1;
-    if (this.envMid > this.midThr) {
-      const over = this.envMid - this.midThr;
-      gainMid = (this.envMid - over * (1 - 1 / this.midRatio)) / this.envMid;
-    }
-    const cMid = mid * gainMid * this.midMakeup;
-
-    // ── Compress HIGH band (controls harshness/air) ──
-    const absHigh = Math.abs(high);
-    if (absHigh > this.envHigh) this.envHigh += (absHigh - this.envHigh) * (dt / this.highAtt);
-    else this.envHigh += (absHigh - this.envHigh) * (dt / this.highRel);
-    let gainHigh = 1;
-    if (this.envHigh > this.highThr) {
-      const over = this.envHigh - this.highThr;
-      gainHigh = (this.envHigh - over * (1 - 1 / this.highRatio)) / this.envHigh;
-    }
-    const cHigh = high * gainHigh * this.highMakeup;
-
-    // Sum bands (LR2 = flat, so sum ≈ original + compression artifacts)
-    return cLow + cMid + cHigh;
   }
 }
 
@@ -1663,41 +1567,17 @@ class StereoWidener {
   }
 }
 
-// ─── Master chain (multiband comp + glue + saturation + LUFS + true-peak) ───
-// PSY3 style_master.py master_pro() ports:
-//   1. Multiband compression (3-band) — NEW
-//   2. Glue compression (thr=0.6, ratio=2, makeup=1.3) — PSY3 params
-//   3. Saturation (drive=1.15, mix=0.15) — PSY3 params
-//   4. LUFS targeting (-9 LUFS) — NEW
-//   5. True-peak limiting (2x oversample, ceiling 0.89) — NEW
-//   6. Final tanh (soft clip safety)
+// ─── Master chain (true-peak limiter only) ────────────────────────────────
+// NOTE: Multiband compression, glue compression, and saturation were DISABLED
+// because they killed the sound (muddy low end, harsh highs, pumping).
+// Only true-peak limiting remains — prevents clipping while keeping the
+// sound transparent. The multiband/glue/saturation classes are kept above
+// for documentation and potential future re-enablement with better tuning.
 
 class MasterChain {
   constructor() {
-    this.gain = 1.0;  // was 0.7 — too quiet. Full output.
-    this.ceiling = 0.95;     // was 0.85 — too much headroom killed the sound.
-
-    // Multiband compressor (3-band: low <180Hz, mid 180-4000Hz, high >4000Hz)
-    this.mb = new MultibandComp(sampleRate);
-
-    // Glue compression (PSY3: thr=0.6, ratio=2, makeup=1.3)
-    this.glueEnv = 0;
-    this.glueThr = 0.60;
-    this.glueRatio = 2.0;      // PSY3 ratio
-    this.glueAttack = 0.004;
-    this.glueRelease = 0.12;
-    this.glueMakeup = 1.1;  // FIX: was 1.3. Too much makeup gain caused clipping.     // PSY3 makeup
-
-    // Saturation (PSY3: drive=1.15, mix=0.15)
-    this.satDrive = 1.15;
-    this.satMix = 0.15;
-
-    // LUFS targeting (simplified K-weighted loudness → makeup gain)
-    this.lufsMs = 0;           // running mean square
-    this.lufsGain = 1.0;       // current applied gain
-    this.lufsTargetGain = 1.0; // computed target gain
-    this.lufsTargetLufs = -10;  // FIX: was -9. Lower target = less clipping.  // target loudness (-8 to -10 LUFS)
-    this.lufsCounter = 0;      // update counter (every 32 samples)
+    this.gain = 1.0;  // full output
+    this.ceiling = 0.95;     // headroom for inter-sample peaks
 
     // True-peak limiter (2x oversample, 1-sample lookahead)
     this.tpPrevInput = 0;      // previous input sample (for inter-sample peak)
@@ -1711,12 +1591,7 @@ class MasterChain {
   process(sample, sr) {
     const dt = 1 / sr;
 
-    // תיקון: דלג על multiband + glue + saturation — הם הרגו את הסאונד
-    // רק true-peak limiter (מונע clipping) + gain
-
-    // 4. TRUE-PEAK LIMITING (2x oversample, 1-sample lookahead)
-    //    Catches inter-sample peaks that sample-peak limiters miss.
-    //    This is the ONLY processing — no multiband, no glue, no saturation.
+    // TRUE-PEAK LIMITING (1-sample lookahead)
     const peak = Math.abs(sample);
     let tpTarget = 1;
     if (peak > this.ceiling) {
@@ -1732,7 +1607,7 @@ class MasterChain {
     const output = this.tpPrevInput * this.tpGainEnv;
     this.tpPrevInput = sample;
 
-    // 5. FINAL TANH (soft clip safety — prevents any remaining overshoot)
+    // FINAL TANH (soft clip safety — prevents any remaining overshoot)
     // Makeup gain 1.5x — boost overall level
     return fastTanh(output * this.gain * 1.5);
   }
@@ -2328,8 +2203,14 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       }
       case V_RISER: case V_IMPACT: case V_SWEEP: case V_ZAP: case V_BLIP: case V_DOWNLIFTER: {
+        // Pass learned params for RISER/IMPACT/SWEEP (ZAP/BLIP/DOWNLIFTER ignore them)
+        const fxVoiceClass = voiceId === V_RISER ? 'RiserVoice'
+          : voiceId === V_IMPACT ? 'ImpactVoice'
+          : voiceId === V_SWEEP ? 'SweepVoice' : null;
+        const lp = fxVoiceClass && this.learnedVoiceParams
+          ? this.learnedVoiceParams[fxVoiceClass] : null;
         const v = this.getFreeVoice(this.fxPool);
-        if (v) v.trigger(voiceId, t, duration, velocity, sr);
+        if (v) v.trigger(voiceId, t, duration, velocity, sr, lp);
         break;
       }
       case V_FM: {

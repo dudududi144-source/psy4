@@ -63,7 +63,6 @@ export default function Page() {
     causalAnticipation: 0, causalGrooveStability: 0, causalExpectation: 0,
     audioProcessMs: 0, audioCpuLoad: 0, audioActiveVoices: 0, audioVoiceBudget: 0,
     userEnergy: 0.5, userTension: 0.3, userStyle: 'FULL_ON', forcedSection: null, forcedBarsRemaining: 0,
-    samplePalette: 'md',
   });
 
   const [streamId, setStreamId] = useState('spaceunicorn');
