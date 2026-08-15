@@ -1581,7 +1581,7 @@ class StereoWidener {
 class MasterChain {
   constructor() {
     this.gain = 1.0;  // full output
-    this.ceiling = 0.89;     // -1 dBTP target (was 0.95 — too hot with glue makeup)
+    this.ceiling = 0.95;     // -0.45 dB ceiling (tanh brings peak to ~-1 dBTP)
 
     // ── EQ shelves (one-pole shelving filters) ──
     // Low shelf: boost ~2dB below 120Hz (warmth)
