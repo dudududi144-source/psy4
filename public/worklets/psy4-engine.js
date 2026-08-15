@@ -266,6 +266,15 @@ class KickVoice {
     this.midPhase = 0;
     this.prevNoise = 0;
     this.noise = new PinkNoise();
+    // NEW: Body layer — sine at 150-300Hz, short decay, adds "punch body" like 909
+    this.bodyLevel = 0.4;
+    this.bodyFreq = 200;     // Hz — the "body" frequency
+    this.bodyDecay = 0.05;   // 50ms — very short, just the initial impact
+    this.bodyPhase = 0;
+    // NEW: Tail layer — sub sine with long decay, adds "weight" that continues
+    this.tailLevel = 0.3;
+    this.tailDecay = 0.4;    // 400ms — long tail
+    this.tailPhase = 0;
     this._out = new Float32Array(2);
   }
 
@@ -279,6 +288,8 @@ class KickVoice {
     this.clickDecay = 0.002;
     this.phase = 0;
     this.midPhase = 0;
+    this.bodyPhase = 0;
+    this.tailPhase = 0;
     this.prevNoise = 0;
     this.noise.reset();
   }
@@ -288,42 +299,59 @@ class KickVoice {
     if (!this.active) { out[0] = 0; return out; }
     const dt = 1 / sr;
     this.t += dt;
-    if (this.t > this.subDecay + 0.05) { this.active = false; out[0] = 0; return out; }
+    // Voice stays active until tail decays (tail has longest decay)
+    const maxDecay = Math.max(this.subDecay, this.tailDecay) + 0.05;
+    if (this.t > maxDecay) { this.active = false; out[0] = 0; return out; }
 
     const t = this.t;
     const f0 = this.fund;
     const f = (f0 * this.startMult - f0) * Math.exp(-t / this.pitchDecay) + f0;
 
+    // ── Layer 1: Sub (pitch envelope) ──
     this.phase += 2 * Math.PI * f / sr;
     const subEnv = Math.exp(-t / (this.subDecay * 0.9));
 
-    // Wave type selection — dramatically changes the kick character
     let sub;
     const ph = this.phase;
     if (this.waveType === 0) {
-      sub = Math.sin(ph); // sine — clean, deep
+      sub = Math.sin(ph);
     } else if (this.waveType === 1) {
       const tp = (ph / (2 * Math.PI)) % 1;
-      sub = 2 * Math.abs(2 * tp - 1) - 1; // triangle — punchy
+      sub = 2 * Math.abs(2 * tp - 1) - 1;
     } else if (this.waveType === 2) {
-      sub = Math.sin(ph) > 0 ? 1 : -1; // square — aggressive
+      sub = Math.sin(ph) > 0 ? 1 : -1;
     } else {
       const tp = (ph / (2 * Math.PI)) % 1;
-      sub = 2 * tp - 1; // saw — dirty, harmonic-rich
+      sub = 2 * tp - 1;
     }
     sub *= subEnv * this.subLevel;
 
+    // ── Layer 2: Body (NEW) — sine at bodyFreq, short decay ──
+    // Adds the "thump" character of a real kick drum (909-style)
+    this.bodyPhase += 2 * Math.PI * this.bodyFreq / sr;
+    const bodyEnv = Math.exp(-t / this.bodyDecay);
+    const body = Math.sin(this.bodyPhase) * bodyEnv * this.bodyLevel;
+
+    // ── Layer 3: Tail (NEW) — sub sine with long decay ──
+    // Adds sustained weight that continues after the initial hit
+    this.tailPhase += 2 * Math.PI * f0 / sr;
+    const tailEnv = Math.exp(-t / this.tailDecay);
+    const tail = Math.sin(this.tailPhase) * tailEnv * this.tailLevel;
+
+    // ── Layer 4: Mid (triangle, existing) ──
     this.midPhase += 2 * Math.PI * f0 / sr;
     const triPhase = (this.midPhase / (2 * Math.PI)) % 1;
     const tri = 2 * Math.abs(2 * triPhase - 1) - 1;
     const midEnv = Math.exp(-t / this.midDecay);
     const mid = fastTanh(tri * 1.5) * midEnv * this.midLevel;
 
+    // ── Layer 5: Click (noise burst, existing) ──
     const n = this.noise.next();
     const click = (n - this.prevNoise) * Math.exp(-t / this.clickDecay) * this.clickLevel;
     this.prevNoise = n;
 
-    let sample = sub + mid + click;
+    // Mix all layers
+    let sample = sub + body + tail + mid + click;
     sample = fastTanh(sample * this.saturation);
     sample *= this.amp * 1.2;
     out[0] = sample;
@@ -2162,6 +2190,12 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           if (lp.clickLevel !== undefined) v.clickLevel = lp.clickLevel;
           if (lp.saturation !== undefined) v.saturation = lp.saturation;
           if (lp.waveType !== undefined) v.waveType = Math.floor(lp.waveType) % 4;
+          // NEW: body + tail learned params
+          if (lp.bodyLevel !== undefined) v.bodyLevel = lp.bodyLevel;
+          if (lp.bodyFreq !== undefined) v.bodyFreq = lp.bodyFreq;
+          if (lp.bodyDecay !== undefined) v.bodyDecay = lp.bodyDecay;
+          if (lp.tailLevel !== undefined) v.tailLevel = lp.tailLevel;
+          if (lp.tailDecay !== undefined) v.tailDecay = lp.tailDecay;
         }
         // Trigger sidechain
         this.duckEnv = 1 - wp.duck * (0.5 + mc.aggression * 0.5);

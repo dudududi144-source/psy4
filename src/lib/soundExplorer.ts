@@ -47,9 +47,11 @@ interface ScanParam {
 const SCAN_PARAMS: Record<OnsetRole, ScanParam[]> = {
   kick: [
     { name: 'fund', values: [38, 48, 58, 68] },
-    { name: 'startMult', values: [2.0, 3.0, 4.0, 5.5] },
-    { name: 'subDecay', values: [0.08, 0.15, 0.22, 0.30] },
-    { name: 'saturation', values: [1.0, 1.5, 2.0, 2.5] },
+    { name: 'saturation', values: [1.0, 1.5, 2.0] },
+    { name: 'bodyLevel', values: [0.3, 0.6] },
+    { name: 'bodyFreq', values: [180, 250] },
+    { name: 'tailLevel', values: [0.2, 0.5] },
+    { name: 'tailDecay', values: [0.3, 0.6] },
   ],
   bass: [
     { name: 'subLevel', values: [0.30, 0.40, 0.50, 0.60] },
