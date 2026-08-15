@@ -10633,3 +10633,48 @@ FINAL STATE:
 PRODUCTION:
 - Commits: 1ad487d, 6738e3a, 52d8bd5, 6814704
 - Deploy: https://b5f8c7b4.psy4.pages.dev
+
+---
+Task ID: DEEP-BUG-FIXING
+Agent: z.ai-code (main)
+Task: בדיקה מעמיקה — מציאת ותיקון באגים נוספים
+
+6 BUGS FOUND AND FIXED:
+
+1. Voice pool sizes too small — shakerPool=1, hatPool=2, etc.
+   Shaker has 16 events/bar but only 1 voice — most events dropped.
+   FIX: Increased all pools (shaker 1→3, hat 2→3, lead 2→3, etc.)
+   Total: 23→33 voices.
+
+2. BREAKDOWN causing complete silence — generateGroove skipped during BREAKDOWN.
+   Only pad played, no kick/bass/snare.
+   FIX: Always call generateGroove, even during BREAKDOWN.
+
+3. LUFS targeting EMA too slow — 22s time constant, couldn't react to sections.
+   FIX: 22s → 2s (alpha 0.001 → 0.0001).
+
+4. LUFS targeting clamp too narrow — ±3dB wasn't enough for section transitions.
+   FIX: ±3dB → ±6dB (0.5-2.0x).
+
+5. LUFS smoothing too fast — 100ms caused oscillation.
+   FIX: 100ms → 500ms.
+
+6. LUFS measurement in wrong place — measured before limiter+tanh.
+   The limiter+tanh reduced the level, so measurement thought output was louder
+   than it actually was, and didn't boost enough.
+   FIX: Moved measurement to after limiter+tanh (finalOut).
+   Feed-forward feedback: gain applied now is based on previous frame's measurement.
+
+RESULTS:
+- Silent points: 18 → 9 (50% reduction)
+- BREAKDOWN: 1 silent → 0 silent (FIXED)
+- avgLUFS: -20.06 → -15.70 (4.36 dB closer to target -10)
+- Peak: -2.80 dB (under -1 dBTP) ✅
+- Full spectrum: sub+mid+high all present ✅
+- 0 errors ✅
+- Bank: 32 entries across 9 roles
+- All 11 buttons present and working
+
+PRODUCTION:
+- Commits: 4419fb4, c95f946, bb6b8b5, f3b1c09
+- Deploy: https://08e2cfc6.psy4.pages.dev
