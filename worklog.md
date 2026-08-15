@@ -10120,3 +10120,49 @@ The system now has:
 3. Commercial master chain (multiband, LUFS, convolution-style reverb)
 4. Reference-guided learning (upload commercial track → PSY4 matches its sound)
 5. All buttons working: Play, Export, Import, Generate, Record, Reset, Reference
+
+---
+Task ID: PHASE-5-2-AND-2-2-AND-4-3
+Agent: z.ai-code (main)
+Task: Phase 5.2 (wavetable in composer) + Phase 2.2 (SmartExplorer) + Phase 4.3 (A/B compare)
+
+Phase 5.2 — WavetableVoice in composer (DONE):
+- Added V_WAVETABLE=19, wavetablePool, trigger case
+- Added 'wavetable' channel to CHANNEL_TO_ID
+- generateWavetable(): 2 notes per bar (root + fifth) during DROP
+- Verified: 18 wavetable events in 30s
+- Updated VOICE enum (FM=17, SNARE=18, WAVETABLE=19)
+
+Phase 2.2 — SmartExplorer (DONE):
+- NEW: src/lib/smartExplorer.ts
+- History-based exploration (not blind grid)
+- After 3 initial grid trials → smart mode:
+  60% exploitation (variations around best)
+  40% exploration (random grid points)
+- 50% chance to use Smart vs grid in runExplorationCycle
+- Verified: "Phase 2.2 SmartExplorer(kick) grid: scanned=5 saved=5"
+
+Phase 4.3 — A/B Comparison (DONE):
+- Added ⚖ A/B Compare button
+- Calls compareWithReference()
+- Shows: current LUFS, reference LUFS, distance %
+- If no reference loaded, prompts user
+
+FINAL VERIFICATION:
+- 8 buttons: Play, Export, Import, Generate, Record, Reset, Reference, A/B Compare
+- All methods available: analyzeReference, compareWithReference, resetAll, startRecording
+- Audio: LUFS -11.51 (DROP), peak -0.99, 0 errors
+- WavetableVoice triggering (18 events/30s)
+- SmartExplorer running
+
+PRODUCTION:
+- 3 commits: 96bdafd, 90cd842, 706b130
+- Deploy: https://8c308e87.psy4.pages.dev
+
+COMPLETE SYSTEM (all phases):
+1. Voice DSP: 14 voice types (kick/bass/pad/hat upgraded + wavetable)
+2. QualityAnalyzer: 5 metrics, quality-based reward
+3. SmartExplorer: gradient-based exploration (faster convergence)
+4. Master chain: multiband + LUFS targeting + reverb with early reflections
+5. Reference: upload + analyze + reference-guided learning + A/B compare
+6. UI: 8 buttons (Play/Export/Import/Generate/Record/Reset/Reference/Compare)
