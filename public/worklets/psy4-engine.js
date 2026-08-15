@@ -1647,19 +1647,22 @@ class MasterChain {
     this.glueGain += (glueTarget - this.glueGain) * Math.min(1, glueCoef);
     const compOut = eqOut * this.glueGain * this.glueMakeup;
 
-    // ── 3. TRUE-PEAK LIMITING (1-sample lookahead) ──
+    // ── 3. TRUE-PEAK LIMITER (brick-wall — instant gain reduction) ──
+    // The previous 1-sample-lookahead + smoothing let transient peaks through.
+    // This version checks the CURRENT sample and instantly reduces gain if it
+    // exceeds the ceiling. The smoothing only applies to the RELEASE (recovery).
     const peak = Math.abs(compOut);
     let tpTarget = 1;
     if (peak > this.ceiling) {
       tpTarget = this.ceiling / peak;
     }
+    // Instant attack (brick-wall): if target < current gain, jump immediately
     if (tpTarget < this.tpGainEnv) {
-      this.tpGainEnv += (tpTarget - this.tpGainEnv) * (dt / this.tpAttack);
+      this.tpGainEnv = tpTarget;  // brick-wall — no smoothing on attack
     } else {
       this.tpGainEnv += (tpTarget - this.tpGainEnv) * (dt / this.tpRelease);
     }
-    const output = this.tpPrevInput * this.tpGainEnv;
-    this.tpPrevInput = compOut;
+    const output = compOut * this.tpGainEnv;
 
     // ── 4. FINAL TANH (soft clip safety + makeup) ──
     return fastTanh(output * this.gain * 1.5);
