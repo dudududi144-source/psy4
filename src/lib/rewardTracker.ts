@@ -26,6 +26,7 @@ interface ActiveTracking {
   role: OnsetRole;
   startTime: number;
   startOccupancy: number;
+  synthetic: boolean;  // true when occupancy comes from PSY4's own output (no radio)
 }
 
 const REWARD_WINDOW_MS = 3000; // חלון מדידה: 3 שניות אחרי החלת recipe
@@ -37,9 +38,19 @@ export class RewardTracker {
   private bank: SoundBank;
   private active: Map<string, ActiveTracking> = new Map(); // entryId → tracking
   private occupancyHistory: { time: number; occupancy: { kick: number; bass: number; lead: number; hats: number } }[] = [];
+  private syntheticMode = false;  // set by psyLive when no radio
 
   constructor(bank: SoundBank) {
     this.bank = bank;
+  }
+
+  /**
+   * Mark that occupancy is synthetic (derived from PSY4's own output, not radio).
+   * In synthetic mode, the reward logic changes: an increase in occupancy means
+   * PSY4 is playing MORE (good), not a collision. Steady output = reward.
+   */
+  setSyntheticMode(synthetic: boolean): void {
+    this.syntheticMode = synthetic;
   }
 
   /**
@@ -67,8 +78,9 @@ export class RewardTracker {
       role,
       startTime: Date.now(),
       startOccupancy: roleOcc,
+      synthetic: this.syntheticMode,
     });
-    console.log(`[PSY4] שלב 4.5 RewardTracker: start tracking ${role} entry=${entryId} startOcc=${roleOcc.toFixed(2)}`);
+    console.log(`[PSY4] שלב 4.5 RewardTracker: start tracking ${role} entry=${entryId} startOcc=${roleOcc.toFixed(2)}${this.syntheticMode ? ' (synthetic)' : ''}`);
   }
 
   /**
@@ -97,20 +109,31 @@ export class RewardTracker {
     const currentOcc = this.getRoleOccupancy(tracking.role, latest.occupancy);
     const delta = currentOcc - tracking.startOccupancy;
 
-    // חשב reward:
-    // - אם occupancy של הרדיו ב-role ירדה (PSY4 השלים) → reward חיובי
-    // - אם עלתה (התנגשות) → penalty
-    // - אם לא השתנה → קצת reward חיובי (לא מזיק)
     let rewardDelta: number;
-    if (delta < -0.05) {
-      // occupancy ירדה → PSY4 השלים את הרדיו → reward
-      rewardDelta = REWARD_DELTA;
-    } else if (delta > 0.05) {
-      // occupancy עלתה → התנגשות → penalty
-      rewardDelta = -REWARD_DELTA;
+    if (tracking.synthetic) {
+      // SYNTHETIC MODE (no radio): reward based on output health, not collision.
+      // - If PSY4 is producing steady output (currentOcc > 0.1) → reward (it's working)
+      // - If output dropped to near-zero (currentOcc < 0.05) → penalty (recipe killed the sound)
+      // - If output is clipping (currentOcc > 0.9) → small penalty (too hot)
+      // This lets reward accumulate when PSY4 plays steadily after a recipe is applied.
+      if (currentOcc < 0.05) {
+        rewardDelta = -REWARD_DELTA;        // output died — bad recipe
+      } else if (currentOcc > 0.9) {
+        rewardDelta = -REWARD_DELTA * 0.5;  // clipping — back off
+      } else if (currentOcc > 0.1) {
+        rewardDelta = REWARD_DELTA * 0.5;   // healthy output — reward
+      } else {
+        rewardDelta = REWARD_DELTA * 0.2;   // weak but present — small reward
+      }
     } else {
-      // יציב → קצת reward (לא מזיק)
-      rewardDelta = REWARD_DELTA * 0.3;
+      // RADIO MODE: original logic — occupancy drop = PSY4 complementing radio = good
+      if (delta < -0.05) {
+        rewardDelta = REWARD_DELTA;
+      } else if (delta > 0.05) {
+        rewardDelta = -REWARD_DELTA;
+      } else {
+        rewardDelta = REWARD_DELTA * 0.3;
+      }
     }
 
     // עדכן את ה-reward ב-bank
@@ -119,7 +142,7 @@ export class RewardTracker {
       console.log(
         `[PSY4] שלב 4.5 RewardTracker: ${tracking.role} entry=${tracking.entryId} ` +
         `startOcc=${tracking.startOccupancy.toFixed(2)} endOcc=${currentOcc.toFixed(2)} ` +
-        `delta=${delta.toFixed(2)} rewardDelta=${rewardDelta >= 0 ? '+' : ''}${rewardDelta.toFixed(3)}`,
+        `delta=${delta.toFixed(2)} rewardDelta=${rewardDelta >= 0 ? '+' : ''}${rewardDelta.toFixed(3)}${tracking.synthetic ? ' (synthetic)' : ''}`,
       );
     } catch (e) {
       console.warn('[PSY4] שלב 4.5 RewardTracker update failed:', e);

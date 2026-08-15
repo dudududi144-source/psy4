@@ -2212,9 +2212,13 @@ export class PsyLive {
       // detect() only runs when radio is on, so without radio the RewardTracker
       // never gets occupancy updates and reward stays at 0.5 forever. This feeds
       // synthetic occupancy (derived from PSY4's own output) so reward can progress.
-      if (this.rewardTracker && this.playing && !this.radioOn) {
-        const synth = this.computeSyntheticOccupancy();
-        this.rewardTracker.recordOccupancy(synth);
+      if (this.rewardTracker && this.playing) {
+        const wasSynthetic = !this.radioOn;
+        this.rewardTracker.setSyntheticMode(wasSynthetic);
+        if (wasSynthetic) {
+          const synth = this.computeSyntheticOccupancy();
+          this.rewardTracker.recordOccupancy(synth);
+        }
       }
       // persistTick every 3rd tick (6000ms — was 5000ms)
       if (this._mergedTickCounter % 3 === 0) {
