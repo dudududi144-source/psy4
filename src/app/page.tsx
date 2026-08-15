@@ -347,6 +347,23 @@ export default function Page() {
               <span className="text-xs uppercase tracking-wider font-bold text-slate-400">Sound Bank</span>
               <span className="text-[10px] text-slate-500 ml-auto tabular-nums">{totalBankEntries} entries</span>
             </div>
+            {/* Phase 6.2: Learning progress display */}
+            {totalBankEntries > 0 && bankEntries.length > 0 && (
+              <div className="flex items-center gap-3 text-[10px] mb-2">
+                <span className="text-slate-400">Best reward:</span>
+                <span className="font-mono font-bold" style={{ color: bankEntries[0].reward > 0.7 ? '#22c55e' : bankEntries[0].reward > 0.5 ? '#f59e0b' : '#94a3b8' }}>
+                  {bankEntries[0].reward.toFixed(2)}
+                </span>
+                <span className="text-slate-400 ml-2">Quality:</span>
+                <span className="font-mono font-bold text-cyan-400">
+                  {s.audioCpuLoad > 0 ? 'measuring' : '—'}
+                </span>
+                <span className="text-slate-400 ml-2">Voices:</span>
+                <span className="font-mono font-bold text-purple-400 tabular-nums">
+                  {s.audioActiveVoices}/{s.audioVoiceBudget}
+                </span>
+              </div>
+            )}
             {totalBankEntries === 0 ? (
               <div className="text-center py-6 text-slate-500 text-sm">
                 {s.radioOn ? `Learning... (${totalOnsets} onsets detected)` : 'Connect radio to start learning'}

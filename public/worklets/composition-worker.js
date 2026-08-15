@@ -352,10 +352,13 @@ class CausalComposerWorker {
   composeBar(bar) {
     onBarAdvance(this.state, bar);
     // Regenerate grammar every 32 bars for musical variety.
-    // Without this, the same motif/bass pattern plays for the entire session.
     if (bar > 0 && bar % 32 === 0) {
       regenerateGrammar(this.userStyle);
     }
+    // Phase 6.1: Phrase planning — get energy/density for this bar
+    const phrase = this.getPhraseEnergy(bar);
+    this.currentPhraseEnergy = phrase.energy;
+    this.currentPhraseDensity = phrase.density;
     if (this.userTension > 0.5) {
       const target = this.userTension;
       this.state.tensionLevel += (target - this.state.tensionLevel) * 0.15;
@@ -470,6 +473,19 @@ class CausalComposerWorker {
     return null;  // intro: free composition
   }
 
+  // Phase 6.1: Phrase planning — computes energy/density for the current bar
+  // based on its position within a 4-bar phrase. This creates musical phrasing
+  // where bars 1-2 build, bar 3 peaks, bar 4 releases.
+  getPhraseEnergy(bar) {
+    const phraseBar = bar % 4;  // 0-3 within a 4-bar phrase
+    switch (phraseBar) {
+      case 0: return { energy: 0.6, density: 0.7, label: 'phrase-start' };
+      case 1: return { energy: 0.7, density: 0.8, label: 'phrase-build' };
+      case 2: return { energy: 0.9, density: 1.0, label: 'phrase-peak' };
+      case 3: return { energy: 0.5, density: 0.5, label: 'phrase-release' };
+    }
+  }
+
   // ARRANGEMENT: Build decision based on section
   buildArrangementDecision(section, bar, activeVoices) {
     let action = 'NO_CHANGE';
@@ -555,7 +571,9 @@ class CausalComposerWorker {
     const stepDur = beatDur / 4;
     const barStart = bar * 4 * beatDur;
     const grammar = STYLE_GRAMMARS[this.userStyle] || STYLE_GRAMMARS.FULL_ON;
-    const velScale = 0.8 + this.userEnergy * 0.4;
+    // Phase 6.1: Blend user energy with phrase energy for musical phrasing
+    const phraseEnergy = this.currentPhraseEnergy ?? this.userEnergy;
+    const velScale = 0.8 + phraseEnergy * 0.4;
 
     switch (action) {
       case 'INTRODUCE_HATS': {

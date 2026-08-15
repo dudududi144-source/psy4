@@ -525,7 +525,7 @@ class LeadVoice {
     this.active = false;
     this.t = 0;
     this.dur = 0.3;
-    this.amp = 0.8;  // FIX: was 0.5. Lead needs to be prominent in the mix.
+    this.amp = 0.8;
     this.saws = [new BLSaw(), new BLSaw(), new BLSaw(), new BLSaw(), new BLSaw()];
     this.octaveSaws = [new BLSaw(), new BLSaw(), new BLSaw()];
     this.filter = new MoogLadder();
@@ -536,14 +536,15 @@ class LeadVoice {
     this.lfoDepth = 0.3;
     this.detune = 10;
     this.noise = new PinkNoise();
-    // PHASE 10: FM modulation — adds metallic/psychedelic character
-    // FM: a modulator oscillator modulates the carrier (saw) frequency
-    // This is what makes leads sound "alive" rather than static
-    this.fmPhase = 0;       // modulator phase
-    this.fmRate = 3;        // modulator frequency (Hz)
-    this.fmDepth = 0;       // 0..1 — modulation amount (0 = off)
-    this.fmRatio = 2;       // modulator:carrier ratio (2:1 = classic FM)
-    // PERF-ZERO-ALLOC: preallocated output buffer
+    this.fmPhase = 0;
+    this.fmRate = 3;
+    this.fmDepth = 0;
+    this.fmRatio = 2;
+    // NEW: Delay throw — short echo on the note (adds space)
+    this.delayBuf = new Float32Array(4410);  // 100ms at 44.1kHz
+    this.delayIdx = 0;
+    this.delayFeedback = 0.3;
+    this.delayMix = 0.15;
     this._out = new Float32Array(2);
   }
 
@@ -560,11 +561,12 @@ class LeadVoice {
     this.lfoDepth = params?.lfoDepth ?? 0.3;
     this.lfoPhase = 0;
     this.filterEnvAmount = params?.filterEnvAmount ?? 1.0;
-    // PHASE 10: FM params — psychedelia macro controls FM depth
     this.fmDepth = params?.fmDepth ?? 0;
     this.fmRate = params?.fmRate ?? 3;
     this.fmRatio = params?.fmRatio ?? 2;
     this.fmPhase = 0;
+    this.delayIdx = 0;
+    this.delayBuf.fill(0);  // clear delay buffer on new note
     for (const s of this.saws) { s.reset(); }
     const n = this.saws.length;
     for (let i = 0; i < n; i++) {
@@ -572,7 +574,6 @@ class LeadVoice {
       const mult = Math.pow(2, cents / 1200);
       this.saws[i].setFreq(freq * mult);
     }
-    // Octave-up layer — adds brightness and richness
     for (let i = 0; i < this.octaveSaws.length; i++) {
       this.octaveSaws[i].reset();
       const cents = (i - 1) * this.detune * 0.6;
@@ -589,16 +590,13 @@ class LeadVoice {
     this.t += dt;
     if (this.t > this.dur + 0.05) { this.active = false; out[0] = 0; return out; }
 
-    // PHASE 10: FM modulation — modulator oscillator
-    // The modulator frequency = carrier * ratio (e.g., 2:1 = classic FM)
-    // fmDepth scales the modulation (0 = no FM, 1 = extreme metallic)
+    // FM modulation
     this.fmPhase += 2 * Math.PI * this.freq * this.fmRatio * dt;
-    const fmMod = Math.sin(this.fmPhase) * this.fmDepth * this.freq * 0.15;  // 15% freq deviation max
+    const fmMod = Math.sin(this.fmPhase) * this.fmDepth * this.freq * 0.15;
 
-    // Layer 1: Fundamental — 5 detuned saws with FM modulation applied
+    // Layer 1: Fundamental — 5 detuned saws with FM
     let fundamental = 0;
     for (const s of this.saws) {
-      // FM: shift the saw frequency by fmMod for each sample
       const fmInc = (s.freq + fmMod) / sr;
       fundamental += s.process(fmInc);
     }
@@ -616,7 +614,7 @@ class LeadVoice {
     // Mix: fundamental dominant, octave at 30%, air at 8%
     let mix = fundamental * 0.7 + octaveLayer * 0.3 + air * 0.08;
 
-    // LFO modulates filter cutoff (psychedelic movement)
+    // LFO modulates filter cutoff
     this.lfoPhase += this.lfoRate * dt;
     const lfo = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.lfoPhase);
     const modCutoff = this.cutoff * (1 + this.lfoDepth * (lfo * 2 - 1) * 0.5);
@@ -627,13 +625,20 @@ class LeadVoice {
 
     const filtered = this.filter.process(mix, cutoff, this.res, 1.5, sr);
 
-    // SATURATION: Post-filter tanh — adds character and warmth
+    // SATURATION
     const saturated = fastTanh(filtered * 1.6);
 
     // Amp envelope
     const ampEnv = Math.min(1, this.t / 0.006) * Math.exp(-this.t / this.dur);
-    const sample = saturated * ampEnv * this.amp;
-    out[0] = sample;
+    const drySample = saturated * ampEnv * this.amp;
+
+    // NEW: Delay throw — short echo with feedback
+    const delayed = this.delayBuf[this.delayIdx];
+    this.delayBuf[this.delayIdx] = drySample + delayed * this.delayFeedback;
+    this.delayIdx = (this.delayIdx + 1) % this.delayBuf.length;
+    const wetSample = delayed * this.delayMix;
+
+    out[0] = drySample + wetSample;
     return out;
   }
 }
