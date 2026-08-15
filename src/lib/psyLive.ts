@@ -247,6 +247,7 @@ export class PsyLive {
   // Audio — simple chain like psy
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
+  private workletVolumeGain: GainNode | null = null;  // Volume control for AudioWorklet output
   private analyser: AnalyserNode | null = null;
   private delaySend: GainNode | null = null;
   private delay: DelayNode | null = null;
@@ -898,6 +899,10 @@ export class PsyLive {
   }
 
   setVolume(v: number): void {
+    // Use workletVolumeGain for AudioWorklet output (main path)
+    if (this.workletVolumeGain && this.ctx)
+      this.workletVolumeGain.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+    // Also set legacy master (for non-worklet fallback)
     if (this.master && this.ctx)
       this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
   }
@@ -1414,12 +1419,19 @@ export class PsyLive {
         // The worklet has its OWN master chain (multiband + glue + true-peak).
         // The legacy chain (engineBus → comp → EQ → master → safetyLimiter → analyser)
         // was SUMMING with the worklet output = double signal = clipping.
-        // Now: worklet → analyser → destination (single path, worklet's master is the only master)
+        // Now: worklet → volumeGain → analyser → destination
+        // (volumeGain controls master volume — the worklet's internal master
+        // chain is separate and can't be controlled from main thread)
         const out = this.engineNode.outputNode;
         if (out && this.analyser) {
           out.disconnect();
-          out.connect(this.analyser);
-          // analyser already connected to destination
+          // Create a gain node for volume control if not exists
+          if (!this.workletVolumeGain) {
+            this.workletVolumeGain = this.ctx.createGain();
+            this.workletVolumeGain.gain.value = 0.9;
+          }
+          out.connect(this.workletVolumeGain);
+          this.workletVolumeGain.connect(this.analyser);
         }
         // FIX: Disconnect the legacy master chain completely.
         // The legacy buses (kickBus, bassBus, etc.) are NOT used by the worklet.
