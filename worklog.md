@@ -10450,3 +10450,40 @@ Phase 8: M/S Stereo Imager + drum pattern variety
 Phase 9: Scale-aware melody + call-response + eviction + reward chart
 
 30+ commits, latest deploy: https://57167c51.psy4.pages.dev
+
+---
+Task ID: PHASE-10
+Agent: z.ai-code (main)
+Task: Phase 10 — MIDI export + Preset save/load
+
+Phase 10.1 — MIDI Export (DONE):
+- exportMIDI() generates MIDI format 0 file
+- 4-bar loop: kick (4-on-floor) + bass (offbeat 16ths) + lead (motif)
+- 480 ticks per quarter, variable-length encoding
+- Verified: 545 bytes exported, 145 BPM
+- Button: 🎵 MIDI Export
+
+Phase 10.2 — Preset Save/Load (DONE):
+- savePreset(name) — saves params + BPM to localStorage
+- loadPreset(name) — loads and applies to engine
+- listPresets() — returns all saved presets
+- Verified: test-preset saved with bpm 145
+- Buttons: 💾 Save Preset + 📂 Load Preset
+
+VERIFICATION:
+- LUFS: -12.75, peak -3.07 (INTRO section)
+- 0 errors
+- All 4 new methods work (exportMIDI, savePreset, loadPreset, listPresets)
+- 11 total UI buttons verified
+
+PRODUCTION:
+- Commit: f785924
+- Deploy: https://35b61217.psy4.pages.dev
+
+TOTAL SYSTEM (Phases 1-10):
+- 15 voice types with advanced DSP
+- Quality-based learning + SmartExplorer + reference-guided
+- Commercial master chain (multiband + LUFS + reverb + M/S stereo)
+- Composition: 64-bar arrangement, phrases, variation, root changes
+- UI: 11 buttons + spectrum analyzer + reward chart
+- MIDI export, Preset save/load, Audio recording
