@@ -852,11 +852,18 @@ class PadVoice {
   constructor() {
     this.active = false;
     this.t = 0;
-    this.saws = [new BLSaw(), new BLSaw(), new BLSaw()]; // 3 oscillators (was 2)
+    this.saws = [new BLSaw(), new BLSaw(), new BLSaw()]; // 3 oscillators
     this.filter = new MoogLadder();
     this.lfoPhase = 0;
-    this.filterSweepPhase = 0; // slow filter sweep
-    // PERF-ZERO-ALLOC: preallocated output buffer (stereo: [left, right])
+    this.filterSweepPhase = 0;
+    // NEW: Shimmer layer — octave-up saw with slow detune LFO
+    this.shimmerSaw = new BLSaw();
+    this.shimmerLevel = 0.15;  // subtle — adds air above the pad
+    this.shimmerPhase = 0;     // slow detune LFO for shimmer movement
+    // NEW: Noise bed — pink noise through HP, adds "air" beneath the pad
+    this.noise = new PinkNoise();
+    this.noiseLevel = 0.05;    // very subtle
+    this.noisePrev = 0;
     this._out = new Float32Array(2);
   }
 
@@ -867,33 +874,34 @@ class PadVoice {
     this.amp = amp;
     this.freq = freq;
     this.cutoffBase = params?.cutoff ?? 1200;
-    this.res = 0.08; // slightly higher resonance for filter movement
+    this.res = 0.08;
     this.attack = params?.attack ?? 0.5;
     this.detune = params?.detune ?? 7;
     this.evolveRate = params?.evolveRate ?? 0.1;
+    this.shimmerLevel = params?.shimmerLevel ?? 0.15;
+    this.noiseLevel = params?.noiseLevel ?? 0.05;
     this.lfoPhase = 0;
     this.filterSweepPhase = 0;
+    this.shimmerPhase = 0;
+    this.noisePrev = 0;
     for (const s of this.saws) { s.reset(); }
-    // 3-osc detuned: -detune, center, +detune (wider than 2-osc)
     this.saws[0].setFreq(freq * Math.pow(2, -this.detune / 1200));
     this.saws[1].setFreq(freq);
     this.saws[2].setFreq(freq * Math.pow(2, this.detune / 1200));
+    // NEW: shimmer at 2x freq (octave up)
+    this.shimmerSaw.reset();
+    this.shimmerSaw.setFreq(freq * 2);
     this.filter.reset();
+    this.noise.reset();
   }
 
-  // Mono render (backward compat — delegates to renderStereo and sums to mono)
   render(currentTime, sr) {
     const out = this.renderStereo(currentTime, sr);
-    // renderStereo wrote left→out[0], right→out[1]; collapse to mono in out[0]
     const sum = (out[0] + out[1]) * 0.5;
     out[0] = sum;
     return out;
   }
 
-  // STEREO render — PSY3 stereo spread: detuned oscs panned L/C/R
-  // PSY3 pad has: numOscs=2, detune=0.004, cutoff=900, attack=0.6, release=1.2
-  // We use 3 oscs panned L/C/R for wider stereo image.
-  // Filter is applied to the MID signal (M/S processing) — preserves stereo width.
   renderStereo(currentTime, sr) {
     const out = this._out;
     if (!this.active) { out[0] = 0; out[1] = 0; return out; }
@@ -901,7 +909,7 @@ class PadVoice {
     this.t += dt;
     if (this.t > this.dur + 0.1) { this.active = false; out[0] = 0; out[1] = 0; return out; }
 
-    // Evolve LFO modulates detune (via frequency)
+    // ── Layer 1: 3 detuned saws (existing) — the pad body ──
     this.lfoPhase += this.evolveRate * dt;
     const lfo = Math.sin(2 * Math.PI * this.lfoPhase);
     const detuneMod = 1 + 0.003 * lfo;
@@ -909,31 +917,43 @@ class PadVoice {
     this.saws[1].setFreq(this.freq * detuneMod);
     this.saws[2].setFreq(this.freq * Math.pow(2, this.detune / 1200) * detuneMod);
 
-    // Render each saw with its own frequency
     const s0 = this.saws[0].process(this.saws[0].freq / sr);
     const s1 = this.saws[1].process(this.saws[1].freq / sr);
     const s2 = this.saws[2].process(this.saws[2].freq / sr);
 
-    // STEREO SPREAD: pan detuned oscs L/C/R
-    // s0 (detuned -) → hard left, s1 (center) → both, s2 (detuned +) → hard right
     let left = s0 * 0.7 + s1 * 0.5;
     let right = s2 * 0.7 + s1 * 0.5;
 
-    // M/S processing: filter the mid, preserve the side (stereo width)
+    // M/S processing: filter the mid, preserve the side
     const mid = (left + right) * 0.5;
     const side = (left - right) * 0.5;
 
-    // SLOW FILTER SWEEP — cutoff moves up and down over the duration
-    // This is what makes a pad "breathe" — without it, it's a static organ
-    this.filterSweepPhase += 0.15 * dt; // 0.15Hz — very slow
+    // SLOW FILTER SWEEP — breathing
+    this.filterSweepPhase += 0.15 * dt;
     const sweep = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.filterSweepPhase);
-    const cutoff = this.cutoffBase * (0.6 + sweep * 0.8); // 60% to 140% of base
-
+    const cutoff = this.cutoffBase * (0.6 + sweep * 0.8);
     const filteredMid = this.filter.process(mid, cutoff, this.res, 1.2, sr);
 
-    // Recombine: filtered mid + unfiltered side (preserves stereo width)
     left = filteredMid + side;
     right = filteredMid - side;
+
+    // ── Layer 2: Shimmer (NEW) — octave-up saw with slow detune movement ──
+    // Adds a high "sheen" above the pad that slowly drifts in pitch
+    this.shimmerPhase += 0.05 * dt;  // 0.05Hz — very slow drift
+    const shimmerDetune = 1 + 0.008 * Math.sin(2 * Math.PI * this.shimmerPhase);
+    this.shimmerSaw.setFreq(this.freq * 2 * shimmerDetune);
+    const shimmerSample = this.shimmerSaw.process(this.shimmerSaw.freq / sr) * this.shimmerLevel;
+    // Pan shimmer slightly right for stereo interest
+    left += shimmerSample * 0.7;
+    right += shimmerSample * 1.0;
+
+    // ── Layer 3: Noise bed (NEW) — HP noise, adds "air" ──
+    const n = this.noise.next();
+    const noiseHP = (n - this.noisePrev);  // simple HP via differentiation
+    this.noisePrev = n;
+    const noiseSample = noiseHP * this.noiseLevel;
+    left += noiseSample * 0.5;
+    right += noiseSample * 0.5;
 
     // Slow attack/release envelope
     const attackEnv = Math.min(1, this.t / this.attack);
@@ -956,6 +976,11 @@ class HatVoice {
     this.hpState = 0;
     this.decay = 0.03;
     this.brightness = 1.0;
+    // NEW: Metallic osc bank — 6 square oscs at inharmonic ratios
+    // This gives the "metallic" character of a real 808/909 hat
+    this.metalPhases = [0, 0, 0, 0, 0, 0];
+    this.metalFreqs = [1.0, 1.5, 2.1, 2.7, 3.3, 4.1];  // inharmonic ratios
+    this.metalLevel = 0.3;  // 30% metallic, 70% noise
     this._out = new Float32Array(2);
   }
 
@@ -966,8 +991,10 @@ class HatVoice {
     this.amp = amp;
     this.decay = (params && params.hatDecay) ? params.hatDecay : (open ? 0.22 : 0.03);
     this.brightness = (params && params.hatBrightness) ? params.hatBrightness : 1.0;
+    this.metalLevel = (params && params.metalLevel !== undefined) ? params.metalLevel : 0.3;
     this.prevNoise = 0;
     this.hpState = 0;
+    this.metalPhases = [0, 0, 0, 0, 0, 0];
     this.noise.reset();
   }
 
@@ -977,14 +1004,30 @@ class HatVoice {
     this.t += 1 / sr;
     if (this.t > this.decay * 1.5) { this.active = false; out[0] = 0; return out; }
 
-    // White noise through highpass — sounds like a real hat, not static
+    // ── Layer 1: Noise through highpass (existing) ──
     const n = this.noise.next();
-    // One-pole highpass: cutoff ~5000Hz * brightness
     const hpCoeff = Math.exp(-2 * Math.PI * (3000 + this.brightness * 4000) / sr);
     this.hpState = n + hpCoeff * (this.hpState - n);
     const hp = this.hpState;
+
+    // ── Layer 2: Metallic osc bank (NEW) ──
+    // 6 square oscillators at inharmonic frequency ratios
+    // Base frequency: 400Hz * brightness — gives metallic clank
+    const baseFreq = 400 * this.brightness;
+    let metallic = 0;
+    for (let i = 0; i < 6; i++) {
+      this.metalPhases[i] += 2 * Math.PI * baseFreq * this.metalFreqs[i] / sr;
+      const ph = this.metalPhases[i];
+      // Square wave via sign of sine
+      metallic += Math.sin(ph) > 0 ? 1 : -1;
+    }
+    metallic /= 6;  // normalize
+
+    // Mix: 70% noise, 30% metallic
+    const mixed = hp * (1 - this.metalLevel) + metallic * this.metalLevel;
+
     const env = Math.exp(-this.t / this.decay);
-    const sample = hp * env * 30.0 * this.amp;
+    const sample = mixed * env * 30.0 * this.amp;
     out[0] = Math.max(-1, Math.min(1, sample));
     return out;
   }
