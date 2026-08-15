@@ -20,28 +20,43 @@
 
 import { type OnsetRole } from './onsetAnalyzer';
 import { SoundBank } from './soundBank';
+import { QualityAnalyzer, type QualityMetrics } from './qualityAnalyzer';
 
 interface ActiveTracking {
   entryId: string;
   role: OnsetRole;
   startTime: number;
   startOccupancy: number;
-  synthetic: boolean;  // true when occupancy comes from PSY4's own output (no radio)
+  synthetic: boolean;
+  startQuality: number;  // NEW: quality score at start
 }
 
-const REWARD_WINDOW_MS = 3000; // חלון מדידה: 3 שניות אחרי החלת recipe
-const REWARD_DELTA = 0.10;     // was 0.05 — too slow to reach "proven" (0.8)
+const REWARD_WINDOW_MS = 3000;
+const REWARD_DELTA = 0.10;
 const MAX_REWARD = 1.0;
 const MIN_REWARD = 0.0;
 
 export class RewardTracker {
   private bank: SoundBank;
-  private active: Map<string, ActiveTracking> = new Map(); // entryId → tracking
+  private active: Map<string, ActiveTracking> = new Map();
   private occupancyHistory: { time: number; occupancy: { kick: number; bass: number; lead: number; hats: number } }[] = [];
-  private syntheticMode = false;  // set by psyLive when no radio
+  private syntheticMode = false;
+  private qualityAnalyzer: QualityAnalyzer | null = null;
+  private analyserL: AnalyserNode | null = null;
+  private analyserR: AnalyserNode | null = null;
+  private qualityHistory: number[] = [];
 
   constructor(bank: SoundBank) {
     this.bank = bank;
+  }
+
+  /**
+   * הגדר את ה-quality analyzer + analysers (נקרא מ-psyLive אחרי audio init).
+   */
+  setQualityAnalyzer(qa: QualityAnalyzer, analyserL: AnalyserNode, analyserR?: AnalyserNode | null): void {
+    this.qualityAnalyzer = qa;
+    this.analyserL = analyserL;
+    this.analyserR = analyserR || null;
   }
 
   /**
@@ -73,14 +88,21 @@ export class RewardTracker {
    */
   startTracking(entryId: string, role: OnsetRole, occupancy: { kick: number; bass: number; lead: number; hats: number }): void {
     const roleOcc = this.getRoleOccupancy(role, occupancy);
+    // Measure quality at start (if quality analyzer is set)
+    let startQuality = 0.5;
+    if (this.qualityAnalyzer && this.analyserL) {
+      const metrics = this.qualityAnalyzer.measure(this.analyserL, this.analyserR);
+      startQuality = this.qualityAnalyzer.compositeScore(metrics);
+    }
     this.active.set(entryId, {
       entryId,
       role,
       startTime: Date.now(),
       startOccupancy: roleOcc,
       synthetic: this.syntheticMode,
+      startQuality,
     });
-    console.log(`[PSY4] שלב 4.5 RewardTracker: start tracking ${role} entry=${entryId} startOcc=${roleOcc.toFixed(2)}${this.syntheticMode ? ' (synthetic)' : ''}`);
+    console.log(`[PSY4] שלב 4.5 RewardTracker: start tracking ${role} entry=${entryId} startOcc=${roleOcc.toFixed(2)} startQ=${startQuality.toFixed(2)}${this.syntheticMode ? ' (synthetic)' : ''}`);
   }
 
   /**
@@ -103,38 +125,51 @@ export class RewardTracker {
    * חשב reward ל-tracking שהסתיים.
    */
   private async evaluateReward(tracking: ActiveTracking): Promise<void> {
-    // מצא את ה-occupancy הנוכחי ל-role
     if (this.occupancyHistory.length === 0) return;
     const latest = this.occupancyHistory[this.occupancyHistory.length - 1];
     const currentOcc = this.getRoleOccupancy(tracking.role, latest.occupancy);
     const delta = currentOcc - tracking.startOccupancy;
 
+    // Measure quality at end (if quality analyzer is set)
+    let endQuality = tracking.startQuality;
+    if (this.qualityAnalyzer && this.analyserL) {
+      const metrics = this.qualityAnalyzer.measure(this.analyserL, this.analyserR);
+      endQuality = this.qualityAnalyzer.compositeScore(metrics);
+    }
+    const qualityDelta = endQuality - tracking.startQuality;
+
     let rewardDelta: number;
     if (tracking.synthetic) {
-      // SYNTHETIC MODE (no radio): reward based on output HEALTH.
-      // The synthetic occupancy measures PSY4's own output level per band.
-      // For kick, occupancy is typically 0.7-0.95 (kick is loud).
-      // For other roles, it's lower (0.1-0.6).
-      // So we use ROLE-SPECIFIC thresholds:
-      // - kick: reward if 0.6-0.98 (healthy), penalty if >0.99 (clipping) or <0.3 (dead)
-      // - other: reward if 0.05-0.8 (healthy), penalty if >0.9 (clipping) or <0.02 (dead)
+      // SYNTHETIC MODE: reward based on QUALITY (not just occupancy).
+      // The quality score (0-1) measures: spectral balance, dynamic range,
+      // stereo width, transient sharpness, low-end clarity.
+      // Reward logic:
+      // - quality > 0.6 → strong reward (+0.10)
+      // - quality 0.4-0.6 → moderate reward (+0.05)
+      // - quality < 0.3 → penalty (-0.05)
+      // - quality improved (delta > 0.1) → bonus (+0.03)
+      // - quality degraded (delta < -0.1) → penalty (-0.05)
+      // - output dead (occ < threshold) → strong penalty (-0.10)
       const isKick = tracking.role === 'kick';
-      const healthyLow = isKick ? 0.6 : 0.05;
-      const healthyHigh = isKick ? 0.98 : 0.8;
-      const clippingThreshold = isKick ? 0.99 : 0.9;
       const deadThreshold = isKick ? 0.3 : 0.02;
 
       if (currentOcc < deadThreshold) {
-        rewardDelta = -REWARD_DELTA;        // output died — bad recipe
-      } else if (currentOcc > clippingThreshold) {
-        rewardDelta = -REWARD_DELTA * 0.5;  // clipping — back off
-      } else if (currentOcc >= healthyLow && currentOcc <= healthyHigh) {
-        rewardDelta = REWARD_DELTA * 0.8;   // healthy range — strong reward
+        rewardDelta = -REWARD_DELTA;        // output died
+      } else if (endQuality > 0.6) {
+        rewardDelta = REWARD_DELTA;          // high quality
+      } else if (endQuality > 0.4) {
+        rewardDelta = REWARD_DELTA * 0.5;   // OK quality
+      } else if (endQuality < 0.3) {
+        rewardDelta = -REWARD_DELTA * 0.5;  // poor quality
       } else {
-        rewardDelta = REWARD_DELTA * 0.3;   // borderline — small reward
+        rewardDelta = REWARD_DELTA * 0.2;   // mediocre
       }
+
+      // Bonus/penalty for quality change
+      if (qualityDelta > 0.1) rewardDelta += REWARD_DELTA * 0.3;   // improved
+      else if (qualityDelta < -0.1) rewardDelta -= REWARD_DELTA * 0.3;  // degraded
     } else {
-      // RADIO MODE: original logic — occupancy drop = PSY4 complementing radio = good
+      // RADIO MODE: original logic
       if (delta < -0.05) {
         rewardDelta = REWARD_DELTA;
       } else if (delta > 0.05) {
@@ -150,7 +185,8 @@ export class RewardTracker {
       console.log(
         `[PSY4] שלב 4.5 RewardTracker: ${tracking.role} entry=${tracking.entryId} ` +
         `startOcc=${tracking.startOccupancy.toFixed(2)} endOcc=${currentOcc.toFixed(2)} ` +
-        `delta=${delta.toFixed(2)} rewardDelta=${rewardDelta >= 0 ? '+' : ''}${rewardDelta.toFixed(3)}${tracking.synthetic ? ' (synthetic)' : ''}`,
+        `Q=${tracking.startQuality.toFixed(2)}→${endQuality.toFixed(2)} ` +
+        `rewardDelta=${rewardDelta >= 0 ? '+' : ''}${rewardDelta.toFixed(3)}${tracking.synthetic ? ' (synthetic)' : ''}`,
       );
     } catch (e) {
       console.warn('[PSY4] שלב 4.5 RewardTracker update failed:', e);

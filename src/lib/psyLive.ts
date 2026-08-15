@@ -29,6 +29,7 @@ import { SoundBank, type SoundBankEntry } from './soundBank';
 import { SoundExplorer, type ExplorationResult } from './soundExplorer';
 // שלב 4.5: Reward loop (self-improvement)
 import { RewardTracker } from './rewardTracker';
+import { QualityAnalyzer } from './qualityAnalyzer';
 // שלב 4.6: Musical style classification
 import { StyleClassifier, type RadioStyle, type StyleFeatures, type ClassificationResult } from './styleClassifier';
 // שלב 5.1: Sound package (export/import)
@@ -1449,8 +1450,14 @@ export class PsyLive {
         this.synthesisMatcher.init(this.engineNode);
         // שלב 4.4: אתחל את ה-SoundExplorer (משתמש ב-matcher + bank)
         this.soundExplorer = new SoundExplorer(this.synthesisMatcher, this.soundBank);
-        // שלב 4.5: אתחל את ה-RewardTracker
+        // שלב 4.5: אתחל את ה-RewardTracker + QualityAnalyzer
         this.rewardTracker = new RewardTracker(this.soundBank);
+        // Phase 2.1: QualityAnalyzer — מודד איכות אודיו ל-reward
+        if (this.analyser) {
+          const qa = new QualityAnalyzer(this.analyser.fftSize);
+          this.rewardTracker.setQualityAnalyzer(qa, this.analyser, null);
+          console.log('[PSY4] Phase 2.1: QualityAnalyzer ready (spectral/dynamic/stereo/transient/clarity)');
+        }
         // שלב 5.1: אתחל Package exporter/importer
         this.packageExporter = new PackageExporter(this.soundBank);
         this.packageImporter = new PackageImporter(this.soundBank);
