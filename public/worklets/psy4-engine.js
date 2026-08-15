@@ -1449,19 +1449,19 @@ class SampleVoice {
 class SchroederReverb {
   constructor() {
     // 4 parallel comb filters (different delays for density)
-    this.combDelays = [1687, 1601, 2053, 2251]; // samples at 44100 (prime)
+    this.combDelays = [1687, 1601, 2053, 2251];
     this.combBuffers = [];
     this.combIdx = [];
-    this.combFeedback = 0.84;
-    this.combDamping = 0.2;
-    this.combLP = []; // one-pole LP per comb for high-freq damping
+    this.combFeedback = 0.88;  // INCREASED from 0.84 — longer tail
+    this.combDamping = 0.15;   // DECREASED from 0.2 — brighter reverb
+    this.combLP = [];
     for (let i = 0; i < 4; i++) {
       this.combBuffers.push(new Float32Array(this.combDelays[i]));
       this.combIdx.push(0);
       this.combLP.push(0);
     }
     // 2 series allpass filters (diffusion)
-    this.allpassDelays = [347, 113]; // samples
+    this.allpassDelays = [347, 113];
     this.allpassBuffers = [];
     this.allpassIdx = [];
     this.allpassFeedback = 0.7;
@@ -1469,35 +1469,72 @@ class SchroederReverb {
       this.allpassBuffers.push(new Float32Array(this.allpassDelays[i]));
       this.allpassIdx.push(0);
     }
-    this.wet = 0.45;  // INCREASED from 0.3 — more audible reverb
-    this.inputGain = 0.15; // send level
-    // PERF-ZERO-ALLOC: preallocated stereo output buffer
+    // NEW: Early reflections — simulated room reflections
+    // [delay_samples, gain] pairs — adds spatial character
+    this.earlyReflections = [
+      [0.011, 0.8],   // 11ms — first reflection
+      [0.019, 0.6],   // 19ms
+      [0.029, 0.5],   // 29ms
+      [0.041, 0.4],   // 41ms
+      [0.057, 0.3],   // 57ms
+      [0.073, 0.25],  // 73ms
+      [0.091, 0.2],   // 91ms
+    ];
+    // Pre-allocate early reflection buffers (will be sized in process)
+    this.erBuffers = null;
+    this.erIdx = 0;
+    this.erMaxDelay = 0;
+    this._erOut = new Float32Array(2);
+
+    this.wet = 0.45;
+    this.inputGain = 0.15;
     this._out = new Float32Array(2);
   }
 
   setWet(wet) { this.wet = wet; }
   setInputGain(g) { this.inputGain = g; }
 
-  // Process a mono input, return this._out (Float32Array[2]): _out[0]=left, _out[1]=right.
+  // Process a mono input, return stereo reverb output
   process(input, sr) {
     const out = this._out;
-    // Scale input by send level
     const inSample = input * this.inputGain;
 
-    // ── Comb filters (parallel) ──
+    // ── NEW: Early reflections (pre-delay + reflections) ──
+    if (!this.erBuffers) {
+      // Initialize early reflection buffers
+      this.erMaxDelay = Math.ceil(0.1 * sr);  // 100ms max
+      this.erBuffers = [new Float32Array(this.erMaxDelay), new Float32Array(this.erMaxDelay)];
+      this.erDelays = this.earlyReflections.map(([sec, gain]) => ({
+        delay: Math.floor(sec * sr),
+        gain: gain,
+        panL: 0.5 + Math.random() * 0.3,  // random pan per reflection
+        panR: 0.5 + Math.random() * 0.3,
+      }));
+    }
+    // Write input to delay buffer
+    this.erBuffers[0][this.erIdx] = inSample;
+    this.erBuffers[1][this.erIdx] = inSample;
+    let erL = 0, erR = 0;
+    for (const er of this.erDelays) {
+      const delayedIdx = (this.erIdx - er.delay + this.erMaxDelay) % this.erMaxDelay;
+      erL += this.erBuffers[0][delayedIdx] * er.gain * er.panL;
+      erR += this.erBuffers[1][delayedIdx] * er.gain * er.panR;
+    }
+    this.erIdx = (this.erIdx + 1) % this.erMaxDelay;
+
+    // ── Comb filters (parallel) — late reverb tail ──
     let combSum = 0;
     for (let i = 0; i < 4; i++) {
       const buf = this.combBuffers[i];
       const idx = this.combIdx[i];
       const delayed = buf[idx];
-      // One-pole lowpass for damping (high frequencies decay faster)
       this.combLP[i] = delayed + this.combDamping * (this.combLP[i] - delayed);
       const cOut = inSample + this.combLP[i] * this.combFeedback;
       buf[idx] = cOut;
       this.combIdx[i] = (idx + 1) % this.combDelays[i];
       combSum += cOut;
     }
-    combSum *= 0.25; // normalize
+    combSum *= 0.25;
 
     // ── Allpass filters (series) for diffusion ──
     let ap = combSum;
@@ -1511,10 +1548,10 @@ class SchroederReverb {
       ap = apOut;
     }
 
-    // Stereo: slight delay between L and R for width
-    // (re-use allpass output, offset by a few samples for stereo effect)
-    out[0] = ap * this.wet;
-    out[1] = combSum * this.wet * 0.9; // slightly different for width
+    // ── Mix: early reflections + late reverb tail ──
+    // Early reflections give spatial definition, late tail gives ambience
+    out[0] = (erL + ap * 0.8) * this.wet;
+    out[1] = (erR + combSum * 0.72) * this.wet;
     return out;
   }
 
@@ -1522,6 +1559,8 @@ class SchroederReverb {
     for (const buf of this.combBuffers) buf.fill(0);
     for (const buf of this.allpassBuffers) buf.fill(0);
     this.combLP.fill(0);
+    if (this.erBuffers) { this.erBuffers[0].fill(0); this.erBuffers[1].fill(0); }
+    this.erIdx = 0;
   }
 }
 
