@@ -1581,7 +1581,7 @@ class StereoWidener {
 class MasterChain {
   constructor() {
     this.gain = 1.0;  // full output
-    this.ceiling = 0.95;     // headroom for inter-sample peaks
+    this.ceiling = 0.89;     // -1 dBTP target (was 0.95 — too hot with glue makeup)
 
     // ── EQ shelves (one-pole shelving filters) ──
     // Low shelf: boost ~2dB below 120Hz (warmth)
@@ -1662,7 +1662,7 @@ class MasterChain {
     this.tpPrevInput = compOut;
 
     // ── 4. FINAL TANH (soft clip safety + makeup) ──
-    return fastTanh(output * this.gain * 1.5);
+    return fastTanh(output * this.gain * 1.2);
   }
 }
 
