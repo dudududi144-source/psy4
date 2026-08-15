@@ -655,10 +655,15 @@ class CausalComposerWorker {
         const answeredId = this.state.unresolvedMaterial[0] || 'motif-A';
         onResponseGiven(this.state, answeredId);
         const root = this.opts.rootPc + 55;
-        const steps = [2, 6, 10, 14];
-        const invIntervals = grammar.motifIntervals.map(iv => -iv + 7);
+        // Phase 9.2: Call-response pattern — alternates between high and low phrases
+        // Even phrases: call (higher), Odd phrases: response (lower)
+        const phraseNum = Math.floor(bar / 4);
+        const isCall = phraseNum % 2 === 0;
+        const transpose = isCall ? 0 : -5;  // response is a fifth lower
+        const steps = isCall ? [2, 6, 10, 14] : [0, 4, 8, 12];  // different rhythm
+        const invIntervals = grammar.motifIntervals.map(iv => -iv + 7 + transpose);
         for (let i = 0; i < steps.length; i++) {
-          events.push({ at: barStart + steps[i] * stepDur, note: root + invIntervals[i % invIntervals.length], velocity: Math.min(1, 0.55 * velScale), duration: stepDur * 1.5, channel: 'counterline' });
+          events.push({ at: barStart + steps[i] * stepDur, note: root + invIntervals[i % invIntervals.length], velocity: Math.min(1, (isCall ? 0.6 : 0.5) * velScale), duration: stepDur * (isCall ? 1.5 : 2.0), channel: 'counterline' });
         }
         break;
       }

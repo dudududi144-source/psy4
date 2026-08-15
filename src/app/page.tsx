@@ -394,21 +394,36 @@ export default function Page() {
               <span className="text-xs uppercase tracking-wider font-bold text-slate-400">Sound Bank</span>
               <span className="text-[10px] text-slate-500 ml-auto tabular-nums">{totalBankEntries} entries</span>
             </div>
-            {/* Phase 6.2: Learning progress display */}
+            {/* Phase 6.2 + 9.3: Learning progress display + reward history bar */}
             {totalBankEntries > 0 && bankEntries.length > 0 && (
-              <div className="flex items-center gap-3 text-[10px] mb-2">
-                <span className="text-slate-400">Best reward:</span>
-                <span className="font-mono font-bold" style={{ color: bankEntries[0].reward > 0.7 ? '#22c55e' : bankEntries[0].reward > 0.5 ? '#f59e0b' : '#94a3b8' }}>
-                  {bankEntries[0].reward.toFixed(2)}
-                </span>
-                <span className="text-slate-400 ml-2">Quality:</span>
-                <span className="font-mono font-bold text-cyan-400">
-                  {s.audioCpuLoad > 0 ? 'measuring' : '—'}
-                </span>
-                <span className="text-slate-400 ml-2">Voices:</span>
-                <span className="font-mono font-bold text-purple-400 tabular-nums">
-                  {s.audioActiveVoices}/{s.audioVoiceBudget}
-                </span>
+              <div className="mb-2">
+                <div className="flex items-center gap-3 text-[10px] mb-2">
+                  <span className="text-slate-400">Best reward:</span>
+                  <span className="font-mono font-bold" style={{ color: bankEntries[0].reward > 0.7 ? '#22c55e' : bankEntries[0].reward > 0.5 ? '#f59e0b' : '#94a3b8' }}>
+                    {bankEntries[0].reward.toFixed(2)}
+                  </span>
+                  <span className="text-slate-400 ml-2">Voices:</span>
+                  <span className="font-mono font-bold text-purple-400 tabular-nums">
+                    {s.audioActiveVoices}/{s.audioVoiceBudget}
+                  </span>
+                  <span className="text-slate-400 ml-2">CPU:</span>
+                  <span className="font-mono font-bold" style={{ color: s.audioCpuLoad > 2 ? '#ef4444' : '#22c55e' }}>
+                    {s.audioProcessMs.toFixed(1)}ms
+                  </span>
+                </div>
+                {/* Phase 9.3: Reward history mini-bar chart */}
+                <div className="flex items-end gap-0.5 h-6">
+                  {bankEntries.slice(0, 20).map((entry, i) => (
+                    <div key={i} className="flex-1 rounded-sm transition-all"
+                      style={{
+                        height: `${Math.max(4, entry.reward * 100)}%`,
+                        background: entry.reward > 0.7 ? '#22c55e' : entry.reward > 0.5 ? '#f59e0b' : '#64748b',
+                        opacity: 0.4 + (i / 20) * 0.6,
+                      }}
+                      title={`${entry.role}: ${entry.reward.toFixed(2)}`}
+                    />
+                  ))}
+                </div>
               </div>
             )}
             {totalBankEntries === 0 ? (
