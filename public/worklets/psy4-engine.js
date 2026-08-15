@@ -1237,6 +1237,87 @@ class TextureVoice {
   }
 }
 
+// ─── Voice: Wavetable (Phase 5.1) ──────────────────────────────────────────
+// Wavetable synthesis — morphs between two waveforms for evolving timbres.
+// The morph position (0-1) crossfades between table A (sine) and table B (saw).
+// This creates sounds that change character over time — impossible with
+// static oscillators.
+
+class WavetableVoice {
+  constructor() {
+    this.active = false;
+    this.t = 0;
+    this.amp = 0.5;
+    this.freq = 220;
+    this.dur = 0.5;
+    // Wavetable: 2048 samples, 2 tables (A=sine, B=saw)
+    this.tableSize = 2048;
+    this.tableA = new Float32Array(this.tableSize);  // sine
+    this.tableB = new Float32Array(this.tableSize);  // saw
+    for (let i = 0; i < this.tableSize; i++) {
+      this.tableA[i] = Math.sin(2 * Math.PI * i / this.tableSize);
+      this.tableB[i] = 2 * (i / this.tableSize) - 1;  // naive saw
+    }
+    this.phase = 0;
+    this.morphPos = 0;        // 0 = table A, 1 = table B
+    this.morphRate = 0.5;     // Hz — morph speed
+    this.morphPhase = 0;
+    this.filter = new MoogLadder();
+    this._out = new Float32Array(2);
+  }
+
+  trigger(time, freq, dur, amp, sr, params) {
+    this.active = true;
+    this.t = 0;
+    this.freq = freq;
+    this.dur = dur;
+    this.amp = amp;
+    this.phase = 0;
+    this.morphPhase = 0;
+    this.morphPos = params?.morphPos ?? 0;
+    this.morphRate = params?.morphRate ?? 0.5;
+    this.filter.reset();
+  }
+
+  render(currentTime, sr) {
+    const out = this._out;
+    if (!this.active) { out[0] = 0; return out; }
+    const dt = 1 / sr;
+    this.t += dt;
+    if (this.t > this.dur + 0.05) { this.active = false; out[0] = 0; return out; }
+
+    // Morph position LFO — moves between table A and B
+    this.morphPhase += this.morphRate * dt;
+    const morphLFO = 0.5 + 0.5 * Math.sin(2 * Math.PI * this.morphPhase);
+    const morph = this.morphPos * 0.5 + morphLFO * 0.5;  // blend static + LFO
+
+    // Advance phase
+    this.phase += this.freq / sr * this.tableSize;
+    const idx = Math.floor(this.phase) % this.tableSize;
+    const idxNext = (idx + 1) % this.tableSize;
+    const frac = this.phase - Math.floor(this.phase);
+
+    // Linear interpolation within each table
+    const sampleA = this.tableA[idx] * (1 - frac) + this.tableA[idxNext] * frac;
+    const sampleB = this.tableB[idx] * (1 - frac) + this.tableB[idxNext] * frac;
+
+    // Crossfade between tables based on morph position
+    const sample = sampleA * (1 - morph) + sampleB * morph;
+
+    // Filter for warmth
+    const cutoff = 2000 + 1000 * Math.sin(2 * Math.PI * this.t * 0.5);
+    const filtered = this.filter.process(sample, cutoff, 0.2, 1.5, sr);
+
+    // Amp envelope
+    const attackEnv = Math.min(1, this.t / 0.01);
+    const decayEnv = Math.exp(-this.t / (this.dur * 0.5));
+    const ampEnv = attackEnv * decayEnv;
+
+    out[0] = filtered * ampEnv * this.amp;
+    return out;
+  }
+}
+
 // ─── Voice: FX (riser, impact, sweep, zap, blip, downlifter) ──────────────
 // BEFORE: Riser = noise getting louder. Impact = sine going down. Primitive.
 // AFTER: Riser = noise + filter sweep opening up. Impact = sub boom + noise burst.
@@ -2223,6 +2304,8 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
             voice.trigger(0, ta.amp ?? 0.5, sr);
           } else if (msg.voiceClass === 'FMVoice') {
             voice.trigger(0, ta.freq ?? 440, ta.amp ?? 0.5, sr);
+          } else if (msg.voiceClass === 'WavetableVoice') {
+            voice.trigger(0, ta.freq ?? 220, ta.dur ?? 0.5, ta.amp ?? 0.5, sr, ta.params ?? null);
           } else {
             this.port.postMessage({ type: 'renderVoiceDone', buffer: null, error: 'No trigger for: ' + msg.voiceClass });
             break;
@@ -2882,6 +2965,6 @@ if (typeof globalThis !== 'undefined') {
   (globalThis).__PSY4_VOICES = {
     KickVoice, BassVoice, LeadVoice, AcidVoice, PadVoice,
     HatVoice, ClapVoice, PercVoice, ShakerVoice, FMVoice,
-    TextureVoice, FXVoice, SampleVoice,
+    TextureVoice, FXVoice, SampleVoice, WavetableVoice,
   };
 }
