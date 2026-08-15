@@ -1072,6 +1072,9 @@ self.onmessage = function(e) {
           // Let's just pass currentBar in the message and use it.
           const currentBarOffset = msg.currentBar !== undefined ? msg.currentBar * 4 * beatDur : 0;
           const bar0AudioTime = barOriginAudioTime - currentBarOffset;
+          if (b === lastComposedBar + 1) {
+            console.log('[PSY4] compose timing:', { currentBar: msg.currentBar, barOriginAudioTime: barOriginAudioTime.toFixed(2), bar0AudioTime: bar0AudioTime.toFixed(2), b: b, firstEventAt: evs[0]?.at?.toFixed(2) });
+          }
           for (let i = 0; i < evs.length; i++) {
             evs[i].at += bar0AudioTime;
             allEvents.push(evs[i]);
