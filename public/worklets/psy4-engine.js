@@ -1599,7 +1599,7 @@ class MasterChain {
     this.glueRatio = 2.0;         // gentle 2:1
     this.glueAttack = 0.010;      // 10ms
     this.glueRelease = 0.150;     // 150ms
-    this.glueMakeup = 1.3;        // +2.3dB makeup to compensate gain reduction
+    this.glueMakeup = 1.0;        // no makeup — final tanh provides boost (was 1.3, caused peaks above ceiling)
     this.glueGain = 1.0;          // current gain (smoothed)
 
     // True-peak limiter (1-sample lookahead)
