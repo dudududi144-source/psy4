@@ -1595,11 +1595,11 @@ class MasterChain {
 
     // ── Glue compressor (PSY7 settings) ──
     this.glueEnv = 0;             // envelope follower state
-    this.glueThr = 0.5;           // threshold (-6.02 dB ≈ 0.5 linear)
+    this.glueThr = 0.7;           // threshold (-3.1 dB — only catches loudest peaks)
     this.glueRatio = 2.0;         // gentle 2:1
     this.glueAttack = 0.010;      // 10ms
     this.glueRelease = 0.150;     // 150ms
-    this.glueMakeup = 1.0;        // no makeup — final tanh provides boost (was 1.3, caused peaks above ceiling)
+    this.glueMakeup = 1.15;       // +1.2dB makeup — compensates for gain reduction
     this.glueGain = 1.0;          // current gain (smoothed)
 
     // True-peak limiter (1-sample lookahead)
@@ -1665,7 +1665,7 @@ class MasterChain {
     const output = compOut * this.tpGainEnv;
 
     // ── 4. FINAL TANH (soft clip safety + makeup) ──
-    return fastTanh(output * this.gain * 1.4);
+    return fastTanh(output * this.gain * 1.5);
   }
 }
 
