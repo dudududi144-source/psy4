@@ -436,9 +436,12 @@ class CausalComposerWorker {
     }
 
     const events = this.executeDecision(decision, bar);
-    if (decision.action !== 'BREAKDOWN') {
-      events.push(...this.generateGroove(bar));
-    }
+    // CRITICAL FIX: Always call generateGroove — even during BREAKDOWN.
+    // BREAKDOWN removes lead/hats/shaker from activeVoices, but generateGroove
+    // still generates kick+bass+snare+clap (the rhythmic base). Previously,
+    // BREAKDAY skipped generateGroove entirely, causing complete silence
+    // (only pad played, no rhythm section).
+    events.push(...this.generateGroove(bar));
 
     // FX Voices (Riser/Impact/Sweep) — musical timing based on arrangement section.
     // These were removed in a previous commit because hardcoded FX created an
