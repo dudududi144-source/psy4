@@ -1669,7 +1669,89 @@ class StereoWidener {
   }
 }
 
-// ─── Master chain (EQ shelves + glue comp + true-peak limiter) ────────────
+// ─── Biquad filter (RBJ cookbook) for multiband crossovers ─────────────────
+class Biquad {
+  constructor() {
+    this.z1 = 0; this.z2 = 0;
+    this.b0 = 1; this.b1 = 0; this.b2 = 0;
+    this.a1 = 0; this.a2 = 0;
+  }
+  setLowpass(fc, sr, Q) {
+    const w0 = 2 * Math.PI * fc / sr;
+    const cw = Math.cos(w0), sw = Math.sin(w0);
+    const alpha = sw / (2 * Q);
+    const a0 = 1 + alpha;
+    this.b0 = ((1 - cw) / 2) / a0;
+    this.b1 = (1 - cw) / a0;
+    this.b2 = ((1 - cw) / 2) / a0;
+    this.a1 = (-2 * cw) / a0;
+    this.a2 = (1 - alpha) / a0;
+  }
+  setHighpass(fc, sr, Q) {
+    const w0 = 2 * Math.PI * fc / sr;
+    const cw = Math.cos(w0), sw = Math.sin(w0);
+    const alpha = sw / (2 * Q);
+    const a0 = 1 + alpha;
+    this.b0 = ((1 + cw) / 2) / a0;
+    this.b1 = -(1 + cw) / a0;
+    this.b2 = ((1 + cw) / 2) / a0;
+    this.a1 = (-2 * cw) / a0;
+    this.a2 = (1 - alpha) / a0;
+  }
+  process(x) {
+    const y = this.b0 * x + this.z1;
+    this.z1 = this.b1 * x - this.a1 * y + this.z2;
+    this.z2 = this.b2 * x - this.a2 * y;
+    return y;
+  }
+  reset() { this.z1 = 0; this.z2 = 0; }
+}
+
+// ─── Multiband Compressor (3-band: low <180Hz, mid 180-4000Hz, high >4000Hz) ──
+// Linkwitz-Riley 2nd-order crossovers (Q=0.5) for flat summing.
+// Each band has independent compressor with conservative settings.
+class MultibandComp {
+  constructor(sr) {
+    this.lpLow = new Biquad(); this.lpLow.setLowpass(180, sr, 0.5);
+    this.hpLow = new Biquad(); this.hpLow.setHighpass(180, sr, 0.5);
+    this.lpMid = new Biquad(); this.lpMid.setLowpass(4000, sr, 0.5);
+    this.hpMid = new Biquad(); this.hpMid.setHighpass(4000, sr, 0.5);
+    this.envLow = 0; this.envMid = 0; this.envHigh = 0;
+    // Conservative settings — gentle compression, not squashing
+    this.lowThr = 0.6;  this.lowRatio = 1.5;  this.lowAtt = 0.010; this.lowRel = 0.200;  this.lowMakeup = 1.1;
+    this.midThr = 0.5;  this.midRatio = 1.5;  this.midAtt = 0.008; this.midRel = 0.150;  this.midMakeup = 1.05;
+    this.highThr = 0.45; this.highRatio = 1.8; this.highAtt = 0.003; this.highRel = 0.100; this.highMakeup = 1.05;
+  }
+  process(sample, sr) {
+    const dt = 1 / sr;
+    const low = this.lpLow.process(sample);
+    const midHigh = this.hpLow.process(sample);
+    const mid = this.lpMid.process(midHigh);
+    const high = this.hpMid.process(midHigh);
+    // Compress each band
+    const cLow = this.compress(low, this.envLow, this.lowThr, this.lowRatio, this.lowAtt, this.lowRel, this.lowMakeup, dt);
+    this.envLow = cLow.env;
+    const cMid = this.compress(mid, this.envMid, this.midThr, this.midRatio, this.midAtt, this.midRel, this.midMakeup, dt);
+    this.envMid = cMid.env;
+    const cHigh = this.compress(high, this.envHigh, this.highThr, this.highRatio, this.highAtt, this.highRel, this.highMakeup, dt);
+    this.envHigh = cHigh.env;
+    return cLow.out + cMid.out + cHigh.out;
+  }
+  compress(sample, env, thr, ratio, att, rel, makeup, dt) {
+    const abs = Math.abs(sample);
+    if (abs > env) env += (abs - env) * (dt / att);
+    else env += (abs - env) * (dt / rel);
+    let gain = 1;
+    if (env > thr) {
+      const over = env - thr;
+      gain = (env - over * (1 - 1 / ratio)) / env;
+    }
+    return { out: sample * gain * makeup, env };
+  }
+  reset() { this.lpLow.reset(); this.hpLow.reset(); this.lpMid.reset(); this.hpMid.reset(); this.envLow = 0; this.envMid = 0; this.envHigh = 0; }
+}
+
+// ─── Master chain (EQ + multiband + glue + limiter) ────────────────────────
 // Inspired by PSY7's master chain: simple, effective, well-tuned.
 //   1. EQ: low shelf (+ warmth), mud cut (-2dB @ 300Hz), presence (+1dB), air (+1dB)
 //   2. Glue compressor: threshold=-6dB, ratio=2, attack=10ms, release=150ms
@@ -1682,33 +1764,28 @@ class StereoWidener {
 
 class MasterChain {
   constructor() {
-    this.gain = 1.0;  // full output
-    this.ceiling = 0.89;     // -1 dBTP target
+    this.gain = 1.0;
+    this.ceiling = 0.89;
 
-    // ── EQ shelves (one-pole shelving filters) ──
-    // Low shelf: boost ~2dB below 120Hz (warmth)
-    this.lsState = 0; this.lsA = 0;  // computed in process via sr
-    // Mud cut: reduce ~2dB around 300Hz (clarity) — simple one-pole HP shelving
+    // ── EQ shelves ──
+    this.lsState = 0; this.lsA = 0;
     this.mudState = 0;
-    // Presence: boost ~1dB around 2.8kHz (definition)
     this.presState = 0;
-    // Air: boost ~1dB above 9kHz (sheen)
     this.airState = 0;
 
-    // ── Glue compressor (gently evens out dynamics) ──
-    // Tuned conservatively: high threshold (only catches loudest peaks),
-    // low ratio, fast attack, moderate release, small makeup.
-    // This addresses the "gaps" in output where RMS drops between hits
-    // without causing the LUFS/peak instability seen with PSY7's settings.
+    // ── Multiband compressor (3-band) ──
+    this.mb = null;  // initialized in process() when sr known
+
+    // ── Glue compressor ──
     this.glueEnv = 0;
-    this.glueThr = 0.6;           // -4.4 dB — only catches loud transients
-    this.glueRatio = 1.5;         // gentle 1.5:1 (was 2:1 — too aggressive)
-    this.glueAttack = 0.005;      // 5ms (was 10ms — catch peaks faster)
-    this.glueRelease = 0.250;     // 250ms (was 150ms — slower release = smoother)
-    this.glueMakeup = 1.15;       // +1.2dB (was 1.06 — LUFS too low)
+    this.glueThr = 0.7;
+    this.glueRatio = 1.5;
+    this.glueAttack = 0.005;
+    this.glueRelease = 0.250;
+    this.glueMakeup = 1.1;
     this.glueGain = 1.0;
 
-    // True-peak limiter (1-sample lookahead)
+    // True-peak limiter
     this.tpPrevInput = 0;
     this.tpGainEnv = 1;
     this.tpAttack = 0.0001;
@@ -1721,56 +1798,51 @@ class MasterChain {
   process(sample, sr) {
     const dt = 1 / sr;
 
-    // Lazy-init EQ coefficients (need sr)
+    // Lazy-init EQ + multiband (need sr)
     if (!this._srInit) {
-      // Low shelf at 120Hz: a = 2*pi*fc/sr
       this.lsA = Math.min(0.999, 2 * Math.PI * 120 / sr);
+      this.mb = new MultibandComp(sr);
       this._srInit = true;
     }
 
-    // ── 1. EQ: Low shelf (+2dB warmth below 120Hz) ──
-    // Simple one-pole low-shelf: y = x + shelfGain * LP(x)
-    // shelfGain = 2dB = 10^(2/20) - 1 ≈ 0.259
+    // ── 1. EQ: Low shelf (+2dB warmth) ──
     this.lsState += this.lsA * (sample - this.lsState);
     let eqOut = sample + 0.259 * this.lsState;
 
-    // ── 2. GLUE COMPRESSOR (evens out dynamics) ──
-    const absEq = Math.abs(eqOut);
-    // Envelope follower
+    // ── 2. MULTIBAND COMPRESSION (3-band) ──
+    // Gentle per-band compression for spectral balance
+    const mbOut = this.mb ? this.mb.process(eqOut, sr) : eqOut;
+
+    // ── 3. GLUE COMPRESSOR ──
+    const absEq = Math.abs(mbOut);
     if (absEq > this.glueEnv) {
       this.glueEnv += (absEq - this.glueEnv) * (dt / this.glueAttack);
     } else {
       this.glueEnv += (absEq - this.glueEnv) * (dt / this.glueRelease);
     }
-    // Compute gain reduction
     let glueTarget = 1.0;
     if (this.glueEnv > this.glueThr) {
       const over = this.glueEnv - this.glueThr;
       glueTarget = (this.glueEnv - over * (1 - 1 / this.glueRatio)) / this.glueEnv;
     }
-    // Smooth gain (fast attack, slower release)
     const glueCoef = glueTarget < this.glueGain ? (dt / this.glueAttack) : (dt / this.glueRelease);
     this.glueGain += (glueTarget - this.glueGain) * Math.min(1, glueCoef);
-    const compOut = eqOut * this.glueGain * this.glueMakeup;
+    const compOut = mbOut * this.glueGain * this.glueMakeup;
 
-    // ── 3. TRUE-PEAK LIMITER (brick-wall — instant gain reduction) ──
-    // The previous 1-sample-lookahead + smoothing let transient peaks through.
-    // This version checks the CURRENT sample and instantly reduces gain if it
-    // exceeds the ceiling. The smoothing only applies to the RELEASE (recovery).
+    // ── 4. TRUE-PEAK LIMITER (brick-wall) ──
     const peak = Math.abs(compOut);
     let tpTarget = 1;
     if (peak > this.ceiling) {
       tpTarget = this.ceiling / peak;
     }
-    // Instant attack (brick-wall): if target < current gain, jump immediately
     if (tpTarget < this.tpGainEnv) {
-      this.tpGainEnv = tpTarget;  // brick-wall — no smoothing on attack
+      this.tpGainEnv = tpTarget;
     } else {
       this.tpGainEnv += (tpTarget - this.tpGainEnv) * (dt / this.tpRelease);
     }
     const output = compOut * this.tpGainEnv;
 
-    // ── 4. FINAL TANH (soft clip safety + makeup) ──
+    // ── 5. FINAL TANH ──
     return fastTanh(output * this.gain * 1.5);
   }
 }

@@ -9956,3 +9956,42 @@ Task: ביקורת הנדסית כנה — האם התיאור תואם את ה�
 VERDICT: המערכת עובדת אבל לא ברמה מסחרית. הלמידה אמיתית אבל מוגבלת.
 
 ראה דוח מלא בהודעה למשתמש.
+
+---
+Task ID: PHASE-1-AND-2
+Agent: z.ai-code (main)
+Task: פאזה 1 (DSP upgrades) + פאזה 2.1 (QualityAnalyzer)
+
+Phase 1 — Voice DSP Upgrades (ALL DONE):
+1.1 KickVoice: Added body layer (sine 150-300Hz, 50ms decay) + tail layer
+    (sub sine, 400ms decay). 5 layers total: sub + body + tail + mid + click.
+1.2 BassVoice: Added harmonic layer (square at octave) + stereo Haas delay
+    (0.5ms on harmonic only, sub stays mono). Fixed ST_STEREO bug in mix loop.
+1.3 PadVoice: Added shimmer (octave-up saw, slow detune drift) + noise bed
+    (HP pink noise, adds air). 3 layers: saws + shimmer + noise.
+1.4 HatVoice: Added metallic osc bank (6 square oscs at inharmonic ratios
+    [1.0, 1.5, 2.1, 2.7, 3.3, 4.1]). Mix 70% noise, 30% metallic.
+
+Phase 2.1 — QualityAnalyzer (DONE):
+- NEW: src/lib/qualityAnalyzer.ts
+- Measures 5 quality metrics: spectralBalance, dynamicRange, stereoWidth,
+  transientSharpness, lowEndClarity
+- compositeScore: weighted average (0-1)
+- RewardTracker now uses quality for reward (not just occupancy)
+- Reward logic: quality > 0.6 → +0.10, quality < 0.3 → -0.05,
+  quality delta > 0.1 → bonus +0.03
+
+VERIFICATION:
+- Audio stable: peak 0.89, rms 0.30, 0 errors
+- QualityAnalyzer logs: Q=0.75→0.49 (quality measured)
+- Reward now quality-based: +0.020 (quality dropped), +0.050 (quality OK)
+
+PRODUCTION:
+- 6 commits pushed: ffebe04, 1b96fcd, 3b47613, c9553e8, bf75365
+- Cloudflare deploy: https://40973f89.psy4.pages.dev
+
+Stage Summary:
+Phase 1 + 2.1 complete. All 4 voices upgraded with new layers.
+QualityAnalyzer measures real audio quality, not just "is there audio".
+Reward now reflects quality — sounds that produce balanced, dynamic,
+clean output get higher reward.
