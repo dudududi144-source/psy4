@@ -9862,3 +9862,50 @@ All 4 remaining issues closed:
 
 The system now has full coverage of all 10 voice roles in the bank,
 exploration, and generation pipeline. No more "only 4 roles" limitation.
+
+---
+Task ID: FIX-SOUND-VARIATION
+Agent: z.ai-code (main)
+Task: תיקון קריטי — הצלילים לא משתנים. אותו מבנה קבוע מההתחלה.
+
+ROOT CAUSE ANALYSIS:
+1. soundBank.get() (line 146-151): כשיש entry עם reward > 0.8, הוא תמיד
+   מחזיר את אותו entry עם ה-reward הגבוה ביותר. אף פעם לא מחזיר אחר.
+2. STYLE_GRAMMARS נוצרים פעם אחת בטעינת המודול עם Math.random —
+   ואז קבועים לכל הסשן. אותו motif/bass pattern לנצח.
+3. applyBestRecipeFromBank דרס params כש reward >= 0.7 — וה-synthetic
+   occupancy fix גרם לכל ה-entries להגיע ל-reward 0.9 מהר.
+
+תוצאה: אותו צליל חוזר כל פעם. ה-bank "נתקע" על entry אחד.
+
+FIXES:
+1. Epsilon-greedy ב-soundBank.get():
+   - 20% chance להחזיר entry אקראי (exploration)
+   - 80% מחזיר את הטוב מתוך top-3 proven (לא תמיד #1)
+2. regenerateGrammar() כל 32 בארים — motif/bass patterns מתחדשים
+3. העלאת override threshold מ-0.7 ל-0.85 — רק entries יוצאי דופן דורסים
+4. resetAll() method — מנקה IndexedDB + localStorage להתחלה נקייה
+5. Reset button ב-UI (↻ Reset) — כפתור לאיפוס מלא
+
+VERIFICATION (Agent Browser, production):
+- Fresh start (cleared IndexedDB + localStorage):
+  * kick fund=65 (random), saturation=1.3, waveType=0
+  * "tracking-only (reward<0.7, keeping user params)" — bank לא דורס
+  * אחרי 10s: kick fund=65 עדיין (לא דרס ל-38!)
+- Reset button:
+  * לפני: fund=62, sat=2.59, wave=3, bassCutoff=1141
+  * אחרי: fund=37, sat=1.58, wave=2, bassCutoff=851
+  * ספקטרום השתנה: 253 → 242 (delta=-10.9)
+- אודיו יציב: avgPeak=0.216, maxPeak=0.893, 0 שגיאות
+- 0 runtime errors
+
+PRODUCTION:
+- Git push: origin/main ✓ (commit 2a041ad)
+- Cloudflare deploy: https://5a25ae5d.psy4.pages.dev ✓
+
+Stage Summary:
+הבאג הקריטי תוקן — הצלילים עכשיו משתנים:
+1. כל סשן חדש מקבל פרמטרים אקראיים (לא נדרס ע"י bank ישן)
+2. כל 32 בארים, המבנה המוזיקלי מתחדש
+3. exploration מנסה entries שונים (20% random)
+4. Reset button מאפשר התחלה נקייה
