@@ -27,6 +27,7 @@ import { SynthesisMatcher, type MatchResult } from './synthesisMatcher';
 import { SoundBank, type SoundBankEntry } from './soundBank';
 // שלב 4.4: Sound explorer (סריקה רחבה של מרחב הפרמטרים)
 import { SoundExplorer, type ExplorationResult } from './soundExplorer';
+import { SmartExplorer } from './smartExplorer';
 // שלב 4.5: Reward loop (self-improvement)
 import { RewardTracker } from './rewardTracker';
 import { QualityAnalyzer } from './qualityAnalyzer';
@@ -388,6 +389,7 @@ export class PsyLive {
   private static readonly MATCH_SAVE_THRESHOLD = 0.7;
   // שלב 4.4: Sound explorer — סריקה רחבה של מרחב הפרמטרים
   private soundExplorer: SoundExplorer | null = null;
+  private smartExplorer: SmartExplorer | null = null;  // Phase 2.2
   // שלב 4.5: Reward tracker — מודד איך הרדיו מגיב לסאונדים של PSY4
   private rewardTracker: RewardTracker | null = null;
   // שלב 4.6: Style classifier — מזהה סגנון מוזיקלי מהרדיו
@@ -1452,6 +1454,8 @@ export class PsyLive {
         this.synthesisMatcher.init(this.engineNode);
         // שלב 4.4: אתחל את ה-SoundExplorer (משתמש ב-matcher + bank)
         this.soundExplorer = new SoundExplorer(this.synthesisMatcher, this.soundBank);
+        // Phase 2.2: SmartExplorer — gradient-based exploration (faster convergence)
+        this.smartExplorer = new SmartExplorer(this.synthesisMatcher, this.soundBank);
         // שלב 4.5: אתחל את ה-RewardTracker + QualityAnalyzer
         this.rewardTracker = new RewardTracker(this.soundBank);
         // Phase 2.1: QualityAnalyzer — מודד איכות אודיו ל-reward
@@ -2553,7 +2557,41 @@ export class PsyLive {
     try {
       // שלב 4.6: השתמש ב-sourceStyle מה-classifier (מזהה סגנון + unknown)
       const sourceStyle = this.styleClassifier.getSourceStyleForBank();
-      const result = await this.soundExplorer.explore(role, targetDNA, sourceStyle);
+      // Phase 2.2: 50% chance to use SmartExplorer (gradient-based) instead of grid
+      if (this.smartExplorer && Math.random() < 0.5) {
+        const ROLE_TO_VOICE_SMART: Record<string, string> = {
+          kick: 'KickVoice', bass: 'BassVoice', lead: 'LeadVoice', hat: 'HatVoice',
+          perc: 'PercVoice', pad: 'PadVoice', acid: 'AcidVoice', clap: 'ClapVoice',
+          shaker: 'ShakerVoice', texture: 'TextureVoice',
+        };
+        const SCAN_PARAMS_SMART: Record<string, { name: string; values: number[] }[]> = {
+          kick: [
+            { name: 'fund', values: [38, 48, 58, 68] },
+            { name: 'saturation', values: [1.0, 1.5, 2.0] },
+            { name: 'bodyLevel', values: [0.3, 0.6] },
+            { name: 'tailLevel', values: [0.2, 0.5] },
+          ],
+          bass: [
+            { name: 'subLevel', values: [0.3, 0.4, 0.5, 0.6] },
+            { name: 'cutoffStart', values: [400, 700, 1000, 1500] },
+            { name: 'cutoffEnd', values: [100, 200, 300, 400] },
+          ],
+          lead: [{ name: 'freq', values: [220, 330, 440, 660, 880] }],
+          hat: [{ name: 'hatDecay', values: [0.02, 0.04, 0.06, 0.08] }],
+          perc: [{ name: 'freq', values: [120, 200, 300, 400] }],
+          pad: [{ name: 'padCutoff', values: [400, 600, 800, 1000] }],
+          acid: [{ name: 'acidCutoff', values: [1000, 1500, 2000, 2500] }],
+          clap: [{ name: 'clapDecay', values: [0.03, 0.05, 0.07, 0.09] }],
+          shaker: [{ name: 'shakerDecay', values: [0.04, 0.06, 0.08, 0.10] }],
+          texture: [{ name: 'textureType', values: [0, 1] }],
+        };
+        await this.smartExplorer.explore(
+          role, targetDNA, sourceStyle,
+          ROLE_TO_VOICE_SMART, SCAN_PARAMS_SMART[role] || [],
+        );
+      } else {
+        const result = await this.soundExplorer.explore(role, targetDNA, sourceStyle);
+      }
       // אחרי ה-exploration, החל את ה-recipe הטוב ביותר מה-bank על ה-engine
       await this.applyBestRecipeFromBank(role);
       // שלב 5: שמור זיכרון אחרי כל cycle — המנוע יתחיל מכאן בפעם הבאה
