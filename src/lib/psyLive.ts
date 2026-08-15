@@ -2516,8 +2516,14 @@ export class PsyLive {
     let targetDNA;
     if (onset) {
       targetDNA = onset.soundDNA;
+    } else if (this.currentReference) {
+      // Phase 4.2: Reference-guided target DNA — use the reference's spectral
+      // characteristics to build a per-role target. This makes the explorer
+      // try to match the reference's sound instead of random targets.
+      targetDNA = this.buildReferenceTargetDNA(role, this.currentReference);
+      console.log(`[PSY4] Phase 4.2: Exploration using reference-guided target for ${role}`);
     } else {
-      // אין onsets (בלי רדיו) — צור synthetic target DNA אקראית
+      // אין onsets ואין reference — צור synthetic target DNA אקראית
       targetDNA = {
         role: 'fx' as const,
         brightness: Math.random(),
@@ -3102,6 +3108,149 @@ export class PsyLive {
   // ── שלב 5.2: Original synthesis generation ──
 
   /**
+   * Phase 4.2: בונה target DNA מתוך reference track.
+   * משתמש ב-bandEnergies של ה-reference כדי לקבוע איזה צליל כל role צריך להפיק.
+   * למשל: אם ה-reference חזק ב-sub (band 0), ה-kick target ידרוש subEnergy גבוה.
+   */
+  private buildReferenceTargetDNA(role: OnsetRole, ref: ReferenceDNA): import('../../foundation/music/SoundDNA').SoundDNA {
+    // ref.bandEnergies: [sub, low, lowMid, mid, highMid, high]
+    const bands = ref.bandEnergies;
+    const base = {
+      confidence: 0.7,  // higher than synthetic — we have real data
+      usageCount: 0,
+      reward: 0.5,
+      sourceStyle: 'reference',
+      sourceContext: `ref-${ref.bpm}bpm-${ref.scaleName}`,
+      harmonicity: 0.6,
+      noisiness: 0.2,
+      spectralSlope: -0.5,
+      roughness: 0.3,
+      sustainLevel: 0.3,
+      releaseTime: 0.1,
+      pitchModulation: 0.1,
+      fmAmount: 0.1,
+      detune: 5,
+      stereoWidth: ref.stereoWidth,
+      stereoMotion: 0.2,
+      distortionCharacter: 0.4,
+    };
+
+    // Map reference spectral balance to per-role targets
+    switch (role) {
+      case 'kick':
+        // Kick should match the reference's sub-band energy
+        return { ...base, role: 'kick', brightness: 0.2 + bands[0] * 0.3,
+          subEnergy: Math.min(0.95, 0.6 + bands[0] * 0.4),
+          bodyEnergy: 0.3 + bands[1] * 0.3,
+          midEnergy: 0.1 + bands[2] * 0.2,
+          highEnergy: 0.05 + bands[4] * 0.1,
+          transientSharpness: 0.85, attackTime: 0.001,
+          decayTime: 0.15 + bands[0] * 0.1,
+          saturation: 0.5 + bands[0] * 0.3,
+          filterCutoff: 200, filterResonance: 1,
+          filterType: 'lowpass' as const, filterEnvelopeAmount: 0.8 };
+      case 'bass':
+        return { ...base, role: 'bass', brightness: 0.3 + bands[1] * 0.3,
+          subEnergy: 0.5 + bands[0] * 0.3,
+          bodyEnergy: 0.6 + bands[1] * 0.3,
+          midEnergy: 0.3 + bands[2] * 0.3,
+          highEnergy: 0.1,
+          transientSharpness: 0.6, attackTime: 0.005,
+          decayTime: 0.2 + bands[1] * 0.1,
+          saturation: 0.4 + bands[1] * 0.2,
+          filterCutoff: 400 + bands[2] * 800, filterResonance: 2,
+          filterType: 'lowpass' as const, filterEnvelopeAmount: 0.6 };
+      case 'lead':
+        return { ...base, role: 'lead', brightness: 0.6 + bands[3] * 0.3,
+          subEnergy: 0.1, bodyEnergy: 0.3 + bands[2] * 0.3,
+          midEnergy: 0.7 + bands[3] * 0.2,
+          highEnergy: 0.5 + bands[4] * 0.3,
+          transientSharpness: 0.5, attackTime: 0.01,
+          decayTime: 0.4,
+          saturation: 0.3 + bands[3] * 0.2,
+          filterCutoff: 1500 + bands[3] * 3000, filterResonance: 3,
+          filterType: 'lowpass' as const, filterEnvelopeAmount: 0.4 };
+      case 'hat':
+        return { ...base, role: 'hat', brightness: 0.8 + bands[5] * 0.2,
+          subEnergy: 0.0, bodyEnergy: 0.1,
+          midEnergy: 0.3 + bands[3] * 0.2,
+          highEnergy: 0.8 + bands[5] * 0.2,
+          transientSharpness: 0.9, attackTime: 0.001,
+          decayTime: 0.05 + bands[5] * 0.05,
+          saturation: 0.3,
+          filterCutoff: 5000 + bands[5] * 5000, filterResonance: 1,
+          filterType: 'highpass' as const, filterEnvelopeAmount: 0.3,
+          noisiness: 0.8, harmonicity: 0.2 };
+      case 'perc':
+        return { ...base, role: 'percussion', brightness: 0.5 + bands[3] * 0.3,
+          subEnergy: 0.2 + bands[0] * 0.2,
+          bodyEnergy: 0.5 + bands[2] * 0.3,
+          midEnergy: 0.5 + bands[3] * 0.2,
+          highEnergy: 0.3 + bands[4] * 0.2,
+          transientSharpness: 0.8, attackTime: 0.002,
+          decayTime: 0.1 + bands[2] * 0.1,
+          saturation: 0.4,
+          filterCutoff: 1000 + bands[3] * 2000, filterResonance: 2,
+          filterType: 'bandpass' as const, filterEnvelopeAmount: 0.5 };
+      case 'pad':
+        return { ...base, role: 'texture', brightness: 0.5 + bands[3] * 0.2,
+          subEnergy: 0.3 + bands[0] * 0.2,
+          bodyEnergy: 0.4 + bands[1] * 0.2,
+          midEnergy: 0.5 + bands[2] * 0.2,
+          highEnergy: 0.3 + bands[4] * 0.2,
+          transientSharpness: 0.2, attackTime: 0.3,
+          decayTime: 2.0,
+          saturation: 0.3,
+          filterCutoff: 800 + bands[3] * 600, filterResonance: 1,
+          filterType: 'lowpass' as const, filterEnvelopeAmount: 0.6 };
+      case 'acid':
+        return { ...base, role: 'lead', brightness: 0.6 + bands[3] * 0.2,
+          subEnergy: 0.2, bodyEnergy: 0.4 + bands[1] * 0.2,
+          midEnergy: 0.6 + bands[2] * 0.2,
+          highEnergy: 0.4 + bands[3] * 0.2,
+          transientSharpness: 0.7, attackTime: 0.005,
+          decayTime: 0.3,
+          saturation: 0.7 + bands[3] * 0.2,
+          filterCutoff: 1000 + bands[3] * 2000, filterResonance: 8,
+          filterType: 'lowpass' as const, filterEnvelopeAmount: 0.8 };
+      case 'clap':
+        return { ...base, role: 'percussion', brightness: 0.7 + bands[4] * 0.2,
+          subEnergy: 0.0, bodyEnergy: 0.2,
+          midEnergy: 0.6 + bands[3] * 0.2,
+          highEnergy: 0.5 + bands[4] * 0.2,
+          transientSharpness: 0.85, attackTime: 0.003,
+          decayTime: 0.1,
+          saturation: 0.4,
+          filterCutoff: 2000 + bands[4] * 1500, filterResonance: 2,
+          filterType: 'bandpass' as const, filterEnvelopeAmount: 0.5,
+          noisiness: 0.7 };
+      case 'shaker':
+        return { ...base, role: 'percussion', brightness: 0.8 + bands[5] * 0.2,
+          subEnergy: 0.0, bodyEnergy: 0.1,
+          midEnergy: 0.3 + bands[3] * 0.2,
+          highEnergy: 0.7 + bands[5] * 0.2,
+          transientSharpness: 0.7, attackTime: 0.005,
+          decayTime: 0.06,
+          saturation: 0.3,
+          filterCutoff: 4000 + bands[5] * 4000, filterResonance: 1,
+          filterType: 'highpass' as const, filterEnvelopeAmount: 0.3,
+          noisiness: 0.8 };
+      case 'texture':
+        return { ...base, role: 'texture', brightness: 0.6 + bands[4] * 0.2,
+          subEnergy: 0.2 + bands[0] * 0.2,
+          bodyEnergy: 0.3 + bands[1] * 0.2,
+          midEnergy: 0.4 + bands[2] * 0.2,
+          highEnergy: 0.4 + bands[4] * 0.2,
+          transientSharpness: 0.3, attackTime: 0.1,
+          decayTime: 1.5,
+          saturation: 0.5,
+          filterCutoff: 1000 + bands[3] * 1000, filterResonance: 2,
+          filterType: 'lowpass' as const, filterEnvelopeAmount: 0.7,
+          fmAmount: 0.4 };
+    }
+  }
+
+  /**
    * בונה target DNA סינטטי כשאין onsets מהרדיו.
    * מאפשר יצירת וריאציות גם ללא רדיו — לכל role יש פרופיל דיפולט.
    */
@@ -3188,9 +3337,16 @@ export class PsyLive {
   async generateOriginalSounds(role: OnsetRole): Promise<GenerationResult | null> {
     if (!this.synthesisGenerator) return null;
     const onset = this.onsetAnalyzer.getLatestOnset(role);
-    const targetDNA = onset?.soundDNA ?? this.buildSyntheticTargetDNA(role);
-    if (!onset) {
-      console.log(`[PSY4] שלב 5.2 generateOriginalSounds(${role}): using synthetic target DNA (no radio onsets)`);
+    // Priority: radio onsets > reference DNA > synthetic DNA
+    let targetDNA;
+    if (onset) {
+      targetDNA = onset.soundDNA;
+    } else if (this.currentReference) {
+      targetDNA = this.buildReferenceTargetDNA(role, this.currentReference);
+      console.log(`[PSY4] Phase 4.2 generateOriginalSounds(${role}): using reference-guided target`);
+    } else {
+      targetDNA = this.buildSyntheticTargetDNA(role);
+      console.log(`[PSY4] שלב 5.2 generateOriginalSounds(${role}): using synthetic target DNA`);
     }
     return this.synthesisGenerator.generate(role, targetDNA);
   }
