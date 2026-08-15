@@ -111,26 +111,27 @@ export class RewardTracker {
 
     let rewardDelta: number;
     if (tracking.synthetic) {
-      // SYNTHETIC MODE (no radio): reward based on output HEALTH and DYNAMICS.
-      // The goal is to reward sounds that produce full, dynamic output —
-      // not just "any audio". We use the occupancy level as a proxy:
-      // - 0.15-0.75 = healthy dynamic range → strong reward
-      // - 0.75-0.90 = loud but not clipping → moderate reward
-      // - >0.90 = clipping → penalty (too hot, will distort)
-      // - <0.05 = output died → penalty (recipe killed the sound)
-      // - 0.05-0.15 = weak output → small reward (needs improvement)
-      // Faster accumulation: +0.08 for healthy (was +0.05) so entries reach
-      // proven status (0.8) in ~4 cycles instead of ~6.
-      if (currentOcc < 0.05) {
+      // SYNTHETIC MODE (no radio): reward based on output HEALTH.
+      // The synthetic occupancy measures PSY4's own output level per band.
+      // For kick, occupancy is typically 0.7-0.95 (kick is loud).
+      // For other roles, it's lower (0.1-0.6).
+      // So we use ROLE-SPECIFIC thresholds:
+      // - kick: reward if 0.6-0.98 (healthy), penalty if >0.99 (clipping) or <0.3 (dead)
+      // - other: reward if 0.05-0.8 (healthy), penalty if >0.9 (clipping) or <0.02 (dead)
+      const isKick = tracking.role === 'kick';
+      const healthyLow = isKick ? 0.6 : 0.05;
+      const healthyHigh = isKick ? 0.98 : 0.8;
+      const clippingThreshold = isKick ? 0.99 : 0.9;
+      const deadThreshold = isKick ? 0.3 : 0.02;
+
+      if (currentOcc < deadThreshold) {
         rewardDelta = -REWARD_DELTA;        // output died — bad recipe
-      } else if (currentOcc > 0.90) {
+      } else if (currentOcc > clippingThreshold) {
         rewardDelta = -REWARD_DELTA * 0.5;  // clipping — back off
-      } else if (currentOcc >= 0.15 && currentOcc <= 0.75) {
-        rewardDelta = REWARD_DELTA * 0.8;   // healthy dynamic range — strong reward
-      } else if (currentOcc > 0.75) {
-        rewardDelta = REWARD_DELTA * 0.4;   // loud but OK — moderate reward
+      } else if (currentOcc >= healthyLow && currentOcc <= healthyHigh) {
+        rewardDelta = REWARD_DELTA * 0.8;   // healthy range — strong reward
       } else {
-        rewardDelta = REWARD_DELTA * 0.2;   // weak but present — small reward
+        rewardDelta = REWARD_DELTA * 0.3;   // borderline — small reward
       }
     } else {
       // RADIO MODE: original logic — occupancy drop = PSY4 complementing radio = good
