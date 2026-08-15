@@ -506,6 +506,17 @@ export default function Page() {
                 style={{ background: recording ? 'rgba(255,46,136,0.3)' : 'rgba(255,255,255,0.05)', color: recording ? '#ff2e88' : '#94a3b8', border: recording ? '1px solid rgba(255,46,136,0.5)' : '1px solid rgba(255,255,255,0.1)' }}>
                 {recording ? '⏹ Stop Rec' : '● Record'}
               </button>
+              <button
+                onClick={() => {
+                  if (confirm('Reset all learned sounds? This clears the bank + memory for a fresh start.')) {
+                    engineRef.current?.resetAll();
+                  }
+                }}
+                disabled={!s.playing}
+                className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: 'rgba(255,255,255,0.05)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}>
+                ↻ Reset
+              </button>
             </div>
             <div className="text-[10px] text-slate-500">
               Export: download JSON with all learned sounds + patterns · Import: load previous package · Generate: create new variations from learned sounds

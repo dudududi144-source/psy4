@@ -274,6 +274,17 @@ const STYLE_GRAMMARS = {
   },
 };
 
+// Regenerate grammar patterns for variety. Called every 32 bars so the
+// musical structure evolves over time instead of being fixed for the
+// entire session. (User feedback: "אותו מבנה קבוע" — same fixed structure.)
+function regenerateGrammar(styleName) {
+  const g = STYLE_GRAMMARS[styleName] || STYLE_GRAMMARS.FULL_ON;
+  g.motifIntervals = genMotifIntervals(Math.random);
+  g.motifSteps = genMotifSteps(Math.random);
+  const density = styleName === 'FULL_ON' ? 0.7 : styleName === 'DARK' ? 0.35 : styleName === 'ACID' ? 0.4 : 0.5;
+  g.bassPattern = genBassPattern(Math.random, density);
+}
+
 // ─── CausalComposer (worker-local) ───────────────────────────────────
 class CausalComposerWorker {
   constructor(opts) {
@@ -340,6 +351,11 @@ class CausalComposerWorker {
 
   composeBar(bar) {
     onBarAdvance(this.state, bar);
+    // Regenerate grammar every 32 bars for musical variety.
+    // Without this, the same motif/bass pattern plays for the entire session.
+    if (bar > 0 && bar % 32 === 0) {
+      regenerateGrammar(this.userStyle);
+    }
     if (this.userTension > 0.5) {
       const target = this.userTension;
       this.state.tensionLevel += (target - this.state.tensionLevel) * 0.15;

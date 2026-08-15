@@ -143,13 +143,24 @@ export class SoundBank {
     await this.init();
     const all = await this.all(role);
     if (all.length === 0) return null;
-    // שלב 4.5: אם יש entry "proven" (reward > 0.8) → החזר אותו תמיד
+
+    // EPSILON-GREEDY: 20% chance to return a RANDOM entry (exploration).
+    // Without this, the same "proven" entry is returned every time and the
+    // sound never changes. This forces the system to try different sounds.
+    if (Math.random() < 0.2) {
+      return all[Math.floor(Math.random() * all.length)];
+    }
+
+    // 80% — return best entry, but cycle among top proven entries for variety
     const proven = all.filter(e => e.reward > 0.8);
     if (proven.length > 0) {
+      // Sort by reward, but pick from top 3 (round-robin style)
       proven.sort((a, b) => b.reward - a.reward);
-      return proven[0];
+      const topN = Math.min(3, proven.length);
+      return proven[Math.floor(Math.random() * topN)];
     }
-    // אם יש context.style, העדף entries עם אותו sourceStyle
+
+    // If there's a context.style, prefer entries with matching sourceStyle
     if (context?.style) {
       const matching = all.filter(e => e.sourceStyle === context.style);
       if (matching.length > 0) {
@@ -157,7 +168,8 @@ export class SoundBank {
         return matching[0];
       }
     }
-    // אחרת — ה-reward הגבוה ביותר
+
+    // Otherwise — highest reward
     all.sort((a, b) => b.reward - a.reward);
     return all[0];
   }

@@ -2571,9 +2571,10 @@ export class PsyLive {
       console.log(`[PSY4] שלב 4.4 applyRecipe(${role}): no entry in bank`);
       return false;
     }
-    // תיקון: רק אם reward > 0.7 (proven) — נדרוס את ה-params הנוכחיים.
-    // אחרת, נשאיר את מה שנטען מ-localStorage ורק נעדכן usageCount + נתחיל tracking.
-    const REWARD_OVERRIDE_THRESHOLD = 0.7;
+    // תיקון: רק אם reward > 0.85 (exceptional) — נדרוס את ה-params הנוכחיים.
+    // רף גבוה יותר (היה 0.7) גורם לכך שרק סאונדים מוכחים באמת מחליפים,
+    // ומאפשר יותר גיוון כי entries עם reward 0.7-0.85 לא דורסים.
+    const REWARD_OVERRIDE_THRESHOLD = 0.85;
     if (entry.reward >= REWARD_OVERRIDE_THRESHOLD) {
       const voiceClass = role === 'kick' ? 'KickVoice'
         : role === 'bass' ? 'BassVoice'
@@ -2922,6 +2923,34 @@ export class PsyLive {
 
   isRecording(): boolean {
     return this.mediaRecorder !== null && this.mediaRecorder.state === 'recording';
+  }
+
+  /**
+   * איפוס מלא — מנקה את ה-bank (IndexedDB) + localStorage.
+   * מאפשר התחלה נקייה ללא צלילים ישנים שחוזרים.
+   */
+  async resetAll(): Promise<void> {
+    console.log('[PSY4] Reset: clearing bank + localStorage...');
+    // Clear IndexedDB bank
+    if (this.soundBank) {
+      await this.soundBank.clearAll();
+    }
+    // Clear localStorage params + BPM
+    localStorage.removeItem(PsyLive.MEMORY_KEY_PARAMS);
+    localStorage.removeItem(PsyLive.MEMORY_KEY_BPM);
+    // Reset engine params by creating new random defaults
+    if (this.engineNode) {
+      const defaults = PsyLive.generateDefaultLearnedParams();
+      for (const [voiceClass, recipe] of Object.entries(defaults)) {
+        this.engineNode.node.port.postMessage({
+          type: 'setVoiceRecipe',
+          voiceClass,
+          recipe,
+        });
+      }
+      this.saveLearnedParamsToMemory(defaults);
+    }
+    console.log('[PSY4] Reset complete — fresh random params applied');
   }
 
   /**
