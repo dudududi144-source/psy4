@@ -2932,6 +2932,166 @@ export class PsyLive {
     await this.packageExporter.download(detectedStyles, sourceStations, insights, patterns);
   }
 
+  // ── Phase 10.1: MIDI Export ──
+  /**
+   * מייצא את ה-patterns הנוכחיים כקובץ MIDI.
+   * יוצר MIDI format 0 עם kick + bass + lead patterns.
+   */
+  exportMIDI(): void {
+    if (!this.transport) {
+      console.warn('[PSY4] Phase 10.1: Transport not ready for MIDI export');
+      return;
+    }
+    const snap = this.transport.snapshot();
+    const bpm = snap.bpm;
+    const rootPc = this.opts?.rootPc ?? 0;
+
+    // Build MIDI bytes (format 0, 1 track)
+    const ticksPerQuarter = 480;
+    const tempo = Math.round(60000000 / bpm);  // microseconds per quarter
+
+    // MIDI header: MThd
+    const header = [
+      0x4D, 0x54, 0x68, 0x64,  // "MThd"
+      0x00, 0x00, 0x00, 0x06,  // header length
+      0x00, 0x00,              // format 0
+      (ticksPerQuarter >> 8) & 0xFF, ticksPerQuarter & 0xFF,  // ticks per quarter
+      0x00, 0x01,              // 1 track
+    ];
+
+    // Build track events
+    const events: { tick: number; data: number[] }[] = [];
+
+    // Tempo meta event
+    events.push({ tick: 0, data: [0xFF, 0x51, 0x03, (tempo >> 16) & 0xFF, (tempo >> 8) & 0xFF, tempo & 0xFF] });
+
+    // Kick pattern: 4-on-the-floor
+    const beatDur = 60 / bpm;
+    const tickDur = ticksPerQuarter / 4;  // 16th note ticks
+    for (let bar = 0; bar < 4; bar++) {
+      for (let beat = 0; beat < 4; beat++) {
+        const tick = Math.round((bar * 4 + beat) * ticksPerQuarter);
+        events.push({ tick, data: [0x99, 36, 100] });  // note on, kick, vel 100
+        events.push({ tick: tick + Math.round(ticksPerQuarter * 0.8), data: [0x89, 36, 0] });  // note off
+      }
+    }
+
+    // Bass pattern: offbeat 16ths
+    for (let bar = 0; bar < 4; bar++) {
+      for (let step = 0; step < 16; step++) {
+        if (step % 2 === 1) {  // offbeats
+          const tick = Math.round((bar * 16 + step) * tickDur);
+          const note = rootPc + 33;  // bass note
+          events.push({ tick, data: [0x91, note, 80] });
+          events.push({ tick: tick + Math.round(tickDur * 0.9), data: [0x81, note, 0] });
+        }
+      }
+    }
+
+    // Lead pattern: motif
+    const motifSteps = [0, 4, 8, 12];
+    const motifIntervals = [0, 4, 7, 4];
+    for (let bar = 0; bar < 4; bar++) {
+      for (let i = 0; i < motifSteps.length; i++) {
+        const tick = Math.round((bar * 16 + motifSteps[i]) * tickDur);
+        const note = rootPc + 60 + motifIntervals[i];
+        events.push({ tick, data: [0x92, note, 70] });
+        events.push({ tick: tick + Math.round(tickDur * 2), data: [0x82, note, 0] });
+      }
+    }
+
+    // End of track
+    events.push({ tick: 4 * 4 * ticksPerQuarter, data: [0xFF, 0x2F, 0x00] });
+
+    // Sort events by tick
+    events.sort((a, b) => a.tick - b.tick);
+
+    // Convert to MIDI bytes with delta times
+    const trackData: number[] = [];
+    let lastTick = 0;
+    for (const ev of events) {
+      const delta = ev.tick - lastTick;
+      lastTick = ev.tick;
+      // Variable-length quantity
+      if (delta > 0x0FFFFFF) trackData.push((delta >> 21) | 0x80);
+      if (delta > 0x3FFF) trackData.push((delta >> 14) | 0x80);
+      if (delta > 0x7F) trackData.push((delta >> 7) | 0x80);
+      trackData.push(delta & 0x7F);
+      trackData.push(...ev.data);
+    }
+
+    // Track header: MTrk
+    const trackLen = trackData.length;
+    const trackHeader = [
+      0x4D, 0x54, 0x72, 0x6B,  // "MTrk"
+      (trackLen >> 24) & 0xFF, (trackLen >> 16) & 0xFF, (trackLen >> 8) & 0xFF, trackLen & 0xFF,
+    ];
+
+    // Combine
+    const midi = new Uint8Array(header.length + trackHeader.length + trackData.length);
+    midi.set(header, 0);
+    midi.set(trackHeader, header.length);
+    midi.set(trackData, header.length + trackHeader.length);
+
+    // Download
+    const blob = new Blob([midi], { type: 'audio/midi' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `psy4-midi-${Date.now()}.mid`;
+    a.click();
+    URL.revokeObjectURL(url);
+    console.log(`[PSY4] Phase 10.1: MIDI exported (${midi.length} bytes, ${bpm} BPM)`);
+  }
+
+  // ── Phase 10.2: Preset Save/Load ──
+  /**
+   * שומר את ה-params הנוכחיים כ-preset בעל שם.
+   */
+  savePreset(name: string): void {
+    const json = localStorage.getItem(PsyLive.MEMORY_KEY_PARAMS);
+    if (!json) {
+      console.warn('[PSY4] Phase 10.2: No params to save');
+      return;
+    }
+    const presets = JSON.parse(localStorage.getItem('psy4-presets') || '{}');
+    presets[name] = {
+      params: JSON.parse(json),
+      bpm: this.transport?.snapshot().bpm ?? 145,
+      savedAt: Date.now(),
+    };
+    localStorage.setItem('psy4-presets', JSON.stringify(presets));
+    console.log(`[PSY4] Phase 10.2: Preset '${name}' saved`);
+  }
+
+  /**
+   * טוען preset בעל שם.
+   */
+  loadPreset(name: string): boolean {
+    const presets = JSON.parse(localStorage.getItem('psy4-presets') || '{}');
+    const preset = presets[name];
+    if (!preset) {
+      console.warn(`[PSY4] Phase 10.2: Preset '${name}' not found`);
+      return false;
+    }
+    this.saveLearnedParamsToMemory(preset.params);
+    this.loadLearnedParamsFromMemory();
+    console.log(`[PSY4] Phase 10.2: Preset '${name}' loaded`);
+    return true;
+  }
+
+  /**
+   * מחזיר רשימת כל ה-presets השמורים.
+   */
+  listPresets(): { name: string; bpm: number; savedAt: number }[] {
+    const presets = JSON.parse(localStorage.getItem('psy4-presets') || '{}');
+    return Object.entries(presets).map(([name, p]: [string, any]) => ({
+      name,
+      bpm: p.bpm ?? 145,
+      savedAt: p.savedAt ?? 0,
+    }));
+  }
+
   // ── Audio Capture (MediaRecorder) ──
   // Records the live output of PSY4 to a downloadable audio file.
   private mediaRecorder: MediaRecorder | null = null;

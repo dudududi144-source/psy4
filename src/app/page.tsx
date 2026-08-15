@@ -635,6 +635,39 @@ export default function Page() {
                 style={{ background: 'rgba(56,189,248,0.15)', color: '#38bdf8', border: '1px solid rgba(56,189,248,0.3)' }}>
                 ⚖ A/B Compare
               </button>
+              <button
+                onClick={() => engineRef.current?.exportMIDI()}
+                disabled={!s.playing}
+                className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: 'rgba(168,85,247,0.15)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)' }}>
+                🎵 MIDI Export
+              </button>
+              <button
+                onClick={() => {
+                  const name = prompt('Preset name:');
+                  if (name) engineRef.current?.savePreset(name);
+                }}
+                disabled={!s.playing}
+                className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.2)' }}>
+                💾 Save Preset
+              </button>
+              <button
+                onClick={() => {
+                  const presets = engineRef.current?.listPresets() || [];
+                  if (presets.length === 0) {
+                    alert('No presets saved yet. Use 💾 Save Preset to create one.');
+                    return;
+                  }
+                  const list = presets.map(p => `${p.name} (${p.bpm} BPM)`).join('\n');
+                  const name = prompt(`Saved presets:\n${list}\n\nEnter preset name to load:`);
+                  if (name) engineRef.current?.loadPreset(name);
+                }}
+                disabled={!s.playing}
+                className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.2)' }}>
+                📂 Load Preset
+              </button>
             </div>
             <div className="text-[10px] text-slate-500">
               Export: download JSON with all learned sounds + patterns · Import: load previous package · Generate: create new variations from learned sounds
