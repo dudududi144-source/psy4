@@ -2436,7 +2436,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     const refArr = this.activeVoiceRef;
     const busArr = this.activeVoiceBus;
     const stereoArr = this.activeVoiceStereo;
-    const ST_MONO = this.ST_MONO, ST_HAAS = this.ST_HAAS, ST_LFO = this.ST_LFO, ST_PAN = this.ST_PAN, ST_SAMPLE = this.ST_SAMPLE, ST_PAD = this.ST_PAD;
+    const ST_MONO = this.ST_MONO, ST_HAAS = this.ST_HAAS, ST_LFO = this.ST_LFO, ST_PAN = this.ST_PAN, ST_SAMPLE = this.ST_SAMPLE, ST_PAD = this.ST_PAD, ST_STEREO = this.ST_STEREO;
     const MAX_ACTIVE = refArr.length;
     // PSY5: voicePoolTable is built once in the constructor (no per-block
     // allocation). Each entry is [pool, bus, stereo].
