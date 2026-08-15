@@ -9909,3 +9909,41 @@ Stage Summary:
 2. כל 32 בארים, המבנה המוזיקלי מתחדש
 3. exploration מנסה entries שונים (20% random)
 4. Reset button מאפשר התחלה נקייה
+
+---
+Task ID: FIX-LEARNING-ARCHITECTURE
+Agent: z.ai-code (main)
+Task: תיקון יסודי — הלמידה הייתה אשליה. ה-bank היה dead code.
+
+ROOT CAUSE (הבעיה היסודית):
+1. applyBestRecipeFromBank דרש reward > 0.85 כדי להחיל entry
+2. אבל reward מעולם לא הגיע ל-0.85 כי:
+   - Exploration רץ כל 15s (איטי מדי ל-10 roles)
+   - Reward נתן רק +0.05 ל-cycle
+   - Kick occupancy היה 0.91 → קיבל penalty (-0.05) במקום reward!
+3. תוצאה: ה-bank בנה entries שאף פעם לא הוחלו. ה"למידה" הייתה dead code.
+   ה-engine ניגן פרמטרים אקראיים ראשוניים והתעלם מה-bank לחלוטין.
+
+תיקונים:
+1. תמיד החל את ה-entry על ה-engine (הסרת ה-threshold 0.85)
+   - ה-epsilon-greedy ב-soundBank.get() כבר דואג לגיוון (20% random)
+2. תיקון reward logic עם role-specific thresholds:
+   - kick: healthy 0.6-0.98 (kick חזק מטבעו), clipping >0.99, dead <0.3
+   - other: healthy 0.05-0.8, clipping >0.9, dead <0.02
+3. הגברת reward: +0.08 ל-healthy (היה +0.05)
+4. זירוז exploration: 15s → 8s (10 roles cycle תוך 80s)
+
+VERIFICATION:
+- לוגים מראים "applied entry" (היה "tracking-only")
+- reward deltas: +0.080 לכל ה-roles (היה מעורבב עם penalties)
+- kick reward: 0.5 → 0.61 תוך 130s (עולה יציב)
+- bass reward: 0.5 → 0.61 תוך 130s
+- אודיו יציב: peak 0.23 אחרי 30s, לא עוצר
+- 0 שגיאות
+
+הבנת הארכיטקטורה:
+- ה-engine מחיל entries מה-bank עכשיו (לא מתעלם מהם)
+- ה-bank בונה entries ע"י exploration (סריקת פרמטרים)
+- ה-reward מודד איכות האודיו (occupancy בטווח הבריא)
+- entries עם reward גבוה יותר מקבלים עדיפות ב-soundBank.get()
+- ה-epsilon-greedy (20% random) מונע תקיעות על entry אחד
