@@ -2682,6 +2682,7 @@ export class PsyLive {
         pitchDecay: 0.010 + Math.random() * 0.035,   // 0.010-0.045
         midLevel: 0.2 + Math.random() * 0.6,         // 0.2-0.8
         clickLevel: 0.2 + Math.random() * 0.6,       // 0.2-0.8
+        waveType: Math.floor(Math.random() * 4),      // 0-3 (sine/tri/sq/saw)
       },
       BassVoice: {
         subLevel: 0.25 + Math.random() * 0.45,       // 0.25-0.70

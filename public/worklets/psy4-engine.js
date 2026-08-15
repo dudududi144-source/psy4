@@ -252,23 +252,20 @@ class KickVoice {
     this.t = 0;
     this.amp = 1;
     this.fund = 50;
-    // Multi-layer params (PSY3 analog modeling)
-    // PSY3 kick has: subDecay, midDecay, clickDecay, subLevel, midLevel, clickLevel,
-    //                fundamental, startMult, pitchDecay, saturation
     this.subDecay = 0.2;
     this.midDecay = 0.05;
     this.clickDecay = 0.002;
     this.subLevel = 0.8;
     this.midLevel = 0.5;
-    this.clickLevel = 0.5;   // COMMERCIAL FIX: louder click (professional kicks have prominent click)
-    this.startMult = 4.0;    // COMMERCIAL FIX: more dramatic pitch sweep (was 2.4 — pro kicks sweep 3-5x)
-    this.pitchDecay = 0.025; // COMMERCIAL FIX: faster pitch decay (was 0.04 — pro is ~25ms)
-    this.saturation = 1.8;   // COMMERCIAL FIX: more saturation (was 1.5 — adds punch)
+    this.clickLevel = 0.5;
+    this.startMult = 4.0;
+    this.pitchDecay = 0.025;
+    this.saturation = 1.8;
+    this.waveType = 0; // 0=sine, 1=triangle, 2=square, 3=saw
     this.phase = 0;
     this.midPhase = 0;
     this.prevNoise = 0;
     this.noise = new PinkNoise();
-    // PERF-ZERO-ALLOC: preallocated output buffer (avoids per-sample array literal)
     this._out = new Float32Array(2);
   }
 
@@ -277,19 +274,15 @@ class KickVoice {
     this.t = 0;
     this.amp = amp;
     this.fund = fund;
-    // Independent decay per layer (PSY3 model) — sub carries the weight,
-    // mid provides body/punch, click provides beater attack
     this.subDecay = Math.max(0.05, decay);
-    this.midDecay = this.subDecay * 0.25;   // mid decays 4x faster
-    this.clickDecay = 0.002;                 // 2ms click
+    this.midDecay = this.subDecay * 0.25;
+    this.clickDecay = 0.002;
     this.phase = 0;
     this.midPhase = 0;
     this.prevNoise = 0;
     this.noise.reset();
   }
 
-  // Returns this._out (Float32Array[2]); _out[0] = mono sample, _out[1] = 0.
-  // Caller checks `this.active` to detect voice-end (no done flag in return).
   render(currentTime, sr) {
     const out = this._out;
     if (!this.active) { out[0] = 0; return out; }
@@ -299,36 +292,40 @@ class KickVoice {
 
     const t = this.t;
     const f0 = this.fund;
-
-    // Pitch envelope: f0*startMult → f0 over pitchDecay
     const f = (f0 * this.startMult - f0) * Math.exp(-t / this.pitchDecay) + f0;
 
-    // Layer 1: SUB — pitched sine with integrated phase (pitch sweep)
-    // This is the weight/foundation of the kick
     this.phase += 2 * Math.PI * f / sr;
     const subEnv = Math.exp(-t / (this.subDecay * 0.9));
-    const sub = Math.sin(this.phase) * subEnv * this.subLevel;
 
-    // Layer 2: MID — saturated triangle at fundamental, short decay
-    // This is the punch/body — gives the kick its "thwack"
+    // Wave type selection — dramatically changes the kick character
+    let sub;
+    const ph = this.phase;
+    if (this.waveType === 0) {
+      sub = Math.sin(ph); // sine — clean, deep
+    } else if (this.waveType === 1) {
+      const tp = (ph / (2 * Math.PI)) % 1;
+      sub = 2 * Math.abs(2 * tp - 1) - 1; // triangle — punchy
+    } else if (this.waveType === 2) {
+      sub = Math.sin(ph) > 0 ? 1 : -1; // square — aggressive
+    } else {
+      const tp = (ph / (2 * Math.PI)) % 1;
+      sub = 2 * tp - 1; // saw — dirty, harmonic-rich
+    }
+    sub *= subEnv * this.subLevel;
+
     this.midPhase += 2 * Math.PI * f0 / sr;
     const triPhase = (this.midPhase / (2 * Math.PI)) % 1;
     const tri = 2 * Math.abs(2 * triPhase - 1) - 1;
     const midEnv = Math.exp(-t / this.midDecay);
     const mid = fastTanh(tri * 1.5) * midEnv * this.midLevel;
 
-    // Layer 3: CLICK — differentiated Gaussian noise, very short
-    // This is the beater attack — the transient that cuts through the mix
     const n = this.noise.next();
     const click = (n - this.prevNoise) * Math.exp(-t / this.clickDecay) * this.clickLevel;
     this.prevNoise = n;
 
-    // Mix layers
     let sample = sub + mid + click;
-    // SATURATION: Post-mix tanh (adds harmonics + punch — commercial kicks
-    // always have saturation. Without it, the kick sounds flat and digital.)
     sample = fastTanh(sample * this.saturation);
-    sample *= this.amp * 1.2;  // was 0.8 — too quiet
+    sample *= this.amp * 1.2;
     out[0] = sample;
     return out;
   }
@@ -921,11 +918,14 @@ class HatVoice {
     this.t += 1 / sr;
     if (this.t > this.decay * 1.5) { this.active = false; out[0] = 0; return out; }
 
-    // Raw white noise — directly audible at high frequencies
+    // White noise through highpass — sounds like a real hat, not static
     const n = this.noise.next();
+    // One-pole highpass: cutoff ~5000Hz * brightness
+    const hpCoeff = Math.exp(-2 * Math.PI * (3000 + this.brightness * 4000) / sr);
+    this.hpState = n + hpCoeff * (this.hpState - n);
+    const hp = this.hpState;
     const env = Math.exp(-this.t / this.decay);
-    // 200x gain — hats must be LOUD
-    const sample = n * env * 200.0 * this.amp * this.brightness;
+    const sample = hp * env * 30.0 * this.amp;
     out[0] = Math.max(-1, Math.min(1, sample));
     return out;
   }
@@ -2216,6 +2216,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           if (lp.midLevel !== undefined) v.midLevel = lp.midLevel;
           if (lp.clickLevel !== undefined) v.clickLevel = lp.clickLevel;
           if (lp.saturation !== undefined) v.saturation = lp.saturation;
+          if (lp.waveType !== undefined) v.waveType = Math.floor(lp.waveType) % 4;
         }
         // Trigger sidechain
         this.duckEnv = 1 - wp.duck * (0.5 + mc.aggression * 0.5);
