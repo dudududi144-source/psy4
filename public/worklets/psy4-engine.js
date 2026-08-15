@@ -1662,7 +1662,7 @@ class MasterChain {
     this.tpPrevInput = compOut;
 
     // ── 4. FINAL TANH (soft clip safety + makeup) ──
-    return fastTanh(output * this.gain * 1.2);
+    return fastTanh(output * this.gain * 1.5);
   }
 }
 
