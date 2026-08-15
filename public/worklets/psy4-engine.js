@@ -1613,7 +1613,7 @@ class MasterChain {
     this.glueRatio = 1.5;         // gentle 1.5:1 (was 2:1 — too aggressive)
     this.glueAttack = 0.005;      // 5ms (was 10ms — catch peaks faster)
     this.glueRelease = 0.250;     // 250ms (was 150ms — slower release = smoother)
-    this.glueMakeup = 1.06;       // +0.5dB (was 1.15 — less push)
+    this.glueMakeup = 1.15;       // +1.2dB (was 1.06 — LUFS too low)
     this.glueGain = 1.0;
 
     // True-peak limiter (1-sample lookahead)
@@ -1679,7 +1679,7 @@ class MasterChain {
     const output = compOut * this.tpGainEnv;
 
     // ── 4. FINAL TANH (soft clip safety + makeup) ──
-    return fastTanh(output * this.gain * 1.35);
+    return fastTanh(output * this.gain * 1.5);
   }
 }
 
