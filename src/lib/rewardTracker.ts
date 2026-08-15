@@ -159,7 +159,12 @@ export class RewardTracker {
       case 'bass': return occupancy.bass;
       case 'lead': return occupancy.lead;
       case 'hat': return occupancy.hats;
-      case 'perc': return (occupancy.kick + occupancy.lead) * 0.3; // perc לא נמדד ישירות
+      case 'perc': return (occupancy.kick + occupancy.lead) * 0.3;
+      case 'pad': return occupancy.lead * 0.5;
+      case 'acid': return occupancy.bass * 0.6;
+      case 'clap': return occupancy.hats * 0.4;
+      case 'shaker': return occupancy.hats * 0.5;
+      case 'texture': return (occupancy.lead + occupancy.hats) * 0.25;
     }
   }
 

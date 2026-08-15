@@ -409,6 +409,7 @@ export class PsyLive {
   private explorationTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly EXPLORATION_INTERVAL_MS = 30000;
   // שלב 4.4: איזה role לסרוק הבא (round-robin)
+  private nextExploreRoleIdx = 0;
   private nextExploreRole: OnsetRole = 'kick';
   // CAUSAL: The live composition authority (now null — worker handles it)
   private causalComposer: CausalComposer | null = null;
@@ -2465,7 +2466,7 @@ export class PsyLive {
    * - אם ל-role אין אף entry עם reward > 0.4 אחרי 3 מחזורים → נקה והתחל מחדש
    */
   private async runPeriodicEviction(): Promise<void> {
-    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'perc'];
+    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'hat', 'perc', 'pad', 'acid', 'clap', 'shaker', 'texture'];
     let totalEvicted = 0;
     for (const role of roles) {
       const all = await this.soundBank.all(role);
@@ -2496,11 +2497,11 @@ export class PsyLive {
   private async runExplorationCycle(): Promise<void> {
     if (!this.soundExplorer) return;
     // בחר role round-robin
-    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'perc'];
-    const role = roles[this.nextExploreRole === 'kick' ? 0 : this.nextExploreRole === 'bass' ? 1 : this.nextExploreRole === 'lead' ? 2 : 3];
+    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'hat', 'perc', 'pad', 'acid', 'clap', 'shaker', 'texture'];
+    const role = roles[this.nextExploreRoleIdx % roles.length];
     // קדם ל-role הבא
-    const nextIdx = (roles.indexOf(role) + 1) % roles.length;
-    this.nextExploreRole = roles[nextIdx];
+    this.nextExploreRoleIdx = (this.nextExploreRoleIdx + 1) % roles.length;
+    this.nextExploreRole = roles[this.nextExploreRoleIdx];
 
     // קבל את ה-onset האחרון ל-role — אם אין, צור synthetic target DNA
     let onset = this.onsetAnalyzer.getLatestOnset(role);
@@ -2578,7 +2579,12 @@ export class PsyLive {
         : role === 'bass' ? 'BassVoice'
         : role === 'lead' ? 'LeadVoice'
         : role === 'hat' ? 'HatVoice'
-        : 'PercVoice';
+        : role === 'perc' ? 'PercVoice'
+        : role === 'pad' ? 'PadVoice'
+        : role === 'acid' ? 'AcidVoice'
+        : role === 'clap' ? 'ClapVoice'
+        : role === 'shaker' ? 'ShakerVoice'
+        : 'TextureVoice';
       this.engineNode.node.port.postMessage({
         type: 'setVoiceRecipe',
         voiceClass,
@@ -2603,7 +2609,7 @@ export class PsyLive {
    * החל recipes מה-bank על כל ה-roles הפעילים (קריאה ידנית).
    */
   async applyAllRecipesFromBank(): Promise<void> {
-    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'perc'];
+    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'hat', 'perc', 'pad', 'acid', 'clap', 'shaker', 'texture'];
     for (const role of roles) {
       await this.applyBestRecipeFromBank(role);
     }
@@ -3054,6 +3060,31 @@ export class PsyLive {
           midEnergy: 0.6, highEnergy: 0.4, transientSharpness: 0.8, attackTime: 0.002,
           decayTime: 0.15, saturation: 0.4, filterCutoff: 2000, filterResonance: 2,
           filterType: 'bandpass', filterEnvelopeAmount: 0.5 };
+      case 'pad':
+        return { ...base, role: 'texture', brightness: 0.5, subEnergy: 0.3, bodyEnergy: 0.5,
+          midEnergy: 0.6, highEnergy: 0.4, transientSharpness: 0.2, attackTime: 0.3,
+          decayTime: 2.0, saturation: 0.3, filterCutoff: 800, filterResonance: 1,
+          filterType: 'lowpass', filterEnvelopeAmount: 0.6 };
+      case 'acid':
+        return { ...base, role: 'lead', brightness: 0.6, subEnergy: 0.2, bodyEnergy: 0.5,
+          midEnergy: 0.7, highEnergy: 0.5, transientSharpness: 0.7, attackTime: 0.005,
+          decayTime: 0.3, saturation: 0.8, filterCutoff: 1500, filterResonance: 8,
+          filterType: 'lowpass', filterEnvelopeAmount: 0.8 };
+      case 'clap':
+        return { ...base, role: 'percussion', brightness: 0.7, subEnergy: 0.0, bodyEnergy: 0.3,
+          midEnergy: 0.7, highEnergy: 0.6, transientSharpness: 0.85, attackTime: 0.003,
+          decayTime: 0.12, saturation: 0.4, filterCutoff: 2500, filterResonance: 2,
+          filterType: 'bandpass', filterEnvelopeAmount: 0.5, noisiness: 0.7 };
+      case 'shaker':
+        return { ...base, role: 'percussion', brightness: 0.8, subEnergy: 0.0, bodyEnergy: 0.1,
+          midEnergy: 0.3, highEnergy: 0.8, transientSharpness: 0.7, attackTime: 0.005,
+          decayTime: 0.08, saturation: 0.3, filterCutoff: 5000, filterResonance: 1,
+          filterType: 'highpass', filterEnvelopeAmount: 0.3, noisiness: 0.8 };
+      case 'texture':
+        return { ...base, role: 'texture', brightness: 0.6, subEnergy: 0.2, bodyEnergy: 0.4,
+          midEnergy: 0.5, highEnergy: 0.5, transientSharpness: 0.3, attackTime: 0.1,
+          decayTime: 1.5, saturation: 0.5, filterCutoff: 1200, filterResonance: 2,
+          filterType: 'lowpass', filterEnvelopeAmount: 0.7, fmAmount: 0.4 };
     }
   }
 
@@ -3076,7 +3107,7 @@ export class PsyLive {
    * יוצר וריאציות לכל ה-roles הפעילים.
    */
   async generateAllOriginalSounds(): Promise<GenerationResult[]> {
-    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'hat', 'perc'];
+    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'hat', 'perc', 'pad', 'acid', 'clap', 'shaker', 'texture'];
     const results: GenerationResult[] = [];
     for (const role of roles) {
       const result = await this.generateOriginalSounds(role);

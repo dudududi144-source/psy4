@@ -22,6 +22,11 @@ const ROLE_TO_VOICE: Record<OnsetRole, string> = {
   lead: 'LeadVoice',
   hat: 'HatVoice',
   perc: 'PercVoice',
+  pad: 'PadVoice',
+  acid: 'AcidVoice',
+  clap: 'ClapVoice',
+  shaker: 'ShakerVoice',
+  texture: 'TextureVoice',
 };
 
 const VARIATION_RANGE = 0.15; // ±15%
@@ -162,6 +167,30 @@ export class SynthesisGenerator {
         return {
           freq: Math.max(120, Math.min(420, (dna.filterCutoff || 200) + jitter(50))),
         };
+      case 'pad':
+        return {
+          padCutoff: Math.max(300, Math.min(1100, (dna.filterCutoff || 600) + jitter(100))),
+          padAttack: Math.max(0.1, Math.min(0.6, 0.3 + jitter(0.1))),
+          padDetune: Math.max(3, Math.min(13, Math.floor(7 + jitter(3)))),
+          padEvolveRate: Math.max(0.2, Math.min(1.0, 0.5 + jitter(0.2))),
+        };
+      case 'acid':
+        return {
+          acidCutoff: Math.max(800, Math.min(2800, (dna.filterCutoff || 1500) + jitter(300))),
+          acidResonance: Math.max(0.5, Math.min(0.9, 0.7 + jitter(0.1))),
+        };
+      case 'clap':
+        return {
+          clapDecay: Math.max(0.015, Math.min(0.095, (dna.decayTime || 0.05) + jitter(0.02))),
+        };
+      case 'shaker':
+        return {
+          shakerDecay: Math.max(0.03, Math.min(0.11, (dna.decayTime || 0.06) + jitter(0.02))),
+        };
+      case 'texture':
+        return {
+          textureType: Math.floor(Math.random() * 2),
+        };
     }
   }
 
@@ -246,6 +275,11 @@ export class SynthesisGenerator {
       case 'lead': return { freq: params.freq ?? 440, amp: 0.5 };
       case 'hat': return { open: false, amp: 0.5 };
       case 'perc': return { freq: params.freq ?? 200, amp: 0.5 };
+      case 'pad': return { freq: 220, dur: 2.0, amp: 0.3, params };
+      case 'acid': return { freq: 110, dur: 0.3, amp: 0.6, params };
+      case 'clap': return { amp: 0.7 };
+      case 'shaker': return { amp: 0.5 };
+      case 'texture': return { dur: 1.0, amp: 0.3, params };
     }
   }
 

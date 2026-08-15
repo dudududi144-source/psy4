@@ -27,6 +27,11 @@ const ROLE_TO_VOICE: Record<OnsetRole, string> = {
   lead: 'LeadVoice',
   hat: 'HatVoice',
   perc: 'PercVoice',
+  pad: 'PadVoice',
+  acid: 'AcidVoice',
+  clap: 'ClapVoice',
+  shaker: 'ShakerVoice',
+  texture: 'TextureVoice',
 };
 
 // ── Default trigger args per role ─────────────────────────────────────────
@@ -36,6 +41,11 @@ const DEFAULT_TRIGGER_ARGS: Record<OnsetRole, object> = {
   lead: { freq: 440, amp: 0.5 },
   hat: { open: false, amp: 0.5 },
   perc: { freq: 200, amp: 0.5 },
+  pad: { freq: 220, dur: 2.0, amp: 0.3, params: null },
+  acid: { freq: 110, dur: 0.3, amp: 0.6, params: null },
+  clap: { amp: 0.7 },
+  shaker: { amp: 0.5 },
+  texture: { dur: 1.0, amp: 0.3, params: null },
 };
 
 // ── Parameters to optimize per role ──────────────────────────────────────
@@ -65,10 +75,27 @@ const OPT_PARAMS: Record<OnsetRole, OptParam[]> = {
     { name: 'freq', min: 220, max: 880, default: 440 },
   ],
   hat: [
-    // HatVoice — אין פרמטרים רציפים משמעותיים (decay נגזר מ-open/closed)
+    { name: 'hatDecay', min: 0.02, max: 0.08, default: 0.04 },
   ],
   perc: [
     { name: 'freq', min: 120, max: 350, default: 200 },
+  ],
+  pad: [
+    { name: 'padCutoff', min: 400, max: 1000, default: 600 },
+    { name: 'padAttack', min: 0.2, max: 0.5, default: 0.3 },
+  ],
+  acid: [
+    { name: 'acidCutoff', min: 1000, max: 2500, default: 1500 },
+    { name: 'acidResonance', min: 0.6, max: 0.9, default: 0.75 },
+  ],
+  clap: [
+    { name: 'clapDecay', min: 0.03, max: 0.08, default: 0.05 },
+  ],
+  shaker: [
+    { name: 'shakerDecay', min: 0.04, max: 0.10, default: 0.06 },
+  ],
+  texture: [
+    { name: 'textureType', min: 0, max: 1, default: 0 },
   ],
 };
 

@@ -15,7 +15,7 @@
 import { type SoundDNA } from '../../foundation/music/SoundDNA';
 import { extractSpectralFeatures } from '../../foundation/music/MusicalObservation';
 
-export type OnsetRole = 'kick' | 'bass' | 'lead' | 'hat' | 'perc';
+export type OnsetRole = 'kick' | 'bass' | 'lead' | 'hat' | 'perc' | 'pad' | 'acid' | 'clap' | 'shaker' | 'texture';
 
 export interface OnsetEvent {
   readonly time: number;          // AudioContext.currentTime של ה-onset

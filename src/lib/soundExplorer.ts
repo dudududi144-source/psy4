@@ -31,6 +31,11 @@ const ROLE_TO_VOICE: Record<OnsetRole, string> = {
   lead: 'LeadVoice',
   hat: 'HatVoice',
   perc: 'PercVoice',
+  pad: 'PadVoice',
+  acid: 'AcidVoice',
+  clap: 'ClapVoice',
+  shaker: 'ShakerVoice',
+  texture: 'TextureVoice',
 };
 
 // פרמטרים לסריקה רחבה — 3 ערכים per פרמטר = 3^4 = 81 קאנדידטים ל-kick
@@ -56,10 +61,28 @@ const SCAN_PARAMS: Record<OnsetRole, ScanParam[]> = {
     { name: 'freq', values: [220, 330, 440, 660, 880] },
   ],
   hat: [
-    // HatVoice לא אופטימיזבילי — דלג
+    { name: 'hatDecay', values: [0.02, 0.04, 0.06, 0.08] },
+    { name: 'hatBrightness', values: [0.5, 1.0, 1.5, 2.0] },
   ],
   perc: [
     { name: 'freq', values: [120, 200, 300, 400] },
+  ],
+  pad: [
+    { name: 'padCutoff', values: [400, 600, 800, 1000] },
+    { name: 'padAttack', values: [0.2, 0.3, 0.4, 0.5] },
+  ],
+  acid: [
+    { name: 'acidCutoff', values: [1000, 1500, 2000, 2500] },
+    { name: 'acidResonance', values: [0.6, 0.7, 0.8, 0.9] },
+  ],
+  clap: [
+    { name: 'clapDecay', values: [0.03, 0.05, 0.07, 0.09] },
+  ],
+  shaker: [
+    { name: 'shakerDecay', values: [0.04, 0.06, 0.08, 0.10] },
+  ],
+  texture: [
+    { name: 'textureType', values: [0, 1] },
   ],
 };
 
@@ -187,6 +210,11 @@ export class SoundExplorer {
       case 'lead': return { freq: 440, amp: 0.5 };
       case 'hat': return { open: false, amp: 0.5 };
       case 'perc': return { freq: 200, amp: 0.5 };
+      case 'pad': return { freq: 220, dur: 2.0, amp: 0.3, params: null };
+      case 'acid': return { freq: 110, dur: 0.3, amp: 0.6, params: null };
+      case 'clap': return { amp: 0.7 };
+      case 'shaker': return { amp: 0.5 };
+      case 'texture': return { dur: 1.0, amp: 0.3, params: null };
     }
   }
 
