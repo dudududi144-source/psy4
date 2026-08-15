@@ -70,3 +70,5 @@ upload/
 .vercel/
 .wrangler/
 tool-results/
+HONEST_ASSESSMENT.md
+MASTER_PROMPT.md
