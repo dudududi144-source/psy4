@@ -974,6 +974,44 @@ class CausalComposerWorker {
     }
 
     onMaterialPlayed(this.state, 'groove', bar);
+
+    // CRITICAL FIX: generate hats/lead/shaker/acid EVERY bar when they're active.
+    // Previously these were only generated once in executeDecision (INTRODUCE_HATS etc)
+    // and then never again — causing the mix to have NO high-frequency content
+    // after the first bar. Now generateGroove generates them every bar.
+    if (this.activeVoices.has('hat-closed')) {
+      for (let step = 2; step < 16; step += 2) {
+        const isOpen = step % 8 === 6;
+        events.push({ at: barStart + step * stepDur, note: isOpen ? 46 : 42, velocity: Math.min(1, (isOpen ? 0.35 : 0.3) * velScale), duration: stepDur * (isOpen ? 0.8 : 0.3), channel: isOpen ? 'hat-open' : 'hat-closed' });
+      }
+    }
+    if (this.activeVoices.has('shaker')) {
+      for (let step = 0; step < 16; step++) {
+        events.push({ at: barStart + step * stepDur, note: 70, velocity: Math.min(1, (0.15 + (step % 4 === 0 ? 0.1 : 0)) * velScale), duration: stepDur * 0.2, channel: 'shaker' });
+      }
+    }
+    if (this.activeVoices.has('lead')) {
+      const root = this.opts.rootPc + 60;
+      const steps = grammar.motifSteps;
+      const intervals = this.getLearnedMotifIntervals() || grammar.motifIntervals;
+      for (let i = 0; i < steps.length; i++) {
+        events.push({ at: barStart + steps[i] * stepDur, note: root + intervals[i % intervals.length], velocity: Math.min(1, 0.6 * velScale), duration: stepDur * 2, channel: 'lead' });
+      }
+    }
+    if (this.activeVoices.has('acid') && grammar.acidBass) {
+      const acidRoot = this.opts.rootPc + 33;
+      const acidIntervals = [0, 0, 7, 0, 0, 0, 7, 5, 0, 0, 7, 0, 3, 0, 7, 0];
+      for (let step = 0; step < 16; step++) {
+        const isBeat = step % 4 === 0;
+        events.push({ at: barStart + step * stepDur, note: acidRoot + acidIntervals[step], velocity: Math.min(1, (isBeat ? 0.7 : 0.5) * velScale), duration: stepDur * 0.7, channel: 'acid' });
+      }
+    }
+    if (this.activeVoices.has('percussion')) {
+      for (let step = 0; step < 16; step += 4) {
+        events.push({ at: barStart + step * stepDur, note: 50, velocity: Math.min(1, 0.5 * velScale), duration: stepDur * 0.3, channel: 'percussion' });
+      }
+    }
+
     return events;
   }
 }
