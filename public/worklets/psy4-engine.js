@@ -377,21 +377,22 @@ class BassVoice {
     this.cutoffStart = 800;
     this.cutoffEnd = 200;
     this.res = 0.1;
-    this.bassDecay = 0.25;  // FIX: was 0.12. Rolling bass needs overlap between 16th notes.
-    // Post-filter state (one-pole HP for cleaning mud)
+    this.bassDecay = 0.25;
     this.hpState = 0;
-    // PSY3 bass params: subLevel, harmonicLevel, cutoffFloor, cutoffDecay
     this.subLevel = 0.45;
     this.harmonicLevel = 0.55;
     this.cutoffFloor = 80;
     this.cutoffDecay = 0.04;
-    // PHASE 7a: Filter LFO for rolling psytrance bass — filter REOPENS per note
-    // This is what creates the "rolling" character. Without it, the filter closes
-    // and stays closed, making the bass a static drone.
     this.lfoPhase = 0;
-    this.lfoRate = 0;  // Hz — set in trigger based on tempo (synced to 16th notes)
-    this.lfoDepth = 0;  // 0..1 — amount of filter modulation
-    // PERF-ZERO-ALLOC: preallocated output buffer
+    this.lfoRate = 0;
+    this.lfoDepth = 0;
+    // NEW: Harmonic layer — square at octave, adds presence in mid-range
+    this.harmonicSquare = new BLSquare();
+    this.harmonicLevel2 = 0.15;  // low level — just adds presence
+    this.harmonicPhase = 0;
+    // NEW: Stereo Haas delay — 0.5ms delay on harmonic layer only
+    this.stereoDelayBuf = new Float32Array(24);  // ~0.5ms at 44.1kHz
+    this.stereoDelayIdx = 0;
     this._out = new Float32Array(2);
   }
 
@@ -404,13 +405,20 @@ class BassVoice {
     this.acid = acid;
     this.phase = 0;
     this.hpState = 0;
+    this.harmonicPhase = 0;
+    this.stereoDelayIdx = 0;
+    this.stereoDelayBuf.fill(0);
     this.square.reset();
     this.square.setFreq(freq);
     this.saw.reset();
     this.saw.setFreq(freq);
+    // NEW: harmonic square at octave (2x freq)
+    this.harmonicSquare.reset();
+    this.harmonicSquare.setFreq(freq * 2);
     this.filter.reset();
     this.subLevel = params?.subLevel ?? 0.45;
     this.harmonicLevel = params?.harmonicLevel ?? 0.55;
+    this.harmonicLevel2 = params?.harmonicLevel2 ?? 0.15;
     this.cutoffFloor = params?.cutoffFloor ?? 80;
     this.cutoffDecay = params?.cutoffDecay ?? 0.04;
     if (acid) {
@@ -418,39 +426,31 @@ class BassVoice {
       this.cutoffEnd = 100;
       this.res = 0.85;
       this.bassDecay = 0.15;
-      // PHASE 7a: Acid bass — strong LFO for squelchy 303 character
-      this.lfoRate = 8;  // 8Hz — fast squelch
+      this.lfoRate = 8;
       this.lfoDepth = 0.6;
     } else {
       this.cutoffStart = params?.cutoffStart ?? 800;
       this.cutoffEnd = params?.cutoffEnd ?? 200;
       this.res = Math.min(0.3, (params?.resonance ?? 3) / 20);
-      this.bassDecay = 0.25;  // FIX: was 0.12. Rolling bass needs overlap.
-      // PHASE 7a: Rolling bass — moderate LFO synced to note rate
-      // The LFO reopens the filter slightly on each note, creating movement
-      this.lfoRate = 4;  // 4Hz — gentle rolling
+      this.bassDecay = 0.25;
+      this.lfoRate = 4;
       this.lfoDepth = 0.3;
     }
-    this.lfoPhase = 0;  // reset LFO phase on each note
+    this.lfoPhase = 0;
   }
 
   render(currentTime, sr) {
     const out = this._out;
-    if (!this.active) { out[0] = 0; return out; }
+    if (!this.active) { out[0] = 0; out[1] = 0; return out; }
     const dt = 1 / sr;
     this.t += dt;
-    // SUSTAIN MODE: if dur > 0.5s, hold the note with a slow decay instead of
-    // cutting off at bassDecay. This allows sustained bass notes (pad-like bass)
-    // alongside the default pluck mode. (DEEP_ROAST: "כל באס = pluck. צריך sustain mode")
     const sustainMode = this.dur > 0.5;
     const noteEnd = sustainMode ? this.dur : this.bassDecay;
-    if (this.t > noteEnd) { this.active = false; out[0] = 0; return out; }
+    if (this.t > noteEnd) { this.active = false; out[0] = 0; out[1] = 0; return out; }
 
-    // COMMERCIAL FIX: Use SAW wave (not square) — psytrance bass is always saw.
+    // ── Layer 1: Body — saw through Moog filter ──
     const inc = this.freq / sr;
     const osc = this.saw.process(inc);
-
-    // Filter envelope: fast decay (pluck) + LFO (rolling)
     const cutoffEnv = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / this.cutoffDecay) + this.cutoffEnd;
     this.lfoPhase += 2 * Math.PI * this.lfoRate * dt;
     const lfoMod = (Math.sin(this.lfoPhase) * 0.5 + 0.5) * this.lfoDepth;
@@ -459,27 +459,31 @@ class BassVoice {
     const drive = this.acid ? 2.5 : 1.3;
     const filtered = this.filter.process(osc, cutoff, this.res, drive, sr);
 
-    // Sub sine (clean fundamental)
+    // ── Layer 2: Sub sine (mono — must be centered) ──
     this.phase += 2 * Math.PI * this.freq / sr;
     const sub = Math.sin(this.phase) * this.subLevel;
 
-    // MIX: filtered saw (character) + sub (weight)
-    let mixed = filtered * this.harmonicLevel + sub * this.subLevel;
+    // ── Layer 3: Harmonic (NEW) — square at octave, adds mid presence ──
+    const harmInc = (this.freq * 2) / sr;
+    const harmOsc = this.harmonicSquare.process(harmInc);
+    // Light filter on harmonic to avoid harshness
+    const harmFiltered = harmOsc * 0.5;  // simple gain for now
+    const harmonic = harmFiltered * this.harmonicLevel2;
 
-    // SATURATION
-    mixed = fastTanh(mixed * 1.8);
+    // MIX: body + sub (mono) + harmonic (will be stereo-delayed)
+    let monoPart = filtered * this.harmonicLevel + sub * this.subLevel;
+    monoPart = fastTanh(monoPart * 1.8);
 
-    // HP FILTER: Remove subsonic mud
+    // HP FILTER on mono part
     const hpCutoff = 30;
     const hpA = (1 / sr) * 2 * Math.PI * hpCutoff;
-    this.hpState += hpA * (mixed - this.hpState) / (1 + hpA);
-    mixed = mixed - this.hpState * 0.7;
+    this.hpState += hpA * (monoPart - this.hpState) / (1 + hpA);
+    monoPart = monoPart - this.hpState * 0.7;
 
-    // AMP ENVELOPE: pluck (fast decay) vs sustain (slow decay + hold)
+    // AMP ENVELOPE
     const attackEnv = Math.min(1, this.t / 0.001);
     let ampEnv;
     if (sustainMode) {
-      // Sustain: quick attack, hold at 0.6, slow release at end
       const sustainLevel = 0.6;
       const releaseStart = this.dur * 0.7;
       if (this.t < releaseStart) {
@@ -488,12 +492,29 @@ class BassVoice {
         ampEnv = attackEnv * sustainLevel * Math.exp(-(this.t - releaseStart) / (this.dur * 0.15));
       }
     } else {
-      // Pluck: fast exponential decay
       ampEnv = attackEnv * Math.exp(-this.t / (this.bassDecay * 0.4));
     }
 
-    out[0] = mixed * ampEnv * this.amp;
+    // STEREO OUTPUT:
+    // Left = mono + harmonic (immediate)
+    // Right = mono + harmonic (delayed 0.5ms via Haas)
+    // Sub stays mono (essential for vinyl compatibility)
+    const monoOut = monoPart * ampEnv * this.amp;
+    const harmOut = harmonic * ampEnv * this.amp;
+    
+    // Write harmonic to delay buffer
+    this.stereoDelayBuf[this.stereoDelayIdx] = harmOut;
+    const delayedHarm = this.stereoDelayBuf[(this.stereoDelayIdx + 1) % this.stereoDelayBuf.length];
+    this.stereoDelayIdx = (this.stereoDelayIdx + 1) % this.stereoDelayBuf.length;
+    
+    out[0] = monoOut + harmOut;       // Left: immediate
+    out[1] = monoOut + delayedHarm;   // Right: delayed (Haas stereo)
     return out;
+  }
+
+  // Stereo render — same as render (bass produces stereo natively)
+  renderStereo(currentTime, sr) {
+    return this.render(currentTime, sr);
   }
 }
 
@@ -1911,6 +1932,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.ST_PAN = 3;
     this.ST_SAMPLE = 4;
     this.ST_PAD = 5; // NEW: pad stereo (renderStereo with L/C/R panning)
+    this.ST_STEREO = 6; // NEW: voice produces stereo (renderStereo) — bass with Haas
 
     // ── PSY5 RT-safe: preallocated pool table ──────────────────────────
     // Avoids the per-block `const pools = [[...]]` array literal allocation
@@ -1922,7 +1944,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       [this.clapPool,       0, this.ST_MONO],
       [this.percPool,       0, this.ST_MONO],
       [this.shakerPool,     0, this.ST_MONO],
-      [this.bassPool,       1, this.ST_MONO],
+      [this.bassPool,       1, this.ST_STEREO],  // bass now produces stereo (Haas on harmonic)
       [this.leadPool,       2, this.ST_HAAS],
       [this.acidPool,       2, this.ST_MONO],
       [this.fmPool,         2, this.ST_MONO],
@@ -2494,13 +2516,19 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         const bus = busArr[vi];
         const stereo = stereoArr[vi];
 
-        if (stereo === ST_SAMPLE || stereo === ST_PAD) {
-          // Sample voice or pad voice — stereo render
+        if (stereo === ST_SAMPLE || stereo === ST_PAD || stereo === ST_STEREO) {
+          // Sample/pad/stereo voice — stereo render
           const out = v.renderStereo(sampleTime, sr);
           const sl = out[0], sr2 = out[1];
           switch (bus) {
             case 0: drumBusL += sl; drumBusR += sr2; break;
-            case 1: bassBusL += sl; bassBusR += sr2; break;
+            case 1: {
+              // Bass stereo — apply sidechain duck to both channels
+              const duckL = sl * duckEnvRef.duckEnv;
+              const duckR = sr2 * duckEnvRef.duckEnv;
+              bassBusL += duckL; bassBusR += duckR;
+              break;
+            }
             case 2: musicBusL += sl; musicBusR += sr2; break;
             case 3: atmosBusL += sl; atmosBusR += sr2; break;
             case 4: fxBusL += sl; fxBusR += sr2; break;

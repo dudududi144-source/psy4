@@ -58,6 +58,7 @@ const SCAN_PARAMS: Record<OnsetRole, ScanParam[]> = {
     { name: 'cutoffStart', values: [400, 700, 1000, 1500] },
     { name: 'cutoffEnd', values: [100, 200, 300, 400] },
     { name: 'cutoffDecay', values: [0.02, 0.04, 0.06, 0.08] },
+    { name: 'harmonicLevel2', values: [0.1, 0.2, 0.3] },
   ],
   lead: [
     { name: 'freq', values: [220, 330, 440, 660, 880] },
