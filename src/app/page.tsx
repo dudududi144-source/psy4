@@ -50,6 +50,7 @@ interface BankEntry {
 
 export default function Page() {
   const engineRef = useRef<PsyLive | null>(null);
+  const spectrumRef = useRef<HTMLCanvasElement | null>(null);
   const [s, setS] = useState<LiveState>({
     playing: false, radioOn: false, radioBpm: 0, engineBpm: 145,
     syncStatus: 'idle', mixMode: 'solo', kickCount: 0, bassNote: '—',
@@ -164,6 +165,41 @@ export default function Page() {
     return () => clearInterval(interval);
   }, [s.playing]);
 
+  // Phase 7.1: Spectrum analyzer — real-time FFT display
+  useEffect(() => {
+    if (!s.playing) return;
+    const canvas = spectrumRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    let raf = 0;
+    const draw = () => {
+      const e = engineRef.current;
+      if (!e) { raf = requestAnimationFrame(draw); return; }
+      const analyser = (e as any).analyser || (e as any)._analyser;
+      if (!analyser) { raf = requestAnimationFrame(draw); return; }
+      const fd = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(fd as Uint8Array<ArrayBuffer>);
+      const W = canvas.width = canvas.offsetWidth;
+      const H = canvas.height = canvas.offsetHeight;
+      ctx.fillStyle = 'rgba(6,3,13,0.4)';
+      ctx.fillRect(0, 0, W, H);
+      const bars = 48;
+      const barW = W / bars;
+      for (let i = 0; i < bars; i++) {
+        const idx = Math.floor(i * fd.length / bars);
+        const val = fd[idx] / 255;
+        const barH = val * H;
+        const hue = i / bars * 180 + 160; // cyan→purple→pink
+        ctx.fillStyle = `hsl(${hue},80%,${40 + val * 30}%)`;
+        ctx.fillRect(i * barW, H - barH, barW - 1, barH);
+      }
+      raf = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => cancelAnimationFrame(raf);
+  }, [s.playing]);
+
   const syncMeta = SYNC_META[s.syncStatus] || SYNC_META.idle;
   const totalBankEntries = bankStats.kick + bankStats.bass + bankStats.lead + bankStats.hat + bankStats.perc;
   const styleColor = STYLE_COLORS[detectedStyle.style] || '#64748b';
@@ -233,6 +269,17 @@ export default function Page() {
 
       {/* ─── MAIN ─── */}
       <main className="flex-1 px-4 py-4 max-w-6xl mx-auto w-full">
+        {/* Phase 7.1: Spectrum analyzer — real-time FFT display */}
+        {s.playing && (
+          <div className="mb-4 rounded-xl overflow-hidden" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+            <div className="flex items-center gap-2 px-4 pt-2 pb-1">
+              <Activity className="w-3 h-3 text-cyan-400" />
+              <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Spectrum</span>
+              <span className="text-[10px] text-slate-500 ml-auto">LUFS ≈ {(20 * Math.log10(Math.max(0.0001, s.engineLevel)) - 0.691).toFixed(1)}</span>
+            </div>
+            <canvas ref={spectrumRef} className="w-full h-20 block" />
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
           {/* ═══ CONTROLS ═══ */}
