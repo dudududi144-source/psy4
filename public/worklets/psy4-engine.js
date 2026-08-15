@@ -2086,7 +2086,7 @@ class MasterChain {
     // Measure running mean square (K-weighting simplified — no pre-filter)
     // Update target gain every lufsUpdateRate samples
     const sampleSq = compOut * compOut;
-    this.lufsMs = this.lufsMs * 0.999 + sampleSq * 0.001;  // slow EMA
+    this.lufsMs = this.lufsMs * 0.9999 + sampleSq * 0.0001;  // 2s time constant (was 22s)
     this.lufsCounter++;
     if (this.lufsCounter >= this.lufsUpdateRate) {
       this.lufsCounter = 0;
@@ -2096,12 +2096,12 @@ class MasterChain {
         const lufsError = this.lufsTarget - currentLUFS;  // positive = too quiet
         // Convert dB error to linear gain: 10^(error/20)
         this.lufsTargetGain = Math.pow(10, lufsError / 20);
-        // Clamp to reasonable range (±3dB) — was ±6dB which caused oscillation
-        this.lufsTargetGain = Math.max(0.7, Math.min(1.5, this.lufsTargetGain));
+        // Clamp to ±6dB range (0.5-2.0x) — need wider range for section transitions
+        this.lufsTargetGain = Math.max(0.5, Math.min(2.0, this.lufsTargetGain));
       }
     }
-    // Smooth gain transition (avoid clicks) — 100ms time constant
-    const lufsSmoothing = dt / 0.1;
+    // Smooth gain transition — 500ms time constant (was 100ms — too fast, caused oscillation)
+    const lufsSmoothing = dt / 0.5;
     this.lufsAppliedGain += (this.lufsTargetGain - this.lufsAppliedGain) * Math.min(1, lufsSmoothing);
     const lufsOut = compOut * this.lufsAppliedGain;
 
