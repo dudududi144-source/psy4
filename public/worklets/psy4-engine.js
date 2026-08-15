@@ -1077,24 +1077,31 @@ class ClapVoice {
     this.active = false;
     this.t = 0;
     this.noise = new PinkNoise();
-    // PERF-ZERO-ALLOC: preallocated output buffer
+    // Phase 11: Add bandpass filter for tonal character + stereo spread
+    this.filter = new MoogLadder();
+    this.clapDecay = 0.05;
     this._out = new Float32Array(2);
   }
 
-  trigger(time, amp, sr) {
+  trigger(time, amp, sr, params) {
     this.active = true;
     this.t = 0;
     this.amp = amp;
     this.noise.reset();
+    this.clapDecay = params?.clapDecay ?? 0.05;
     this.bursts = [0, 0.012, 0.024, 0.036];
-    this.decays = [0.02, 0.02, 0.02, 0.09];
+    this.decays = [0.02, 0.02, 0.02, this.clapDecay * 2];
+    this.filter.reset();
+    // Random pan per clap for stereo spread
+    this.panL = 0.5 + Math.random() * 0.3;
+    this.panR = 0.5 + Math.random() * 0.3;
   }
 
   render(currentTime, sr) {
     const out = this._out;
-    if (!this.active) { out[0] = 0; return out; }
+    if (!this.active) { out[0] = 0; out[1] = 0; return out; }
     this.t += 1 / sr;
-    if (this.t > 0.3) { this.active = false; out[0] = 0; return out; }
+    if (this.t > 0.3) { this.active = false; out[0] = 0; out[1] = 0; return out; }
 
     const n = this.noise.next();
     let g = 0;
@@ -1103,9 +1110,17 @@ class ClapVoice {
         g += Math.exp(-(this.t - this.bursts[k]) / this.decays[k]);
       }
     }
-    const sample = n * g * 0.6 * this.amp / 0.4;
-    out[0] = sample;
+    // Phase 11: Bandpass filter at 1500Hz for tonal clap character
+    const filtered = this.filter.process(n, 1500, 0.3, 1.0, sr);
+    const sample = filtered * g * 0.6 * this.amp / 0.4;
+    // Stereo: slightly different pan per burst
+    out[0] = sample * this.panL;
+    out[1] = sample * this.panR;
     return out;
+  }
+
+  renderStereo(currentTime, sr) {
+    return this.render(currentTime, sr);
   }
 }
 
@@ -1166,38 +1181,45 @@ class ShakerVoice {
     this.t = 0;
     this.noise = new PinkNoise();
     this.prevNoise = 0;
-    this.filter = new MoogLadder(); // for HP shaping
-    // PERF-ZERO-ALLOC: preallocated output buffer
+    this.filter = new MoogLadder();
+    this.shakerDecay = 0.03;
     this._out = new Float32Array(2);
   }
 
-  trigger(time, amp, sr) {
+  trigger(time, amp, sr, params) {
     this.active = true;
     this.t = 0;
     this.amp = amp;
+    this.shakerDecay = params?.shakerDecay ?? 0.03;
     this.noise.reset();
     this.prevNoise = 0;
     this.filter.reset();
+    // Phase 11: Random pan per shaker hit for stereo spread
+    this.panL = 0.6 + Math.random() * 0.2;
+    this.panR = 0.6 + Math.random() * 0.2;
   }
 
   render(currentTime, sr) {
     const out = this._out;
-    if (!this.active) { out[0] = 0; return out; }
+    if (!this.active) { out[0] = 0; out[1] = 0; return out; }
     this.t += 1 / sr;
-    if (this.t > 0.08) { this.active = false; out[0] = 0; return out; }
+    if (this.t > this.shakerDecay * 2) { this.active = false; out[0] = 0; out[1] = 0; return out; }
 
     const n = this.noise.process();
-    // HP via differentiation (fast)
     const hp = n - this.prevNoise;
     this.prevNoise = n;
-    // Additional HP shaping through Moog (highpass approximation via lowpass inversion)
     const shaped = this.filter.process(hp, 6000, 0.1, 1.0, sr);
-    // Saturation for warmth
     const saturated = fastTanh(shaped * 2.5);
-    const env = Math.exp(-this.t / 0.03);
+    const env = Math.exp(-this.t / this.shakerDecay);
     const sample = saturated * env * 2 * this.amp;
-    out[0] = sample;
+    // Phase 11: Stereo output with random pan
+    out[0] = sample * this.panL;
+    out[1] = sample * this.panR;
     return out;
+  }
+
+  renderStereo(currentTime, sr) {
+    return this.render(currentTime, sr);
   }
 }
 
@@ -2308,9 +2330,9 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.voicePoolTable = [
       [this.kickPool,       0, this.ST_MONO],
       [this.hatPool,        0, this.ST_MONO],
-      [this.clapPool,       0, this.ST_MONO],
+      [this.clapPool,       0, this.ST_STEREO],  // Phase 11: clap now stereo
       [this.percPool,       0, this.ST_MONO],
-      [this.shakerPool,     0, this.ST_MONO],
+      [this.shakerPool,     0, this.ST_STEREO],  // Phase 11: shaker now stereo
       [this.bassPool,       1, this.ST_STEREO],  // bass now produces stereo (Haas on harmonic)
       [this.leadPool,       2, this.ST_HAAS],
       [this.acidPool,       2, this.ST_MONO],
