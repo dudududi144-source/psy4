@@ -2430,7 +2430,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           } else if (msg.voiceClass === 'ShakerVoice') {
             voice.trigger(0, ta.amp ?? 0.5, sr);
           } else if (msg.voiceClass === 'FMVoice') {
-            voice.trigger(0, ta.freq ?? 440, ta.amp ?? 0.5, sr);
+            voice.trigger(0, ta.freq ?? 440, ta.dur ?? 0.3, ta.amp ?? 0.5, sr, ta.params ?? null);
           } else if (msg.voiceClass === 'WavetableVoice') {
             voice.trigger(0, ta.freq ?? 220, ta.dur ?? 0.5, ta.amp ?? 0.5, sr, ta.params ?? null);
           } else {
