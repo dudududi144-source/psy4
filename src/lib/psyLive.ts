@@ -2582,16 +2582,60 @@ export class PsyLive {
    * תיקון קריטי: אם אין params שמורים, צור defaults אקראיים.
    * זה מבטיח שהמנוע לעולם לא מנגן את אותו הסאונד פעמיים.
    * ה-params נשמרים ל-localStorage כדי שהפעם הבאה יהיה המשכיות.
+   *
+   * תיקון נוסף: אם יש params שמורים אבל חסרים voice classes חדשים
+   * (למשל RiserVoice/ImpactVoice/SweepVoice שנוספו אחרי השמירה הראשונה),
+   * נוסיף רק את החסרים — לא נדרוס את מה שכבר נשמר.
    */
   private ensureDefaultLearnedParams(): void {
-    const json = localStorage.getItem(PsyLive.MEMORY_KEY_PARAMS);
-    if (json) return; // כבר יש params — לא צריך ליצור
     if (!this.engineNode) return;
+    const defaults = PsyLive.generateDefaultLearnedParams();
+    const json = localStorage.getItem(PsyLive.MEMORY_KEY_PARAMS);
+    let existing: Record<string, Record<string, number>> = {};
+    if (json) {
+      try { existing = JSON.parse(json); } catch {}
+    }
 
-    // צור params אקראיים דרמטיים — טווחים רחבים לשינוי ברור
-    const params: Record<string, Record<string, number>> = {
+    // מצא voice classes חסרים
+    const missing: string[] = [];
+    const toAdd: Record<string, Record<string, number>> = {};
+    for (const [voiceClass, recipe] of Object.entries(defaults)) {
+      if (!existing[voiceClass]) {
+        missing.push(voiceClass);
+        toAdd[voiceClass] = recipe;
+      }
+    }
+
+    if (missing.length === 0 && json) return; // הכל קיים — שום דבר לעשות
+
+    // שלח ל-engine רק את החסרים (או את כולם אם אין כלום שמור)
+    const toSend = json ? toAdd : defaults;
+    for (const [voiceClass, recipe] of Object.entries(toSend)) {
+      this.engineNode.node.port.postMessage({
+        type: 'setVoiceRecipe',
+        voiceClass,
+        recipe,
+      });
+    }
+
+    // שמור ל-localStorage — merge עם קיים
+    const merged = { ...existing, ...toSend };
+    this.saveLearnedParamsToMemory(merged);
+    if (json && missing.length > 0) {
+      console.log(`[PSY4] הוספת voice classes חסרים ל-localStorage: ${missing.join(', ')}`);
+    } else if (!json) {
+      console.log('[PSY4] יצירת params אקראיים ראשוניים (no saved params):', JSON.stringify(defaults).slice(0, 100));
+    }
+  }
+
+  /**
+   * יוצר פרמטרים אקראיים דרמטיים לכל ה-voice classes.
+   * טווחים רחבים לשינוי ברור בין סשנים.
+   */
+  private static generateDefaultLearnedParams(): Record<string, Record<string, number>> {
+    return {
       KickVoice: {
-        fund: 35 + Math.floor(Math.random() * 35),   // 35-70 (was 38-58)
+        fund: 35 + Math.floor(Math.random() * 35),   // 35-70
         startMult: 1.5 + Math.random() * 4.0,        // 1.5-5.5
         subDecay: 0.05 + Math.random() * 0.30,       // 0.05-0.35
         saturation: 0.8 + Math.random() * 2.0,       // 0.8-2.8
@@ -2656,19 +2700,6 @@ export class PsyLive {
         sweepDrive: 1.0 + Math.random() * 2.5,                        // 1.0-3.5
       },
     };
-
-    // שלח ל-engine
-    for (const [voiceClass, recipe] of Object.entries(params)) {
-      this.engineNode.node.port.postMessage({
-        type: 'setVoiceRecipe',
-        voiceClass,
-        recipe,
-      });
-    }
-
-    // שמור ל-localStorage
-    this.saveLearnedParamsToMemory(params);
-    console.log('[PSY4] יצירת params אקראיים ראשוניים (no saved params):', JSON.stringify(params).slice(0, 100));
   }
 
   /**
