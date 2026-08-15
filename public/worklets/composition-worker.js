@@ -1040,8 +1040,40 @@ self.onmessage = function(e) {
         for (let b = lastComposedBar + 1; b <= msg.targetBar; b++) {
           const result = composer.composeBar(b);
           const evs = result.events;
+          // FIX: events are generated with at = barStart + offset
+          // where barStart = b * 4 * beatDur (relative to bar 0).
+          // We need to convert to absolute audio time by adding barOriginAudioTime.
+          // BUT barOriginAudioTime is the audio time of the CURRENT bar (msg bar),
+          // not bar 0. So we need to subtract the current bar's offset first.
+          // barOriginAudioTime = audio time of bar [currentBar]
+          // audio time of bar 0 = barOriginAudioTime - currentBar * 4 * beatDur
+          // audio time of bar [b] = (b * 4 * beatDur) + (barOriginAudioTime - currentBar * 4 * beatDur)
+          //                       = barOriginAudioTime + (b - currentBar) * 4 * beatDur
+          // Since events already have at = b * 4 * beatDur + offset,
+          // we need: at = at + (barOriginAudioTime - currentBar * 4 * beatDur)
+          // But composeBar already computed at = b * 4 * beatDur + stepOffset
+          // So: final_at = at + barOriginAudioTime - b * 4 * beatDur + (something?)
+          // Actually, the issue is simpler: composeBar computes at = barStart + offset
+          // where barStart = b * 4 * beatDur. This is relative to "bar 0".
+          // barOriginAudioTime is the audio time of bar [currentBar].
+          // So audio time of bar [b] = barOriginAudioTime + (b - currentBar) * 4 * beatDur
+          // And final event time = audio time of bar [b] + offset
+          //                       = barOriginAudioTime + (b - currentBar) * 4 * beatDur + offset
+          // But composeBar already set at = b * 4 * beatDur + offset
+          // So: final_at = at - b * 4 * beatDur + barOriginAudioTime + (b - currentBar) * 4 * beatDur
+          //               = at + barOriginAudioTime - currentBar * 4 * beatDur
+          // currentBar = the bar that was current when compose was requested
+          // We don't have currentBar directly, but we can compute it from barOriginAudioTime:
+          // currentBar * 4 * beatDur = barOriginAudioTime - (beatTime - beat * beatDur - barOriginAudioTime)
+          // Actually, the simplest fix: just add barOriginAudioTime to at, and subtract the bar 0 offset.
+          // The bar 0 audio time is: barOriginAudioTime - currentBar * 4 * beatDur
+          // We know currentBar = lastComposedBar + 1 (first bar to compose)
+          // Actually no, currentBar = msg bar from the main thread.
+          // Let's just pass currentBar in the message and use it.
+          const currentBarOffset = msg.currentBar !== undefined ? msg.currentBar * 4 * beatDur : 0;
+          const bar0AudioTime = barOriginAudioTime - currentBarOffset;
           for (let i = 0; i < evs.length; i++) {
-            evs[i].at += barOriginAudioTime;
+            evs[i].at += bar0AudioTime;
             allEvents.push(evs[i]);
           }
           lastComposedBar = b;

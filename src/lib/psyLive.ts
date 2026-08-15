@@ -850,13 +850,15 @@ export class PsyLive {
     const snap = this.transport!.snapshot();
     const beatDur = 60 / snap.bpm;
     const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
-    this.lastWorkerComposeBar = -1;  // FIX: reset so scheduler will send
+    const currentBar = snap.bar;
+    this.lastWorkerComposeBar = -1;
     this.compositionWorker?.postMessage({
       type: 'compose',
       targetBar: 3,
       barOriginAudioTime,
+      currentBar,
     });
-    this.lastWorkerComposeBar = 3;  // track requested
+    this.lastWorkerComposeBar = 3;
   }
 
   stop(): void {
@@ -1523,6 +1525,7 @@ export class PsyLive {
           type: 'compose',
           targetBar,
           barOriginAudioTime,
+          currentBar,
         });
         this.lastWorkerComposeBar = targetBar;
       }
