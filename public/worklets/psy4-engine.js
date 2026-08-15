@@ -1665,7 +1665,7 @@ class MasterChain {
     const output = compOut * this.tpGainEnv;
 
     // ── 4. FINAL TANH (soft clip safety + makeup) ──
-    return fastTanh(output * this.gain * 1.5);
+    return fastTanh(output * this.gain * 1.3);
   }
 }
 
