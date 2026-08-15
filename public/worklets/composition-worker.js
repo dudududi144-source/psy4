@@ -285,6 +285,23 @@ function regenerateGrammar(styleName) {
   g.bassPattern = genBassPattern(Math.random, density);
 }
 
+// Phase 6.3: Per-phrase variation — slightly mutates the grammar patterns
+// every 4 bars for continuous evolution without full regeneration.
+// This keeps the musical identity but adds subtle variation per phrase.
+function varyGrammar(styleName) {
+  const g = STYLE_GRAMMARS[styleName] || STYLE_GRAMMARS.FULL_ON;
+  // Slightly shift motif intervals (±2 semitones on one note)
+  if (g.motifIntervals && g.motifIntervals.length > 0) {
+    const idx = Math.floor(Math.random() * g.motifIntervals.length);
+    g.motifIntervals[idx] += (Math.random() - 0.5) * 4;
+  }
+  // Slightly shift one bass pattern step
+  if (g.bassPattern && g.bassPattern.length > 0) {
+    const idx = Math.floor(Math.random() * g.bassPattern.length);
+    g.bassPattern[idx] = Math.max(0, Math.min(1, g.bassPattern[idx] + (Math.random() - 0.5) * 0.3));
+  }
+}
+
 // ─── CausalComposer (worker-local) ───────────────────────────────────
 class CausalComposerWorker {
   constructor(opts) {
@@ -354,6 +371,10 @@ class CausalComposerWorker {
     // Regenerate grammar every 32 bars for musical variety.
     if (bar > 0 && bar % 32 === 0) {
       regenerateGrammar(this.userStyle);
+    }
+    // Phase 6.3: Per-phrase variation — slight mutation every 4 bars
+    if (bar > 0 && bar % 4 === 0) {
+      varyGrammar(this.userStyle);
     }
     // Phase 6.1: Phrase planning — get energy/density for this bar
     const phrase = this.getPhraseEnergy(bar);
