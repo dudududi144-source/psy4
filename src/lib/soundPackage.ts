@@ -85,7 +85,7 @@ export class PackageExporter {
     patterns: PackagePattern[],
   ): Promise<SoundPackage> {
     // אסוף את כל ה-entries מכל ה-roles
-    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'hat', 'perc'];
+    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'hat', 'perc', 'pad', 'acid', 'clap', 'shaker', 'texture'];
     const allEntries: SoundBankEntry[] = [];
     for (const role of roles) {
       const entries = await this.bank.all(role);

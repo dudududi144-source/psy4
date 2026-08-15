@@ -256,6 +256,35 @@ export class SynthesisGenerator {
       if (variation.freq !== undefined) {
         variation.freq = this.varyValue(variation.freq, 80, 100, 420); // ±80 (was ±30)
       }
+    } else if (role === 'pad') {
+      if (variation.padCutoff !== undefined) {
+        variation.padCutoff = this.varyValue(variation.padCutoff, 200, 300, 1100);
+      }
+      if (variation.padAttack !== undefined) {
+        variation.padAttack = this.varyValue(variation.padAttack, 0.15, 0.1, 0.6);
+      }
+      if (variation.padDetune !== undefined) {
+        variation.padDetune = this.varyValue(variation.padDetune, 4, 3, 13);
+      }
+    } else if (role === 'acid') {
+      if (variation.acidCutoff !== undefined) {
+        variation.acidCutoff = this.varyValue(variation.acidCutoff, 500, 800, 2800);
+      }
+      if (variation.acidResonance !== undefined) {
+        variation.acidResonance = this.varyValue(variation.acidResonance, 0.15, 0.5, 0.9);
+      }
+    } else if (role === 'clap') {
+      if (variation.clapDecay !== undefined) {
+        variation.clapDecay = this.varyValue(variation.clapDecay, 0.03, 0.015, 0.095);
+      }
+    } else if (role === 'shaker') {
+      if (variation.shakerDecay !== undefined) {
+        variation.shakerDecay = this.varyValue(variation.shakerDecay, 0.03, 0.03, 0.11);
+      }
+    } else if (role === 'texture') {
+      if (variation.textureType !== undefined && Math.random() < 0.5) {
+        variation.textureType = Math.floor(Math.random() * 2);
+      }
     }
     return variation;
   }
