@@ -10291,3 +10291,24 @@ COMPLETE SYSTEM (all phases 1-7):
 3. Master: multiband + glue + LUFS targeting + brick-wall limiter + reverb (early reflections)
 4. Composition: 64-bar arrangement, 4-bar phrases, per-phrase variation, root note changes
 5. UI: 8 buttons + spectrum analyzer + learning progress display
+
+Phase 8.1 — M/S Stereo Imager (DONE):
+- M/S processing after master chain
+- One-pole HP on side at 200Hz (mono low end)
+- Side boost 1.2x (wider highs)
+- Club-safe: mono below 200Hz, wide above
+
+VERIFICATION:
+- LUFS: -12.93, peak -0.99, 0 errors
+- Audio working, stereo imager active
+
+PRODUCTION:
+- Commit: 44f2587
+- Deploy: https://118557b6.psy4.pages.dev
+
+TOTAL SYSTEM (Phases 1-8 complete):
+- 15 voice types with advanced DSP
+- Quality-based learning + SmartExplorer + reference-guided
+- Master chain: EQ → multiband → glue → LUFS → limiter → M/S stereo imager
+- Composition: 64-bar arrangement, phrases, variation, root changes
+- UI: 8 buttons + spectrum analyzer + learning display

@@ -848,9 +848,18 @@ class CausalComposerWorker {
     const grammar = STYLE_GRAMMARS[this.userStyle] || STYLE_GRAMMARS.FULL_ON;
 
     // ── שלב 3.1: KICK — 4-on-the-floor + ghost kicks מהדפוס הנלמד ──
-    // סטנדרטי: steps 0, 4, 8, 12 (always high velocity)
+    // Phase 8.3: Add kick variation based on phrase position
+    // Phrase peak (bar 2 of 4): add extra kick on offbeat for energy
+    const phraseBar4 = bar % 4;
     for (let beat = 0; beat < 4; beat++) {
-      events.push({ at: barStart + beat * beatDur, note: 36, velocity: Math.min(1, (beat === 0 ? 0.95 : 0.88) * velScale), duration: beatDur * 0.8, channel: 'kick' });
+      const isDownbeat = beat === 0;
+      const isPeak = phraseBar4 === 2;
+      const vel = isDownbeat ? 0.95 : (isPeak ? 0.92 : 0.88);
+      events.push({ at: barStart + beat * beatDur, note: 36, velocity: Math.min(1, vel * velScale), duration: beatDur * 0.8, channel: 'kick' });
+    }
+    // Phase 8.3: Add syncopated kick on phrase peak (beat 2.5)
+    if (phraseBar4 === 2 && this.userEnergy > 0.4) {
+      events.push({ at: barStart + 2.5 * beatDur, note: 36, velocity: Math.min(1, 0.5 * velScale), duration: beatDur * 0.3, channel: 'kick' });
     }
     // GHOST KICKS: אם הרדיו מנגן kick ב-step לא-סטנדרטי, PSY4 מוסיף ghost kick (velocity נמוך)
     // רק ב-DROP/REBUILD (phrasePos >= 4) — לא ב-INTRO כדי לא להרוס את הבנייה
