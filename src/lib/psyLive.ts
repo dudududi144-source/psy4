@@ -2960,10 +2960,10 @@ export class PsyLive {
     // MIDI header: MThd
     const header = [
       0x4D, 0x54, 0x68, 0x64,  // "MThd"
-      0x00, 0x00, 0x00, 0x06,  // header length
+      0x00, 0x00, 0x00, 0x06,  // header length = 6
       0x00, 0x00,              // format 0
-      (ticksPerQuarter >> 8) & 0xFF, ticksPerQuarter & 0xFF,  // ticks per quarter
       0x00, 0x01,              // 1 track
+      (ticksPerQuarter >> 8) & 0xFF, ticksPerQuarter & 0xFF,  // ticks per quarter (480)
     ];
 
     // Build track events
