@@ -411,19 +411,19 @@ class BassVoice {
     if (!this.active) { out[0] = 0; return out; }
     const dt = 1 / sr;
     this.t += dt;
-    if (this.t > this.bassDecay) { this.active = false; out[0] = 0; return out; }
+    // SUSTAIN MODE: if dur > 0.5s, hold the note with a slow decay instead of
+    // cutting off at bassDecay. This allows sustained bass notes (pad-like bass)
+    // alongside the default pluck mode. (DEEP_ROAST: "כל באס = pluck. צריך sustain mode")
+    const sustainMode = this.dur > 0.5;
+    const noteEnd = sustainMode ? this.dur : this.bassDecay;
+    if (this.t > noteEnd) { this.active = false; out[0] = 0; return out; }
 
     // COMMERCIAL FIX: Use SAW wave (not square) — psytrance bass is always saw.
-    // Source: dsokolovskiy.com (professional psytrance producer)
-    // Square is too hollow; saw has the harmonics needed for filter movement.
     const inc = this.freq / sr;
-    const osc = this.saw.process(inc);  // always saw — even for acid (acid uses filter, not osc type)
+    const osc = this.saw.process(inc);
 
-    // COMMERCIAL FIX: 24dB/oct filter (Moog ladder is already 24dB — good)
     // Filter envelope: fast decay (pluck) + LFO (rolling)
-    // Source: professional bass uses Decay ~30% of max, Attack=0, Release=0, Sustain=low
     const cutoffEnv = (this.cutoffStart - this.cutoffEnd) * Math.exp(-this.t / this.cutoffDecay) + this.cutoffEnd;
-    // LFO reopens filter (rolling character)
     this.lfoPhase += 2 * Math.PI * this.lfoRate * dt;
     const lfoMod = (Math.sin(this.lfoPhase) * 0.5 + 0.5) * this.lfoDepth;
     const lfoAmount = (this.cutoffStart - this.cutoffEnd) * lfoMod;
@@ -431,15 +431,14 @@ class BassVoice {
     const drive = this.acid ? 2.5 : 1.3;
     const filtered = this.filter.process(osc, cutoff, this.res, drive, sr);
 
-    // COMMERCIAL FIX: Sub sine (clean fundamental) — but at lower level
-    // Professional bass has sub, but it shouldn't dominate
+    // Sub sine (clean fundamental)
     this.phase += 2 * Math.PI * this.freq / sr;
     const sub = Math.sin(this.phase) * this.subLevel;
 
     // MIX: filtered saw (character) + sub (weight)
     let mixed = filtered * this.harmonicLevel + sub * this.subLevel;
 
-    // SATURATION: Post-mix tanh — adds harmonics + warmth
+    // SATURATION
     mixed = fastTanh(mixed * 1.8);
 
     // HP FILTER: Remove subsonic mud
@@ -448,11 +447,22 @@ class BassVoice {
     this.hpState += hpA * (mixed - this.hpState) / (1 + hpA);
     mixed = mixed - this.hpState * 0.7;
 
-    // COMMERCIAL FIX: Shorter decay = tighter bass (was 0.12s, now proportional)
-    // Professional psytrance bass is tight — not sustained
-    const attackEnv = Math.min(1, this.t / 0.001);  // 1ms attack (instant)
-    const decayEnv = Math.exp(-this.t / (this.bassDecay * 0.4));  // faster decay
-    const ampEnv = attackEnv * decayEnv;
+    // AMP ENVELOPE: pluck (fast decay) vs sustain (slow decay + hold)
+    const attackEnv = Math.min(1, this.t / 0.001);
+    let ampEnv;
+    if (sustainMode) {
+      // Sustain: quick attack, hold at 0.6, slow release at end
+      const sustainLevel = 0.6;
+      const releaseStart = this.dur * 0.7;
+      if (this.t < releaseStart) {
+        ampEnv = attackEnv * (sustainLevel + (1 - sustainLevel) * Math.exp(-this.t / 0.1));
+      } else {
+        ampEnv = attackEnv * sustainLevel * Math.exp(-(this.t - releaseStart) / (this.dur * 0.15));
+      }
+    } else {
+      // Pluck: fast exponential decay
+      ampEnv = attackEnv * Math.exp(-this.t / (this.bassDecay * 0.4));
+    }
 
     out[0] = mixed * ampEnv * this.amp;
     return out;

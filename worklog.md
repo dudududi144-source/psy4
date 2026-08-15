@@ -9748,3 +9748,12 @@ Stage Summary:
 
 Remaining: Problems 4-10 (master chain, voice DSP, bank expansion, variation,
 pattern export, audio capture, FX UI).
+
+Problem 4: Master chain — PARTIALLY FIXED
+- Baseline: LUFS -10.35, peak -1.03 (both in range, but no EQ/glue)
+- Added: low-shelf EQ (+2dB warmth below 120Hz)
+- Added: glue compressor infrastructure (PSY7 settings) — but bypassed (threshold=1.0) because it caused LUFS/peak instability across arrangement sections
+- Upgraded: brick-wall limiter (instant attack, was 1-sample lookahead + smoothing)
+- Result: LUFS varies -10 to -14 depending on section, peak -0.78 to -1.26
+- The variation is due to arrangement (intro=quiet, drop=loud), not master chain
+- Glue comp needs better tuning — left bypassed until Problem 5 (voice DSP) improves the source material
