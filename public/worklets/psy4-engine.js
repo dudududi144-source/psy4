@@ -2060,7 +2060,7 @@ class MasterChain {
     let eqOut = sample + 0.259 * this.lsState;
 
     // ── 2. MULTIBAND COMPRESSION ──
-    const mbOut = this.mb ? this.mb.process(eqOut, sr) : eqOut;
+    const mbOut = eqOut;  // TEMP: bypass multiband to test if it kills highs
 
     // ── 3. GLUE COMPRESSOR ──
     const absEq = Math.abs(mbOut);
