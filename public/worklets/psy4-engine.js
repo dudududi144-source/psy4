@@ -2060,7 +2060,11 @@ class MasterChain {
     let eqOut = sample + 0.259 * this.lsState;
 
     // ── 2. MULTIBAND COMPRESSION ──
-    const mbOut = eqOut;  // TEMP: bypass multiband to test if it kills highs
+    // DISABLED: Biquad crossover with Q=0.5 was killing high frequencies.
+    // The LR2 crossover implementation was incorrect — it attenuated the high
+    // band instead of passing it through. Until properly fixed, bypass it.
+    // The glue compressor + limiter provide enough dynamic control.
+    const mbOut = eqOut;
 
     // ── 3. GLUE COMPRESSOR ──
     const absEq = Math.abs(mbOut);
