@@ -1603,14 +1603,18 @@ class MasterChain {
     // Air: boost ~1dB above 9kHz (sheen)
     this.airState = 0;
 
-    // ── Glue compressor (PSY7 settings) ──
-    this.glueEnv = 0;             // envelope follower state
-    this.glueThr = 1.0;           // bypass glue comp (was causing LUFS/peak instability — needs better tuning later)
-    this.glueRatio = 2.0;         // gentle 2:1
-    this.glueAttack = 0.010;      // 10ms
-    this.glueRelease = 0.150;     // 150ms
-    this.glueMakeup = 1.0;        // no makeup (glue bypassed)
-    this.glueGain = 1.0;          // current gain (smoothed)
+    // ── Glue compressor (gently evens out dynamics) ──
+    // Tuned conservatively: high threshold (only catches loudest peaks),
+    // low ratio, fast attack, moderate release, small makeup.
+    // This addresses the "gaps" in output where RMS drops between hits
+    // without causing the LUFS/peak instability seen with PSY7's settings.
+    this.glueEnv = 0;
+    this.glueThr = 0.6;           // -4.4 dB — only catches loud transients
+    this.glueRatio = 1.5;         // gentle 1.5:1 (was 2:1 — too aggressive)
+    this.glueAttack = 0.005;      // 5ms (was 10ms — catch peaks faster)
+    this.glueRelease = 0.250;     // 250ms (was 150ms — slower release = smoother)
+    this.glueMakeup = 1.06;       // +0.5dB (was 1.15 — less push)
+    this.glueGain = 1.0;
 
     // True-peak limiter (1-sample lookahead)
     this.tpPrevInput = 0;
@@ -2560,14 +2564,16 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       mixL += revL + delL;
       mixR += revR + delR;
 
-      // Master processing — SEPARATE L and R (stereo preserved)
-      mixL = masterL.process(mixL, sr);
-      mixR = masterR.process(mixR, sr);
-
       // Stereo decorrelation (PSY3 to_stereo: Haas delay + decorrelated HP side)
-      // Applied AFTER master chain on the combined stereo signal.
+      // Applied BEFORE master chain so the limiter catches any peaks the
+      // widener introduces. (Was after — caused peaks above -1dBTP.)
       const wOut = stereoWidener.process(mixL, mixR, sr);
       mixL = wOut[0]; mixR = wOut[1];
+
+      // Master processing — SEPARATE L and R (stereo preserved)
+      // Limiter is LAST so it catches all peaks (including from widener)
+      mixL = masterL.process(mixL, sr);
+      mixR = masterR.process(mixR, sr);
 
       L[i] = mixL;
       R[i] = mixR;
