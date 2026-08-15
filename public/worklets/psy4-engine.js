@@ -2416,19 +2416,21 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           } else if (msg.voiceClass === 'BassVoice') {
             voice.trigger(0, ta.freq ?? 80, ta.dur ?? 0.2, ta.amp ?? 0.5, ta.acid ?? false, sr, ta.params ?? null);
           } else if (msg.voiceClass === 'LeadVoice') {
-            voice.trigger(0, ta.freq ?? 440, ta.amp ?? 0.5, sr);
+            voice.trigger(0, ta.freq ?? 440, ta.dur ?? 0.3, ta.amp ?? 0.5, sr, ta.params ?? null);
           } else if (msg.voiceClass === 'HatVoice') {
             voice.trigger(0, ta.open ?? false, ta.amp ?? 0.5, sr);
           } else if (msg.voiceClass === 'PercVoice') {
             voice.trigger(0, ta.freq ?? 200, ta.amp ?? 0.5, sr);
           } else if (msg.voiceClass === 'AcidVoice') {
-            voice.trigger(0, ta.freq ?? 110, ta.amp ?? 0.5, sr);
+            voice.trigger(0, ta.freq ?? 110, ta.dur ?? 0.3, ta.amp ?? 0.5, sr, ta.param ?? 0);
           } else if (msg.voiceClass === 'PadVoice') {
-            voice.trigger(0, ta.freq ?? 220, ta.amp ?? 0.3, sr);
+            voice.trigger(0, ta.freq ?? 220, ta.dur ?? 2.0, ta.amp ?? 0.3, sr, ta.params ?? null);
           } else if (msg.voiceClass === 'ClapVoice') {
-            voice.trigger(0, ta.amp ?? 0.5, sr);
+            voice.trigger(0, ta.amp ?? 0.5, sr, ta.params ?? null);
           } else if (msg.voiceClass === 'ShakerVoice') {
-            voice.trigger(0, ta.amp ?? 0.5, sr);
+            voice.trigger(0, ta.amp ?? 0.5, sr, ta.params ?? null);
+          } else if (msg.voiceClass === 'TextureVoice') {
+            voice.trigger(0, ta.dur ?? 1.0, ta.amp ?? 0.3, ta.type ?? 'fm', sr);
           } else if (msg.voiceClass === 'FMVoice') {
             voice.trigger(0, ta.freq ?? 440, ta.dur ?? 0.3, ta.amp ?? 0.5, sr, ta.params ?? null);
           } else if (msg.voiceClass === 'WavetableVoice') {
