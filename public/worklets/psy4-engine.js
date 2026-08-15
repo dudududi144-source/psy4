@@ -2096,8 +2096,8 @@ class MasterChain {
         const lufsError = this.lufsTarget - currentLUFS;  // positive = too quiet
         // Convert dB error to linear gain: 10^(error/20)
         this.lufsTargetGain = Math.pow(10, lufsError / 20);
-        // Clamp to reasonable range (±6dB)
-        this.lufsTargetGain = Math.max(0.5, Math.min(2.0, this.lufsTargetGain));
+        // Clamp to reasonable range (±3dB) — was ±6dB which caused oscillation
+        this.lufsTargetGain = Math.max(0.7, Math.min(1.5, this.lufsTargetGain));
       }
     }
     // Smooth gain transition (avoid clicks) — 100ms time constant
@@ -2165,19 +2165,19 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
     this.fmPool = [];
     this.wavetablePool = [];  // Phase 5.2: WavetableVoice pool
     // FIX: Reduced pool sizes for mobile/low-end devices
-    for (let i = 0; i < 2; i++) this.kickPool.push(new KickVoice());    // was 4
-    for (let i = 0; i < 2; i++) this.bassPool.push(new BassVoice());    // was 2
-    for (let i = 0; i < 2; i++) this.leadPool.push(new LeadVoice());    // was 4
-    for (let i = 0; i < 1; i++) this.acidPool.push(new AcidVoice());    // was 2
-    for (let i = 0; i < 1; i++) this.padPool.push(new PadVoice());      // was 2
-    for (let i = 0; i < 2; i++) this.hatPool.push(new HatVoice());      // was 4
-    for (let i = 0; i < 1; i++) this.clapPool.push(new ClapVoice());    // was 2
-    for (let i = 0; i < 2; i++) this.percPool.push(new PercVoice());    // was 4
-    for (let i = 0; i < 1; i++) this.shakerPool.push(new ShakerVoice());// was 2
-    for (let i = 0; i < 1; i++) this.texturePool.push(new TextureVoice());// was 2
-    for (let i = 0; i < 2; i++) this.fxPool.push(new FXVoice());        // was 4
-    for (let i = 0; i < 1; i++) this.fmPool.push(new FMVoice());        // was 2
-    for (let i = 0; i < 1; i++) this.wavetablePool.push(new WavetableVoice());  // Phase 5.2
+    for (let i = 0; i < 3; i++) this.kickPool.push(new KickVoice());    // was 2 — need more for ghost kicks
+    for (let i = 0; i < 3; i++) this.bassPool.push(new BassVoice());    // was 2 — bass is frequent
+    for (let i = 0; i < 3; i++) this.leadPool.push(new LeadVoice());    // was 2 — lead has sustain
+    for (let i = 0; i < 2; i++) this.acidPool.push(new AcidVoice());    // was 1 — acid is 16th notes
+    for (let i = 0; i < 2; i++) this.padPool.push(new PadVoice());      // was 1 — pad has long sustain
+    for (let i = 0; i < 3; i++) this.hatPool.push(new HatVoice());      // was 2 — hats are 8 per bar
+    for (let i = 0; i < 2; i++) this.clapPool.push(new ClapVoice());    // was 1 — claps on 2&4
+    for (let i = 0; i < 3; i++) this.percPool.push(new PercVoice());    // was 2 — perc every 4 steps
+    for (let i = 0; i < 3; i++) this.shakerPool.push(new ShakerVoice());// was 1 — shaker is 16 per bar!
+    for (let i = 0; i < 2; i++) this.texturePool.push(new TextureVoice());// was 1
+    for (let i = 0; i < 2; i++) this.fxPool.push(new FXVoice());        // was 2 — FX voices
+    for (let i = 0; i < 2; i++) this.fmPool.push(new FMVoice());        // was 1
+    for (let i = 0; i < 2; i++) this.wavetablePool.push(new WavetableVoice());  // was 1
     // Total: 34 voices (was 64+28=92)
 
     // Sample voice pools — populated with SampleVoice instances
@@ -2520,7 +2520,7 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
         break;
       case 'duck':
         // Trigger sidechain duck (used by triggerImmediate)
-        this.duckEnv = Math.max(0.3, 1 - this.duckDepth * (0.5 + this.macros.aggression * 0.5));
+        this.duckEnv = Math.max(0.35, 1 - this.duckDepth * (0.5 + this.macros.aggression * 0.5));
         break;
       case 'panic':
         // Kill all voices
@@ -2615,10 +2615,9 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
           if (lp.tailLevel !== undefined) v.tailLevel = lp.tailLevel;
           if (lp.tailDecay !== undefined) v.tailDecay = lp.tailDecay;
         }
-        // Trigger sidechain — Phase 7.3: deeper ducking (0.25 min = -12dB)
-        // Commercial psytrance uses 6-8dB ducking for tight groove
+        // Trigger sidechain — consistent with triggerImmediate (min 0.35)
         this.duckEnv = 1 - wp.duck * (0.6 + mc.aggression * 0.4);
-        this.duckEnv = Math.max(0.25, this.duckEnv);
+        this.duckEnv = Math.max(0.35, this.duckEnv);
         break;
       }
       case V_BASS: {
@@ -3058,8 +3057,8 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       const sideHpA = Math.min(0.999, 2 * Math.PI * 200 / sr);
       this._sideHP += sideHpA * (side - this._sideHP);
       side = side - this._sideHP * 0.8;  // reduce side below 200Hz
-      // Enhance side above 2kHz (boost by 20%)
-      side *= 1.2;
+      // Enhance side above 2kHz (boost by 10% — was 20%, caused peaks)
+      side *= 1.1;
       // Recombine
       mixL = mid + side;
       mixR = mid - side;
