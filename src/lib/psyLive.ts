@@ -1794,6 +1794,49 @@ export class PsyLive {
     if (!this.playing) this.stopUITimer();
   }
 
+  /**
+   * שלב 4.5: Synthetic occupancy — derived from PSY4's own output when no radio.
+   *
+   * When radio is off, RewardTracker has no occupancy signal, so reward stays
+   * at 0.5 forever. This method measures PSY4's own output via the main
+   * analyser and derives occupancy values:
+   *   - kick: low-band energy (0-120Hz) normalized
+   *   - bass: low-mid energy (120-500Hz) normalized
+   *   - lead: mid energy (500-2500Hz) normalized
+   *   - hats: high energy (2500Hz+) normalized
+   *
+   * The values are smoothed so they reflect sustained activity, not transients.
+   * This lets the RewardTracker evaluate whether a recipe "worked" — if PSY4
+   * keeps playing steadily after applying a recipe, reward goes up.
+   */
+  private synthOccSmoothed: { kick: number; bass: number; lead: number; hats: number } = { kick: 0, bass: 0, lead: 0, hats: 0 };
+  private computeSyntheticOccupancy(): { kick: number; bass: number; lead: number; hats: number } {
+    if (!this.analyser || !this.ctx) return this.synthOccSmoothed;
+    const fd = new Uint8Array(this.analyser.frequencyBinCount);
+    this.analyser.getByteFrequencyData(fd as Uint8Array<ArrayBuffer>);
+    const sr = this.ctx.sampleRate;
+    const binWidth = sr / this.analyser.fftSize;
+    const bandAvg = (loHz: number, hiHz: number): number => {
+      const lo = Math.max(0, Math.floor(loHz / binWidth));
+      const hi = Math.min(fd.length - 1, Math.ceil(hiHz / binWidth));
+      let sum = 0, n = 0;
+      for (let i = lo; i <= hi; i++) { sum += fd[i]; n++; }
+      return n > 0 ? (sum / n) / 255 : 0;  // normalize 0-1
+    };
+    // Raw band energies
+    const kickRaw = bandAvg(20, 120);
+    const bassRaw = bandAvg(120, 500);
+    const leadRaw = bandAvg(500, 2500);
+    const hatsRaw = bandAvg(2500, 12000);
+    // Smooth (exponential moving average) — reflects sustained activity
+    const a = 0.3;  // smoothing factor
+    this.synthOccSmoothed.kick = this.synthOccSmoothed.kick * (1 - a) + kickRaw * a;
+    this.synthOccSmoothed.bass = this.synthOccSmoothed.bass * (1 - a) + bassRaw * a;
+    this.synthOccSmoothed.lead = this.synthOccSmoothed.lead * (1 - a) + leadRaw * a;
+    this.synthOccSmoothed.hats = this.synthOccSmoothed.hats * (1 - a) + hatsRaw * a;
+    return { ...this.synthOccSmoothed };
+  }
+
   private detect(): void {
     if (!this.radioAnalyser || !this.ctx || !this.radioLayer) return;
     if (!this.radioFreqBuf || this.radioFreqBuf.length !== this.radioAnalyser.frequencyBinCount) {
@@ -1902,8 +1945,18 @@ export class PsyLive {
     // F2.5 — Update occupancy from radio layer (for arranger decisions)
     this.occupancy = radioSnap.occupancy;
     // שלב 4.5: עדכן את RewardTracker עם occupancy הנוכחי
-    if (this.rewardTracker && this.radioOn) {
-      this.rewardTracker.recordOccupancy(this.occupancy);
+    if (this.rewardTracker) {
+      if (this.radioOn) {
+        // Radio active — use real radio occupancy
+        this.rewardTracker.recordOccupancy(this.occupancy);
+      } else if (this.playing) {
+        // No radio — derive synthetic occupancy from PSY4's own output.
+        // This lets the RewardTracker progress (reward entries) even when
+        // the user never connects radio. Without this, reward stays at 0.5
+        // forever and the "self-improvement" loop never advances.
+        const synth = this.computeSyntheticOccupancy();
+        this.rewardTracker.recordOccupancy(synth);
+      }
     }
 
     // MUSICAL FIX: session.observeRadioTick REMOVED entirely.
