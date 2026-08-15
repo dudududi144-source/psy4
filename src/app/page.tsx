@@ -542,6 +542,20 @@ export default function Page() {
                 style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.3)' }}>
                 📁 Reference
               </button>
+              <button
+                onClick={() => {
+                  const result = engineRef.current?.compareWithReference();
+                  if (!result) {
+                    alert('No reference loaded. Upload a reference track first (📁 Reference button).');
+                  } else {
+                    alert(`A/B Comparison:\nCurrent LUFS: ${result.currentLUFS.toFixed(1)}\nReference LUFS: ${result.refLUFS.toFixed(1)}\nDistance: ${(result.distance * 100).toFixed(0)}% (0% = identical)`);
+                  }
+                }}
+                disabled={!s.playing}
+                className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: 'rgba(56,189,248,0.15)', color: '#38bdf8', border: '1px solid rgba(56,189,248,0.3)' }}>
+                ⚖ A/B Compare
+              </button>
             </div>
             <div className="text-[10px] text-slate-500">
               Export: download JSON with all learned sounds + patterns · Import: load previous package · Generate: create new variations from learned sounds
