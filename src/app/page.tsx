@@ -517,6 +517,31 @@ export default function Page() {
                 style={{ background: 'rgba(255,255,255,0.05)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}>
                 ↻ Reset
               </button>
+              <button
+                onClick={() => {
+                  const input = document.createElement('input');
+                  input.type = 'file';
+                  input.accept = 'audio/*';
+                  input.onchange = async (e) => {
+                    const file = (e.target as HTMLInputElement).files?.[0];
+                    if (file) {
+                      try {
+                        const dna = await engineRef.current?.analyzeReference(file);
+                        if (dna) {
+                          alert(`Reference analyzed!\nLUFS: ${dna.lufs.toFixed(1)}\nTrue Peak: ${dna.truePeak.toFixed(1)}\nBPM: ${dna.bpm}\nKey: ${dna.key} (${dna.scaleName})\nStereo Width: ${dna.stereoWidth.toFixed(2)}`);
+                        }
+                      } catch (err) {
+                        alert('Reference analysis failed: ' + (err as Error).message);
+                      }
+                    }
+                  };
+                  input.click();
+                }}
+                disabled={!s.playing}
+                className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.3)' }}>
+                📁 Reference
+              </button>
             </div>
             <div className="text-[10px] text-slate-500">
               Export: download JSON with all learned sounds + patterns · Import: load previous package · Generate: create new variations from learned sounds

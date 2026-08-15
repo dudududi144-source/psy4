@@ -30,6 +30,7 @@ import { SoundExplorer, type ExplorationResult } from './soundExplorer';
 // שלב 4.5: Reward loop (self-improvement)
 import { RewardTracker } from './rewardTracker';
 import { QualityAnalyzer } from './qualityAnalyzer';
+import { ReferenceAnalyzer, type ReferenceDNA } from './referenceAnalyzer';
 // שלב 4.6: Musical style classification
 import { StyleClassifier, type RadioStyle, type StyleFeatures, type ClassificationResult } from './styleClassifier';
 // שלב 5.1: Sound package (export/import)
@@ -2953,6 +2954,66 @@ export class PsyLive {
       this.saveLearnedParamsToMemory(defaults);
     }
     console.log('[PSY4] Reset complete — fresh random params applied');
+  }
+
+  // ── Phase 4: Reference Analysis ──
+  private referenceAnalyzer: ReferenceAnalyzer | null = null;
+  private currentReference: ReferenceDNA | null = null;
+
+  /**
+   * מעלה קובץ reference ומנתח אותו.
+   * מחזיר את ה-ReferenceDNA שניתן להשתמש בו להשוואה.
+   */
+  async analyzeReference(file: File): Promise<ReferenceDNA> {
+    if (!this.ctx) {
+      throw new Error('AudioContext not ready — press Play first');
+    }
+    if (!this.referenceAnalyzer) {
+      this.referenceAnalyzer = new ReferenceAnalyzer(this.ctx);
+    }
+    console.log(`[PSY4] Phase 4: Analyzing reference: ${file.name} (${(file.size / 1024).toFixed(0)}KB)`);
+    const dna = await this.referenceAnalyzer.analyze(file);
+    this.currentReference = dna;
+    console.log(`[PSY4] Phase 4: Reference analysis complete:`, {
+      lufs: dna.lufs.toFixed(1),
+      truePeak: dna.truePeak.toFixed(1),
+      bpm: dna.bpm,
+      key: dna.key,
+      scale: dna.scaleName,
+      stereoWidth: dna.stereoWidth.toFixed(2),
+      spectralCentroid: dna.spectralCentroid.toFixed(0),
+    });
+    return dna;
+  }
+
+  /**
+   * מחזיר את ה-reference הנוכחי (או null).
+   */
+  getReference(): ReferenceDNA | null {
+    return this.currentReference;
+  }
+
+  /**
+   * משווה את ה-output הנוכחי של PSY4 ל-reference.
+   * מחזיר distance (0 = זהה, 1 = שונה) + פירוט.
+   */
+  compareWithReference(): { distance: number; currentLUFS: number; refLUFS: number } | null {
+    if (!this.currentReference || !this.analyser || !this.ctx) return null;
+    // Measure current output LUFS (simplified)
+    const tdBuf = new Float32Array(this.analyser.fftSize);
+    this.analyser.getFloatTimeDomainData(tdBuf as Float32Array<ArrayBuffer>);
+    let sumSq = 0;
+    for (let i = 0; i < tdBuf.length; i++) sumSq += tdBuf[i] * tdBuf[i];
+    const rms = Math.sqrt(sumSq / tdBuf.length);
+    const currentLUFS = rms > 1e-6 ? -0.691 + 10 * Math.log10(sumSq / tdBuf.length) : -70;
+    const ref = this.currentReference;
+    // Simple distance based on LUFS
+    const lufsDistance = Math.abs(currentLUFS - ref.lufs) / 10;
+    return {
+      distance: Math.min(1, lufsDistance),
+      currentLUFS,
+      refLUFS: ref.lufs,
+    };
   }
 
   /**
