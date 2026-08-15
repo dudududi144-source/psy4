@@ -10166,3 +10166,33 @@ COMPLETE SYSTEM (all phases):
 4. Master chain: multiband + LUFS targeting + reverb with early reflections
 5. Reference: upload + analyze + reference-guided learning + A/B compare
 6. UI: 8 buttons (Play/Export/Import/Generate/Record/Reset/Reference/Compare)
+
+---
+Task ID: PHASE-5-3-6-1-6-2
+Agent: z.ai-code (main)
+Task: Phase 5.3 (lead delay throw) + Phase 6.1 (phrase planning) + Phase 6.2 (UI)
+
+Phase 5.3 — LeadVoice delay throw (DONE):
+- 100ms delay buffer with 0.3 feedback + 0.15 mix
+- Short echo on each note adds space
+- Buffer cleared on new note
+
+Phase 6.1 — Phrase planning (DONE):
+- getPhraseEnergy(bar): 4-bar cycle
+  bar 0: start (0.6), bar 1: build (0.7), bar 2: peak (0.9), bar 3: release (0.5)
+- velScale uses phraseEnergy for musical phrasing
+- Bars breathe instead of being uniform
+
+Phase 6.2 — Visual feedback UI (DONE):
+- Learning progress display in Sound Bank panel:
+  Best reward (color-coded), Quality status, Active voices/budget
+- Updates every 2s
+
+VERIFICATION:
+- LUFS: -12.22, peak -0.99, 0 errors
+- 5 kick entries, max reward 0.520 (rising)
+- Audio stable
+
+PRODUCTION:
+- Commit: bf8f7e3
+- Deploy: https://7f704ff9.psy4.pages.dev
