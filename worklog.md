@@ -9526,3 +9526,97 @@ WHAT'S DIFFERENT NOW:
 
 The user will now hear DIFFERENT sounds each time, because the engine
 remembers what it learned last time and starts from there.
+
+---
+Task ID: COMMERCIAL-GAPS-FINAL
+Agent: z.ai-code (main)
+Task: סגירת כל הפערים המסחריים הפתוחים + דוח מה נשאר כדי להגיע למערכת מסחרית קצה-לקצה.
+
+Work Log:
+- קראתי את ה-worklog והבנתי שנשארו עוד פערים מרשימת ה-10 המקורית
+- בדקתי את המצב הנוכחי של כל פער:
+  * פער 1 (loadWorkletSamples): כבר סגור ב-commit d9c58ad ✓
+  * פער 2 (1640 שורות dead code): כבר סגור — 4 קבצים הוסרו ✓
+  * פער 3 (V_RISER/V_IMPACT/V_SWEEP אין learned params): היה פתוח — תוקן
+  * פער 4 (samplePalette ב-state): היה פתוח — תוקן
+  * פער 5 (exploration בלי רדיו): כבר סגור ב-commit d9c58ad ✓
+  * פער 6 (reward איטי): כבר סגור — 0.05→0.10 ✓
+  * פער 7 (אימות production): בוצע עם Agent Browser ✓
+  * פער 8 (generateOriginalSounds מחזיר 0): היה פתוח — תוקן
+  * פער 9 (bus processor/master chain): היה פתוח — תוקן
+  * פער 10 (אימות end-to-end): בוצע עם Agent Browser ✓
+
+תיקונים שבוצעו:
+
+1. FXVoice learned params (פער 3):
+   - FXVoice.trigger עכשיו מקבל params object
+   - V_RISER: riserStartCutoff, riserEndCutoff, riserResonance, riserDrive
+   - V_IMPACT: impactSubFreq, impactSubDecay, impactNoiseDecay
+   - V_SWEEP: sweepStartCutoff, sweepEndCutoff, sweepResonance, sweepDrive
+   - Engine triggerVoice case עובר learnedVoiceParams ל-FX voices
+   - ensureDefaultLearnedParams מייצר params אקראיים ל-3 ה-voices החדשים
+
+2. From-scratch synthesis (פער 8):
+   - generateOriginalSounds משתמש ב-synthetic target DNA כשאין onsets
+   - buildSyntheticTargetDNA בונה DNA הגיוני לכל role (kick/bass/lead/hat/perc)
+   - SynthesisGenerator.generate יוצר מאפס כשה-bank ריק (createScratchParams)
+   - אימות: lead + perc יצרו 3 וריאציות כל אחד מאפס ב-production
+
+3. samplePalette cleanup (פער 4):
+   - הוסר מ-EngineState interface
+   - הוסר מ-getState()
+   - הוסר מ-page.tsx initial state
+   - הוסרו: loadWorkletSamples, currentPalette, setSamplePalette, getSamplePalette, loadPalette
+   - חיסכון: ~105 שורות dead code
+
+4. Bus/Master cleanup (פער 9):
+   - BusProcessor: הוסרו compEnv, hpState, drive (dead state)
+   - MasterChain: הוסרו mb (MultibandComp), glueEnv, glueThr, glueRatio, glueAttack,
+     glueRelease, glueMakeup, satDrive, satMix, lufsMs, lufsGain, lufsTargetGain,
+     lufsTargetLufs, lufsCounter (כל ה-dead state)
+   - הוסרה class MultibandComp לחלוטין (never instantiated)
+   - הוסרה class Biquad לחלוטין (only used by MultibandComp)
+   - חיסכון: ~135 שורות dead code
+
+5. Forward compatibility fix:
+   - ensureDefaultLearnedParams עכשיו ממזג voice classes חסרים ל-localStorage קיים
+   - משתמשים ישנים מקבלים את RiserVoice/ImpactVoice/SweepVoice אוטומטית
+   - לא דורס params קיימים
+
+VERIFICATION (production, Agent Browser, https://psy4.pages.dev):
+- Page loads: ✓ (title "PSY4 — Psytrance Studio Digital Twin")
+- Play button works: ✓ (button changes to "Stop", all controls enabled)
+- Engine worklet loads: ✓ ("AudioWorklet engine active")
+- SharedArrayBuffer: ✓ ("lock-free event transfer")
+- Memory persistence: ✓ ("loaded learned params from localStorage")
+- localStorage now contains ALL 13 voice classes: ✓
+  (KickVoice, BassVoice, LeadVoice, HatVoice, ClapVoice, PercVoice, PadVoice,
+   AcidVoice, ShakerVoice, TextureVoice, RiserVoice, ImpactVoice, SweepVoice)
+- Auto-exploration without radio: ✓ ("using synthetic target")
+- SoundBank.add creates entries: ✓ (5 kick entries in 211ms)
+- Generate Originals works for ALL roles: ✓
+  (bass: 3 variations, lead: 3 from scratch, perc: 3 from scratch)
+- Export Package: ✓ (78 voices exported + downloaded)
+- 0 runtime errors
+- 0 page errors
+
+PRODUCTION:
+- Git push: origin/main ✓ (commit 87b89c7)
+- Cloudflare build: ✓ (1.12s)
+- Cloudflare deploy: ✓ (https://36e2c23c.psy4.pages.dev)
+- Production verified: https://psy4.pages.dev ✓
+
+Stage Summary:
+כל 10 הפערים המסחריים סגורים. המערכת עובדת end-to-end ב-production:
+- למידה מרדיו (onset → bank → exploration → reward)
+- סינתזה מקורית מאפס (גם בלי רדיו)
+- יצוא/יבוא חבילות
+- זיכרון בין סשנים
+- 13 voice classes עם learned params
+- 0 שגיאות runtime
+
+נשאר פתוח (למערכת מסחרית מלאה):
+1. Beat phase alignment (PLL) — BPM מסונכרן אבל לא ה-beat position
+2. Multiband compression disabled (היה הורג את הסאונד — צריך tuning עדין)
+3. אין הקלטת אודיו (לא יכולים לשמוע את ה-output בחזרה)
+4. אין UI לשליטה על FX params (רק internal)
