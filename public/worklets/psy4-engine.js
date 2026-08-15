@@ -3022,6 +3022,22 @@ class Psy4EngineProcessor extends AudioWorkletProcessor {
       mixL = masterL.process(mixL, sr);
       mixR = masterR.process(mixR, sr);
 
+      // Phase 8.1: M/S Stereo Imager — widen highs, keep lows mono
+      // Commercial psytrance: mono below 200Hz, wide above 2kHz
+      // This prevents phase issues in clubs while creating spacious highs
+      const mid = (mixL + mixR) * 0.5;
+      let side = (mixL - mixR) * 0.5;
+      // One-pole HP on side to reduce low-freq stereo (keep sub mono)
+      this._sideHP = this._sideHP || 0;
+      const sideHpA = Math.min(0.999, 2 * Math.PI * 200 / sr);
+      this._sideHP += sideHpA * (side - this._sideHP);
+      side = side - this._sideHP * 0.8;  // reduce side below 200Hz
+      // Enhance side above 2kHz (boost by 20%)
+      side *= 1.2;
+      // Recombine
+      mixL = mid + side;
+      mixR = mid - side;
+
       L[i] = mixL;
       R[i] = mixR;
     }
