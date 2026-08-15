@@ -9995,3 +9995,19 @@ Phase 1 + 2.1 complete. All 4 voices upgraded with new layers.
 QualityAnalyzer measures real audio quality, not just "is there audio".
 Reward now reflects quality — sounds that produce balanced, dynamic,
 clean output get higher reward.
+
+Phase 3.1 — MultibandComp (DONE):
+- Added Biquad class (RBJ cookbook) for crossovers
+- Added MultibandComp: 3-band (low <180Hz, mid 180-4kHz, high >4kHz)
+- LR2 crossovers (Q=0.5) for flat summing
+- Conservative compression: ratio 1.5-1.8, makeup 1.05-1.1
+- Integrated: EQ → Multiband → Glue → Limiter → Tanh
+
+VERIFICATION:
+- Audio stable: peak -0.99dB, LUFS -13.24, 0 errors
+- Multiband provides spectral balance without killing sound
+- All Phase 1 + 2.1 + 3.1 upgrades working together
+
+PRODUCTION:
+- Commits: 2e64bf7
+- Deploy: https://ec10c4aa.psy4.pages.dev
