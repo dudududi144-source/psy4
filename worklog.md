@@ -10941,3 +10941,1357 @@ Stage Summary:
 - Agent Browser verified: page renders, audio engine starts, all controls interactive
 - Backup branch preserved: backup/local-diverged-181commits (Phase 1-9 engineering work, in case needed later)
 - File sizes match summary: psy4-engine.js=3129, composition-worker.js=1154, psyLive.ts=3644, page.tsx=705
+
+---
+Task ID: audit-A-psyLive
+Agent: general-purpose (read-only audit sub-agent)
+Task: Audit /home/z/my-project/src/lib/psyLive.ts (3644 lines) end-to-end. Verify each public method does real work, identify stubs/dead code/silent swallows, and check AudioWorklet/Worker/DOM wiring. No code changes.
+
+Work Log:
+- Read worklog tail (last 200 lines) for prior context — confirmed psyLive.ts is the production engine (3644 lines, last modified 2026-08-16).
+- Read psyLive.ts in full (offsets 1-500, 500-1000, 1000-1500, 1500-2000, 2000-2500, 2500-3000, 3000-3500, 3500-3645).
+- Read supporting files: src/lib/studio/engine/engineWorklet.ts (281 lines), src/lib/loopLearner.ts (236 lines), src/lib/soundPackage.ts (272 lines), src/lib/referenceAnalyzer.ts (first 80 lines).
+- Verified worklet files exist on disk: public/worklets/psy4-engine.js (127917 bytes), public/worklets/composition-worker.js (54993 bytes).
+- Checked tsconfig.json + next.config.ts — CRITICAL: `typescript.ignoreBuildErrors: true`. TypeScript errors are silently swallowed at build time. This explains why the bugs below were never caught.
+- Grepped for TODO/FIXME (none), silent `catch(e){}` patterns (11 found), `console.warn` early returns (16 found), `this.opts` references (1 — used but never declared).
+- Cross-referenced method definitions and call sites (scheduleCausalEvent, causalEventQueue, _queueScratch, applyLearnedParamsToComposer, lastScheduledBeatIndex, hasLearnedFromRadio, etc.).
+
+────────────────────────────────────────────────────────────────────────────────
+FINDINGS — Per public method
+────────────────────────────────────────────────────────────────────────────────
+
+▸ play()                                          [line 779]   REAL — YES
+  - Resumes AudioContext (ensureAudio line 579).
+  - Loads worklet module via addModule('/worklets/psy4-engine.js').
+  - Creates AudioWorkletNode 'psy4-engine' (engineWorklet.ts line 106).
+  - Creates Worker('/worklets/composition-worker.js') (line 672) — worker file exists.
+  - Starts setInterval scheduler at 100ms (line 838).
+  - Polls (50ms) if worklet not yet ready (line 811) — clears on success, 5s timeout.
+  - Calls engineNode.play() to start the worklet's internal transport.
+  - Sends 'init' message to worker with seed/root/scale (line 676).
+  - VERIFIED REAL: AudioContext resume + worklet + worker + scheduler all wired.
+
+▸ stop()                                          [line 865]   REAL — YES
+  - Clears _playPollInterval, _playPollTimeout, timer.
+  - Calls engineNode.stop() AND engineNode.panic() (clears voices).
+  - Posts 'reset' to compositionWorker.
+  - Resets lastWorkerComposeBar = -1 so next play restarts composition.
+  - Stops loopLearner if running.
+
+▸ setPreset(id)                                   [line 886]   PARTIAL
+  - Updates presetId, sets transport tempo via setTempo(p.bpm, 'internal').
+  - Updates delay time. Emits state.
+  - MISSING: Does NOT call engineNode.setBPM() — worklet may keep old BPM until next play(). Preset.bpm is in 138-150 range; mismatch may be inaudible but is inconsistent.
+
+▸ setVariant(v)                                   [line 896]   STUB
+  - Sets this.variant = v; emit().
+  - The variant's actual synth params (bassWave/bassCut/leadWave/etc. from PRESETS[].variants) are NEVER applied to the worklet. setVariant only updates the UI state field. Switching A/B has no audible effect.
+
+▸ setVolume(v)                                    [line 901]   REAL — YES
+  - setTargetAtTime on workletVolumeGain (worklet→analyser→destination path) — actually affects master volume.
+  - Also setTargetAtTime on master (legacy chain, disconnected when worklet active — no effect, but harmless).
+
+▸ setBusVolume(bus, v)                            [line 911]   PARTIAL
+  - Calls realizer.setBusVolume(bus, v). MaterialRealizer is created (line 684) but only used in the dead scheduleCausalEvent path. In production (worklet path), setBusVolume has NO audible effect — the worklet's internal mixer is controlled via setMacros(), not these legacy buses.
+
+▸ setChannelVolume(channel, v)                    [line 916]   PARTIAL
+  - Routes to setBusVolume (which is dead, see above).
+  - ALSO sets legacy kickBus/bassBus/leadBus/hatBus gain — but these are disconnected from the audio graph in initWorkletEngine (lines 1442-1448). So the slider moves but does nothing in production.
+
+▸ setDelayAmount(v) / setDelayFeedback(v) / setReverbSend(v)  [lines 928/932/938]   DEAD
+  - All three write to legacy delaySend/delayFb/reverbSend gain nodes which are connected to the legacy master chain. The legacy master chain (masterEqLow → masterEqMid → masterEqHigh → master → safetyLimiter → analyser) is fully disconnected in initWorkletEngine (lines 1442-1451). The delay and reverb sends DO still receive audio from the legacy buses, but those buses have no input source — they're orphans. In production these controls have ZERO audible effect. Only the worklet's internal FX (controlled via engineNode.setFX()) affect the output.
+
+▸ setStyle(style)                                 [line 948]   REAL — YES
+  - Sets cachedUserControls.style, calls sendWorkerControls() → posts {type:'controls', style} to compositionWorker.
+  - Also calls engineNode.setMacros(m) with style-mapped macros (energy/aggression/brightness/psychedelia).
+  - If worker not ready, stashes in pendingStyle (applied on init).
+
+▸ setEnergy(v)                                    [line 967]   REAL — YES
+  - Updates cachedUserControls.energy; sendWorkerControls() posts to worker.
+  - Also engineNode.setMacros({energy, density}).
+
+▸ setDensity(v)                                   [line 974]   PARTIAL
+  - Comment says "density is now derived from energy inside CausalComposer" — only updates worklet macro. The user-facing density control is effectively a no-op for composition decisions.
+
+▸ setTension(v)                                   [line 981]   REAL — YES
+  - Updates cachedUserControls.tension; sendWorkerControls(); setMacros({psychedelia, aggression}).
+
+▸ unlockStyle/Energy/Density/Tension/Key          [lines 990-994]   STUBS
+  - All five are empty bodies with comments. They are no-ops preserved for API compatibility. Calling them does nothing.
+
+▸ forceSection / releaseSection / triggerBreak/Build/Drop  [lines 999-1024]   REAL — YES
+  - Sets cachedUserControls.forcedSection + forcedBarsRemaining, then sendWorkerControls() posts {type:'controls', forcedSection, bars} to worker.
+
+▸ getArrangementState()                           [line 1025]   REAL
+  - Returns cached state (used for UI display only).
+
+▸ toggleComposition()                             [line 1621]   PARTIAL
+  - Generates Composition from learningData; sets transport tempo. But this.currentComposition is unused by the scheduler (which only talks to the worker). The composition field is stored but never read by audio playback. UI-only effect.
+
+▸ hasSavedComposition()                           [line 1640]   REAL (trivial)
+  - localStorage.getItem('psy-best-composition') existence check.
+
+▸ connectRadio(stream)                            [line 1645]   REAL — YES
+  - ensureAudio() called; AudioContext resumes.
+  - new Audio(); crossOrigin='anonymous'; src = stream.url.
+  - createMediaElementSource(radioEl) → radioGain → radioAnalyser → ctx.destination.
+  - Calls radioEl.play() with 12s timeout and AbortError handling.
+  - On success: radioOn=true, startDetection(), startAutoExploration(), emit().
+  - VERIFIED REAL: full DOM audio element + MediaElementSource + graph wiring.
+
+▸ disconnectRadio()                               [line 1735]   REAL — YES
+  - Clears radioEl.src, disconnects radioSource/radioAnalyser, transport.loseSource(), radioLayer.reset(), stopDetection/stopAutoExploration.
+
+▸ setRadioVolume(v)                               [line 1767]   REAL
+  - setTargetAtTime on radioGain (smoothed).
+
+▸ setChannelMute / setChannelSolo / applyMuteSolo [lines 1782-1807]   DEAD
+  - Writes to kickMute/bassMute/leadMute/hatMute gain nodes (created in ensureAudio lines 711-714). These mute nodes are between the legacy role buses and engineBus, both of which are disconnected from the audio graph in initWorkletEngine. The mute/solo UI works visually but has NO audible effect in production (worklet path).
+
+▸ initSynthesisMatcher()                          [line 2383]   REAL
+  - Forwards to synthesisMatcher.init(this.engineNode).
+
+▸ matchSound(role)                                [line 2397]   REAL — YES
+  - Gets latest onset from onsetAnalyzer; runs synthesisMatcher.match(); auto-saves to soundBank if matchScore >= 0.7; returns MatchResult.
+
+▸ getSoundBank()                                  [line 2436]   REAL — returns real SoundBank instance (IndexedDB-backed, initialized in constructor line 388).
+
+▸ getOnsetAnalyzer()                              [line 2441]   REAL — returns real OnsetAnalyzer instance (line 384).
+
+▸ getSoundBankStats()                             [line 2446]   REAL — awaits soundBank.getStats().
+
+▸ applyBestRecipeFromBank(role)                   [line 2651]   REAL — YES
+  - Gets entry from bank via soundBank.get(role, {style}); posts {type:'setVoiceRecipe', voiceClass, recipe} to engineNode.node.port (direct port access — see "Direct .node access" issue below).
+  - Updates usageCount via soundBank.updateReward(entry.id, 0, true).
+  - Starts rewardTracker tracking.
+  - VERIFIED: real recipe application to worklet.
+
+▸ applyAllRecipesFromBank()                       [line 2693]   REAL — loops over all 10 roles.
+
+▸ persistLearnedParamsToMemory()                  [line 2903]   REAL — YES
+  - Posts {type:'debug', query:'learnedVoiceParams'} to engineNode.node.port.
+  - Listens for 'debugResult' message; saves result to localStorage.
+  - 2s timeout. Works, but uses synchronous localStorage write inside async path.
+
+▸ exportSoundPackage()                            [line 2934]   REAL — YES
+  - Builds PackageInsights from transport + cachedInsights.
+  - Collects patterns via collectPatternsForPackage() (extracts kick pattern from radioKickTimes, or synthetic 4-on-floor fallback).
+  - Calls packageExporter.download() → JSON.stringify → Blob → a.click() → real .json file download.
+  - VERIFIED: produces valid JSON with real data (voices, patterns, insights, metadata).
+
+▸ importSoundPackage(jsonString)                  [line 3264]   REAL — YES
+  - Calls packageImporter.importJSON() → parses JSON, validates format='psy4-sound-package', clears bank, re-adds each voice with reconstructed SoundDNA + recipe.
+  - Then applyAllRecipesFromBank() to apply imported recipes to engine.
+  - VERIFIED: real import path with IndexedDB persistence.
+
+▸ generateAllOriginalSounds() (called generateAllOriginals in task spec)  [line 3593]   REAL — YES
+  - Loops over 10 roles, calls generateOriginalSounds(role) which delegates to synthesisGenerator.generate(role, targetDNA).
+  - targetDNA priority: onset.soundDNA > buildReferenceTargetDNA(role, currentReference) > buildSyntheticTargetDNA(role).
+  - All three target builders are real and return SoundDNA objects.
+  - VERIFIED: produces real GenerationResult[] (need to confirm SynthesisGenerator implementation, but the psyLive side is correctly wired).
+
+▸ exportMIDI()                                    [line 2959]   PARTIAL — BUG
+  - Builds valid MIDI format 0 header (MThd + format=0 + 1 track + 480 tpq). ✅
+  - Builds tempo meta event (0xFF 0x51). ✅
+  - Builds 4 bars of 4-on-floor kick (channel 9, note 36). ✅
+  - Builds offbeat 16th bass (channel 1, note = rootPc + 33). ✅
+  - Builds lead motif (channel 2, note = rootPc + 60 + intervals). ✅
+  - End-of-track meta (0xFF 0x2F 0x00). ✅
+  - VLQ delta encoding correct. ✅
+  - Downloads .mid blob via a.click(). ✅
+  - ⚠️ BUG: line 2966 `const rootPc = this.opts?.rootPc ?? 0;` — `this.opts` is NEVER declared on PsyLive (grep confirms 0 declarations). `this.opts` is undefined at runtime, so rootPc ALWAYS = 0. The MIDI file's bass/lead are always in C major regardless of the detected key. (Build silently passes because next.config.ts has `typescript.ignoreBuildErrors: true`.) Also, the patterns are hardcoded 4-bar motifs — they do NOT reflect what the engine is actually playing (which comes from the composition worker). So while the MIDI file is structurally valid, it is not a faithful export of the live performance.
+
+▸ savePreset(name)                                [line 3070]   REAL — YES
+  - Reads localStorage 'psy4-learned-params', saves under localStorage 'psy4-presets'[name] = {params, bpm, savedAt}.
+
+▸ loadPreset(name)                                [line 3089]   REAL — YES
+  - Reads 'psy4-presets'[name], calls saveLearnedParamsToMemory + loadLearnedParamsFromMemory (which posts setVoiceRecipe to worklet for each voiceClass). Returns false if not found.
+
+▸ listPresets()                                   [line 3105]   REAL
+  - Reads 'psy4-presets' object, maps to {name, bpm, savedAt}[].
+
+▸ startRecording()                                [line 3123]   REAL — YES
+  - ctx.createMediaStreamDestination(); analyser.connect(dest); new MediaRecorder(dest.stream, {mimeType:'audio/webm'}); ondataavailable pushes chunks; recorder.start().
+  - VERIFIED: real MediaRecorder usage.
+
+▸ stopRecording()                                 [line 3149]   REAL — YES
+  - recorder.onstop → Blob(chunks, {type:'audio/webm'}) → a.click() → downloads .webm file. Resolves true.
+  - VERIFIED: produces downloadable blob.
+
+▸ isRecording()                                   [line 3169]   REAL
+  - Returns mediaRecorder !== null && mediaRecorder.state === 'recording'.
+
+▸ resetAll()                                      [line 3177]   REAL — YES
+  - soundBank.clearAll() (IndexedDB wipe); localStorage.removeItem for params + bpm; generates fresh random defaults via generateDefaultLearnedParams(); posts setVoiceRecipe to worklet for each voice; saves to localStorage.
+
+▸ analyzeReference(file)                          [line 3209]   REAL — YES
+  - Throws if !ctx. Creates ReferenceAnalyzer(ctx). Calls analyzer.analyze(file) which does file.arrayBuffer() → ctx.decodeAudioData() → analyzeBuffer() (computes LUFS/truePeak/bandEnergies/bpm/key/scale). Stores as currentReference. Returns ReferenceDNA.
+  - VERIFIED: real decode + analysis.
+
+▸ getReference()                                  [line 3234]   REAL (trivial getter)
+
+▸ compareWithReference()                          [line 3242]   PARTIAL
+  - Returns null if no reference or analyser.
+  - Otherwise reads a SINGLE time-domain window (fftSize=512, ~11ms at 44.1kHz) from analyser, computes RMS, converts to "LUFS" via -0.691 + 10*log10(meanSquare).
+  - This is NOT real LUFS (which integrates K-weighted loudness over the whole track). It's a single-window RMS in dB. The distance metric is |currentLUFS - ref.lufs| / 10, clamped to 1.
+  - Works as a rough ballpark indicator but is mathematically wrong. "LUFS" labeling is misleading.
+
+▸ loadLoopFile(file)                              [line 3609]   REAL — YES
+  - Delegates to loopLearner.loadFile(file). Verified loopLearner.ts: creates blob URL, new Audio(), src=blobURL, loop=true, createMediaElementSource, gain→analyser→destination, audioEl.play(). Connects to psyLive's radioAnalyser field (hijacks detection). Real audio playback + learning.
+  - VERIFIED: real decode/play (browser handles format decoding via HTMLAudioElement).
+
+▸ stopLoop / isLoopRunning / setLoopVolume / getLoopLearner  [lines 3620-3643]   REAL — simple delegates to loopLearner.
+
+▸ getMusicState()                                 [line 2302]   REAL (returns shallow copy of musicState, updated in detect()).
+
+▸ getTransportDebug()                             [line 2326]   PARTIAL
+  - Returns object with real transport snapshot fields. But sessionStyle/sessionRole/sessionAction/etc. fields are HARDCODED defaults ('FULL_ON', 'LEAD', 'introduce', 'UNKNOWN', 0, 0, 0, '', false, 0). Comments admit "MusicalSession REMOVED — all defaults". So half the returned object is fabricated constants. UI displays these as if they were real.
+
+▸ getTransport()                                  [line 2375]   REAL (returns MusicalTransport instance).
+
+▸ hasLearnedFromRadio()                           [line 1370]   STUB — returns false always.
+▸ getLearnedPhraseCount()                         [line 1371]   STUB — returns 0 always.
+
+▸ Other getters (getPresets/getStreams/getPreset/getVariant/analyserNode/radioAnalyserNode/audioContext/engineBusInput)  REAL.
+
+────────────────────────────────────────────────────────────────────────────────
+CRITICAL VERIFICATION ITEMS
+────────────────────────────────────────────────────────────────────────────────
+
+1. AudioWorkletNode created?
+   ✅ YES — engineWorklet.ts line 106: `new AudioWorkletNode(this.ctx, 'psy4-engine', {...})`. Name matches the worklet registered in /worklets/psy4-engine.js. PsyLive.initWorkletEngine() (line 1396) creates Psy4EngineNode which creates the AudioWorkletNode.
+
+2. Worker created?
+   ✅ YES — psyLive.ts line 672: `this.compositionWorker = new Worker('/worklets/composition-worker.js')`. File exists (54993 bytes).
+
+3. SharedArrayBuffer used?
+   ⚠️ PARTIAL — Psy4EngineNode.initSharedBuffer() (engineWorklet.ts line 249) creates a SharedArrayBuffer and Int32Array count buffer, then posts them to the worklet via `initSharedBuffer` message. BUT the actual event transfer path (scheduleEvent + flushEvents) NEVER writes to the shared buffer. flushEvents() (line 232) creates a NEW Float64Array, copies from the regular eventBatch, and transfers it via `[events.buffer]`. So the SAB is allocated and sent to the worklet but never used for lock-free event transfer. The Transferable fallback is the actual code path in ALL cases. The console.log "SharedArrayBuffer active — lock-free event transfer" on psyLive.ts line 1409 is misleading.
+   Fallback exists: `if (typeof SharedArrayBuffer === 'undefined') return false;` (engineWorklet.ts line 250).
+
+4. play() starts audio?
+   ✅ YES — AudioContext resumed, worklet loaded, worker started, scheduler running (100ms setInterval), engineNode.play() called. See play() audit above.
+
+5. connectRadio() plays real radio stream?
+   ✅ YES — HTMLAudioElement + crossOrigin='anonymous' + createMediaElementSource + connect to destination. Real playback with 12s timeout and AbortError handling.
+
+6. setStyle/Energy/Tension/Volume affect worklet?
+   ✅ YES for setStyle/setEnergy/setTension (postMessage to worker via sendWorkerControls + engineNode.setMacros).
+   ✅ YES for setVolume (setTargetAtTime on workletVolumeGain, which sits between worklet output and analyser→destination).
+   ⚠️ setDensity only updates worklet macro, not worker (intentional per comment).
+
+7. loadLoopFile() actually decodes and plays a loop?
+   ✅ YES — see above. Uses HTMLAudioElement (browser-native decode) + MediaElementSource + real analyser routing.
+
+8. exportSoundPackage/importSoundPackage/generateAllOriginals produce valid JSON with real data?
+   ✅ YES for exportSoundPackage (10 roles collected, real voiceParams + soundDNASummary + patterns + insights, valid JSON downloaded).
+   ✅ YES for importSoundPackage (parses, validates format, reconstructs SoundDNA, repopulates IndexedDB).
+   ✅ YES for generateAllOriginalSounds (loops 10 roles, delegates to SynthesisGenerator).
+
+9. exportMIDI() produces valid MIDI file?
+   ✅ Format 0, 480 tpq, 1 track — header is correct (was previously swapped, fixed per worklog FEATURE-VERIFICATION).
+   ⚠️ BUG: rootPc always 0 (this.opts undefined — see exportMIDI audit above). Bass/lead notes are in C major regardless of detected key.
+   ⚠️ Patterns are hardcoded 4-bar motifs, NOT a faithful export of the live performance.
+
+10. analyzeReference/compareWithReference actually decode + analyze?
+    ✅ YES for analyzeReference (file.arrayBuffer + ctx.decodeAudioData + analyzeBuffer).
+    ⚠️ PARTIAL for compareWithReference — single-window RMS labeled as "LUFS", not real integrated LUFS. Distance metric is rough.
+
+11. savePreset/loadPreset/listPresets persist to localStorage?
+    ✅ YES — keys 'psy4-presets' (object), 'psy4-learned-params' (params JSON), 'psy4-learned-bpm' (BPM string).
+
+12. startRecording/stopRecording use MediaRecorder + produce downloadable blob?
+    ✅ YES — MediaRecorder(dest.stream, {mimeType:'audio/webm'}); Blob(chunks); a.click() downloads .webm file.
+
+13. getSoundBank/getOnsetAnalyzer/getSoundBankStats return real instances?
+    ✅ YES — SoundBank (IndexedDB), OnsetAnalyzer, both instantiated eagerly in field initializers (lines 384, 388). getSoundBankStats awaits real IndexedDB query.
+
+────────────────────────────────────────────────────────────────────────────────
+DEAD CODE / STUBS / SILENT SWALLOWS
+────────────────────────────────────────────────────────────────────────────────
+
+DEAD METHODS (defined, never called or always no-op):
+- scheduleCausalEvent(ev)                 [line 1590]  — private, never called. Was the old main-thread composer path. Worker handles all events now via handleWorkerMessage.
+- causalEventQueue: CausalNoteEvent[]     [line 423]   — declared, never read or written.
+- _queueScratch: CausalNoteEvent[]        [line 425]   — declared, never used.
+- applyLearnedParamsToComposer()          [line 2177]  — dead because causalComposer is always null (line 681: this.causalComposer = null). BPM/scale DO reach the worker via sendRadioDataToWorker (line 1100, 1129-1136), but applyLearnedParamsToComposer does nothing.
+- causalComposer: CausalComposer | null   [line 421]   — always null. Worker is the live authority.
+- lastScheduledBeatIndex                  [line 445]   — set to -1 in play() and stop(); only "read" in getTransportDebug (display only). Never used for scheduling.
+- hasLearnedFromRadio()                   [line 1370]  — returns false always (MusicalSession removed).
+- getLearnedPhraseCount()                 [line 1371]  — returns 0 always.
+- unlockStyle/Energy/Density/Tension/Key  [lines 990-994]  — empty bodies, no-ops.
+
+DEAD AUDIO GRAPH (created in ensureAudio, disconnected in initWorkletEngine):
+- masterEqLow / masterEqMid / masterEqHigh [lines 584-598] — disconnected line 1444-1446.
+- master GainNode                          [line 600]  — disconnected line 1447.
+- safetyLimiter DynamicsCompressorNode     [line 605]  — disconnected line 1448.
+- comp (engine bus compressor)             [line 721]  — disconnected line 1443.
+- engineBus                                [line 705]  — disconnected line 1442.
+- kickBus/bassBus/leadBus/hatBus           [lines 700-703] — connected to engineBus via mute/duck, but engineBus is disconnected → orphan chain.
+- kickMute/bassMute/leadMute/hatMute       [lines 711-714] — orphan (see above).
+- kickDuck/bassDuck/leadDuck/hatDuck       [lines 715-718] — set in detect() lines 2073-2081, but they're in the orphan chain. The ducking computation runs every 100ms but has no audible effect.
+- delaySend/delay/delayFb/reverbSend/convolver  [lines 621-638]  — connected to masterEqLow which is disconnected. Orphan.
+- noiseBuf                                 [line 642]  — only used by hat() function (line 743), but hat() is never called (was the legacy synth path; worklet has its own hat synth).
+- hat(t, lvl, open)                        [line 743]  — never called.
+- makeShaper(amount)                       [line 762]  — never called.
+- MaterialRealizer.realize(ev)             [line 1609]  — only called from dead scheduleCausalEvent. Realizer is created (line 684) and may load samples, but never produces audio in production.
+
+SILENT ERROR SWALLOWS (catch with no logging):
+- Line 1544: `} catch (e) {}` — scheduler() error swallowed. If scheduler throws, no error is reported; composition silently stalls.
+- Line 1650: `try { this.radioSource.disconnect(); } catch {}` — radio source disconnect.
+- Lines 1654-1656, 1738-1740: `try { this.radioEl.src = ''; } catch {}` etc. — radio element cleanup (acceptable; these can throw if element is in weird state).
+- Line 1743, 1745: radioSource/radioAnalyser disconnect (acceptable).
+- Line 2760: `try { existing = JSON.parse(json); } catch {}` — if saved params are corrupt JSON, silently treated as empty.
+- Line 2879, 2895: `} catch {}` in saveMemoryBpm / loadMemoryBpm — localStorage failures (quota, disabled) silently ignored.
+
+CONSOLE.WARN EARLY RETURNS (16 total) — these are documented as "not ready" warnings:
+- initSynthesisMatcher (engineNode not ready), matchSound (no onsets), exportSoundPackage (exporter not ready), exportMIDI (transport not ready), savePreset (no params), loadPreset (preset not found), startRecording (already recording), loadLoopFile (LoopLearner not ready), worklet init failed (MaterialRealizer fallback), worklet error (MaterialRealizer fallback), MEMORY save/load failed, persistLearnedParams failed, Exploration failed, auto-save failed, Radio play() aborted, AUDIO THREAD OVER BUDGET.
+- Note: "MaterialRealizer fallback" is a lie — MaterialRealizer is never wired into the audio graph when the worklet fails (see DEAD AUDIO GRAPH above). If worklet init fails, NOTHING produces audio. The "fallback" produces silence.
+
+────────────────────────────────────────────────────────────────────────────────
+ADDITIONAL ISSUES FOUND
+────────────────────────────────────────────────────────────────────────────────
+
+A. TS CONFIG MASKS BUGS — next.config.ts line 5: `typescript: { ignoreBuildErrors: true }`. This is why the bugs below compile and ship to production. Strong recommendation: remove this and fix the resulting errors.
+
+B. UNDECLARED this.opts — psyLive.ts line 2966: `this.opts?.rootPc ?? 0`. There is no `opts` field declared on PsyLive (grep confirmed). At runtime `this.opts` is undefined, so rootPc is always 0. MIDI bass/lead always export in C major. This would be a TypeScript error under normal strict checking but is masked by (A).
+
+C. DIRECT .node ACCESS — psyLive.ts accesses `this.engineNode.node.port.postMessage(...)` directly on lines 2673, 2733, 2778, 2913-2914, 3190. In engineWorklet.ts line 91, `node` is declared `private`. This is a TypeScript compile error that (A) hides. The engineWorklet.ts already has public methods for some of these (setMacros, setWorld, setBPM, setFX) but no public `setVoiceRecipe` method. Recommend adding a public method to Psy4EngineNode and using it instead of reaching into private state.
+
+D. DUPLICATE GETTER — `get engineBusInput()` is declared TWICE: line 490 AND line 1615. Both have the same body (`return this.engineBus ?? null;`). TypeScript should error on duplicate identifier but (A) hides it. Harmless at runtime (second declaration wins) but indicates copy-paste debris.
+
+E. SHAREDARRAYBUFFER IS THEATRICAL — initSharedBuffer() allocates a SAB and posts it to the worklet, but the actual event transfer path (scheduleEvent → flushEvents) writes to a regular Float64Array (eventBatch) and transfers a copy. The SAB is never written to by the main thread. The "lock-free event transfer" log message is misleading. To make it real, flushEvents should write into the SAB and signal via Atomics.store + Atomics.notify, and the worklet should poll the SAB in its process() loop.
+
+F. WORKLET STATS LOG IS NOISY — engineWorklet.ts exposes stats via onStats callback. psyLive.ts line 1412-1417 sets a callback that calls console.warn whenever processMs > 3.0. This will spam the console on slower devices. Not a correctness bug but a UX issue.
+
+G. BPM DETECTION LOGIC IS COMPLEX BUT PROBABLY CORRECT — sendRadioDataToWorker (line 1047) implements a 5-sample history, ±6 BPM stability check, 10s lock timeout, 5s drift unlock. Logic appears sound. The "BPM LOCKED" log on line 1105 fires when conditions are met.
+
+H. emit() RUNS EVEN WHEN NOT PLAYING — constructor calls `setTimeout(() => this.emit(), 0)` (line 499). This is fine (UI needs initial state) but means React mounts with playing=false, radioOn=false, all defaults. No issue.
+
+I. MUSICSTATE DENSITY MUTATION IS UNREAD — musicState.density is updated in detect() (lines 2043-2050) based on energySlope, but musicState is only consumed by getMusicState() (line 2302) for UI display. The worker doesn't read this field; it gets density from energy via its own internal mapping. So the density-mutation logic in detect() is effectively UI-only.
+
+J. COMPOSITION MODE DOESN'T AFFECT PLAYBACK — toggleComposition() (line 1621) sets this.compositionMode and this.composition (a Composition object), and updates transport tempo. But the scheduler() (line 1520) never reads this.composition — it only talks to the compositionWorker. So toggling composition mode only changes the BPM and a UI flag; the actual composition is still whatever the worker decides.
+
+K. KICK COUNT DRIFT — kickCount is incremented in BOTH handleWorkerMessage (line 1570, for events from worker) AND detect() (line 1930, for radio beats observed). When radio is connected AND engine is playing, kickCount double-counts: once for the radio-detected kick and once for the engine-scheduled kick. UI display will be inflated.
+
+L. SIDECHAIN STATE IS HARDCODED FALSE — emit() line 546: `sidechainActive: false`. The actual sidechain/ducking is applied by the worklet internally (line 1458 setWorld({duck: 0.6})). The UI shows sidechain as always-off even though it's active in the worklet. Cosmetic.
+
+────────────────────────────────────────────────────────────────────────────────
+STAGE SUMMARY
+────────────────────────────────────────────────────────────────────────────────
+
+OVERALL VERDICT: psyLive.ts is a REAL, WORKING engine for the core play/stop/radio/learning paths. The AudioWorklet + Worker + Transport architecture is correctly wired and produces real audio. ~70% of public methods do real work; ~20% are stubs/dead; ~10% have correctness bugs.
+
+WORKING CORRECTLY (no action needed):
+- play/stop, AudioContext resume, worklet loading, worker startup, scheduler.
+- connectRadio/disconnectRadio — real radio stream playback with proper CORS + timeout handling.
+- setStyle/setEnergy/setTension/setVolume — real effect on worklet.
+- exportSoundPackage/importSoundPackage — valid JSON with real IndexedDB data.
+- analyzeReference — real decodeAudioData + analysis.
+- savePreset/loadPreset/listPresets — localStorage persistence works.
+- startRecording/stopRecording — real MediaRecorder + .webm download.
+- loadLoopFile — real HTMLAudioElement + MediaElementSource + analyser hijack.
+- SoundBank/OnsetAnalyzer/SynthesisMatcher — real instances, real work.
+- BPM lock logic — complex but appears correct.
+
+CRITICAL BUGS TO FIX:
+1. exportMIDI() rootPc always 0 (this.opts undefined) — bass/lead export in C major regardless of detected key. (line 2966)
+2. next.config.ts `typescript.ignoreBuildErrors: true` masks all TS errors — should be removed and the resulting errors fixed.
+3. SharedArrayBuffer allocated but never used for event transfer — "lock-free" log is misleading. (engineWorklet.ts flushEvents)
+
+DEAD CODE TO REMOVE (cleanup):
+- scheduleCausalEvent, causalEventQueue, _queueScratch, applyLearnedParamsToComposer, causalComposer field.
+- Entire legacy audio graph (kickBus/bassBus/leadBus/hatBus/mute/duck/engineBus/comp/masterEq/master/safetyLimiter/delay/reverb/noiseBuf/hat/makeShaper) — disconnected in initWorkletEngine, kept "for fallback" but fallback is broken.
+- MaterialRealizer fallback path — realizer is created but its output is never connected; "MaterialRealizer fallback" warning is a lie.
+- hasLearnedFromRadio, getLearnedPhraseCount — return false/0 always.
+- unlockStyle/Energy/Density/Tension/Key — empty no-ops.
+- Duplicate `get engineBusInput` declaration (line 490 + 1615).
+- setChannelVolume/setChannelMute/setChannelSolo/setBusVolume/setDelayAmount/setDelayFeedback/setReverbSend — all write to orphan legacy nodes. Either rewire to worklet.setFX or remove from UI.
+
+PARTIAL / NEEDS WORK:
+- compareWithReference — uses single-window RMS mislabeled as LUFS. Should use a real integrated LUFS measurement (or relabel as "RMS distance").
+- exportMIDI — patterns are hardcoded 4-bar motifs, not a faithful export of live performance.
+- getTransportDebug — half the fields are hardcoded defaults from the removed MusicalSession.
+- setDensity — only updates worklet macro, not worker.
+- setVariant — never applies variant synth params to worklet (no audible effect).
+- kickCount — double-counts when radio + engine both running.
+- sidechainActive — always false in UI state despite worklet applying ducking.
+
+NO TODO/FIXME comments found in the file (good — dead code is documented in inline comments instead).
+
+SILENT ERROR SWALLOWS: 11 instances, mostly acceptable (DOM cleanup, localStorage quota). One concerning: scheduler() line 1544 catches all errors silently — if scheduler throws, composition stalls with no log.
+
+RECOMMENDATION: The engine is production-viable for the core demo (Play → hear a track). The bugs above are quality issues, not show-stoppers. Priority order for fixing:
+1. Remove `typescript.ignoreBuildErrors: true` and fix resulting errors (will catch this.opts, duplicate getter, private access).
+2. Fix exportMIDI rootPc bug.
+3. Either wire SharedArrayBuffer into flushEvents or remove the misleading log.
+4. Remove dead legacy audio graph (or rewire to worklet for actual fallback).
+5. Fix setVariant to apply params to worklet.
+
+Audit complete. No code was modified.
+
+---
+
+**Task ID:** audit-B-engine
+**Agent:** general-purpose (read-only audit)
+**Task:** End-to-end audit of `/home/z/my-project/public/worklets/psy4-engine.js` (3129 lines) — the PSY4 AudioWorklet DSP engine. Verify voice classes, main processor, master chain, SAB usage, message handlers, voice pool, sampler, and dead code. Do NOT trust prior claims; read the actual code.
+
+**Work Log:**
+
+Read the entire file in 8 chunks (offsets 1, 400, 800, 1200, 1600, 2000, 2400, 2800) plus targeted greps for class declarations, SnareVoice, fetch/decodeAudioData, TODO/FIXME, catch blocks, postMessage, render/renderStereo, allocations (new/push/splice/slice/map), DISABLED markers, learnedVoiceParams, and RiserVoice/ImpactVoice/SweepVoice. Cross-referenced against the prior audit-A context (last 200 lines of worklog) which documented the main-thread psyLive.ts side.
+
+────────────────────────────────────────────────────────────────────────────────
+1. VOICE CLASSES — 14, NOT 15
+────────────────────────────────────────────────────────────────────────────────
+
+The claim "15 voice classes (KickVoice, BassVoice, LeadVoice, AcidVoice, PadVoice, HatVoice, ClapVoice, PercVoice, ShakerVoice, TextureVoice, WavetableVoice, FMVoice, FXVoice, SampleVoice, SnareVoice)" is **FALSE**. There are **14** voice classes. `SnareVoice` does NOT exist as a class.
+
+Voice ID constants (line 60) define `V_SNARE = 18`, but `triggerVoice` case `V_SNARE` (line 2701) reuses the **clapPool** with `ClapVoice`:
+```js
+case V_SNARE: {
+  const lp = (this.learnedVoiceParams && this.learnedVoiceParams.ClapVoice) || {};
+  const v = this.getFreeVoice(this.clapPool);   // ← reuses ClapVoice, not a SnareVoice
+  if (v) v.trigger(t, velocity, sr);
+  ...
+}
+```
+The snareSamplePool (1 SampleVoice, line 2195) exists but is never triggered (see §7/§8 below).
+
+Complete list of voice classes (all verified to have real render() that produces non-silent audio when active):
+
+| # | Class | Line | Role | render() produces audio? | trigger() sets real state? |
+|---|-------|------|------|--------------------------|----------------------------|
+| 1 | KickVoice | 249 | Kick (sub+mid+click+body+tail) | YES — 5-layer synth | YES (amp, fund, decay, phases) |
+| 2 | BassVoice | 365 | Bass (BL saw→Moog+sub+harmonic, Haas stereo) | YES | YES (freq, dur, amp, acid, filter params) |
+| 3 | LeadVoice | 523 | Lead (5-detuned-saw supersaw→Moog, FM, delay throw) | YES | YES (freq, dur, amp, detune, cutoff, FM) |
+| 4 | AcidVoice | 651 | Acid/TB-303 (square→high-res Moog, analog modeling: accent cap, thermal drift, power sag, slide, tolerance) | YES | YES (freq, dur, amp, accent/slide/drift state) |
+| 5 | FMVoice | 798 | 4-operator FM (3 algorithms)→Moog | YES | YES (freq, dur, ratios, indices, algorithm) |
+| 6 | PadVoice | 888 | Pad (3 detuned saws→Moog M/S, shimmer+noise bed) | YES | YES (freq, dur, cutoff, attack, detune) |
+| 7 | HatVoice | 1007 | Hat (differentiated pink noise + 6-osc metallic bank) | YES | YES (open, amp, decay, brightness, metalLevel) |
+| 8 | ClapVoice | 1075 | Clap (4-burst noise→Moog bandpass, random stereo pan) | YES | YES (amp, bursts, decays, pan) |
+| 9 | PercVoice | 1131 | Perc (pitched sine w/ pitch env→Moog→tanh) | YES | YES (freq, amp, phase) |
+| 10 | ShakerVoice | 1178 | Shaker (pink noise→Moog HP→tanh, random pan) | YES | YES (amp, decay, pan) |
+| 11 | TextureVoice | 1231 | Texture (detuned saw+noise bed OR granular synthesis) | YES (two modes) | YES (dur, amp, type, baseFreq) |
+| 12 | WavetableVoice | 1366 | Wavetable (sine↔saw morph, 2048-sample tables) | YES | YES (freq, dur, morphPos, morphRate) |
+| 13 | FXVoice | 1446 | FX (riser/impact/sweep/zap/blip/downlifter via switch) | YES (6 sub-types) | YES (type, dur, amp, learned params) |
+| 14 | SampleVoice | 1577 | Sample playback (linear interp, pitch, pan, tanh saturation) | YES — but NEVER TRIGGERED (see §8) | YES (sampleData, rate, amp, decay, pan) |
+
+All 14 voice classes have genuine DSP in render() — none return silence unconditionally. All trigger() methods set real state. The `globalThis.__PSY4_VOICES` export at line 3123-3128 lists exactly these 14 classes (no SnareVoice).
+
+────────────────────────────────────────────────────────────────────────────────
+2. MAIN AUDIOWORKLETPROCESSOR — Psy4EngineProcessor (line 2128)
+────────────────────────────────────────────────────────────────────────────────
+
+Registered at line 3118: `registerProcessor('psy4-engine', Psy4EngineProcessor)`.
+
+**process(inputs, outputs)** at line 2791-3115:
+
+- **Event source:** Reads from BOTH paths:
+  - SharedArrayBuffer: lines 2806-2825 — checks `if (this.sharedEventCount)`, reads `Atomics.load(this.sharedEventCount, 0)`, copies events from `sharedEventView` (Float64Array) into the internal ring buffer, then `Atomics.store(this.sharedEventCount, 0, 0)`. This code IS present and correct.
+  - Internal ring buffer: lines 2827-2841 — drains `eventBuffer` (Float64Array) by comparing event time to `currentFrame / sr`. Events enter the ring buffer via the `'events'` message handler (line 2509 → `enqueueEvents`) or `'trigger'` (line 2519 → `enqueueEvent`).
+  - **Per audit-A:** the main thread's `flushEvents()` NEVER writes to the SAB — it transfers a Float64Array copy via `postMessage(..., [buffer])`. So the SAB read in process() always finds `sharedCount === 0` in practice. The SAB code is live but never receives data from the main thread.
+
+- **Iterates active voices and sums them:** YES. Lines 2843-2889 collect active voices into preallocated flat arrays (`activeVoiceRef`, `activeVoiceBus`, `activeVoiceStereo`). Lines 2926-2988 iterate `activeCount` voices, call `v.render()` or `v.renderStereo()`, and sum into 5 stereo buses (drum/bass/music/atmos/fx). Bass and music buses have sidechain ducking applied (lines 2939-2941, 2954-2955, 2959).
+
+- **Master chain applied:** YES. Per-sample: bus processing (lines 2992-3001) → bus sum with gains (3004-3013) → reverb+delay sends (3016-3039) → StereoWidener (3044-3045) → MasterChain.process() for L and R (3049-3050) → M/S Stereo Imager (3055-3066) → output write (3068-3069).
+
+- **postMessage in hot path:** YES, but **throttled** to every `STATS_REPORT_BLOCKS` (150) blocks (~2 Hz at 128-sample blocks). Line 3098-3112: `this.blockCounter++; if (this.blockCounter >= STATS_REPORT_BLOCKS) { ... this.port.postMessage({type:'stats',...}) }`. This is NOT per-sample or per-block; it's ~2 Hz. The `postMessage` call does allocate an object literal (lines 3101-3111) every 150 blocks — minor, gated allocation.
+
+- **Allocation in process():** MINIMAL but present:
+  - Line 2888: `if (!this.leadDelayL) this.leadDelayL = new Float32Array(18);` — lazy init, once only (first block ever). Guarded.
+  - Line 3058: `this._sideHP = this._sideHP || 0;` — lazy init, once only.
+  - Line 3101: `this.port.postMessage({...})` — object literal allocated every 150 blocks. Gated.
+  - SchroederReverb.process() lines 1704-1714: lazy init of `erBuffers`/`erDelays` on first call (once only). After that, no allocation. The `.map()` at line 1708 runs once.
+  - **TextureVoice granular path (lines 1301, 1319):** `this.activeGrains.push({...})` and `this.activeGrains.splice(i, 1)` — per-sample allocation INSIDE render(). HOWEVER, the granular type is NEVER triggered from `triggerVoice` (case V_TEXTURE at line 2723-2728 only triggers with `'noise'` or `'fm'`, never `'granular'`). So this allocation path is unreachable in normal operation. It would allocate if a direct `'trigger'` message with type='granular' were sent, but the scheduler doesn't do this.
+  - **Verdict:** Effectively zero per-block allocation in the live hot path. The PSY5 RT-safe contract (documented at lines 2781-2789) is honored in practice.
+
+- **Preallocated `_out` buffers:** YES. Every voice class has `this._out = new Float32Array(2)` in its constructor and returns `this._out` from render()/renderStereo(). SchroederReverb, StereoDelay, StereoWidener all have `this._out`. MasterChain returns a scalar (processes one sample at a time). The active-voice tracking arrays (`activeVoiceRef` as `new Array(64)`, `activeVoiceBus`/`activeVoiceStereo` as `Uint8Array(64)`) are preallocated at lines 2307-2309.
+
+────────────────────────────────────────────────────────────────────────────────
+3. MASTER CHAIN — stages verified
+────────────────────────────────────────────────────────────────────────────────
+
+MasterChain.process() (line 2048-2123) runs per-sample, separately for L and R (two instances: `this.masterL`, `this.masterR` at lines 2219-2220).
+
+| Stage | Implemented? | Lines | Notes |
+|-------|-------------|-------|-------|
+| EQ (low shelf warmth) | YES | 2058-2060 | One-pole LP at 120Hz, +2.5dB shelf (`sample + 0.259 * lsState`). Only low shelf — no mud cut, no presence, no air (despite comment at line 1996 claiming 4-band EQ). |
+| Multiband compression | **DISABLED** | 2062-2067 | Comment: "DISABLED: Biquad crossover with Q=0.5 was killing high frequencies." `this.mb = new MultibandComp(sr)` IS constructed (line 2054) but `mbOut = eqOut` bypasses it entirely. The MultibandComp class (line 1953) and Biquad class (line 1913) are fully implemented but NEVER called. DEAD CODE. |
+| Glue compressor | YES | 2069-2083 | threshold=0.7, ratio=1.5, attack=5ms, release=250ms, makeup=0.9. Peak-detecting envelope, gain smoothing. |
+| LUFS targeting | YES | 2085-2120 | Running mean square (smoothed `lufsMs * 0.9999 + finalSq * 0.0001`), computes LUFS = `-0.691 + 10*log10(lufsMs)` every 256 samples, sets `lufsTargetGain = 10^(error/20)` clamped to [0.5, 2.0]. Applied with 0.5s smoothing. This is a single-pole-RMS approximation, NOT true K-weighted integrated LUFS, but it IS a real feedback loop that adjusts makeup gain. |
+| Brick-wall limiter | YES | 2091-2102 | ceiling=0.89 (line 2008). Peak-detecting: if `|lufsOut| > ceiling`, instantly sets `tpGainEnv = ceiling/peak` (attack=0.0001s ≈ instant). Release=60ms. True brick-wall behavior (instant attack). |
+| Tanh soft-clip | YES | 2105 | `fastTanh(output * this.gain * 1.0)` — Pade approximation (line 66-71). Final safety clip. |
+| M/S Stereo Imager | YES (in process(), not MasterChain) | 3055-3066 | Applied AFTER master chain. Computes mid/side, one-pole HP on side at 200Hz (keeps sub mono), boosts side by 10% (`side *= 1.1`). Comment: "was 20%, caused peaks". **BUG RISK:** applied after the limiter, so the 10% side boost can push peaks above ceiling=0.89. No post-imager safety clip. |
+| Sidechain ducking | YES (in process(), not MasterChain) | 2272-2274, 2621-2622, 2913-2915, 2939-2955 | `duckEnv` set to `1 - wp.duck * (0.6 + aggression*0.4)` on kick trigger (clamped to min 0.35). Exponential recovery over 100ms (`dt/0.10`). Applied to **bass bus** (stereo: lines 2939-2941; mono: 2954-2955) and **music bus** (line 2959). NOT applied to drum/atmos/fx buses. Kick ducks itself indirectly via the bass/music duck. |
+
+**Order in process() per sample:**
+1. Bus gain only (BusProcessor.process — line 1854-1856: `return sample * this.gain`. HP/compressor/saturation in bus configs are IGNORED — only `gain` field is used. Comment at line 1849: "only gain is applied — HP/compressor/saturation were disabled because they killed the sound".)
+2. Sum buses with `busGains` [1.0, 1.0, 0.9, 0.5, 0.7]
+3. Reverb + Delay sends (SchroederReverb + StereoDelay, both fully implemented)
+4. StereoWidener (Haas 12ms + decorrelated HP side, line 1868)
+5. MasterChain (EQ → [Multiband DISABLED] → Glue → LUFS → Limiter → Tanh)
+6. M/S Stereo Imager
+7. Output write
+
+────────────────────────────────────────────────────────────────────────────────
+4. SharedArrayBuffer USAGE
+────────────────────────────────────────────────────────────────────────────────
+
+- **init method receives SAB:** YES. `initSharedBuffer` message handler (lines 2512-2518) stores `this.sharedEventBuffer = msg.buffer`, `this.sharedEventCount = new Int32Array(msg.countBuffer)`, `this.sharedEventView = new Float64Array(this.sharedEventBuffer)`.
+
+- **process() reads from it via Atomics.load:** YES. Lines 2806-2825:
+  ```js
+  if (this.sharedEventCount) {
+    const sharedCount = Atomics.load(this.sharedEventCount, 0);
+    if (sharedCount > 0) {
+      for (let i = 0; i < sharedCount; i++) {
+        const sBase = i * EVENT_SIZE;
+        this.enqueueEvent(this.sharedEventView[sBase], ...);
+      }
+      Atomics.store(this.sharedEventCount, 0, 0);
+    }
+  }
+  ```
+
+- **Is the SAB ever written by the main thread?** NO — per audit-A, the main thread's `flushEvents()` (engineWorklet.ts line 232) creates a NEW Float64Array, copies from `eventBatch`, and transfers it via `[events.buffer]` using the `'events'` message. The SAB is allocated and sent to the worklet but NEVER written to by the main thread. So `Atomics.load` in process() always returns 0.
+
+- **Is the SAB "allocated but never read"?** The worklet code CAN read it, but in practice the read always finds count=0. The worklet side is correctly implemented; the main thread side doesn't use it. The actual event transfer path is: main thread → `postMessage('events', Float64Array transfer)` → worklet `enqueueEvents` → ring buffer → `triggerVoice`. This is a transferable-queue path, not a lock-free SAB path.
+
+────────────────────────────────────────────────────────────────────────────────
+5. MESSAGE PORT HANDLERS — 17 handlers
+────────────────────────────────────────────────────────────────────────────────
+
+`this.port.onmessage = (e) => this.handleMessage(e.data)` set at line 2132 (top of constructor — comment says "CRITICAL FIX: Set port.onmessage FIRST").
+
+`handleMessage` switch (lines 2365-2558) accepts these message types:
+
+| Message | Line | Action |
+|---------|------|--------|
+| `play` | 2366 | Sets `playing=true`, resets step/currentSample/nextStepSample |
+| `stop` | 2372 | Sets `playing=false`, clears event ring buffer, Atomics.store count=0, deactivates ALL voice pools |
+| `bpm` | 2388 | Sets `this.bpm` |
+| `macros` | 2391 | Merges into `this.macros` (energy/psychedelia/darkness/density/groove/evolution/space/surprise/aggression/brightness) |
+| `renderVoice` | 2395 | Offline render: instantiates a voice class from `globalThis.__PSY4_VOICES`, triggers it, renders `duration` samples, transfers Float32Array back via `renderVoiceDone`. Used by SynthesisMatcher. |
+| `world` | 2457 | Merges into `worldParams` (kickFundamental, bassCutoff, leadCutoff, padCutoff, duck, etc.) |
+| `debug` | 2461 | If query='learnedVoiceParams', returns `this.learnedVoiceParams` via `debugResult` |
+| `setVoiceRecipe` | 2468 | Stores learned params keyed by voiceClass string on `this.learnedVoiceParams` |
+| `setFX` | 2479 | Sets reverbSends/delaySends arrays, reverbWet, delayWet, delayFeedback |
+| `setParams` | 2488 | Batched: world + macros + bpm + FX sends in one message |
+| `events` | 2509 | Calls `enqueueEvents(msg.events)` — Float64Array of [time,voice,note,vel,dur,param,...] |
+| `initSharedBuffer` | 2512 | Receives SAB + Int32Array count buffer |
+| `trigger` | 2519 | Single immediate event: `enqueueEvent(time, voice, note, velocity, duration, param)` |
+| `duck` | 2523 | Triggers sidechain duck: `duckEnv = max(0.35, 1 - duckDepth*(0.5+aggression*0.5))` |
+| `panic` | 2527 | Deactivates all voice pools |
+| `newPhrase` | 2533 | Increments phraseKickIdx/phraseHatIdx/phraseClapIdx/phrasePercIdx/phraseLeadIdx (used for round-robin sample rotation, but these indices are never read elsewhere — DEAD STATE) |
+| `loadSamples` | 2542 | Stores sample data in `this.samples[name]`, sets `samplesReady` — but samples are never used (see §8) |
+
+No `setMacros` or `setVolume` handler — macros come via `macros`/`setParams`; volume is handled on the main-thread side via a GainNode (per audit-A).
+
+────────────────────────────────────────────────────────────────────────────────
+6. VOICE POOL
+────────────────────────────────────────────────────────────────────────────────
+
+**Preallocated pools (constructor lines 2168-2195):**
+
+| Pool | Size | Class |
+|------|------|-------|
+| kickPool | 3 | KickVoice |
+| bassPool | 3 | BassVoice |
+| leadPool | 3 | LeadVoice |
+| acidPool | 2 | AcidVoice |
+| padPool | 2 | PadVoice |
+| hatPool | 3 | HatVoice |
+| clapPool | 2 | ClapVoice |
+| percPool | 3 | PercVoice |
+| shakerPool | 3 | ShakerVoice |
+| texturePool | 2 | TextureVoice |
+| fxPool | 2 | FXVoice |
+| fmPool | 2 | FMVoice |
+| wavetablePool | 2 | WavetableVoice |
+| kickSamplePool | 2 | SampleVoice (DEAD — never triggered) |
+| hatSamplePool | 2 | SampleVoice (DEAD — never triggered) |
+| clapSamplePool | 1 | SampleVoice (DEAD — never triggered) |
+| snareSamplePool | 1 | SampleVoice (DEAD — never triggered) |
+
+**Total:** 32 synth + 6 sample = **38 voices**. Comment at line 2181 says "Total: 34 voices (was 64+28=92)" — the comment is **wrong** (32+6=38, not 34).
+
+**Budget:** `MAX_VOICES = 24` (line 43), `VOICE_BUDGET_MIN = 6` (line 44). Dynamic budget starts at 24 and can drop to 6 under CPU load (lines 3084-3091). If active count exceeds budget, the highest-indexed active voices (FX/sample/texture — lowest musical priority) are deactivated (lines 2877-2885). Kick/bass/lead (lowest indices) are protected.
+
+**triggerVoice → getFreeVoice (line 2773-2779):**
+```js
+getFreeVoice(pool) {
+  for (const v of pool) {
+    if (!v.active) return v;   // first inactive
+  }
+  return pool[0];  // voice stealing: returns FIRST allocated, not oldest active
+}
+```
+Returns the first inactive voice. If all active, returns `pool[0]` — this is voice stealing, but the comment "return the oldest (first in pool)" is misleading: `pool[0]` is the first ALLOCATED voice, which may or may not be the oldest ACTIVE voice. It could steal a voice that just started. Minor inaccuracy.
+
+────────────────────────────────────────────────────────────────────────────────
+7. SAMPLER / SAMPLES — infrastructure exists but is DEAD CODE
+────────────────────────────────────────────────────────────────────────────────
+
+- **No fetch/decodeAudioData in the worklet.** Grep for `fetch` and `decodeAudioData` returned zero matches in the worklet file (only a comment at line 2375). Sample decoding happens on the main thread; raw `Float32Array` data is transferred to the worklet via the `loadSamples` message (line 2542).
+
+- **`loadSamples` handler (lines 2542-2557):** Receives `msg.samples = [{name, category, subcategory, sampleRate, data: Float32Array}]`, stores in `this.samples[name]`, sets `samplesReady = true`. Console logs count.
+
+- **SampleVoice class (line 1577):** Fully implemented — linear interpolation playback, pitch shift via `playbackRate`, exponential decay env, tanh saturation, equal-power pan, stereo output via `renderStereo()`. Real, working DSP.
+
+- **Sample voice pools (lines 2187-2195):** 6 SampleVoice instances allocated (kickSamplePool=2, hatSamplePool=2, clapSamplePool=1, snareSamplePool=1). Added to `voicePoolTable` (lines 2348-2351) so their `active` flag is checked in the process() iteration loop.
+
+- **CRITICAL: SampleVoice is NEVER TRIGGERED.** `triggerVoice` (lines 2590-2770) has cases for V_KICK through V_WAVETABLE, and ALL drum cases (V_KICK, V_HAT, V_HAT_OPEN, V_CLAP, V_SNARE) use the SYNTH pools (kickPool, hatPool, clapPool), NOT the sample pools. There is no code path that calls `getFreeVoice(this.kickSamplePool)` or sets `samplesReady` to route to samples. The comment at line 2598-2599 (Hebrew) translates to: "switching to SYNTH kick only — samples create a constant sound that doesn't change" — confirming this was an intentional decision.
+
+- **Consequence:** The `loadSamples` handler, `this.samples` bank, `samplesReady` flag, 6 SampleVoice instances, and 4 sample pool entries in `voicePoolTable` are all **dead code**. They consume memory (6 voice instances + whatever sample data was transferred) and add a small per-block overhead (iterating 6 always-inactive voices), but produce no audio. If the main thread sends sample data via `loadSamples`, it's stored and never played.
+
+────────────────────────────────────────────────────────────────────────────────
+8. BUGS / DEAD CODE
+────────────────────────────────────────────────────────────────────────────────
+
+**Voice classes with render() that always returns silence:** NONE. All 14 voice classes produce real audio when active.
+
+**Master stage commented out or behind `if(false)`:**
+- **Multiband compression is DISABLED** (lines 2062-2067). Not behind `if(false)` — the code is `const mbOut = eqOut;` with a comment explaining the bypass. The `MultibandComp` instance is still constructed (line 2054) but `this.mb.process()` is never called. The entire `MultibandComp` class (line 1953) and `Biquad` class (line 1913) are dead code.
+- **BusProcessor HP/compressor/saturation DISABLED** (lines 1846-1857). The class only applies `gain`. Comment: "HP/compressor/saturation were disabled because they killed the sound." The config objects (drumConfig, bassConfig, etc. at lines 2236-2258) still define `hpFreq`, `compThr`, `compRatio`, `compAtt`, `compRel`, `compMakeup`, `drive` — but BusProcessor ignores all of them except `gain`. Dead config fields.
+
+**TODO/FIXME:** NONE. Grep returned zero matches for TODO/FIXME/XXX/HACK.
+
+**Silent `catch(e){}` swallows:** NONE with empty body. The only `catch` in the file is at line 2452 in the `renderVoice` handler: `} catch (err) { this.port.postMessage({type:'renderVoiceDone', buffer:null, error: String(err && err.message ? err.message : err)}); }` — this DOES report the error back to the main thread. Not a silent swallow.
+
+**Other dead code:**
+- `eventTimes` Float64Array (line 2146) — allocated, never read or written. `enqueueEvent` writes to `eventBuffer` only, not `eventTimes`.
+- `phraseKickIdx`/`phraseHatIdx`/`phraseClapIdx`/`phrasePercIdx`/`phraseLeadIdx` (lines 2536-2540) — incremented on `newPhrase` but never read elsewhere. Dead state.
+- `rrCounters` (line 2202) — initialized to `{kick:0, hat:0, clap:0}` but never read or incremented. Dead.
+- `sampleUsage` (line 2204) — initialized to `{}` but never written. Dead.
+- `logCounter` (line 2203) — initialized to 0 but never read. Dead.
+- `statsTimer` (line 2293) — initialized to 0 but never used (replaced by `blockCounter`). Dead.
+- `playing` flag (line 2137) — set by `play`/`stop` messages but **never checked in process()**. The worklet processes events and renders audio regardless of whether `playing` is true. The main thread controls start/stop by ceasing to send events; the worklet doesn't gate on `playing`. (Not strictly a bug — the worklet is always "hot" — but the flag is misleading dead state.)
+- `step` / `nextStepSample` (lines 2139-2140) — set by `play` but never used in process(). The worklet doesn't advance a transport; it just executes events whose `time` <= current audio time. Dead transport state.
+- `RiserVoice`/`ImpactVoice`/`SweepVoice` string keys (lines 2731-2733) — used to look up `learnedVoiceParams['RiserVoice']` etc., but these voice CLASSES don't exist (only `FXVoice` handles all FX). The lookup works by string key, so if the main thread stored a recipe under `'RiserVoice'`, it would be found and passed to `FXVoice.trigger` as `params`. Functionally OK, but the naming implies non-existent classes.
+
+**M/S imager post-limiter peak risk:** The M/S Stereo Imager (lines 3055-3066) runs AFTER the master limiter and boosts the side channel by 10% (`side *= 1.1`). This can push peaks above the limiter ceiling (0.89). There is no post-imager safety clip. The comment at line 3062 acknowledges this ("was 20%, caused peaks") but 10% can still exceed ceiling on side-heavy material. The final tanh in MasterChain (line 2105) is BEFORE the imager, so it doesn't catch imager peaks.
+
+**Lead air layer bug (line 612):** `const air = (noiseSample - this.noise.prevOutput || 0) * 0.08;` — operator precedence: `this.noise.prevOutput` is undefined (PinkNoise has no `prevOutput` property; it has `b[6]` etc.), so `this.noise.prevOutput || 0` evaluates to `0`. The expression becomes `(noiseSample - 0) * 0.08` = `noiseSample * 0.08`. The differentiation (intended HP) doesn't work — it's just scaled noise. Minor audio bug, not a crash.
+
+**V_SNARE sets `v.decays` (line 2705)** on a ClapVoice: `v.decays = [lp.clapDecay, ...]`. ClapVoice.trigger (line 1093) sets `this.decays = [0.02, 0.02, 0.02, this.clapDecay * 2]`. The V_SNARE override only applies if `lp.clapDecay !== undefined` (from learnedVoiceParams.ClapVoice). Works, but uses ClapVoice for snare — no dedicated snare synth.
+
+────────────────────────────────────────────────────────────────────────────────
+STAGE SUMMARY
+────────────────────────────────────────────────────────────────────────────────
+
+**OVERALL VERDICT:** psy4-engine.js is a REAL, FUNCTIONAL AudioWorklet DSP engine that produces real-time psytrance audio. The core signal path (voices → buses → FX sends → master chain → output) is fully wired and generates sound. The DSP is genuine: Moog ladder filter, PolyBLEP oscillators, supersaw, FM, granular, wavetable, Schroeder reverb, ping-pong delay, glue compressor, LUFS targeting, brick-wall limiter, sidechain ducking — all implemented and running. The RT-safe contract (preallocated buffers, bounded loops, throttled stats) is honored in practice.
+
+**WORKING CORRECTLY:**
+- 14 voice classes with real DSP — kick, bass, lead, acid, FM, pad, hat, clap, perc, shaker, texture, wavetable, FX (6 sub-types), sample (class works but unused).
+- MoogLadder (4-stage tanh), BLSaw/BLSquare (polyBLEP), PinkNoise (Voss-McCartney), ADSR, DecayEnv — all genuine.
+- Voice pool: 32 synth voices preallocated, dynamic budget (24→6 under load), voice stealing.
+- Event ring buffer (Float64Array, 1024 events) — lock-free, zero-alloc.
+- Master chain: EQ low shelf → glue compressor → LUFS auto-makeup → brick-wall limiter → tanh soft-clip. Real feedback loop.
+- Sidechain ducking on bass + music buses, triggered by kick.
+- SchroederReverb (4 comb + 2 allpass + 7 early reflections) + StereoDelay (ping-pong, LP-filtered feedback) — both real, per-sample.
+- StereoWidener (Haas 12ms + decorrelated HP side) + M/S Stereo Imager (HP side at 200Hz, +10% side boost).
+- 17 message port handlers — play/stop/bpm/macros/world/events/trigger/duck/panic/loadSamples/setFX/setParams/setVoiceRecipe/renderVoice/debug/initSharedBuffer/newPhrase.
+- PSY5 RT-safe: preallocated active-voice arrays, no per-block allocation in live path, CPU monitoring with voice budget drop.
+- `renderVoice` offline path for SynthesisMatcher — real, transfers Float32Array back.
+
+**CRITICAL ISSUES:**
+1. **Multiband compression is DISABLED** (line 2067: `const mbOut = eqOut`). The MultibandComp and Biquad classes are fully implemented but never called. Comment says the LR2 crossover "was killing high frequencies". This is a known bug that was worked around by bypassing.
+2. **SampleVoice path is entirely dead** — 6 SampleVoice instances + `loadSamples` handler + `this.samples` bank + `samplesReady` flag are allocated but never triggered. `triggerVoice` always uses synth voices for kick/hat/clap/snare. Intentional per comment, but the dead infrastructure wastes memory and adds per-block iteration overhead.
+3. **SharedArrayBuffer is read but never written by main thread** — the worklet correctly polls `Atomics.load(sharedEventCount, 0)` in process(), but the main thread's `flushEvents` transfers Float64Arrays via `postMessage` instead. The SAB path always finds count=0. Consistent with audit-A finding.
+4. **M/S Stereo Imager runs AFTER the limiter** (line 3055-3066) — the +10% side boost can push peaks above ceiling=0.89. No post-imager safety clip. Potential inter-sample peak violation.
+5. **`playing` flag is never checked in process()** — the worklet renders audio even when `playing=false`. Stop works only because the main thread stops sending events AND the `stop` handler clears the ring buffer + deactivates voices. If a stray event arrives after stop, it would play.
+
+**MINOR BUGS:**
+6. LeadVoice air layer (line 612): `this.noise.prevOutput` is undefined → differentiation doesn't work, just scales noise. Cosmetic audio bug.
+7. BusProcessor ignores all config fields except `gain` — `hpFreq`/`compThr`/`compRatio`/`compAtt`/`compRel`/`compMakeup`/`drive` in drumConfig/bassConfig/musicConfig/atmosConfig/fxConfig are dead. Comment acknowledges this.
+8. EQ comment (line 1996) claims "low shelf + mud cut + presence + air" but only low shelf is implemented.
+9. Voice pool comment (line 2181) says "34 voices" but actual count is 38 (32 synth + 6 sample).
+10. `getFreeVoice` voice-stealing returns `pool[0]` (first allocated), not the oldest active voice — comment is misleading.
+11. `RiserVoice`/`ImpactVoice`/`SweepVoice` learned-param keys reference non-existent classes (functionally OK since lookup is by string).
+
+**DEAD CODE TO REMOVE:**
+- `MultibandComp` class (line 1953) + `Biquad` class (line 1913) — fully implemented, never called.
+- `eventTimes` Float64Array (line 2146) — never used.
+- `phraseKickIdx`/`phraseHatIdx`/`phraseClapIdx`/`phrasePercIdx`/`phraseLeadIdx` (lines 2536-2540) — incremented, never read.
+- `rrCounters` (line 2202), `sampleUsage` (line 2204), `logCounter` (line 2203), `statsTimer` (line 2293) — dead state.
+- `step`/`nextStepSample`/`playing` (lines 2137-2140) — set but never read in process() (playing is reported in stats but doesn't gate audio).
+- SampleVoice infrastructure: `kickSamplePool`/`hatSamplePool`/`clapSamplePool`/`snareSamplePool` (lines 2187-2195), `samples` bank (line 2198), `samplesReady` (line 2199), `loadSamples` handler (lines 2542-2557), `voicePoolTable` entries for sample pools (lines 2348-2351). Either rewire `triggerVoice` to use samples when `samplesReady`, or remove.
+- BusProcessor config fields (`hpFreq`, `compThr`, etc.) — ignored, only `gain` used.
+- TextureVoice granular path (lines 1293-1342) — unreachable from `triggerVoice` (only 'fm'/'noise' types triggered). Either wire 'granular' type or remove.
+
+**NO TODO/FIXME comments.** Dead code is documented in inline comments (mostly accurate).
+
+**NO silent `catch(e){}` swallows.** The one `catch` (line 2452) reports errors via postMessage.
+
+**RECOMMENDATION:** The engine is production-viable for real-time psytrance synthesis. The 14-voice synth path is genuine and produces professional-quality DSP. Priority fixes:
+1. Re-enable multiband compression (fix the LR2 crossover) OR remove the dead MultibandComp/Biquad classes.
+2. Move M/S Stereo Imager BEFORE the limiter, or add a post-imager safety clip.
+3. Either wire SampleVoice into triggerVoice (use samples when `samplesReady`) or remove the sample infrastructure.
+4. Wire the SharedArrayBuffer on the main-thread side (write to SAB + Atomics.notify) or remove the SAB read in process().
+5. Gate process() on `playing` flag, or remove the flag.
+6. Fix LeadVoice air layer (`this.noise.prevOutput` → `this.noisePrev` or similar).
+
+Audit complete. No code was modified.
+
+---
+
+## Task ID: audit-C-composition-and-api
+**Agent:** general-purpose (read-only audit)
+**Task:** Audit composition-worker.js + 7 API routes for PSY4. No code changes.
+
+## Work Log
+
+### Part 1: Composition Worker — `/home/z/my-project/public/worklets/composition-worker.js` (1155 lines)
+
+Read end-to-end. The file defines a `CausalComposerWorker` class plus a `self.onmessage` handler with 9 message types: `init`, `compose`, `controls`, `setBPM`, `setRoot`, `setScale`, `setKickPattern`, `setBassIntervals`, `setMelodicIntervals`, `reset`.
+
+────────────────────────────────────────────────────────────────────────────────
+1. PRNG — `mulberry32` DEFINED but NEVER USED. All randomness via `Math.random()`.
+────────────────────────────────────────────────────────────────────────────────
+
+- `mulberry32(seed)` is defined at lines 18-26 — a correct, deterministic PRNG.
+- `this.rng = mulberry32(opts.seed || 42)` is initialized in the constructor (line 331).
+- **`this.rng()` is NEVER CALLED anywhere in the file.** Grep for `this\.rng` returns exactly one hit — the initialization line. Grep for `composer\.rng` returns zero.
+- All randomness comes from `Math.random()`:
+  - `STYLE_GRAMMARS` initialization (lines 259-285) calls `genMotifIntervals(Math.random, ...)`, `genMotifSteps(Math.random)`, `genBassPattern(Math.random, ...)` — passing `Math.random` as the `rng` parameter, NOT `this.rng`.
+  - `regenerateGrammar()` (lines 294-300) and `varyGrammar()` (lines 305-317) also use `Math.random`.
+  - Root-note change at line 393: `compatibleRoots[Math.floor(Math.random() * compatibleRoots.length)]`.
+  - Bass offsets at lines 905-907: `Math.floor(Math.random() * 5) + 2`, etc.
+- The header comment at line 17 ("PRNG: mulberry32 — deterministic, seeded. ADR-003.") is **FALSE**. The product spec's "deterministic PRNG" claim is **NOT HONORED**. Same seed will produce different arrangements on every run.
+- `genBassPattern(rng, density)`, `genMotifIntervals(rng, scaleName)`, `genMotifSteps(rng)` correctly accept an `rng` parameter (lines 214, 235, 246) — the plumbing is there, but the call sites all pass `Math.random`.
+
+────────────────────────────────────────────────────────────────────────────────
+2. "Composes 3 bars ahead" — NOT ENFORCED by the worker.
+────────────────────────────────────────────────────────────────────────────────
+
+- The `compose` handler (lines 1034-1123) receives `{ targetBar, barOriginAudioTime, currentBar }` and iterates `for (let b = lastComposedBar + 1; b <= msg.targetBar; b++)`, composing every bar between `lastComposedBar+1` and `targetBar` inclusive.
+- The worker has **NO "3 bars ahead" logic**. The look-ahead distance is entirely determined by the main thread's choice of `targetBar`. If the main thread sends `targetBar = currentBar + 3`, the worker composes 3 bars ahead; if it sends `targetBar = currentBar + 1`, the worker composes 1 bar ahead.
+- The "3 bars ahead" claim in the product spec is a **main-thread responsibility**, not a worker guarantee.
+
+────────────────────────────────────────────────────────────────────────────────
+3. Events sent as Float64Array Transferable — YES (correct).
+────────────────────────────────────────────────────────────────────────────────
+
+- Lines 1101-1114: builds `flat = new Float64Array(allEvents.length * 6)`, packs `[at, note, velocity, duration, channelHash, param]` per event, then `self.postMessage({ type: 'events', events: flat, count, bar }, [flat.buffer])` — the `[flat.buffer]` transfer list gives zero-copy transfer. Correct.
+- Empty case (line 1089): `self.postMessage({ type: 'events', events: new Float64Array(0), count: 0, bar })` — no transfer list (minor; an empty buffer is cheap to copy, so this is fine).
+- The channel→ID map (lines 1094-1100) is a static object literal created inside the `compose` handler on EVERY compose call — small allocation per message, not a perf issue but mildly wasteful. Could be hoisted to module scope.
+
+────────────────────────────────────────────────────────────────────────────────
+4. 32-bar arrangement — ACTUAL implementation is 64-bar. Comment is STALE.
+────────────────────────────────────────────────────────────────────────────────
+
+- The comment at lines 411-416 claims "32 bars total = ~53s at 145 BPM" with sections INTRO(0-7)/GROOVE(8-15)/DROP(16-23)/BREAKDOWN+REBUILD(24-31).
+- `getArrangementSection(bar)` (lines 498-520) actually uses `bar % 64` — a 64-bar cycle (~106s). The comment at line 497 explicitly says: "תיקון: מערך ארוך ומתפתח (64 תיבות = ~106s) במקום 32 קבוע" → "Fix: long evolving arrangement (64 bars = ~106s) instead of fixed 32."
+- The 64-bar arrangement has two halves:
+  - **Half 1 (bars 0-31):** INTRO_START(0) → GROOVE_START(8) → DROP_START(16) → BREAKDOWN_START(24) → REBUILD_START(28). Maintain sections fill in (GROOVE_MAINTAIN 8-15, DROP_MAINTAIN 16-23, REBUILD_MAINTAIN 28-31).
+  - **Half 2 (bars 32-63):** DROP_START(32) → BREAKDOWN_START(40) → REBUILD_START(44) → DROP_START(52) → BREAKDOWN_START(60). DropMaintain 32-39, RebuildMaintain 44-51, DropMaintain 52-59.
+- So the product spec's "32-bar arrangement (intro→groove→drop→breakdown→rebuild)" is implemented as a **64-bar cycle** with the second half being a varied repeat. The 32-bar comment is **stale documentation**.
+
+────────────────────────────────────────────────────────────────────────────────
+5. 6 scales — YES, all 6 present.
+────────────────────────────────────────────────────────────────────────────────
+
+- `SCALE_INTERVALS` (lines 226-233):
+  1. `phrygian-dominant` [0, 1, 4, 5, 7, 8, 11]
+  2. `phrygian` [0, 1, 3, 5, 7, 8, 10]
+  3. `dorian` [0, 2, 3, 5, 7, 9, 10]
+  4. `minor` [0, 2, 3, 5, 7, 8, 10]
+  5. `major` [0, 2, 4, 5, 7, 9, 11]
+  6. `harmonicMinor` [0, 2, 3, 5, 7, 8, 11]
+- Only 4 are wired to STYLE_GRAMMARS (lines 256-289): FULL_ON→phrygian-dominant, DARK→phrygian, PROGRESSIVE→dorian, ACID→phrygian-dominant. `minor`, `major`, `harmonicMinor` are reachable only via `setScale` message (line 1138) — i.e., the user/main thread can switch to them, but the 4 default styles never use them.
+- Note: `minor` and `phrygian` have IDENTICAL intervals [0,2,3,5,7,8,10] vs [0,1,3,5,7,8,10] — they differ only at index 1 (2 vs 1 semitone). Distinct entries. OK.
+- Note: `genMotifIntervals` (line 235) only picks 3 random notes from the scale — it does NOT enforce melodic flow (the comment at line 239 says "prefer steps and thirds" but the code just picks `scale[Math.floor(rng() * scale.length)]` uniformly). Minor doc/impl mismatch.
+
+────────────────────────────────────────────────────────────────────────────────
+6. Call-response counter-melody — YES, implemented in two places.
+────────────────────────────────────────────────────────────────────────────────
+
+- `INTRODUCE_COUNTERLINE` action (lines 670-686): alternates between call and response by phrase number. `const phraseNum = Math.floor(bar / 4); const isCall = phraseNum % 2 === 0;` — even phrases are "call" (higher, root+55, steps [2,6,10,14], velocity 0.6, dur 1.5 steps), odd phrases are "response" (a fifth lower, transpose=-5, steps [0,4,8,12], velocity 0.5, dur 2.0 steps). Inverts the motif intervals: `grammar.motifIntervals.map(iv => -iv + 7 + transpose)`.
+- `RESPONSE` action (lines 747-758): a simpler response — same inversion (`-iv + 7`) without the call/response toggle, fixed steps [2,6,10,14], velocity 0.55.
+- Causal state hooks: `onResponseGiven(state, answeredId)` (line 93) removes the answered material from `unresolvedMaterial` and decreases tension; `onMaterialVaried` (line 83) pushes material to `unresolvedMaterial` to set up the call.
+- The mechanism is real and wired. The "response is a fifth lower" is a hardcoded interval (-5 semitones at line 679), not learned from the radio.
+
+────────────────────────────────────────────────────────────────────────────────
+7. Root note changes every 64 bars — YES, but uses `Math.random()` (non-deterministic).
+────────────────────────────────────────────────────────────────────────────────
+
+- Lines 391-396 in `composeBar`:
+  ```js
+  if (bar > 0 && bar % 64 === 0) {
+    const compatibleRoots = [0, 2, 3, 5, 7, 8, 10];
+    const newRoot = compatibleRoots[Math.floor(Math.random() * compatibleRoots.length)];
+    this.opts.rootPc = newRoot;
+    console.log(`[PSY4] Phase 7.2: Root note changed to ${newRoot} at bar ${bar}`);
+  }
+  ```
+- Triggers at bars 64, 128, 192, ... — every 64 bars. Correct cadence.
+- `compatibleRoots` is hardcoded to minor-compatible roots [0,2,3,5,7,8,10] regardless of the current scale. For `major` scale this is wrong (major roots would be [0,2,4,5,7,9,11]). Minor scale-correctness bug.
+- Uses `Math.random()` — non-deterministic (see §1).
+- Leaves a `console.log` in production code (line 395).
+
+────────────────────────────────────────────────────────────────────────────────
+8. Groove generation — kick/bass/snare/clap/hats/lead/acid/perc/shaker ALL generated. `texture` is NOT.
+────────────────────────────────────────────────────────────────────────────────
+
+- `generateGroove(bar)` (lines 860-1019) ALWAYS runs (per the CRITICAL FIX comment at lines 439-443) and produces events for:
+  - **kick** (lines 876-881, 884, 897) — 4-on-the-floor + phrase-peak ghost + learned-pattern ghost kicks
+  - **bass** (lines 929-946) — uses `grammar.bassPattern`, learned-bass-interval overrides
+  - **sub** (line 950) — long root note, only when `grooveStability > 0.5`
+  - **snare** (lines 958-959, 972) — backbeat on 2 & 4, plus fill at phrase end
+  - **clap** (lines 960-961) — backbeat on 2 & 4
+  - **ride** (lines 965-967) — only when `grooveStability > 0.8 && userEnergy > 0.6`
+  - **fill** (lines 974-975) — at phrasePos===7 (end of 8-bar phrase)
+  - **hat-closed / hat-open** (lines 985-990) — regenerated every bar when active
+  - **shaker** (lines 991-995) — regenerated every bar when active
+  - **lead** (lines 996-1003) — regenerated every bar when active
+  - **acid** (lines 1004-1011) — regenerated every bar when active AND `grammar.acidBass` is true
+  - **percussion** (lines 1012-1016) — regenerated every bar when active
+- **`texture` is NOT generated.** The `CHANNEL_TO_ID` map (line 1098) includes `texture: 10` and `atmosphere: 10`, but no `events.push({...channel: 'texture'})` exists anywhere in the composer. The AudioWorklet's `TextureVoice` (V_TEXTURE=10, per audit-A) is therefore NEVER scheduled by the composer. Dead mapping.
+- Other dead channel mappings (never produced): `tom`, `rim`, `crash`, `blip`, `downlifter`, `drone`, `chord`, `motif` (synonyms for produced channels but never used as strings).
+- **DUPLICATE-EVENT BUG:** `executeDecision` and `generateGroove` BOTH generate events for the same channels in the bar where a voice is introduced:
+  - `INTRODUCE_HATS` (line 626 adds 'hat-closed', line 628 generates hats) → `generateGroove` line 985 checks `if (this.activeVoices.has('hat-closed'))` (now true) and regenerates hats at the SAME steps (2,4,6,8,10,12,14). Every hat event is duplicated at the same `at` time.
+  - Same pattern for **shaker** (line 632 add + 634 generate → 991 regen), **lead** (639 + 646 → 996), **percussion** (651 + 654 → 1012), **acid** (722 + 728 → 1004, only when `grammar.acidBass`), and **lead** again from `CALLBACK_MOTIF` (707 + 717 → 996) and `VARY_MOTIF` (already active → 996).
+  - Per audit-A, the AudioWorklet's `getFreeVoice` returns the first inactive voice in the pool, so two events at the same time trigger two different voices → doubling of volume for that one bar. Audible glitch on every voice introduction.
+  - `pad` and `counterline` do NOT have this bug (no regeneration block in `generateGroove`).
+- INTRO comment (line 551) says "kick + bass + snare only" but `generateGroove` unconditionally adds clap (lines 955-961) and may add ride/sub — so INTRO actually has kick+bass+snare+clap. Minor doc/impl mismatch.
+
+────────────────────────────────────────────────────────────────────────────────
+9. State snapshot to main thread — YES, sent after every compose.
+────────────────────────────────────────────────────────────────────────────────
+
+- Lines 1116-1122: after posting the events Float64Array, the worker posts a second message:
+  ```js
+  self.postMessage({
+    type: 'state',
+    state: cs,                                          // snapshotState() output
+    action: composer.activeVoices.size > 0 ? 'COMPOSED' : 'NO_CHANGE',
+    activeVoices: Array.from(composer.activeVoices),
+  });
+  ```
+- `snapshotState()` (lines 485-494) returns `{ tensionLevel, contrastDebt, anticipationLevel, grooveStability, expectationLevel }` — 5 numeric fields, all in [0,1]. Real causal-state snapshot, suitable for UI rendering.
+- Note: the state snapshot is posted as a plain object (not Transferable) — appropriate for a small 5-field object.
+- Caveat: this second `postMessage` happens unconditionally on every `compose`, even when `allEvents.length === 0` (the early-return at line 1089-1091 skips it). So when there are no new bars to compose, the main thread gets the empty-events message but NOT a state update. Minor inconsistency.
+
+────────────────────────────────────────────────────────────────────────────────
+10. `Math.random()` calls — YES, many. No `Date.now`/`performance.now`/`crypto`.
+────────────────────────────────────────────────────────────────────────────────
+
+- 17 `Math.random()` call sites: lines 259, 260, 261, 267, 268, 269, 275, 276, 277, 283, 284, 285, 296, 297, 299, 309, 310, 314, 315, 393, 905, 906, 907. All produce non-deterministic output.
+- `Math.floor`, `Math.round`, `Math.min`, `Math.max` are used extensively for index/velocity computation — these are deterministic given their inputs.
+- No `Date.now()`, `performance.now()`, `new Date()`, or `crypto.*` calls anywhere in the worker. Confirmed by grep.
+
+────────────────────────────────────────────────────────────────────────────────
+11. Silent `catch(e){}` — NONE.
+────────────────────────────────────────────────────────────────────────────────
+
+- Zero `try`/`catch` blocks in the entire worker file. Confirmed by grep for `catch\s*\(` and `try\s*\{` — both return zero hits.
+- Errors in `composeBar` would propagate up to the `onmessage` handler and crash the worker silently (no error reporting to the main thread). The AudioWorklet (per audit-A) has a try/catch in `renderVoice` that reports errors; the composition worker does NOT. If `composer.composeBar(b)` throws, the worker dies and the main thread gets no `events` and no `state` message — it would hang waiting. Minor robustness gap.
+
+────────────────────────────────────────────────────────────────────────────────
+12. Dead code in composition-worker.js
+────────────────────────────────────────────────────────────────────────────────
+
+- **`mulberry32` function (lines 18-26) and `this.rng` field (line 331)** — defined and initialized but `this.rng()` is NEVER called. Either wire it into `genMotifIntervals`/`genMotifSteps`/`genBassPattern`/`regenerateGrammar`/`varyGrammar`/root-change, or remove the function and the field. This is the most important dead code: it gives a false impression of determinism.
+- **`this.userTension`** (line 327) — set by `setTension` (line 341), read at lines 405-408 (tension level tracking) and 659 (VARY_MOTIF shift). Used. NOT dead.
+- **`getLearnedMotifIntervals`** (lines 369-381) — called from 3 sites (lines 644, 664, 715, 999). Used. NOT dead.
+- **`getPhraseEnergy`** (lines 525-533) — switch on `bar % 4` with cases 0-3, no default. Since `bar % 4` is always 0-3, this is fine in practice, but TypeScript strict mode would flag the missing default return (returns `undefined`).
+- **`buildForcedDecision`** (lines 594-611) — called when `this.forcedSection` is set (line 422). The `forcedSection` is set via `forceSection()` which is called from the `controls` message handler (line 1131). Reachable. NOT dead.
+- **`CHANNEL_TO_ID` unused entries**: `tom: 8, rim: 8, crash: 6, blip: 15, downlifter: 16, drone: 4, chord: 2, motif: 2` — the composer never produces these channel strings. Dead map entries (not dead code per se, but unreachable mappings).
+- **`applyFadeIn`** (lines 767-778) — called at line 480. Used. NOT dead.
+- **`generateFX`** (lines 789-831) — called at line 456. Used. NOT dead.
+- **`generateWavetable`** (lines 837-858) — called at line 462 only when `sectionType === 'DROP_MAINTAIN' || 'DROP_START'`. Used. NOT dead.
+- **`materialIntroBar` Map** (line 325) — populated in `composeBar` (lines 473-479), read in `applyFadeIn`. Used. NOT dead.
+- **`lastComposedBar` module-level variable** (line 1024) — set in compose handler (line 1082), reset in `reset` handler (line 1149). Used. NOT dead.
+- **Comment at line 213** (Hebrew) "תיקון: patterns מתייצרים אקראית בכל אתחול — לא קבועים" ("Fix: patterns are generated randomly on each init — not fixed") — accurate but accidentally reveals that `Math.random` is used (not `this.rng`).
+
+────────────────────────────────────────────────────────────────────────────────
+PART 1 SUMMARY
+────────────────────────────────────────────────────────────────────────────────
+
+The composition worker is a REAL, FUNCTIONAL causal composer that produces musical events for the AudioWorklet. The architecture is sound: CausalState tracking, candidate generation, conflict resolution, arrangement-driven section overrides, learned-pattern integration (kick/bass/melodic histograms from radio), Float64Array transferable events, state snapshots for UI. The 9-section arrangement logic, 6-scale library, call-response counter-melody, 64-bar root changes, and groove generation are all genuinely implemented.
+
+**CRITICAL ISSUES:**
+1. **`mulberry32` is DEAD CODE — `Math.random()` is used everywhere.** The "deterministic PRNG" claim in the header comment and the product spec is FALSE. Same seed produces different arrangements on every run. The `rng` parameter is plumbed through `genBassPattern`/`genMotifIntervals`/`genMotifSteps` but every call site passes `Math.random` instead of `this.rng`.
+2. **DUPLICATE-EVENT BUG:** `executeDecision` and `generateGroove` both generate events for hat-closed, shaker, lead, percussion, acid (when `grammar.acidBass`) in the bar where the voice is introduced. Two events at the same `at` time → two voices triggered → audible volume doubling on voice introduction.
+3. **Root-change uses `Math.random`** (line 393) — non-deterministic, picks from minor-compatible roots [0,2,3,5,7,8,10] regardless of current scale (wrong for `major`).
+4. **`texture` voice never scheduled** — the AudioWorklet's TextureVoice (V_TEXTURE=10) is reachable from `triggerVoice` but the composer never emits a `channel: 'texture'` event. Dead voice class from the composer's perspective.
+
+**MINOR ISSUES:**
+5. Stale comment at lines 411-416 claims "32 bars total" but the implementation is 64 bars. The fix-comment at line 497 acknowledges this.
+6. INTRO comment says "kick + bass + snare only" but clap is also unconditionally generated by `generateGroove`.
+7. No `try`/`catch` in the worker — if `composeBar` throws, the worker dies silently and the main thread hangs.
+8. `CHANNEL_TO_ID` is rebuilt as an object literal inside the `compose` handler on every message — could be hoisted to module scope.
+9. Two `console.log` calls left in production code (lines 395, 1076).
+10. `getPhraseEnergy` has no default return — works in practice (`bar % 4` is always 0-3) but is fragile.
+11. State snapshot is NOT sent when `allEvents.length === 0` (early return at line 1089) — main thread gets events but no state update on idle composes.
+
+---
+
+### Part 2: API Routes
+
+Cross-checked every route against `src/app/page.tsx` and `src/lib/**/*.ts` for actual `fetch()` callers.
+
+────────────────────────────────────────────────────────────────────────────────
+Route usage map (who calls what)
+────────────────────────────────────────────────────────────────────────────────
+
+| Route | Called from frontend? |
+|-------|----------------------|
+| `GET /api/` (root) | NO — no `fetch('/api')` anywhere in `src/` |
+| `POST/GET /api/learn` | NO — `src/lib/learning.ts:19` mentions it in a comment but NEVER fetches it |
+| `POST /api/forensic/render` | NO — only referenced in audit reports / worklog markdown, never in active code |
+| `POST /api/forensic/analyze` | NO — only referenced in audit reports / worklog markdown |
+| `GET /api/reference/streams` | NO — `referenceListenerV2.ts` uses its own hardcoded `RADIO_STREAMS` from `radioStreams.ts` (10 streams), NOT this endpoint (6 streams) |
+| `GET /api/reference/proxy` | YES — `referenceListenerV2.ts:95` calls `/api/reference/proxy?stream=...` for HTTP streams (HTTPS streams are fetched directly) |
+| `POST /api/reference/train` | NO — only referenced in audit reports / worklog markdown |
+
+**Only 1 of 7 routes is actually called from active frontend code** (`/api/reference/proxy`). The other 6 are either stubs, admin/forensic utilities, or completely orphaned.
+
+────────────────────────────────────────────────────────────────────────────────
+Route 1: `/api/route.ts` (root) — 8 lines
+────────────────────────────────────────────────────────────────────────────────
+
+- **Methods:** `GET` only.
+- **Logic:** Returns `{ status: "ok", project: "PSY4" }`. Pure health-check stub.
+- **Called from frontend?** NO.
+- **Database?** NO.
+- **AI SDK?** NO.
+- **Bugs/dead code:** None. Trivial health-check. Could be removed or kept for uptime monitoring.
+
+────────────────────────────────────────────────────────────────────────────────
+Route 2: `/api/learn/route.ts` — 223 lines
+────────────────────────────────────────────────────────────────────────────────
+
+- **Methods:** `POST` (lines 91-194) and `GET` (lines 196-223).
+- **Logic:**
+  - **POST** accepts `{ deviceId, action, payload }` with 4 actions:
+    - `session` → INSERT into `LearningSession` table
+    - `scale_vote` → upsert into `ScaleVote` table (pitch class votes)
+    - `tempo_vote` → upsert into `TempoVote` table (BPM votes)
+    - `sync` → bulk sync `{ bpmVotes, pitchClassHistogram }` from localStorage
+  - **GET** returns aggregated learning stats for a `deviceId` (scale votes, tempo votes, last 20 sessions).
+  - Uses `@libsql/client` (Turso) via HTTP transport — Edge-runtime compatible.
+  - `getClient()` returns `null` if `TURSO_URL` or `TURSO_TOKEN` env vars are missing or contain `example.com`.
+  - `ensureTables()` runs `CREATE TABLE IF NOT EXISTS` for the 3 tables on first use.
+  - `safeExecute()` catches "no such table" errors and re-creates tables.
+- **Called from frontend?** NO. `src/lib/learning.ts:19` mentions `/api/learn` in a docstring comment but the file has ZERO `fetch` calls. The learning module stores everything in localStorage and never syncs to the server. The Turso sync path is **completely unwired**.
+- **Database?** YES — libsql/Turso directly (NOT Prisma). Creates 3 tables: `LearningSession`, `ScaleVote`, `TempoVote`. **These tables are NOT in `prisma/schema.prisma`** (which only has `User` and `Post` from the Next.js starter). The Prisma schema and the libsql tables are completely unrelated.
+- **AI SDK?** NO.
+- **Bugs/dead code:**
+  - **`.env` only has `DATABASE_URL=file:...`** — no `TURSO_URL` or `TURSO_TOKEN`. So `getClient()` returns `null`, POST returns `{ ok: true, stored: false, reason: 'db_not_configured' }`, GET returns 503 'DB not configured'. **The route is non-functional in the current env** (silently accepts POSTs, refuses GETs).
+  - **`scale_vote` SQL bug** (line 140-141): `INSERT ... VALUES (..., ?, ?, ?) ON CONFLICT(deviceId, pitchClass) DO UPDATE SET count = count + ?` — passes 4 args `[deviceId, pc, count, count]` but the SQL has 5 `?` placeholders (3 in VALUES + 1 in DO UPDATE + the count in DO UPDATE references the same `?`). Wait — actually the SQL has 4 `?`: 3 in VALUES (deviceId, pc, count) + 1 in `count + ?`. Args `[deviceId, pc, count, count]` = 4. Matches. OK, no bug. Same pattern for `tempo_vote` (line 152-153).
+  - **`sync` SQL bug** (line 169): `INSERT INTO TempoVote ... VALUES (..., ?, ?, ?) ... ON CONFLICT ... DO UPDATE SET count = count + ?` — 4 `?` in SQL but args are `[deviceId, bpm, count, count, count]` = 5 args. **Off-by-one — extra `count` arg.** libsql may ignore the extra arg or throw. Real bug.
+  - The route is also completely orphaned — no caller. Even if the env vars were set, nothing would POST to it.
+
+────────────────────────────────────────────────────────────────────────────────
+Route 3: `/api/forensic/render/route.ts` — 74 lines
+────────────────────────────────────────────────────────────────────────────────
+
+- **Methods:** `POST` only.
+- **Logic:** Renders a single forensic "world" to a WAV file. Accepts `{ seed, worldId, duration, onlyVoices?, paramOverrides? }`. Calls `render()` from `@/lib/studio/engine/forensic/offlineRenderer`, encodes to WAV via `encodeWav()`, returns as `audio/wav` blob. `maxDuration = 60` seconds. `VOICE_MAP` translates string voice names to numeric V_* constants.
+- **Called from frontend?** NO. Only referenced in audit reports and worklog markdown. Was previously used by a forensic dashboard that no longer exists in `src/app/`.
+- **Database?** NO.
+- **AI SDK?** NO.
+- **Bugs/dead code:** None. The route is functional if called, but it's an orphaned admin/forensic utility. The `console.error` at line 68 is appropriate.
+
+────────────────────────────────────────────────────────────────────────────────
+Route 4: `/api/forensic/analyze/route.ts` — 52 lines
+────────────────────────────────────────────────────────────────────────────────
+
+- **Methods:** `POST` only.
+- **Logic:** Runs the full forensic analysis pipeline. Accepts `{ seed?, duration?, worlds?, skipClosedLoop?, skipParamValidation?, skipBassIsolation? }`. Calls `runForensicAnalysis()` from `@/lib/studio/engine/forensic/forensicRunner`, returns `{ ok, report }`. `maxDuration = 120` seconds. CPU-intensive (5-15s typical).
+- **Called from frontend?** NO. Only referenced in audit reports and worklog markdown. Orphaned.
+- **Database?** NO.
+- **AI SDK?** NO.
+- **Bugs/dead code:** None. Functional if called, but orphaned.
+
+────────────────────────────────────────────────────────────────────────────────
+Route 5: `/api/reference/streams/route.ts` — 90 lines
+────────────────────────────────────────────────────────────────────────────────
+
+- **Methods:** `GET` only.
+- **Logic:** Returns a hardcoded list of 6 radio streams as `{ ok, streams }`. Self-contained — no imports. The 6 streams are: babaganousha, psyndora-psytrance, hirschmilch-psytrance, psyradio-progressive, psy-from-the-sky, space-unicorn.
+- **Called from frontend?** NO. The frontend uses its OWN hardcoded list in `src/lib/studio/engine/reference/radioStreams.ts` (10 streams: psyndora-psytrance, babaganousha, psytravel, radiozora, recordgoa, goanight, 1fm-psytrance, amoris-goa, space-unicorn, psyradio-progressive). **The two lists DIVERGE** — the API has `hirschmilch-psytrance` and `psy-from-the-sky` which the frontend doesn't know about; the frontend has `psytravel`, `radiozora`, `recordgoa`, `goanight`, `1fm-psytrance`, `amoris-goa` which the API doesn't serve.
+- **Database?** NO.
+- **AI SDK?** NO.
+- **Bugs/dead code:**
+  - **Duplicated and divergent stream registry.** The API route and `radioStreams.ts` are independent hardcoded lists with different stream IDs. If the frontend ever switched to consuming `/api/reference/streams`, the proxy route would break for streams not in `STREAM_URLS` (see Route 6 below).
+  - The API route is **completely redundant** — the frontend doesn't need it because the stream list is bundled.
+
+────────────────────────────────────────────────────────────────────────────────
+Route 6: `/api/reference/proxy/route.ts` — 202 lines
+────────────────────────────────────────────────────────────────────────────────
+
+- **Methods:** `GET` only.
+- **Logic:** Server-side proxy for radio streams. Solves CORS, mixed-content (HTTP stream from HTTPS page), and ICY metadata stripping. Two modes:
+  - **Default (no `continuous` param):** collects ~20s of audio (320KB at 128kbps), strips ICY metadata, returns as a Blob. Used for `decodeAudioData` analysis.
+  - **`continuous=1`:** streams indefinitely via `ReadableStream`, strips ICY metadata on the fly. Used for playback.
+  - `STREAM_URLS` is a hardcoded map of 10 stream IDs → URLs (lines 17-28): psyndora-psytrance, babaganousha, psytravel, radiozora, recordgoa, goanight, 1fm-psytrance, amoris-goa, space-unicorn, psyradio-progressive.
+  - `stripIcyMetadata(data, metaint)` (lines 184-202): parses the ICY block format (audio chunk + 1 byte length + length*16 bytes metadata).
+- **Called from frontend?** YES — `referenceListenerV2.ts:95`: `const fetchUrl = stream.url.startsWith('https') ? stream.url : \`/api/reference/proxy?stream=${encodeURIComponent(stream.id)}\`;`. Only HTTP streams go through the proxy; HTTPS streams are fetched directly.
+- **Database?** NO.
+- **AI SDK?** NO.
+- **Bugs/dead code:**
+  - **Only 1 of the 10 streams in `STREAM_URLS` is actually HTTP** — `psyradio-progressive: 'http://streamer.psyradio.org:8030/;listen.mp3'`. The other 9 are HTTPS and the frontend fetches them directly, bypassing the proxy. So the proxy is effectively only used for `psyradio-progressive`.
+  - **`stripIcyMetadata` is O(n) with per-byte push to a JS array** (line 191: `result.push(data[i])`). For a 320KB window, this is 320K array pushes — slow but tolerable. For continuous mode, the streaming version (lines 65-92) uses `subarray` + `enqueue` which is much faster. The window-mode `stripIcyMetadata` could be rewritten with `Uint8Array.set` for a ~10x speedup.
+  - **Silent `catch (e) {}` at line 101-102** in the continuous-mode `start(controller)` callback — swallows stream errors with a comment "stream ended or aborted". The `finally` block closes the controller, so the client gets a clean stream end, but errors are not logged. Acceptable for a streaming proxy (errors here are usually client disconnects).
+  - **Silent `try { reader.cancel(); } catch {}` at lines 105 and 109** — empty catch blocks. Acceptable (cancel errors are irrelevant).
+  - **`STREAM_URLS` divergence with `radioStreams.ts`:** both files have 10 streams, mostly the same IDs, but `STREAM_URLS` is the authoritative map for the proxy. If the frontend ever sent a stream ID not in `STREAM_URLS`, the proxy returns 400 'Unknown stream'. Currently aligned, but two sources of truth.
+  - `audioEnd` variable at line 68 is declared but never used (dead local).
+
+────────────────────────────────────────────────────────────────────────────────
+Route 7: `/api/reference/train/route.ts` — 367 lines
+────────────────────────────────────────────────────────────────────────────────
+
+- **Methods:** `POST` only.
+- **Logic:** Runs an iterative training loop that learns voice parameters by:
+  1. Render with current params → analyze audio → compute score
+  2. Identify weakest metrics (topProblems)
+  3. Propose parameter changes (kickDecay, bassCutoff, leadCutoff, duck) based on the weakest metric
+  4. Render with new params → analyze → compute new score
+  5. Accept if improved, reject (and mark direction as tried) if worse
+  6. Repeat up to `maxIterations` (default 12)
+  - Uses `parameterRegistry` (create/adjust/apply/registryToOverrides), `worldDNA`, `referenceScore`, `audioAnalyzer`, `offlineRenderer` — all real imports from `@/lib/studio/engine/`.
+  - Returns `{ ok, iterations, initialScore, finalScore, bestScore, bestParams, referenceScoreBreakdown, improvement, learned }`.
+  - `analysisToReferenceMetrics` (lines 41-77) converts forensic `AudioAnalysis` → `ReferenceMetrics` for the scoring function. Some fields are hardcoded approximations: `stereoWidth: 0.35`, `repetitionScore: 0.5`, `overallConfidence: 0.8`, `bpmConfidence: 0.9`. These are placeholders, not measured.
+- **Called from frontend?** NO. Only referenced in audit reports and worklog markdown. Orphaned admin/forensic utility.
+- **Database?** NO.
+- **AI SDK?** NO.
+- **Bugs/dead code:**
+  - **`targetError` field is always 0** (lines 286, 334) — declared in the `TrainIteration` interface (line 125) but never populated with the actual error value. Dead field.
+  - **`currentScore` tracking is partially redundant** — `currentScore` is updated on accept (line 317) but is also recomputed from scratch at the top of every iteration (line 160 via `currentScoreResult.total`, stored as `oldScore`). The `currentScore` variable is only read at line 352 (`finalScore: currentScore`). If the last iteration rejects, `currentScore` holds the score from the last accepted iteration, which is correct. But it's confusing because `oldScore` (recomputed) and `currentScore` (tracked) can diverge if non-parameter problems are skipped. Minor.
+  - **`bestParams` is captured but never returned to a caller** that uses it — the route is orphaned, so `bestParams` is computed and discarded.
+  - The hardcoded metric approximations in `analysisToReferenceMetrics` (stereoWidth=0.35, repetitionScore=0.5) mean the training loop is optimizing against a partially-fake reference profile. Real bug if the route were ever used.
+  - `timestamp: Date.now()` (line 74) — non-deterministic, but only used for logging in the iteration records.
+
+────────────────────────────────────────────────────────────────────────────────
+Prisma schema — `/home/z/my-project/prisma/schema.prisma` (32 lines)
+────────────────────────────────────────────────────────────────────────────────
+
+- **Datasource:** SQLite, `url = env("DATABASE_URL")`.
+- **Tables:**
+  - `User` (id, email, name, createdAt, updatedAt) — default Next.js starter
+  - `Post` (id, title, content, published, authorId, createdAt, updatedAt) — default Next.js starter
+- **Neither table is PSY4-related.** This is the untouched Next.js + Prisma starter schema.
+- **`src/lib/db.ts` exports `db` (PrismaClient instance) but NOTHING imports it.** Grep for `from '@/lib/db'` or `lib/db` in `src/` returns ZERO hits (only in `skills/fullstack-dev/SKILL.md` as an example). The Prisma client is dead infrastructure.
+- **The `/api/learn` route uses `@libsql/client` directly, NOT Prisma.** Its 3 tables (`LearningSession`, `ScaleVote`, `TempoVote`) are created via raw `CREATE TABLE IF NOT EXISTS` SQL, not via Prisma migrations. They are NOT in the Prisma schema.
+- **`.env` only has `DATABASE_URL=file:/home/z/my-project/db/custom.db`** — no `TURSO_URL`/`TURSO_TOKEN`, so the learn route's `getClient()` returns `null` and the route is non-functional even if it were called.
+- **`@prisma/client` and `prisma` are in `package.json`** (^6.11.1) but the client is never instantiated in live code (only in `db.ts` which is never imported).
+
+────────────────────────────────────────────────────────────────────────────────
+z-ai-web-dev-sdk — NOT USED in any API route
+────────────────────────────────────────────────────────────────────────────────
+
+- `z-ai-web-dev-sdk` (^0.0.18) is in `package.json` dependencies.
+- Grep for `z-ai-web-dev-sdk` or `@z-ai` in `src/` and `public/` returns ZERO hits.
+- No API route imports or uses any AI SDK. The dependency is installed but unused.
+
+────────────────────────────────────────────────────────────────────────────────
+PART 2 SUMMARY
+────────────────────────────────────────────────────────────────────────────────
+
+Of 7 API routes:
+- **1 is actually called from the frontend** (`/api/reference/proxy`, only for HTTP streams — 1 of 10 streams).
+- **3 are orphaned forensic/admin utilities** (`/api/forensic/render`, `/api/forensic/analyze`, `/api/reference/train`) — functional code, but no live caller. They were previously used by a forensic dashboard that no longer exists.
+- **1 is a duplicated stream registry** (`/api/reference/streams`) — returns 6 streams, while the frontend uses its own hardcoded list of 10 streams from `radioStreams.ts`. Divergent sources of truth.
+- **1 is non-functional in the current env** (`/api/learn`) — needs `TURSO_URL`/`TURSO_TOKEN` env vars that aren't set. Even if configured, nothing in the frontend calls it (`learning.ts` only mentions it in a comment).
+- **1 is a trivial health-check** (`/api/` root) — returns `{status:"ok",project:"PSY4"}`.
+
+**Database situation is messy:**
+- Prisma schema has only starter tables (`User`, `Post`) — unrelated to PSY4.
+- `src/lib/db.ts` exports a PrismaClient but nothing imports it — dead infrastructure.
+- `/api/learn` uses libsql/Turso directly with 3 tables NOT in the Prisma schema.
+- `.env` only has `DATABASE_URL` (SQLite file) — no Turso creds.
+- `@prisma/client` and `prisma` are installed but unused.
+- `@libsql/client` is installed and used only by the orphaned `/api/learn` route.
+
+**No AI SDK usage anywhere.** `z-ai-web-dev-sdk` is installed but never imported.
+
+---
+
+## STAGE SUMMARY
+
+**OVERALL VERDICT:**
+
+The composition worker is a real, functional causal composer with genuine musical intelligence (CausalState tracking, candidate generation, arrangement-driven section overrides, learned-pattern integration, call-response counter-melody, 6-scale library, Float64Array transferable events, state snapshots). The architecture is sound and the code is mostly clean. However, it has ONE CRITICAL correctness bug (deterministic PRNG is dead code — `Math.random` is used everywhere) and ONE CRITICAL audio bug (duplicate events on voice introduction).
+
+The API surface is mostly orphaned: 6 of 7 routes have no live caller. Only `/api/reference/proxy` is actually used, and only for 1 of 10 streams (the only HTTP one). The database infrastructure is split between Prisma (unused) and libsql (orphaned), and `.env` doesn't have the Turso creds the learn route needs. No AI SDK is used despite being installed.
+
+**PRIORITY FIXES (composition worker):**
+1. **Wire `this.rng` into all `Math.random` call sites** — pass `this.rng` to `genMotifIntervals`/`genMotifSteps`/`genBassPattern`/`regenerateGrammar`/`varyGrammar`, and use `this.rng()` instead of `Math.random()` at lines 309-315, 393, 905-907. This honors the "deterministic PRNG" claim.
+2. **Fix the duplicate-event bug** — either remove the regeneration blocks in `generateGroove` (lines 985-1016) since `executeDecision` already generates them on the intro bar, OR skip `executeDecision`'s generation for voices that `generateGroove` will handle. The cleanest fix is to make `executeDecision` ONLY update `activeVoices` (and call the causal-state hooks) without generating events for hat/shaker/lead/perc/acid — let `generateGroove` own event generation for those channels.
+3. **Use scale-aware root changes** — pick compatible roots based on `SCALE_INTERVALS[this.opts.scaleName]` instead of hardcoded minor roots.
+4. **Add a try/catch around `composeBar`** in the `compose` handler that posts an `{ type: 'error', error: ... }` message back to the main thread, so the worker doesn't die silently.
+5. **Update the stale 32-bar comment** at lines 411-416 to reflect the actual 64-bar cycle.
+6. **Remove the `console.log` calls** at lines 395 and 1076 (or gate them behind a `DEBUG` flag).
+
+**PRIORITY FIXES (API routes):**
+1. **Either wire `/api/learn` or remove it.** If keeping: add `TURSO_URL`/`TURSO_TOKEN` to `.env`, call `/api/learn` from `learning.ts` (the sync function is sketched in the docstring but never implemented), and add the 3 tables to `prisma/schema.prisma` (or drop Prisma entirely and use libsql everywhere). If removing: delete the route and the `@libsql/client` dependency.
+2. **Either wire `/api/reference/streams` or remove it.** If keeping: make the frontend consume it instead of `radioStreams.ts`, and consolidate the two stream lists. If removing: delete the route.
+3. **Remove `/api/forensic/render`, `/api/forensic/analyze`, `/api/reference/train`** unless a forensic dashboard is planned. They're functional but orphaned and add ~700 lines of route code + transitive imports (15 forensic files, 4,849 lines per audit-B) to the build.
+4. **Remove `src/lib/db.ts`** — nothing imports it. Either use Prisma consistently or remove `@prisma/client`/`prisma` from `package.json`.
+5. **Remove `z-ai-web-dev-sdk`** from `package.json` if no AI features are planned.
+6. **Fix the `sync` action SQL bug** in `/api/learn` line 169 — 5 args for 4 placeholders.
+
+**NO TODO/FIXME comments in the composition worker.** Hebrew comments accurately describe fixes ("תיקון") that were applied. The mulberry32-vs-Math.random discrepancy is the only case where the comment ("deterministic, seeded. ADR-003.") is misleading.
+
+**NO silent `catch(e){}` swallows in the composition worker** (zero try/catch). The proxy route has acceptable empty catches for stream-cancel errors.
+
+Audit complete. No code was modified.
+
+---
+Task ID: audit-D-deadcode
+Agent: general-purpose (dead-code audit)
+Task: Audit /home/z/my-project/src/lib/studio/ for dead code in the PSY4 project. Read-only audit (no code modified). Identify which studio files are transitively reachable from the user-facing entry point `src/app/page.tsx` → `src/lib/psyLive.ts`, and which are orphaned. Also verify live/dead status for 16 named top-level lib files.
+
+Work Log:
+- Read last ~200 lines of worklog.md for prior context (audit-C summary on composition worker + audit-B summary on API routes). Prior audits already confirmed: (a) `page.tsx` imports only from `@/lib/psyLive`; (b) 6 of 7 API routes are orphaned; (c) `/api/forensic/*`, `/api/reference/train`, `/api/reference/streams` reference studio files but are themselves dead.
+- Listed all 72 files under `src/lib/studio/` recursively (3 at root, 1 in `dsp/`, 50 directly in `engine/`, 15 in `engine/forensic/`, 13 in `engine/reference/` — total = 72 files, 34,499 lines).
+- Extracted all `from '…'` imports from `psyLive.ts` (line 47 is the ONLY studio import: `./studio/engine/engineWorklet`). Also imports 18 sibling lib files + 5 `foundation/` files. Zero other studio references.
+- Grepped `src/`, `foundation/`, `tests/`, `components/`, `hooks/` for any reference to `studio/`:
+  - From outside `src/lib/studio/`, only 2 files import a studio path:
+    1. `src/lib/psyLive.ts:47` → `./studio/engine/engineWorklet` (LIVE, value import — uses `Psy4EngineNode`, `VOICE`, `VoiceId`, `EngineStats`)
+    2. `src/lib/synthesisMatcher.ts:21` → `./studio/engine/engineWorklet` (LIVE, type-only import — `Psy4EngineNode` type)
+  - `foundation/` files import nothing from `studio/` (0 matches).
+  - `components/ui/*` import nothing from `studio/` (0 matches).
+  - `hooks/*` import nothing from `studio/` (0 matches).
+  - `tests/foundation/music/causal-worker.test.ts` + `tests/foundation/music/audio-quality.test.ts` `fs.readFileSync` `engineWorklet.ts` (test-only — doesn't rescue any other studio file).
+- Verified `engineWorklet.ts` has ZERO `import` statements itself (self-contained TS wrapper around the runtime-loaded worklet module `/worklets/psy4-engine.js`, which is in `public/` — not in `src/lib/studio/`). Therefore no other studio file is transitively reachable through it.
+- The orphaned API routes (`/api/forensic/render`, `/api/forensic/analyze`, `/api/reference/train`) DO import 9 studio files (`offlineRenderer`, `audioAnalyzer`, `referenceScore`, `parameterRegistry`, `worldDNA`, `referenceListener`, `worlds`, `forensicRunner`, `voices`) — but those routes themselves have no live caller per audit-B, so those studio files are dead too. Same for studio-internal cross-imports (`continuousTrainer` → `liteRenderer`/`audioAnalyzer`/`referenceScore`/`perVoiceAnalyzer`/`parameterRegistry`/`worldDNA`/`referenceListener`, and `perVoiceAnalyzer` → `liteRenderer`/`audioAnalyzer`/`referenceListener`).
+- Counted lines via `wc -l` for all 72 studio files. Total = 34,499. LIVE = 281 (`engineWorklet.ts`). DEAD = **34,218 lines across 71 files**.
+- For the 16 named top-level lib files, ran a `grep` for each module name across `src/` to determine live/dead:
+  - 14 are LIVE (directly imported by `psyLive.ts`).
+  - 2 are DEAD (`beatPLL.ts` and `melodyObserver.ts` — only mentioned in stale comments inside `psyLive.ts` at lines 307, 326, 1878 / 320, 331; both are explicitly described as "Removed dead fields — pll, melodyObserver" in a comment block).
+- Read the top docstring of every DEAD studio file to produce a one-line description (see tables below).
+- No code was modified. Read-only audit.
+
+────────────────────────────────────────────────────────────────────────────────
+REACHABILITY GRAPH — ENTRY POINT
+────────────────────────────────────────────────────────────────────────────────
+
+```
+src/app/page.tsx
+  └─ @/lib/psyLive           (src/lib/psyLive.ts)
+       ├─ ./learning                      [LIVE — top-level lib]
+       ├─ ../../foundation/transport/MusicalTransport       [LIVE — out of scope]
+       ├─ ../../foundation/radio/RadioObservationLayer      [LIVE — out of scope]
+       ├─ ../../foundation/radio/RadioObservationTypes      [LIVE — out of scope]
+       ├─ ../../foundation/music/CausalComposer             [LIVE — out of scope]
+       ├─ ../../foundation/music/MusicalObservation         [LIVE — out of scope]
+       ├─ ./onsetAnalyzer                 [LIVE — top-level lib]
+       ├─ ./synthesisMatcher              [LIVE — top-level lib]
+       │     └─ ./studio/engine/engineWorklet  [LIVE — type-only]
+       ├─ ./soundBank                     [LIVE — top-level lib]
+       ├─ ./soundExplorer                 [LIVE — top-level lib]
+       ├─ ./smartExplorer                 [LIVE — top-level lib]
+       ├─ ./rewardTracker                 [LIVE — top-level lib]
+       ├─ ./qualityAnalyzer               [LIVE — top-level lib]
+       ├─ ./referenceAnalyzer             [LIVE — top-level lib]
+       ├─ ./styleClassifier               [LIVE — top-level lib]
+       ├─ ./soundPackage                  [LIVE — top-level lib]
+       ├─ ./synthesisGenerator            [LIVE — top-level lib]
+       ├─ ./loopLearner                   [LIVE — top-level lib]
+       ├─ ./material-realizer             [LIVE — top-level lib]
+       └─ ./studio/engine/engineWorklet   [LIVE — studio, ONLY live studio file]
+              (no further imports — wraps runtime-loaded /worklets/psy4-engine.js)
+```
+
+────────────────────────────────────────────────────────────────────────────────
+STUDIO FILES — LIVE (1 file, 281 lines)
+────────────────────────────────────────────────────────────────────────────────
+
+| File | Lines | What it does |
+| --- | ---: | --- |
+| `engine/engineWorklet.ts` | 281 | `Psy4EngineNode` class — TS wrapper around the `psy4-engine` AudioWorkletNode. Exposes `init/play/stop/setBPM/setMacros/setWorld/scheduleEvent/flushEvents/loadSamples/triggerImmediate/panic/onStats`. The worklet module (`/worklets/psy4-engine.js`, lives in `public/`) contains the actual DSP; this file is just the typed RPC boundary. Imported value+type by `psyLive.ts`; type-only by `synthesisMatcher.ts`. |
+
+────────────────────────────────────────────────────────────────────────────────
+STUDIO FILES — DEAD (71 files, 34,218 lines)
+────────────────────────────────────────────────────────────────────────────────
+
+### Root (3 files, 284 lines)
+
+| File | Lines | One-line purpose (from top docstring) |
+| --- | ---: | --- |
+| `clock.ts` | 100 | "CLOCK & TRANSPORT — Phase 3. Sample-accurate master clock that drives every sequencer. Live 12 master clock twin." (Replaced by `foundation/transport/MusicalTransport`.) |
+| `rng.ts` | 79 | "Deterministic Pseudo-Random Number Generator. Used everywhere in the studio so every random choice is reproducible." (Foundation layer has its own `primitives/rng.ts`.) |
+| `dsp/wavetable.ts` | 105 | "DSP PRIMITIVES — Noise + wavetable factories." Imports the dead `rng.ts`. |
+
+### `engine/` direct (35 files, 17,339 lines)
+
+| File | Lines | One-line purpose |
+| --- | ---: | --- |
+| `advancedVoice.ts` | 756 | "AdvancedSynthVoice — drop-in replacement for PooledSynthVoice with classic/fm/supersaw/wavetable modes." |
+| `audioBackend.ts` | 237 | "AudioBackend — Task F1-F3: clean architectural separation. ONE interface, TWO implementations (WorkletEngine + LegacyAudioGraph)." |
+| `callResponseEngine.ts` | 137 | "Call/Response + Counter-Melody Engine — prevents MIDI soup." |
+| `commercialReference.ts` | 454 | "Commercial Reference Engine — defines what professional psytrance sounds like (LUFS/true-peak/spectral targets)." |
+| `djController.ts` | 738 | "DJController — full DJ-style sync (Pioneer CDJ / Traktor / Serato model)." |
+| `effectsDetector.ts` | 432 | "Effects Detector (Task A1) — infers the EFFECTS CHAIN the radio reference is using." |
+| `effectsRack.ts` | 568 | "TrackEffectsRack — per-track insert chain (EQ → Compressor → Saturation → Haas → Panner) for the PSY4 engine." |
+| `flowEngine.ts` | 829 | "FLOW ENGINE (Task F1) — replaces fixed `arrangement` array with dynamic, creative, radio-responsive flow." |
+| `harmonyEngine.ts` | 619 | "HarmonyEngine — professional-grade chord progression + voice leading engine (11 chord types)." |
+| `layerEngine.ts` | 259 | "Layer Engine — constructs sounds from multiple compatible layers (sub/body/click for kick, etc.)." |
+| `learningMemory.ts` | 260 | "LearningMemory — active learning system; stores successful parameter configs indexed by reference features." |
+| `legacyAudioGraph.ts` | 860 | "LegacyAudioGraph — Task F1-F3: the legacy Web Audio node graph as an AudioBackend implementation (FALLBACK backend)." |
+| `melodyEngine.ts` | 834 | "MelodyEngine — professional melodic development engine (motif generation, sequence, transformation)." |
+| `mixAwareSelector.ts` | 197 | "Mix-Aware Selector — tracks current mix state and avoids frequency masking." |
+| `multibandCompressor.ts` | 235 | "MultibandCompressor — 3-band master bus compressor (low/mid/high crossovers)." |
+| `multisampleGenerator.ts` | 524 | "Procedural Multisample Generator — generates 40+ kick variants, 30+ bass, etc." |
+| `musicAnalyzer.ts` | 1027 | "MusicAnalyzer — hears MUSIC (melodic contour, rhythm, chords) not just acoustic features." |
+| `musicalDirector.ts` | 1987 | "MUSICAL DIRECTOR (Task M1 — real composer, not step-by-step generator)." |
+| `musicalGrammar.ts` | 331 | "Musical Grammar Engine — port of PSY3's psy_gen.py (EvolvingSequence, EvolvingParam, tensionAt, densityAt)." |
+| `musicalMemory.ts` | 279 | "MUSICAL MEMORY ENGINE — persistent musical state so variations feel like evolving ideas." |
+| `offlineRenderer.ts` | 114 | "Offline Audio Renderer — renders PSY4 engine to WAV via OfflineAudioContext for A/B analysis." |
+| `performanceMonitor.ts` | 254 | "PerformanceMonitor — adaptive quality scaling for the PSY4 engine (P1 task)." |
+| `phaseSync.ts` | 523 | "DJ-style phase sync — phase-locked beat matching + downbeat alignment (Task D1)." |
+| `phraseSync.ts` | 581 | "PhraseSync — aligns our phrase boundaries with the radio's (Task P4 structural sync)." |
+| `psy4EngineV2.ts` | 5485 | "PSY4 Engine V2 — based on PSY6 architecture (pooled voices, factory presets, step sequencer, 8 tracks). The single largest dead file." |
+| `sampleBank.ts` | 266 | "SampleBank — loads PSY3 WAV samples and transfers them to the AudioWorklet." (Pre-existing duplicate of worklet loading path; `engineWorklet.loadSamples` is the live equivalent.) |
+| `schedulerWorker.ts` | 251 | "SchedulerWorker — jitter-resistant Web Worker scheduler (replaces setTimeout(15ms))." |
+| `sendEffects.ts` | 518 | "SendEffects — global send-bus effects (chorus/phaser/distortion/bitcrush) as AudioNodes." |
+| `styleClassifier.ts` | 528 | "Spectral Style Classifier (Task 14) — learns psytrance sub-style from acoustic features." |
+| `synthesisDetector.ts` | 241 | "Synthesis Character Detector (Task T1) — PURE function inferring synthesis mode (fm/supersaw/etc.)." |
+| `synthesisRouter.ts` | 375 | "Synthesis Router (Task A1) — produces a CONCRETE PLAN of adjustments to match the reference." |
+| `timbreFingerprint.ts` | 440 | "Timbre Fingerprint (Task A1) — compact, comparable signature of SOUND CHARACTER." |
+| `uniquenessDetector.ts` | 327 | "Uniqueness Detector (Task A1) — identifies risers/impacts/sweeps/vocal chops/glitches in reference." |
+| `vocabularyLearner.ts` | 649 | "VocabularyLearner — learns musical vocabulary (melodic motifs, rhythm patterns) from the radio." |
+| `workletEngine.ts` | 758 | "WorkletEngine — Task W1 unified AudioWorklet bridge (replaces 1054-node Web Audio NODE GRAPH inside Psy4EngineV2)." |
+| `worlds.ts` | 290 | "WORLDS — parameterized musical identities (key/scale/tempo/grammar/timbre/FX per world)." |
+
+### `engine/forensic/` (16 files, 6,033 lines) — **all orphaned forensic-test infrastructure**
+
+| File | Lines | One-line purpose |
+| --- | ---: | --- |
+| `prng.ts` | 44 | "Deterministic PRNG — mulberry32. All forensic rendering uses this." |
+| `closedLoop.ts` | 285 | "Closed-Loop Optimizer — iterative parameter optimization (GENERATE→RENDER→ANALYZE→DIAGNOSE→MODIFY)." |
+| `forensicRunner.ts` | 143 | "Forensic Runner — orchestrates full analysis pipeline (render+analyze, world diff, param validation, bass isolation)." |
+| `paramValidator.ts` | 186 | "Parameter Validator — tests whether each world parameter actually affects rendered output." |
+| `qualityScore.ts` | 615 | "Audio Quality Score — weighted metric-based scoring (LOW END/KICK/BASS/etc.)." |
+| `liteRenderer.ts` | 402 | "Lite Offline Renderer — matches Psy4LiteEngine exactly. CRITICAL FIX: old renderer used different DSP than live engine." |
+| `mixing.ts` | 235 | "Forensic Mixing — bus processors, master chain, reverb, delay (direct port of psy4-engine.js)." |
+| `repetitionDetector.ts` | 229 | "Repetition Detector — measures musical repetition at 4/8/16-bar and section-level granularity." |
+| `audioAnalyzer.ts` | 546 | "Forensic Audio Analyzer — FFT-based measurement (dynamics, spectrum, low end)." |
+| `offlineRenderer.ts` | 717 | "Forensic Offline Renderer — the deterministic render(seed, worldId, duration) function." |
+| `worldDifferentiator.ts` | 176 | "World Differentiator — tests whether different worlds actually produce different audio." |
+| `musicalGrammar.ts` | 165 | "Forensic Musical Grammar — scales, progressions, bass patterns, arrangement." |
+| `worlds.ts` | 134 | "Forensic Worlds — Psy4World definitions for the offline renderer." |
+| `voices.ts` | 674 | "Forensic Voices — isomorphic TS port of psy4-engine.js voice classes." |
+| `reportGenerator.ts` | 318 | "Forensic Report Generator — produces the final FORENSIC AUDIO REPORT (metrics only)." |
+| `latencyMonitor.ts` | 134 | "Latency Monitor — measures realtime engine performance during playback." |
+
+### `engine/reference/` (13 files, 5,562 lines) — **all orphaned reference-listener / training infrastructure**
+
+| File | Lines | One-line purpose |
+| --- | ---: | --- |
+| `continuousTrainer.ts` | 773 | "Continuous Trainer — runs entirely client-side. Renders→analyzes→compares→optimizes params periodically." |
+| `musicalUnderstanding.ts` | 339 | "Musical Understanding — detects key, scale, BPM, and notes from audio (chromagram + key detection)." |
+| `parameterRegistry.ts` | 176 | "Optimizable Parameter Registry (Priority 7) — each parameter has min/max/step/current/importance." |
+| `perVoiceAnalyzer.ts` | 232 | "Per-Voice Analyzer — measures each voice's contribution separately (renders each voice ISOLATED)." |
+| `performanceMonitor.ts` | 256 | "PerformanceMonitor — measures realtime engine stability (audio callback duration, scheduler jitter)." |
+| `radioStreams.ts` | 127 | "Psytrance Radio Stream Registry (10 streams verified via ICY metadata)." **Divergent copy** of the stream list also embedded in `/api/reference/proxy/route.ts`. |
+| `referenceListener.ts` | 818 | "ReferenceListener V1 — connects to live psytrance radio stream and extracts acoustic features (NO ScriptProcessorNode)." |
+| `referenceListenerV2.ts` | 1210 | "ReferenceListener V2 — robust cross-origin stream analysis via fetch()+ReadableStream+decodeAudioData. V1 was silent for cross-origin streams." **Single largest reference file.** |
+| `referenceScore.ts` | 297 | "Reference Score — measures how close our engine's output is to the reference profile." |
+| `renderWorker.ts` | 375 | "Render Worker — runs the offline renderer in a separate Web Worker thread." |
+| `selfAnalyzer.ts` | 354 | "SelfAnalyzer — analyzes our engine's actual audio output via AnalyserNode tap." |
+| `trainingLoop.ts` | 353 | "Training Loop — GENERATE → ANALYZE → COMPARE → MODIFY → ACCEPT/REJECT cycle." |
+| `worldDNA.ts` | 236 | "World DNA — per-world reference targets (Priority 8: different profiles per world)." |
+
+────────────────────────────────────────────────────────────────────────────────
+TOP-LEVEL LIB FILES — LIVE/DEAD VERIFICATION
+────────────────────────────────────────────────────────────────────────────────
+
+For each named file, status was determined by grepping `src/` for `from './<name>'` and confirming the import is in `psyLive.ts`.
+
+| File | Lines | Status | Evidence |
+| --- | ---: | --- | --- |
+| `learning.ts` | 482 | **LIVE** | `psyLive.ts:15` imports `LearningData, Composition, loadLearning, saveLearning, recordKick, recordBassNote, recordRadioBands, recordEnergy, deriveInsights, getInsights, generateComposition`. |
+| `loopLearner.ts` | 236 | **LIVE** | `psyLive.ts:42` imports `LoopLearner`. |
+| `melodyObserver.ts` | 394 | **DEAD** | No `from './melodyObserver'` import anywhere in `src/`. Only mentioned in stale comments at `psyLive.ts:307,326,1878` ("was melodyObserver", "Removed dead fields — pll, melodyObserver, radioGate, transportAdapter..."). |
+| `styleClassifier.ts` | 288 | **LIVE** | `psyLive.ts:36` imports `StyleClassifier, RadioStyle, StyleFeatures, ClassificationResult`. |
+| `referenceAnalyzer.ts` | 301 | **LIVE** | `psyLive.ts:34` imports `ReferenceAnalyzer, ReferenceDNA`. |
+| `soundExplorer.ts` | 245 | **LIVE** | `psyLive.ts:29` imports `SoundExplorer, ExplorationResult`. |
+| `soundPackage.ts` | 271 | **LIVE** | `psyLive.ts:38` imports `PackageExporter, PackageImporter, SoundPackage, PackagePattern, PackageInsights`. |
+| `onsetAnalyzer.ts` | 351 | **LIVE** | `psyLive.ts:23` imports `OnsetAnalyzer, OnsetEvent, OnsetRole`. |
+| `synthesisMatcher.ts` | 487 | **LIVE** | `psyLive.ts:25` imports `SynthesisMatcher, MatchResult`. (Also type-imports `Psy4EngineNode` from `./studio/engine/engineWorklet`.) |
+| `soundBank.ts` | 294 | **LIVE** | `psyLive.ts:27` imports `SoundBank, SoundBankEntry`. |
+| `synthesisGenerator.ts` | 336 | **LIVE** | `psyLive.ts:40` imports `SynthesisGenerator, GenerationResult`. |
+| `rewardTracker.ts` | 225 | **LIVE** | `psyLive.ts:32` imports `RewardTracker`. |
+| `smartExplorer.ts` | 224 | **LIVE** | `psyLive.ts:30` imports `SmartExplorer`. |
+| `material-realizer.ts` | 491 | **LIVE** | `psyLive.ts:46` imports `MaterialRealizer`. |
+| `qualityAnalyzer.ts` | 158 | **LIVE** | `psyLive.ts:33` imports `QualityAnalyzer`. |
+| `beatPLL.ts` | 213 | **DEAD** | No `from './beatPLL'` import anywhere in `src/`. Only mentioned in stale comments at `psyLive.ts:320-323,331` ("Beat PLL (phase-locked loop for beat sync) — OBSERVER only", "The PLL is an observer inside RadioObservationLayer"). Foundation's `RadioObservationLayer` has its own internal `BeatPLL` — the top-level `beatPLL.ts` file is the abandoned standalone version. |
+
+**Top-level lib summary:** 14 LIVE / 2 DEAD. Dead top-level lib code = 213 + 394 = **607 lines**.
+
+────────────────────────────────────────────────────────────────────────────────
+DEAD CODE TOTALS
+────────────────────────────────────────────────────────────────────────────────
+
+| Scope | Files | Lines |
+| --- | ---: | ---: |
+| `src/lib/studio/` total | 72 | 34,499 |
+| `src/lib/studio/` LIVE (`engineWorklet.ts`) | 1 | 281 |
+| **`src/lib/studio/` DEAD** | **71** | **34,218** |
+| Top-level lib DEAD (`beatPLL.ts` + `melodyObserver.ts`) | 2 | 607 |
+| **Grand total DEAD** | **73** | **34,825** |
+
+────────────────────────────────────────────────────────────────────────────────
+NOTABLE HOTSPOTS IN THE DEAD CODE
+────────────────────────────────────────────────────────────────────────────────
+
+1. **`psy4EngineV2.ts` (5,485 lines)** — The single largest dead file. A whole alternate engine ("PSY4 Engine V2 based on PSY6 architecture, pooled voices, 8 tracks, factory presets, step sequencer"). The live engine is the AudioWorklet in `public/worklets/psy4-engine.js`, wrapped by `engineWorklet.ts` (281 lines). `psy4EngineV2.ts` was fully superseded but never removed.
+2. **`musicalDirector.ts` (1,987 lines)** — "MUSICAL DIRECTOR (Task M1 — real composer, not step-by-step generator)". Live composition has moved to `foundation/music/CausalComposer.ts` running in a Web Worker (`/worklets/composition-worker.js`). The MusicalDirector class is fully orphaned.
+3. **`reference/referenceListenerV2.ts` (1,210 lines)** — V2 of the reference listener. Despite the "V2" naming (implying it replaced V1), **both** `referenceListener.ts` (V1, 818 lines) and `referenceListenerV2.ts` (V2, 1,210 lines) are dead. The live radio path is `foundation/radio/RadioObservationLayer.ts` (out of scope).
+4. **`musicAnalyzer.ts` (1,027 lines)** — "MusicAnalyzer — hears MUSIC, not just features." Live musical analysis is in `foundation/music/*` (MusicalObservation, CausalState, etc.).
+5. **`forensic/*` (16 files, 6,033 lines)** — Entire forensic-test infrastructure. Reachable only from 3 orphaned API routes (`/api/forensic/render`, `/api/forensic/analyze`, `/api/reference/train`) that audit-B already flagged as dead.
+6. **`reference/*` (13 files, 5,562 lines)** — Entire reference-listener/training infrastructure. Same situation as forensic — reachable only from the orphaned training route.
+7. **Duplicated `radioStreams.ts`** — `studio/engine/reference/radioStreams.ts` (10 streams, 127 lines) and the inline `STREAM_URLS` map in `/api/reference/proxy/route.ts` (10 streams) are divergent copies. Neither is the live source — the actual stream list consumed by the live radio path is in `foundation/radio/RadioObservationLayer.ts` (out of scope).
+8. **Two RNG modules** — `studio/rng.ts` (79 lines, dead) and `studio/engine/forensic/prng.ts` (44 lines, dead) duplicate functionality that the live code gets from `foundation/music/primitives/rng.ts` (out of scope).
+9. **Two `styleClassifier.ts` files** — `src/lib/styleClassifier.ts` (LIVE, 288 lines) and `src/lib/studio/engine/styleClassifier.ts` (DEAD, 528 lines). The studio version is the abandoned "Task 14" version; the live one is what `psyLive.ts` actually uses.
+10. **Two `musicalGrammar.ts` files** — `studio/engine/musicalGrammar.ts` (DEAD, 331 lines) and `studio/engine/forensic/musicalGrammar.ts` (DEAD, 165 lines). Both abandoned. Live grammar is in `foundation/music/*` and the composition worker.
+11. **Two `worlds.ts` files** — `studio/engine/worlds.ts` (DEAD, 290 lines) and `studio/engine/forensic/worlds.ts` (DEAD, 134 lines). Both abandoned.
+12. **Two `offlineRenderer.ts` files** — `studio/engine/offlineRenderer.ts` (DEAD, 114 lines) and `studio/engine/forensic/offlineRenderer.ts` (DEAD, 717 lines). Both abandoned.
+13. **Two `sampleBank.ts` paths** — `studio/engine/sampleBank.ts` (DEAD, 266 lines) duplicates the sample-loading logic that's now inlined into `psyLive.ts` + `engineWorklet.loadSamples()`.
+
+────────────────────────────────────────────────────────────────────────────────
+BRUTAL HONESTY NOTES
+────────────────────────────────────────────────────────────────────────────────
+
+- **97.4% of `src/lib/studio/` is dead** (34,218 / 34,499 lines). The entire directory is a museum of abandoned iterations: PSY4 Engine V2 (5.5K lines), MusicalDirector (2K lines), ReferenceListener V1+V2 (2K lines combined), the full forensic + reference training stacks (11.6K lines combined). Only the 281-line worklet wrapper actually ships.
+- The live architecture is split across THREE locations, which is why the studio dir looks orphaned:
+  1. **`src/lib/psyLive.ts` (3,645 lines)** — the conductor. Owns the radio state machine, schedules events to the worklet.
+  2. **`foundation/` (out of scope, ~30 files)** — transport, radio observation layer, causal composer, musical state.
+  3. **`public/worklets/psy4-engine.js` (1,233 lines)** + **`public/worklets/composition-worker.js`** — the actual DSP and composition engines, running off-main-thread.
+  The `src/lib/studio/` directory was the previous monolithic home of all this logic. It has been progressively evacuated to foundation/ + worklets/, but the corpses were never cleaned up.
+- **No code modifications were made.** This is a pure read-only audit. The dead code can be safely deleted in a follow-up PR — nothing in `psyLive.ts`, `page.tsx`, `foundation/`, `components/`, or `hooks/` references any of the 71 dead studio files. The only external references are from 3 orphaned API routes (which audit-B already flagged for deletion).
+- **Caveat:** 2 test files (`tests/foundation/music/causal-worker.test.ts`, `tests/foundation/music/audio-quality.test.ts`) `fs.readFileSync` `engineWorklet.ts` (the LIVE file). No tests reference any DEAD studio file, so deleting the dead code will not break tests.
+
+Stage Summary:
+- **1 LIVE studio file** (`engine/engineWorklet.ts`, 281 lines) — typed wrapper around the `psy4-engine` AudioWorklet. Everything else in `src/lib/studio/` (71 files, 34,218 lines) is dead.
+- **2 DEAD top-level lib files** (`beatPLL.ts`, 213 lines; `melodyObserver.ts`, 394 lines) — both are stale standalone versions replaced by `foundation/radio/RadioObservationLayer.ts` (which has its own internal BeatPLL + MelodyObserver). Only mentioned in stale comments inside `psyLive.ts`.
+- **14 LIVE top-level lib files** — all directly imported by `psyLive.ts`.
+- **Grand total dead code identified: 73 files / 34,825 lines** (34,218 in studio/ + 607 in top-level lib).
+- **Top 3 dead-code hotspots:** `psy4EngineV2.ts` (5,485), `musicalDirector.ts` (1,987), `reference/referenceListenerV2.ts` (1,210).
+- **Recommended next action (separate PR):** delete the 71 dead studio files + 2 dead top-level lib files + the 3 orphaned API routes that reference them (`/api/forensic/render`, `/api/forensic/analyze`, `/api/reference/train`). This is ~35K lines of code that ships to the build but is never executed. Read-only audit — no code modified.
+
+---
+Task ID: audit-summary-plan
+Agent: main (Z.ai Code)
+Task: ביקורת אמיתית של הקוד מול מטרת המוצר והכנת תוכנית ביצוע
+
+Work Log:
+- הפעלתי 4 סוכנים עצמאיים לביקורת עמוקה:
+  - audit-A-psyLive: 3644 שורות, בדק כל מתודה ציבורית
+  - audit-B-engine: 3129 שורות psy4-engine.js, בדק voice classes + master chain + SAB
+  - audit-C-composition-and-api: 1154 שורות worker + 7 API routes
+  - audit-D-deadcode: מיפוי reachability של כל studio/
+- אימות חי ב-Agent Browser: לחצתי Play, בדקתי analyser data (avg=111/255 = אודיו זורם), בדקתי engineLevel state
+- גיליתי באג קריטי: LUFS תקוע ב- -80.7 כי detect() יוצא מוקדם כשרדיו כבוי, ו-engineLevel מתעדכן רק בתוך detect()
+- כתבתי תוכנית ביצוע מלאה ל-EXECUTION_PLAN.md
+
+Stage Summary:
+- מצב אמיתי: המנוע עובד (אודיו זורם) אבל יש 12 באגים מזוהים, 4 מהם קריטיים
+- טענות שקריות שהתגלו: "deterministic" (Math.random במקום mulberry32), "lock-free SAB" (SAB תיאטרלי), "real samples" (sampler dead code), "15 voice classes" (רק 14, SnareVoice לא קיים)
+- 34,825 שורות קוד מת (97.4% מ-studio/)
+- next.config.ts מסתיר שגיאות TS עם ignoreBuildErrors: true
+- תוכנית ביצוע: 7 שלבים, סה"כ 410 דק' חובה / 810 דק' מלא
+- קובץ תוכנית: /home/z/my-project/EXECUTION_PLAN.md
