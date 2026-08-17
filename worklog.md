@@ -12295,3 +12295,666 @@ Stage Summary:
 - next.config.ts מסתיר שגיאות TS עם ignoreBuildErrors: true
 - תוכנית ביצוע: 7 שלבים, סה"כ 410 דק' חובה / 810 דק' מלא
 - קובץ תוכנית: /home/z/my-project/EXECUTION_PLAN.md
+
+---
+Task ID: audit-E-psysynth-dsp
+Agent: general-purpose sub-agent (Z.ai Code)
+Task: Read-only DSP + voice/pool audit of the sibling `psysynth` repo cloned at `/tmp/psysynth-audit/`, to assess whether its capabilities are worth porting into PSY4. No code modified.
+
+Work Log:
+- Read prior PSY4 audit context from worklog (lines 12097–12296): audit-A/B/C/D established that PSY4 ships a 3,129-line monolithic `public/worklets/psy4-engine.js` with 14 voice classes, multiband DISABLED, sampler dead code, Math.random() instead of a PRNG, theatrical SAB, and 34,825 lines of dead code in `src/lib/studio/`.
+- Read all 12 files named in the brief (line counts verified to match the brief exactly: 368/207/106/142/136/117/78/57/131/243/161/71).
+- Cross-referenced `public/patches/manifest.json` (14,458 bytes, 20 patches, all 7 roles covered: bass:5, lead:4, arp:3, pad:2, stab:2, pluck:2, keys:2) and `public/patches/style-banks.json` (1,609 bytes, 6 subgenre banks: FULL-ON, DARK-PSY, PROGRESSIVE, GOA, HI-TECH, FOREST — every override references a real patch id).
+- Verified mulberry32 RNG lineage by reading the verbatim shim at `src/psy-foundation-shim/voice-pool.ts:107-133`.
+- Verified PolyBLEP alias-reduction test is real (`tests/psy-synth/polyblep.test.ts` uses a Goertzel power comparison at the folded 2nd harmonic — `expect(polySpur).toBeLessThan(naiveSpur * 0.5)`).
+- Verified the AudioWorklet processor source (`src/psy-synth/worklet/polyblep-worklet.ts`) inlines the SAME `polyblep(t, dt)` math as the pure module, with parameter descriptors for `frequency/duty/wave/sync` and per-sample phase advance + hard-sync reset on the rising edge of the `sync` param.
+- Discovered the "11 engines" attribution error: the SUB/SSAW/FM/ORG/NSE/WT/VOW/PLK/BEL/GRN/CHO engine switch does NOT exist anywhere in `src/psy-synth/*`. It lives only in `public/psyforge-pro.html` — a separate standalone single-page demo synth ("PsyForge Pro X") that ships its own AudioWorklet processor (`registerProcessor("psy-engine", ...)`) with a `P.eng===0..10` switch. The contract-based `src/psy-synth/dsp/engine-router.ts` chooses between ONLY TWO engines: `'periodic'` (default, static band-limited PeriodicWave) and `'polyblep'` (per-sample, opt-in for hard-sync/ring-mod patches).
+
+────────────────────────────────────────────────────────────────────────────────
+1. SynthVoice DSP chain (src/psy-synth/voice.ts)
+────────────────────────────────────────────────────────────────────────────────
+Signal flow (verbatim from constructor wiring at voice.ts:179-196):
+
+  oscA → gainA ─┐
+  oscB → gainB ─┤                          ┌→ out(gain) → dests.dry (reconnectable per role)
+  oscB → ring.gain → gainA.gain (AM)       │
+  sub  → gainSub ┘→ preDriveGain → preDrive(WaveShaper,tanh(1.8x))
+                  → f1(Biquad lowpass) → f2(Biquad lowpass) → fSat(WaveShaper,tanh(1.8x))
+                  → vca(gain, ADSR) ─┤
+                                     └→ sendDelay(gain) → dests.delaySend
+                                     └→ sendReverb(gain) → dests.reverbSend
+
+- 3 oscillators: oscA (primary), oscB (secondary, optional, supports detune + semitones), sub (sine-only, typically -12 semis). All use band-limited `PeriodicWave`s built from a 64-harmonic truncated Fourier series (`waveFor`, cached per-host in a WeakMap, voice.ts:69-99).
+- Pre-drive stage: WaveShaper with `tanh(1.8 * x)` curve (512-point LUT, voice.ts:101-109), scaled by `Math.pow(10, patch.driveDb / 20)` (0..12 dB).
+- Filter stage: TWO cascaded BiquadFilter lowpasses (f1, f2) + a WaveShaper saturation. Cutoff scheduled via `linearRampToValueAtTime` for the attack and `setTargetAtTime` for the decay (voice.ts:266-273). f1.Q capped at `clamp(f.res * resMult, 0, 0.95) * 20` (= 0..19); f2.Q at half that. Type can be 'lp' or 'bp'.
+- VCA: standard ADSR via `linearRampToValueAtTime` (attack) + `setTargetAtTime` (decay, release). Peak = `clamp(0.15 + 0.55 * vel, 0, 0.8)` (voice.ts:279).
+- Sends: delay + reverb, pre-gated by the host (level=0 when host node absent). Both sends tap the VCA output, so reverb/delay hear the post-VCA signal.
+
+Modulation sources (in the SHIPPED voice.ts path):
+- Filter envelope (ADSR-style: attack → peak, decay → base, via AudioParam scheduling).
+- Amp envelope (ADSR).
+- Velocity → cutoff (velTrack 0..0.3) AND → VCA peak.
+- Macro: cutoffMult, cutoffBias, resMult, energyCutoffHz — all passed in at trigger time, applied via AudioParam scheduling (NO node creation in the hot path).
+- Portamento/glide: exponential ramp on oscA/oscB frequency (legato-only).
+- **NO LFO** in voice.ts. **NO mod matrix** in voice.ts. **NO step sequencer** in voice.ts.
+  (The filter spec has optional `lfoHz`/`lfoDepth`/`lfoSync` fields in types.ts:46-48, but voice.ts never reads them — they are dead fields in the shipped path.)
+
+Modulation sources that EXIST but are NOT wired into the shipped voice:
+- `dsp/voice-ext.ts` builds a SEPARATE "extended" voice (Phase 6 KAI) that wires FM/noise/wavetable/formant/comb/SVF filters, up to 3 LFOs, a step sequencer, and a mod matrix (`buildModMatrix`, 14 ModSource × 11 ModDest, types.ts:152-170). This voice is reached only via patches of type `SynthPatchExt` — NONE of the 20 patches in manifest.json use modMatrix/lfos/stepSeq. So today the entire Thor-like layer is dormant in production patches.
+
+────────────────────────────────────────────────────────────────────────────────
+2. PolyBLEP implementation (src/psy-synth/dsp/polyblep.ts + worklet/polyblep-worklet.ts)
+────────────────────────────────────────────────────────────────────────────────
+**The math is REAL and alias-reducing.** Verified three ways:
+1. Pure module (polyblep.ts:23-34) implements the standard residual: `polyblep(t, dt)` returns `t+t - t*t - 1` for `t < dt` (rising-edge correction) and `(t-1)^2 + 2(t-1) + 1` for `t > 1-dt` (falling-edge). Zero in between.
+2. `polyblepSaw(phase, dt) = 2*t - 1 - polyblep(t, dt)` (polyblep.ts:49-52).
+3. `polyblepPulse(phase, duty, dt) = naive + polyblep(t, dt) - polyblep(wrapPhase(t + (1-duty)), dt)` — corrects BOTH edges (rising at phase 0, falling at phase `duty`) (polyblep.ts:63-69).
+4. Test `tests/psy-synth/polyblep.test.ts:55-94` runs a Goertzel power comparison at the folded 2nd harmonic (fundamental 0.4 × Nyquist 0.5 = spurious 0.2): `expect(polySpur).toBeLessThan(naiveSpur * 0.5)`. **PolyBLEP reduces spurious power by >2× vs naive.** This is a real alias-reduction test, not theater.
+5. Worklet source (`polyblep-worklet.ts:15-67`) inlines the IDENTICAL `polyblep(t, dt)` math (byte-for-byte same formula) so the AudioWorklet scope (no module imports) produces the same samples as the pure module. A `worklet-consistency.test.ts` drift-guard test pins this.
+
+Waveforms supported:
+- **saw, square, pulse (variable duty = PWM)** — yes (polyblep.ts:11). 
+- **triangle, sine** — NOT in the PolyBLEP path; rendered as band-limited PeriodicWaves (voice.ts:86-87) since they have no discontinuities to correct.
+- **Hard sync** — `syncReset(state)` (polyblep.ts:81-83) zeroes the phase; the worklet watches the `sync` AudioParam's rising edge (`if (syncNow && !this.lastSync) this.phase = 0`, polyblep-worklet.ts:46-47). Real and tested.
+- **PWM** — `polyblepPulse(phase, duty, dt)` with a k-rate `duty` AudioParam (0.01..0.99). Real.
+
+**BRUTAL HONESTY:** The PolyBLEP path is NOT WIRED INTO THE SHIPPED VOICE. `voice.ts:214` calls `selectOscEngine(patch)` and stores `this.engine`, but the trigger() body unconditionally uses `setPeriodicWave(waveFor(...))` (voice.ts:221-223) regardless of the resolved engine. The voice.ts docstring (line 9-11) admits: "Full PolyBLEP + hard sync via AudioWorklet is a later polish phase; ring-mod is approximated as AM." So the 2 patches that declare `b.sync: true` (lead-hitech-sync) and `b.ringMod: 0.35` (pluck-forest) are RENDERED AS STATIC WAVES today, not as actually-synced/ring-modulated oscillators. The router DECIDES but voice.ts does not ACT on the decision. The `engine` field is set but never read after trigger.
+
+────────────────────────────────────────────────────────────────────────────────
+3. "Moog ladder" filter (src/psy-synth/voice.ts:164-169 + dsp/filter.ts)
+────────────────────────────────────────────────────────────────────────────────
+**It is NOT a Moog ladder.** The voice.ts docstring (line 12-13) is honest: "Moog ladder character APPROXIMATED with two cascaded biquads + soft saturation; resonance capped (self-oscillation guarded)."
+
+What it actually is:
+- Two cascaded BiquadFilterNode lowpasses (f1 → f2). Each is a 2-pole biquad. Cascaded → 4-pole rolloff, but with the standard biquad transfer function (not the Moog 1-pole-with-feedback topology).
+- A `tanh(1.8x)` WaveShaper AFTER f2 (`fSat`) — this is the "soft saturation" that gives Moog-ish warmth.
+- Q (resonance) mapping: `q = clamp(f.res * resMult, 0, 0.95) * 20` (voice.ts:254) → 0..19. Self-oscillation is guarded by the 0.95 cap on the patch-level `f.res` (validatePatch rejects res > 0.95, patch-library.ts:44). f2.Q is at half of f1.Q (`Math.max(0.5, q * 0.5)`).
+- Cutoff range: MIN_CUTOFF=40 Hz, MAX_CUTOFF=18 kHz (voice.ts:62-63). Filter type: 'lp' (default) or 'bp' (both biquads switched to bandpass — voice.ts:252-253).
+- Filter envelope: peak = `base + envDepth * (MAX_CUTOFF - base)` (voice.ts:263), attack via `linearRampToValueAtTime`, decay via `setTargetAtTime(base, t+atk, dec/3)`.
+
+The extended filter factory (`dsp/filter.ts`) adds 'hp', 'notch', 'comb', 'formant' (3 parallel bandpasses at vowel formant freqs), 'svf' (4 parallel biquads summed) — but these are only reachable via the unused `voice-ext.ts` path. Shipped patches all use 'lp' or 'bp'.
+
+────────────────────────────────────────────────────────────────────────────────
+4. Voice pool (src/psy-synth/voice-pool.ts)
+────────────────────────────────────────────────────────────────────────────────
+- Voice count: configured by host via `SynthConfig.maxVoices` (default 16 per INTEGRATION-GUIDE.md). The pool is PRE-CREATED at construction (voices passed in via the constructor, voice-pool.ts:31-38). The free-stack is initialized as `[N-1, N-2, ..., 1, 0]` and `pop()` is O(1).
+- Steal policy — **DETERMINISTIC, in this exact priority** (voice-pool.ts:177-206, `pickSteal`):
+  1. **Role-budget guard**: if the requested role is over its budget, steal from the SAME role first (sameRoleOnly=true).
+  2. **Oldest voice already in release** (tail only, lowest-priority victim) — measured by `voice.ageSec`.
+  3. **Oldest-on voice** (longest-sounding) — fallback.
+  - Lowest-gain / quietest is NOT used; the policy is age-based, not amplitude-based.
+  - Pathological case (all voices same role + budgeted, no free): `counters.noteDrop('pool-exhausted')` and throws. Counters record every steal and drop.
+- (channel, note) → voice index map (`byKey`, a Map) for O(1) note-off matching (voice-pool.ts:46-51). Mono roles (bass) auto-release the previous voice for the same key on `bind()` (voice-pool.ts:97-101).
+- **Zero allocation on trigger**: confirmed. `allocate()` only pops from `this.free` (pre-sized array) and mutates a pre-existing `PooledVoiceRecord`. `bind()` mutates fields on the record and sets a Map key. No `new`, no `Array.push` outside the constructor. `panicAll()` rebuilds the free-stack in-place (`voice-pool.ts:121-122`). `sweep(now)` reclaims voices whose release tail finished (markInactiveIfDone, 350ms after releaseScheduledAt).
+- `find(channel, note)` is O(1) via the Map. `activeCount()` is O(N) — acceptable.
+
+────────────────────────────────────────────────────────────────────────────────
+5. Patch system (types.ts + patch-library.ts + manifest.json + style-banks.json)
+────────────────────────────────────────────────────────────────────────────────
+SynthPatch schema (types.ts:69-91), required fields:
+- `id` (string), `role` (one of 7 canonical SynthRole: bass/lead/arp/pad/stab/pluck/keys).
+- `provenance`: { author, license, created (ISO date), source? } — **enforced at load** by validatePatch (patch-library.ts:25-28). Rejected patches counted via `counters.patchLoadErrors`, never reach the runtime.
+- `osc`: { a: OscSpec (wave, gain, semitones?, detuneCents?, sync?, ringMod?), b?: OscSpec, sub?: SubSpec }.
+- `glideMs` (portamento, legato-only).
+- `filter`: { type: 'lp'|'bp', cutoff 40..18000, res 0..0.95, envDepth 0..1, envAttackMs >=0.5, envDecayMs >=0.5, velTrack 0..0.3, lfoHz?, lfoDepth?, lfoSync? }. Range constraints enforced by validatePatch.
+- `amp`: ADSR with each stage >=0.5ms, sustain 0..1.
+- `driveDb` 0..12, `sends`: { delay 0..1, reverb 0..1 }.
+- `humanize` (boolean), `chordIntervals?` (number[] for stab), `arpOrnament?` (boolean), `oscEngine?` ('periodic'|'polyblep'), `stepVariance?` (boolean).
+- Optional extended fields (SynthPatchExt): `modMatrix?`, `lfos?`, `modEnvelopes?`, `stepSeq?`.
+
+Validation is STRICT: 13 separate field checks in validatePatch (patch-library.ts:16-69). Malformed/duplicate-id patches are rejected AT LOAD and counted; the runtime never sees a bad patch. This is exactly the discipline PSY4 lacks.
+
+Manifest (public/patches/manifest.json, 14,458 bytes):
+- **20 patches**, all 7 roles covered: bass:5 (acid-303, dark-offbeat, gallop, prog-minimal, sub-deep), lead:4 (fullon-squelch, dark-square, hitech-sync, prog-pluck), arp:3 (hitech-square, forest-plucky, goa), pad:2 (atmospheric, dark-drone), stab:2 (goa-major, dark-minor), pluck:2 (forest, organic), keys:2 (break-soft, goan-flute).
+- `manifestVersion: 1`, `seed: 1`. All 20 patches authored by "psysynth", license "original", created "2026-08-14".
+- Only 1 patch uses `sync: true` (lead-hitech-sync). 1 uses `ringMod` (pluck-forest, 0.35). 2 use `chordIntervals` (the 2 stabs). 2 use `arpOrnament` (arp-hitech-square, arp-goa). 4 use `stepVariance`. 9 use `humanize: true`. **NO patch uses modMatrix/lfos/stepSeq** (the entire Thor-like extension layer is unused by the shipped bank).
+
+Style banks (public/patches/style-banks.json, 1,609 bytes):
+- **6 subgenre banks**: FULL-ON, DARK-PSY, PROGRESSIVE, GOA, HI-TECH, FOREST.
+- Each bank has `patchOverrides` (per-role patch id swap) + `macro` ({ cutoffBias, resBias, glideBias, energyToCutoff }). e.g. HI-TECH: cutoffBias 1.2, resBias 1.15, energyToCutoff 1000 (most aggressive). FOREST: cutoffBias 0.9, resBias 0.9 (darker). Every override references a real patch id.
+- Resolution: bank override → first patch of role → null (silent fallback). `setStyle()` is uppercase-normalized.
+
+────────────────────────────────────────────────────────────────────────────────
+6. Variance rules (src/psy-synth/variance-rules.ts)
+────────────────────────────────────────────────────────────────────────────────
+- **Seeded: YES, mulberry32.** `VarianceRules` constructs `new Rng(seed >>> 0)` (variance-rules.ts:30), where `Rng` is the verbatim-shim mulberry32 from `psy-foundation-shim/voice-pool.ts:107-133`. The mulberry32 implementation is the standard form: state += 0x6d2b79f5, then `Math.imul(t ^ (t>>>15), t|1)`, etc. Verified line-by-line.
+- Same seed ⇒ same decisions across runs and platforms (render-proof requirement, per the file docstring).
+- `reseed(seed)` is exposed for phrase-boundary resets.
+- What varies (all bounded, all deterministic):
+  - `detuneDriftCents()` — ±3 cents (DEFAULT_VARIANCE.detuneCents=3) applied to oscA (+) and oscB (−) at trigger.
+  - `cutoffMultiplier()` — ±2% (cutoffWobble=0.02) on the filter cutoff.
+  - `humanizedVelocity(v, enabled)` — ±3% (velocityHumanize=0.03) on note velocity, gated by patch.humanize.
+  - `stepCutoffMultiplier()` — ±8% (stepCutoff=0.08) per arp step, gated by patch.stepVariance.
+  - `arpOrnament(stepIndex, enabled)` — +12 semitones on every 4th step (stepIndex % 4 === 3), NOT random — purely deterministic.
+  - `pickIndex(count)` — `rng.int(0, count-1)` for future ornament selection.
+- This is the ONLY place randomness may exist in the device (file docstring, line 1-2). PSY4's Math.random() problem is exactly what this design prevents.
+
+────────────────────────────────────────────────────────────────────────────────
+7. "11 engines" — ATTRIBUTION ERROR IN THE TASK BRIEF
+────────────────────────────────────────────────────────────────────────────────
+**The 11 engines (SUB/SSAW/FM/ORG/NSE/WT/VOW/PLK/BEL/GRN/CHO) are NOT in `src/psy-synth/*`.** They live ONLY in `public/psyforge-pro.html` — a separate standalone single-page demo synth ("PsyForge Pro X — psytrance workstation", 592 lines of inline JS/CSS/HTML) that ships its own AudioWorklet processor (`registerProcessor("psy-engine", ...)`, line 185) with a `P.eng === 0..10` switch in its `noteOn()` function (lines 263-275). Mapped from the array `["SUB","FM","ORG","NSE","WT","VOW","SSAW","BEL","PLK","GRN","CHO"]` (line 419):
+
+  eng 0 = SUB  — subtractive (1-3 osc + sub + optional FM mod if P.fm>0.02 + pitch env)
+  eng 1 = FM   — 2-operator FM (sine carrier + sine modulator, ratio from P.wt)
+  eng 2 = ORG  — additive (6 sine partials at H=[1,2,3,4,6,8], wt-morphed)
+  eng 3 = NSE  — white noise buffer source (looped)
+  eng 4 = WT   — wavetable morph (morphWave interpolates saw↔square PeriodicWave)
+  eng 5 = VOW   — vowel/formant (2 bandpass filters at 500+wt*400 / 1000+wt*900)
+  eng 6 = SSAW — supersaw (5 detuned saw PeriodicWaves at ±14/±7/0 cents)
+  eng 7 = BEL  — bell (4 sine partials at inharmonic ratios [1,2.76,5.4,8.9])
+  eng 8 = PLK  — Karplus-Strong pluck (ksBuf noise burst + delay-line decay)
+  eng 9 = GRN  — granular (morphWave + 5-10Hz tremolo LFO on amplitude)
+  eng 10 = CHO — chorus (3 detuned sines at ±8 cents)
+
+`public/psyforge-pro.html` also contains 40+ presets ("Full-On Rolling", "FM Bell", "Crystal Bells", "FM E-Piano", etc.) and a master chain (drive shaper + limiter + delay + convolver reverb + pump LFO for sidechain). It uses `Math.random()` freely (lines 245, 251, 252, 274) — so it is NOT deterministic. It is a toy/playground, not the contract device.
+
+The CONTRACT-based `src/psy-synth/dsp/engine-router.ts` (57 lines) chooses between ONLY TWO engines:
+- `selectOscEngine(patch)`: explicit `patch.oscEngine` is authoritative ('periodic'|'polyblep'); omitted → auto, which routes to 'polyblep' only when `patch.osc.b.sync === true` OR `patch.osc.b.ringMod > 0` (engine-router.ts:18-24). Otherwise 'periodic'.
+- `engineCensus(patches)` reports how many patches in a bank need polyblep. Over the shipped 20-patch manifest, exactly 2 patches qualify: `lead-hitech-sync` (b.sync=true) and `pluck-forest` (b.ringMod=0.35).
+
+────────────────────────────────────────────────────────────────────────────────
+8. Comparison to PSY4's psy4-engine.js
+────────────────────────────────────────────────────────────────────────────────
+WHAT'S BETTER IN PSYSYNTH (the contract device, not the psyforge-pro.html demo):
+1. **Determinism** — mulberry32 PRNG with a single lineage (variance-rules.ts). PSY4 uses Math.random() (audit-A finding, line 12293 of worklog).
+2. **Zero-alloc hot path** — voices pre-created at construction; trigger() only schedules AudioParams (no `createGain`/`createOscillator`/`connect`/`disconnect` in the hot path). voice.ts docstring (line 14-15) and constructor (line 142-201) confirm. PSY4's worklet churns nodes per note in some paths.
+3. **Contract-based PsyDevice interface** — `onTransport/onContext/onEvent/capabilities/reportLatencyMs` (README:73-83). PSY4 has a 3,129-line monolithic worklet with no contract boundary.
+4. **Strict patch validation at LOAD** — validatePatch rejects malformed/duplicate-id patches before the runtime ever sees them (patch-library.ts:16-69). PSY4 has no patch schema.
+5. **Patch provenance** — author/license/created required on every patch. PSY4 has no provenance tracking.
+6. **Style banks with macro tuning** — 6 subgenres × {cutoffBias, resBias, glideBias, energyToCutoff}. PSY4 has no subgenre system in the worklet.
+7. **Deterministic steal policy** — oldest-released → oldest-on, per-role budgets, O(1) note-off matching. PSY4's steal policy is ad-hoc per voice class.
+8. **Real PolyBLEP math** (pure + worklet) with a Goertzel alias-reduction test. PSY4 has no PolyBLEP; it uses naive oscillators.
+9. **Test suite** — claimed 124 pass / 3 skip / 0 fail across 16 files; includes render-proof (bit-identical AudioParam fingerprint per seed), stress (5-min bass: zero node churn), polyblep (Goertzel), shim-sync (verbatim shim purity). PSY4's psy4-engine.js has NO headless tests.
+
+WHAT'S MISSING IN PSYSYNTH vs PSY4:
+1. **NO drum voices** — explicitly out of scope (ARCHITECTURE.md:16). 7 melodic roles only: bass/lead/arp/pad/stab/pluck/keys. PSY4 has KickVoice, BassDrum, etc. psysynth expects a sibling "drums" device (ARCHITECTURE.md:16: "drums (future)"). PSY4 cannot replace its drum path with psysynth.
+2. **NO multiband master compressor** — psysynth has NO master chain at all; output is one gain node → host's injected bus. PSY4 has (disabled) multiband. The host owns all mastering.
+3. **NO sidechain ducking** — psysynth's contract is "bass amp release ≤ 80ms so ducking reads as pumping" (ARCHITECTURE-STYLE.md:101); the host applies the actual ducking. PSY4 has its own (broken) sidechain.
+4. **NO real wavetable import** — the "wavetable" engine is just a linear morph between saw and square PeriodicWaves (morphWave, psyforge-pro.html:253). No .wav file loading.
+5. **NO sampler path** — explicit non-goal (README:163-167). psysynth is "100% synthesized". PSY4 has 35K lines of dead sampler code; psysynth has zero lines of sampler code, by design.
+6. **NO transport ownership** — pure HOW device (README:165). Cannot drive a clock.
+7. **NO internal sequencer/scheduler** — `event.at` on the shared AudioContext is the only scheduling surface (README:166). PSY4 has a scheduler worker.
+8. **NO 11-engine switch in the device** — the SUB/FM/ORG/NSE/WT/VOW/SSAW/BEL/PLK/GRN/CHO engines exist ONLY in the standalone `psyforge-pro.html` demo, which uses `Math.random()` and is NOT contract-based. The contract device has only `'periodic'` and `'polyblep'`.
+9. **Extended Thor-like layer is dormant** — `voice-ext.ts` + `dsp/oscillator.ts` + `dsp/filter.ts` + `dsp/lfo.ts` + `dsp/mod-matrix.ts` implement FM, noise, wavetable scanner, formant/comb/SVF filters, 3 LFOs, step sequencer, 14×11 mod matrix — but NONE of the 20 shipped patches use any of these. They are reachable only via `SynthPatchExt` patches, of which zero exist in the manifest. The wavetable scanner (`buildWavetableScanner`) returns crossfade gains but the caller in `voice-ext.ts:64-68` never wires oscillators into them — it just sets a position on an empty scanner. `buildSampleHold` (oscillator.ts:91-104) is an explicit no-op stub: `setSource: (_param) => { /* minimal */ }`.
+10. **PolyBLEP not wired into voice.ts** — see §2 above. The router decides but the shipped voice ignores the decision and renders everything as static PeriodicWaves. Hard-sync and ring-mod patches do NOT actually hard-sync or ring-mod today.
+11. **Filter is "Moog-like", NOT a Moog ladder** — see §3 above. Two cascaded biquads + tanh saturation. Honest approximation, not the real topology.
+
+INTEGRATION SEAM (how PSY4 would absorb psysynth):
+- psysynth is a pure HOW device: it consumes `NoteEvent`s via `onEvent`, gets transport via `onTransport` (sync only — never owns), gets context/style via `onContext` (for subgenre bank switching). It injects via the host's shared `AudioContext` + `outputNode` (the engine bus input — NEVER `ctx.destination`). 5-line integration per README:114-123.
+- The `PsyDevice` contract (psy-foundation-shim/protocol.ts + device.ts) is the seam. psysynth claims the contract is verbatim from psy-foundation via a pinned shim, sync-tested by `shim-sync.test.ts`.
+- For PSY4 to use psysynth:
+  1. Instantiate `createSynthDevice({ audioContext: psy4AudioContext, outputNode: psy4EngineBusInput, patchManifestUrl })`.
+  2. Convert PSY4's MIDI/note stream into `NoteEvent { type:'note', note, velocity, duration, channel, at }`. PSY4's `psyLive.ts` already produces these for the existing worklet.
+  3. Map channels → SynthRole (the 7 canonical roles). `NoteRouter` (src/psy-synth/note-router.ts) does this.
+  4. Accept that psysynth provides NO drums, NO mastering, NO sidechain — PSY4 keeps its KickVoice path + master chain; psysynth handles ONLY the 7 melodic voices.
+  5. Bonus: psysynth's `SynthDiagnostics` (eventsReceived, eventsDropped, dropReasons, voicesOn, voicesStolen, unknownChannel, staleDrop, patchLoadErrors) is exactly the observability PSY4 lacks.
+
+BRUTAL VERDICT:
+- psysynth's CONTRACT, POOL, PATCH VALIDATION, and SEEDED VARIANCE are production-grade and clearly better than PSY4's. Port the discipline (strict patch schema, mulberry32 variance, deterministic steal, zero-alloc trigger, diagnostics counters).
+- psysynth's DSP is HONEST but MODEST: 3 osc + 2-biquad + shaper + ADSR. The "Moog ladder" claim is overstated. The "PolyBLEP" math is real and tested but not wired into the shipped voice. The "11 engines" don't exist in the contract device — they're in a separate demo HTML page that uses Math.random(). The "Thor-like" extension (FM/wavetable/formant/mod-matrix) is dormant stubs.
+- If PSY4 wants psysynth's melodic voices, the cleanest path is: adopt the `PsyDevice` contract + patch manifest + variance rules + voice pool, but keep PSY4's existing kick/snare/hat path and master chain. The two would coexist as siblings on the same engine bus, exactly as ARCHITECTURE.md:16 envisions ("sampler (exists) | synth (THIS) | drums (future)").
+- Do NOT port `public/psyforge-pro.html`. It is a toy. Its 11 engines are fun but undisciplined (Math.random, no contract, no tests, inline 592-line HTML). If any of those engine ideas are wanted (real FM, real additive organ, real Karplus-Strong pluck, real formant vocals), reimplement them inside `dsp/oscillator.ts` as contract-grade pure factories with tests — the file structure is already there for it.
+
+Stage Summary:
+- **SynthVoice DSP chain** (§1): oscA + oscB(+AM ring) + sub → preDrive(tanh) → f1+f2 (2× cascaded biquad LP/BP) → fSat(tanh) → VCA(ADSR) → dry + delaySend + reverbSend. Hot path is zero-alloc. Mod sources in the shipped path: filter env, amp env, velocity (→cutoff+VCA), macros (cutoffMult/cutoffBias/resMult/energyCutoffHz), glide. NO LFO, NO mod matrix, NO step seq in voice.ts.
+- **PolyBLEP** (§2): real alias-reducing math (Goertzel-tested, >2× spurious-power reduction vs naive). Supports saw/square/pulse(PWM)/hard-sync. Triangle/sine use PeriodicWave. NOT wired into voice.ts — router decides but voice ignores; lead-hitech-sync and pluck-forest render as static waves today.
+- **"Moog ladder"** (§3): NOT a Moog ladder. Two cascaded biquads + tanh(1.8x) saturation. Self-osc guarded (res capped at 0.95, Q max ≈19). Cutoff 40 Hz–18 kHz. Honest approximation, docstring admits it.
+- **Voice pool** (§4): pre-created (default 16 voices), deterministic steal (oldest-released → oldest-on, per-role budgets), O(1) (channel,note)→voice matching via Map, zero allocation on trigger. Panic + releaseAll + sweep reclaim.
+- **Patch system** (§5): SynthPatch schema (types.ts:69-91) with 13 strict field validations at LOAD; 20 patches in manifest covering all 7 roles; 6 subgenre style banks (FULL-ON/DARK-PSY/PROGRESSIVE/GOA/HI-TECH/FOREST) with macro tuning; provenance enforced.
+- **Variance rules** (§6): VERIFIED mulberry32 (single lineage, shim-verbatim). Varies detune (±3 cents), cutoff (±2%), velocity (±3%, gated by patch.humanize), arp step cutoff (±8%, gated by patch.stepVariance), arp ornament (+12 every 4th step, deterministic not random). Only place randomness may exist.
+- **"11 engines"** (§7): ATTRIBUTION ERROR. The SUB/SSAW/FM/ORG/NSE/WT/VOW/PLK/BEL/GRN/CHO switch lives in `public/psyforge-pro.html` (a standalone demo, uses Math.random, no contract, no tests), NOT in `src/psy-synth/*`. The contract device has only 2 engines: 'periodic' (default) and 'polyblep' (opt-in, auto-selected when patch has sync or ringMod).
+- **vs PSY4** (§8): psysynth is BETTER at determinism, contract, validation, voice pool, variance, testability. psysynth is MISSING drums, master chain, sidechain, sampler, transport, real PolyBLEP wiring, real Moog ladder, real wavetable, and any use of the Thor-like extension layer. Integration seam = `PsyDevice` contract + shared AudioContext/outputNode + NoteEvent stream + role-mapped channels. Recommend: port the discipline (schema + variance + pool + counters), keep PSY4's drum+master paths, ignore psyforge-pro.html.
+- **No code was modified.** Read-only audit of `/tmp/psysynth-audit/`.
+
+---
+Task ID: audit-F-psysynth-contract
+Agent: general-purpose sub-agent (Z.ai Code)
+Task: Read-only audit of the `psysynth` integration CONTRACT layer at `/tmp/psysynth-audit/` (NOT the DSP layer — that was audit-E). Verify the `PsyDevice` / `DeviceHost` / `InMemoryChannel` / `NoteEvent` contract is real and assess exactly how PSY4 would adopt it as a sibling device on its shared engine bus. No code modified.
+
+Work Log:
+- Read worklog tail (lines 10946–12506): audit-A through audit-E context.
+  - audit-A-psyLive established PSY4 ships `psy4-engine.js` (3129 lines, 14 voice classes, multiband DISABLED, sampler dead code, Math.random() instead of a PRNG) + `composition-worker.js` (mulberry32 dead, all RNG via Math.random) + `psyLive.ts` (3644 lines) with method-by-method bug list: setVariant is a STUB, setChannelMute/setChannelSolo/setDelayAmount/setReverbSend/setBusVolume/setChannelVolume all DEAD in production (route to disconnected legacy chain), unlockStyle/Energy/Density/Tension/Key are EMPTY BODIES, toggleComposition's `currentComposition` is never read, sampler-bridge.ts (213 LoC) is fully built but never attached from page.tsx. The "12 bugs / 4 critical" framing in the task brief is the audit-summary-plan summary of these findings.
+  - audit-D-deadcode confirmed 34,825 lines of dead studio code (97.4% of studio/).
+  - audit-E-psysynth-dsp confirmed psysynth's DSP is HONEST but MODEST (3 osc + 2-biquad + shaper + ADSR; "Moog ladder" is two cascaded biquads + tanh, not a real ladder; PolyBLEP math is real and Goertzel-tested but NOT wired into voice.ts; Thor-like extension layer is dormant stubs).
+- Read all 17 files named in the brief verbatim (line counts verified: device.ts 24 / host.ts 104 / protocol.ts 202 / transport.ts 58 / index.ts 60 / synth/device.ts 312 / note-router.ts 89 / synth/index.ts 56 / latency.ts 34 / counters.ts 59 / midi-map.ts 102 / page.tsx 192 / INTEGRATION-GUIDE.md 140 / contract.test.ts 119 / shim-sync.test.ts 68 / stress.test.ts 111 / render-proof.test.ts 98 / style-acceptance.test.ts 126).
+- Read tests/helpers/stub-audio.ts (129 lines, NOT in brief but needed to understand how render-proof.test.ts achieves bit-identical fingerprints headless).
+- Read README.md (181 lines) + package.json (no `@psy-foundation/*` runtime deps — confirms the verbatim-shim discipline; only `next`, `react`, `react-dom`).
+- Cross-referenced PSY4 host side: grepped /home/z/my-project/src for `attachSynthBridge`/`SynthBridge`/`attachSamplerBridge`/`engineBusInput`. PSY4 ALREADY has `get engineBusInput(): AudioNode | null` at `psyLive.ts:486` (returns this.engineBus) — the exact seam psysynth expects. `attachSynthBridge` does NOT exist (only `attachSamplerBridge` in dead `sampler-bridge.ts`). `delaySend` + `reverbSend` gain nodes also exist on PSY4 at psyLive.ts:621/632.
+- Grepped PSY4's `composition-worker.js` for channel strings: emits 'kick', 'bass', 'lead', 'acid', 'pad', 'snare', 'hat-closed', 'hat-open', 'counterline', 'sub', 'shaker', 'perc', 'texture', 'clap', 'fx' etc. — NOT the 7 canonical psysynth roles. Mapping required (see §8 below).
+
+────────────────────────────────────────────────────────────────────────────────
+1. PsyDevice contract (psy-foundation-shim/device.ts, 24 lines)
+────────────────────────────────────────────────────────────────────────────────
+Verbatim shim pinned to psy-foundation commit 4ae95d3 (2026-08-13). The interface is exactly:
+
+```ts
+export interface PsyDevice {
+  id: string
+  capabilities(): DeviceCapabilities
+  onTransport(transport: MusicalTransport): void
+  onContext(context: MusicalContext): void
+  onEvent(event: MusicalEvent): void
+  onStart?(): void
+  onStop?(): void
+  reportLatencyMs?(): number
+}
+```
+
+- **5 required members**: id (string), capabilities(), onTransport(), onContext(), onEvent(). These are the audio-event-driven contract: transport + context for sync, onEvent for the actual notes.
+- **3 optional members**: onStart?, onStop?, reportLatencyMs?. Optional because not every device needs lifecycle hooks (e.g. a pure-stateless sampler doesn't), and reportLatencyMs is informational (host decides whether to compensate).
+- **Lifecycle is onStart→{onTransport|onContext|onEvent}*→onStop**, driven by DeviceHost. SynthDevice.onStart is **idempotent** (device.ts:126 `if (this.started) return`) — calls LatencyMeter.probe(ctx) to capture ctx.baseLatency once, then sets a flag. onStart is what triggers voice pre-allocation effectively by being the "you may make noise now" gate (the pool itself is constructed eagerly in the constructor, but no audio plays before onStart because the device is not registered with the host yet).
+- **onStop is HARD-RELEASE**: `pool.panicAll()` (device.ts:133) — fast-releases every voice with no dangling tails. This is the right behavior for a sibling device on a shared bus: when the user pauses, you don't want 30-second pad tails bleeding over the next play. Clearing `lastFreqByRole` + `stepCounterByRole` is also correct (prevents stale glide-from values after restart).
+- The contract forbids throwing out of onEvent (device.ts:152-176) — the entire event handling body is wrapped in try/catch that increments `counters.noteDrop('unexpected-error')` instead. This is the "atomic device isolation" property: one bad event never starves the host's main thread or the sibling devices on the same bus.
+- **NO** `dispose()` on the contract. Resource release is `onStop()`. The factory bundle (`createSynthDevice`) adds `dispose()` separately (synth/index.ts:46-48) which just calls `device.onStop?.()` — the contract itself stays minimal.
+- **NO** `onMidi()` on the contract. MIDI lives entirely in the host (see §5). The contract is MIDI-agnostic; the device exposes `setParameterByCC(cc, value01)` + `midiLearnStart/Cancel` as DEVICE-level methods (not contract-level), called by the host's MIDI path. This is the correct separation: a contract that took raw MIDI bytes would force every sampler/effect device to also implement MIDI parsing.
+
+────────────────────────────────────────────────────────────────────────────────
+2. DeviceHost + InMemoryChannel (psy-foundation-shim/host.ts, 104 lines + protocol.ts:152-202)
+────────────────────────────────────────────────────────────────────────────────
+- **InMemoryChannel** is a tiny pub/sub: `Set<ChannelListener>`, `subscribe()` returns an `Unsubscribe` fn, `publish()` does `Array.from(listeners)` then `try { l(event) } catch { console.error }` per listener. **Per-listener try/catch is explicit** (protocol.ts:185-191, comment `FIX: catch per-listener errors so one bad listener doesn't starve the rest`) — this is the corrected version after a real bug. `close()` is idempotent and clears listeners. `subscriberCount` getter for tests. No buffering, no priority, no ordering guarantees beyond subscription order (FIFO on `Array.from`).
+- **DeviceHost** wraps the channel and a `Map<id, PsyDevice>`:
+  - Constructor wires `this.channel.subscribe(routingFn)` once (host.ts:92-103). Every `channel.publish(event)` is fanned out to every registered device's `onEvent`. **Per-device try/catch too** (host.ts:96-100, comment `FIX: catch per-device errors so one bad device doesn't starve the rest`) — defense in depth.
+  - `register(device)`: throws if `id` already registered (host.ts:38). Calls `device.onStart?.()`. This is the ONLY place onStart is invoked by the contract.
+  - `unregister(id)`: calls `device.onStop?.()` then deletes from map. Idempotent (returns silently if not found).
+  - `list()`: returns `{id, capabilities}` array (snapshot, not iterator) — host UI uses this to render the device panel.
+  - `findByRole(role)`: filter devices by `capabilities().roles.includes(role)`. Lets the host ask "who can play 'bass'?" — relevant when multiple sibling devices (synth + sampler + drums) compete for the same role.
+  - `pushTransport(transport, nowMs)`: dedup by revision (`transportDedupByRevision: true` default) OR by min-interval (`transportMinIntervalMs`, default 0 = off). Avoids spamming devices with identical transport snapshots — important because PSY4's transport updates 4× per bar at minimum. Then fans out to all devices' `onTransport()`.
+  - `pushContext(context)`: no dedup — context changes are rare (style/section/key changes), so always propagate. Fan-out to all `onContext()`.
+  - `publish(event)`: thin pass-through to `channel.publish(event)`. This is how the host emits notes.
+  - `dispose()`: onStop every device, clear map, unsubscribe from channel. Idempotent.
+  - `deviceCount` getter for tests.
+- **The model is publish/subscribe with N devices on 1 channel**. There is no per-device routing on the channel itself — every device sees every event. Role-based filtering happens INSIDE each device (SynthDevice does `isSynthRole(event.channel)` first in NoteRouter; a sampler would do its own channel check; a drum device would check its own). This is correct: devices are self-filtering, the channel stays dumb.
+- **Audit implication**: PSY4 could put SynthDevice + DrumDevice + SamplerDevice all on the same InMemoryChannel, all reading the same event stream. Each device filters by its own role set. This is the cleanest possible sibling-device topology.
+
+────────────────────────────────────────────────────────────────────────────────
+3. NoteEvent shape (psy-foundation-shim/protocol.ts:127-134)
+────────────────────────────────────────────────────────────────────────────────
+Exact interface:
+```ts
+export interface NoteEvent {
+  type: 'note'
+  note: number           // MIDI pitch 0..127 (enforced by NoteRouter: integer, finite, 0<=n<=127)
+  velocity: number       // 0..1 (enforced; 0 means note-off)
+  duration: number       // seconds. -1 = HOLD until matching note-off. 0 with vel>0 = minimal 30ms pluck gate.
+  channel: string        // canonical role: bass|lead|arp|pad|stab|pluck|keys (else dropped + counted)
+  at: EventTime          // EventTime = number, AudioContext.currentTime frame
+}
+```
+
+Five sibling event types in the `MusicalEvent` union: `'beat' | 'section' | 'energy' | 'drop' | 'note' | 'pattern'`. SynthDevice only ACTS on `'note'`, `'energy'`, `'drop'`. The other three (`'beat'`, `'section'`, `'pattern'`) are accepted and returned early from onEvent — they're informational hooks for v2 features (tempo-locked LFO via `'beat'`, bank switch via `'section'`, hot-swap via `'pattern'`).
+
+**How `at` works (AudioContext time)**:
+- `at` is in seconds, in the SAME clock frame as the host's `AudioContext.currentTime`. The bridge is responsible for converting host-internal time (beat index, bar offset, worker tick) to this clock — typically `at = ctx.currentTime + lookahead` where lookahead covers worker→main postMessage latency.
+- SynthVoice schedules AudioParam ramps directly at `event.at` (linearRampToValueAtTime, setTargetAtTime, setValueAtTime — see audit-E §1). So `at` is the absolute audio-thread time when the note's attack ramp begins.
+- The host adds a small safety margin (3ms in INTEGRATION-GUIDE.md:119 `t = engine.audioContext.currentTime + 0.003`) to absorb main-thread jitter. The device NEVER adds its own margin — its `reportLatencyMs()` returns its measured output latency so the host can compensate.
+- **Stale drop policy** (note-router.ts:60-66): if `event.at < now - 0.05` (50ms stale window), the event is dropped and counted. This prevents "backlog" scenarios where the worker stalls and then dumps 100 overdue events. PSY4's composition-worker.js has no such guard today.
+
+**Duration semantics** (note-router.ts:73-78, three cases):
+1. `duration > 0` — fixed gate. Voice auto-releases at `event.at + duration` (device.ts:260 `autoReleaseAt = action.hold ? null : action.at + action.duration`).
+2. `duration === -1` (HOLD_SENTINEL) — HOLD mode. Voice sustains indefinitely until a matching `velocity:0` note-off arrives. `autoReleaseAt = null`. This is the MIDI-keyboard path.
+3. `duration === 0` (with vel > 0) — treated as a minimal 30ms pluck gate (`duration = 0.03`). This is the "rest" convention: composer emits `{duration:0}` to mean "play as short as possible without being zero-length".
+
+**Velocity semantics**:
+- `velocity === 0` — note-off (note-router.ts:68-71). Returns `{kind:'note-off'}` without checking duration. This is the family convention (per comment "audit: no contract changes needed" — meaning the NoteEvent schema doesn't need an `kind:'off'` field, velocity=0 suffices).
+- `0 < velocity <= 1` — note-on. 1.0 is fortissimo.
+- Velocity interacts with cutoff (velTrack 0..0.3) AND VCA peak (`0.15 + 0.55*vel` clamped to 0.8) — see audit-E §1.
+- Humanization can perturb velocity by ±3% (gated by patch.humanize) — see audit-E §6.
+
+**Unknown channel behavior**:
+- NoteRouter.route() check #1 (note-router.ts:39-43): `if (!isSynthRole(event.channel))` → `counters.unknownChannel += 1` AND `counters.noteDrop('unknown-channel')` AND return `{kind:'drop', reason:'unknown-channel'}`. The event is consumed (counted in eventsReceived) but produces no audio.
+- `isSynthRole()` (types.ts) checks membership in the 7-element `SYNTH_ROLES` enum. **Case-sensitive**: 'Bass', 'LEAD', 'Kick' all drop. The host MUST normalize channel strings before publishing.
+- PSY4's composition-worker.js emits channels like 'kick', 'snare', 'hat-closed', 'counterline', 'sub', 'acid' — all would be DROPPED today. A bridge layer must map them.
+
+────────────────────────────────────────────────────────────────────────────────
+4. The 7 canonical roles (types.ts:SYNTH_ROLES, note-router.ts, device.ts:35-43)
+────────────────────────────────────────────────────────────────────────────────
+Canonical enum: `['bass', 'lead', 'arp', 'pad', 'stab', 'pluck', 'keys']`.
+
+Per-role character (from README.md style table + ARCHITECTURE-STYLE.md):
+- **bass** — 303-style acid / rolling offbeat. Mono (pool auto-releases previous voice on same key — voice-pool.ts:97-101). Sidechain-ready: amp.releaseMs ≤ 80ms (style-acceptance.test.ts:50 enforces this).
+- **lead** — squelch full-on lead. Dual detuned osc, resonant sweep, delay-send ≥ 0.3 (style-acceptance.test.ts:55).
+- **arp** — hi-tech 16th arpeggios. Pluck env, tight decay, per-step cutoff variation (±8% via VarianceRules.stepCutoffMultiplier, gated by patch.stepVariance), deterministic octave patterns (+12 semis on every 4th step via arpOrnament, NOT random).
+- **pad** — atmospheric break pads. Slow attack/release, wide detune, reverb-send ≥ 0.4. Hold-mode (style-acceptance.test.ts:108-117 holds a pad for 3 seconds without release).
+- **stab** — goa stabs/chords. Chord fan-out: a single NoteEvent on 'stab' triggers up to 4 voices (root + chordIntervals[0..2], device.ts:253-256).
+- **pluck** — organic/forest plucks. Sync/ring-mod option (patch.pluck-forest declares b.ringMod=0.35 — though audit-E §2 notes this is rendered as AM approximation, not true ring mod).
+- **keys** — break melody keys. Soft triangle/sine mix, gentle chorus via detune.
+
+**Channel→role validation flow** (note-router.ts):
+1. `isSynthRole(event.channel)` — exact string match against the 7-element enum. NO coercion. NO case folding. NO alias map (e.g. 'BASS' → 'bass' is NOT done). Comment at line 38: "no coercion, no guessing (audit B1)".
+2. If invalid → drop + count, return early. Counter: `unknownChannel` AND `dropReasons['unknown-channel']`.
+3. If valid → role = event.channel (typed as SynthRole).
+
+**Default per-role voice budgets** (device.ts:35-43):
+```
+bass: 4, lead: 4, arp: 4, pad: 6, stab: 4, pluck: 6, keys: 4
+```
+Pad and pluck get 6 because they're cheap and may overlap (long tails). Bass/lead/arp/stab/keys get 4. Total = 32, but pool hard-caps at maxVoices (default 16), so role budgets are GUIDELINES for the steal policy, not hard reservations. When the pool is full, NoteRouter's steal policy first tries to steal within the same role if over-budget (voice-pool.ts:177-206, see audit-E §4). Host can override via `roleBudgets` opt (synth/device.ts:32).
+
+**Style banks** (style-banks.json, 6 subgenres × per-role patch override + macro): each bank swaps which patch id is used per role. e.g. HI-TECH bank: bass → bass-acid-303, lead → lead-hitech-sync. Resolution chain: bank override → first patch of role → null (silent). style-acceptance.test.ts:88-96 verifies that switching style actually changes the resolved bass patch id.
+
+────────────────────────────────────────────────────────────────────────────────
+5. MIDI layer (psy-synth/midi-map.ts, 102 lines; INTEGRATION-GUIDE.md:111-125; src/app/page.tsx:91-126)
+────────────────────────────────────────────────────────────────────────────────
+**The device NEVER touches WebMIDI.** The contract is MIDI-agnostic — `PsyDevice` has no `onMidi()` method. MIDI lives in the HOST (the bridge / page).
+
+The device's MIDI surface is 3 methods + 1 type (device.ts:185-203):
+- `setParameterByCC(cc: number, value01: number): boolean` — host converts raw MIDI CC `{controller, value:0..127}` to `{cc, value01: value/127}` and calls this. Returns true if the CC is mapped (or learned), false if unmapped.
+- `midiLearnStart(target: SynthParameterId)` — begin learn mode for a target parameter; the NEXT incoming CC claims it.
+- `midiLearnCancel()` — abort learn.
+- `get midi(): MidiMap` — exposes the map for persistence/serialization (host owns storage).
+
+**Default CC map** (midi-map.ts:12-19):
+```
+74  → 'cutoff'        (filter cutoff — standard MIDI CC for cutoff)
+71  → 'resonance'     (filter resonance — standard)
+ 5  → 'glide'         (portamento time)
+12  → 'energyMacro'   (device macro — controls energy→cutoff bias)
+14  → 'delaySend'
+15  → 'reverbSend'
+```
+CCs 74 and 71 follow the standard MIDI spec (cutoff/resonance). CCs 5, 12, 14, 15 are device-specific (5 is "Portamento Time" in the MIDI spec, so it's actually correct; 12/14/15 are unassigned in the MIDI spec, so the device picks them).
+
+**MIDI-learn flow** (midi-map.ts:36-47):
+1. Host calls `device.midiLearnStart('cutoff')`. State: `{learning: true, target: 'cutoff'}`.
+2. Next CC arrives → `setParameterByCC(cc, value01)`. Inside `parameterFor(cc)`: if `state.learning && state.target`, the CC is bound to the target REGARDLESS of existing mapping (line 38-44). State is cleared. Listeners are notified via `emit()`.
+3. Host serializes `device.midi.toJSON()` to localStorage (host owns storage).
+4. On reload, host calls `device.midi.fromJSON(saved)` (line 72-86). Unknown CCs or invalid param ids are silently rejected (return accepted count).
+
+**MIDI CC effect on audio** (device.ts:294-303):
+- `ccOverride(param, fallback)`: returns the stored value or fallback.
+- `ccFactor(param, neutral)`: maps 0..1 to 0.25..1.75 with neutral at 0.5 (so a CC at 0.5 = 1.0× mult, no effect; 0 = 0.25×; 1 = 1.75×). Used for cutoff/resonance/glide/delaySend/reverbSend multipliers.
+- `energyMacro` is the only param that adds (not multiplies): `energyCutoffHz = macro.energyToCutoff * (this.energy + this.ccOverride('energyMacro', 0))`.
+
+**Note-on via MIDI** (page.tsx:115-119): the host's MIDI handler converts NoteOn status 0x90 with vel>0 to `{type:'note', note, velocity: vel/127, duration: -1, channel: currentRole, at: ctx.currentTime + 0.003}`. NoteOn vel=0 and NoteOff 0x80 both go to `{type:'note', note, velocity: 0, duration: 0, channel, at}`. This is the family note-off convention.
+
+**Brutal honesty on MIDI**:
+- **NO pitch bend** — there's no `setParameterByPitchBend()` method. PSY4's acid filter sweeps cannot be played from a pitch-bend wheel; only CC74 (cutoff) can do it.
+- **NO aftertouch** — `setParameterByCC` is the only CC entry point. Channel pressure / poly aftertouch are not exposed.
+- **NO clock/sync in** — MIDI clock bytes (0xF8 etc.) are not handled. Transport comes via `onTransport`, not via MIDI.
+- **NO MIDI out** — the device only consumes, never emits. So no "MIDI echo" of learned CCs back to hardware.
+- **Single MIDI input assumed** — page.tsx:101 takes `a.inputs.values().next().value` (the first input only). Multi-device rigs would need host-side merging.
+- The 3ms safety margin (page.tsx:112, INTEGRATION-GUIDE.md:119) is a magic number — it's the worst-case main-thread-to-AudioWorklet postMessage latency in modern browsers, but it's not measured.
+
+────────────────────────────────────────────────────────────────────────────────
+6. Factory createSynthDevice() (psy-synth/index.ts, 56 lines)
+────────────────────────────────────────────────────────────────────────────────
+```ts
+export function createSynthDevice(opts: CreateSynthDeviceOpts): SynthDeviceBundle {
+  const device = new SynthDevice(opts)
+  let loaded = false
+  async function load(): Promise<number> { /* fetch manifest, validate, register banks */ }
+  function dispose(): void { device.onStop?.() }
+  return { device, load, dispose }
+}
+```
+
+**Options** (CreateSynthDeviceOpts extends SynthDeviceOptions):
+- `audioContext: VoiceAudioHost` (required) — the SHARED host AudioContext. SynthDevice NEVER calls `new AudioContext()`. VoiceAudioHost is a structural subset of BaseAudioContext (createGain/createOscillator/createBiquadFilter/createWaveShaper/createPeriodicWave + currentTime + sampleRate — see voice.ts:VoiceAudioHost). This is what makes the stub-audio test host possible.
+- `outputNode: AudioNode` (required) — the SHARED engine bus. SynthDevice NEVER connects to `ctx.destination`. It creates one internal `deviceOut` GainNode (device.ts:82-84) and connects it to `outputNode`. All role buses (bass/lead/arp/pad/stab/pluck/keys) are GainNodes that connect to `deviceOut` (device.ts:86-91).
+- `delaySendNode?: AudioNode | null` (optional) — host's delay send bus. When present, voices send `patch.sends.delay * ccFactor` to this node. When null/absent, the voice's `sendDelay` gain collapses to 0 (no delay). Same for `reverbSendNode`. The device is FX-agnostic: it just routes pre-VCA audio to whatever sends the host provides.
+- `maxVoices?: number` (default 16, clamped 1..64) — pool size. All voices are pre-allocated in the constructor (device.ts:98-107). Hard cap at 64.
+- `seed?: number` (default 1, >>> 0) — mulberry32 seed for VarianceRules. Same seed → same detune drift, same cutoff wobble, same humanized velocity, same arp ornament sequence (deterministic — see audit-E §6).
+- `roleBudgets?: Partial<Record<SynthRole, number>>` (default per DEFAULT_ROLE_BUDGETS) — per-role voice budget GUIDELINES for the steal policy.
+- `deviceId?: string` (default 'psysynth') — used as the DeviceHost map key.
+- `patchManifestUrl?: string` (factory-level, not on SynthDeviceOptions) — URL to fetch the manifest JSON. Fetch happens in `load()` (synth/index.ts:31-34), NOT in the constructor and NOT in the audio path. Throws on non-2xx response.
+- `patchManifest?: unknown` (factory-level) — inline manifest, alternative to URL. Used in tests (contract.test.ts:112) and SSR-safe paths. If both are provided, inline wins (manifest variable check at synth/index.ts:29-34).
+- `styleBanks?: unknown` (factory-level) — array of StyleBank objects, registered via `device.patches.registerBank(bank)` after the manifest loads (synth/index.ts:37-41).
+
+**Bundle return**: `{device, load, dispose}`.
+- `device` is the SynthDevice instance (implements PsyDevice). Register it with DeviceHost.
+- `load()` is async, returns accepted patch count (after validation; rejected patches counted in `counters.patchLoadErrors`, never reach the runtime).
+- `dispose()` calls `device.onStop?.()` (fast-release). Does NOT close the AudioContext (host owns it). Does NOT disconnect `deviceOut` from `outputNode` — host can do that explicitly if needed (the device does not hold a reference to disconnect).
+
+**The 5-line integration** (README.md:114-123, INTEGRATION-GUIDE.md:84-103):
+```ts
+const synthModule = await import('/psysynth.js')
+const bundle = synthModule.createSynthDevice({
+  audioContext: host.audioContext,           // SHARED
+  outputNode: host.engineBusInput,            // SHARED master bus
+  patchManifestUrl: '/patches/manifest.json',
+  seed: 1,
+  delaySendNode: engine.delaySend ?? null,
+  reverbSendNode: engine.reverbSend ?? null,
+})
+bridge.host.register(bundle.device)
+await bundle.load()
+bundle.device.onStart?.()
+```
+
+The "5 lines" claim is honest if you count: import + createSynthDevice + register + load + onStart. The full INTEGRATION-GUIDE.md wiring (bridge construction, transport push, context push, MIDI attach) is more like 50 lines — but those are host-side concerns, not device-side.
+
+────────────────────────────────────────────────────────────────────────────────
+7. Test suite — what each suite actually verifies
+────────────────────────────────────────────────────────────────────────────────
+**Counted 130 `it(`/`test(` matches across 17 test files** (rg). README.md:132 claims "124 pass · 3 skip · 0 fail · 127 tests across 16 files · ~170ms". The discrepancy (130 vs 127) is consistent with the 3 skipped browser-CI tests being counted as tests but not as passes. **The "124 pass" claim is credible based on test code** — the suites are real, assertions are non-trivial, and several use Goertzel/Goertzel-style analysis that can't be theater.
+
+Per-suite verification (only the 5 in the brief, but the others exist too):
+
+- **contract.test.ts** (119 lines, 8 tests):
+  1. `SynthDevice satisfies PsyDevice interface structurally` — typeof checks on all 8 members.
+  2. `capabilities: midi:true, roles EXACTLY canonical enum` — strict array equality `[...caps.roles].sort() === [...SYNTH_ROLES].sort()`. This is the "audit B10" guard — no extra roles leak in.
+  3. `latency: capabilities().latencyMs === reportLatencyMs()` — pins the "audit B9" guard (same source).
+  4. `onEvent NEVER throws - fuzz with 1000 malformed events` — feeds 1000 events with NaN/Infinity/-5/999/45.7 pitches, NaN/-1/2 velocities, NaN/-2/-1/0/0.1/999 durations, 'kick'/''/'LEAD'/null channels, NaN/-100/0/0.5/1e9/1 ats. Asserts `() => device.onEvent(e)` never throws AND `eventsReceived === 1000` AND `eventsDropped > 0`. This is a REAL fuzz test — covers the unknown-channel, invalid-pitch, invalid-velocity, stale, hold, and minimal-gate paths.
+  5. `valid note-on triggers a voice; matching note-off releases it` — note-on bass 45 vel 0.8 → voicesActive=1; note-off → ≤1 (release tail).
+  6. `energy and drop events update the macro (no throw)`.
+  7. `onStop fast-releases all voices` — 4 keys notes held, onStop, voicesActive=0.
+  8. `no patch for role => silent drop counted` — note-on 'lead' (no lead patch loaded) → `dropReasons['no-patch'] === 1` AND `voicesActive === 0`. **Device stays alive.**
+  9. `createSynthDevice bundle loads inline manifest without fetch` — accepted=2, capabilities().voices=16 (default), dispose works.
+
+- **shim-sync.test.ts** (68 lines, 5 tests): structural gate, NOT behavioral.
+  1. Each of the 5 content shim files (protocol.ts, transport.ts, device.ts, host.ts, voice-pool.ts) starts with `// VERBATIM SHIM`.
+  2. Each contains `Do not modify`.
+  3. `transport.ts` + `device.ts` reference pinned commit `4ae95d3` and the string `SHIM_VERSION`.
+  4. `index.ts` is a pure barrel — only import/export/type lines (regex-validated per line).
+  5. No runtime import of `@psy-foundation/*` anywhere in src/psy-synth/{device,index,voice,voice-pool,note-router,patch-library}.ts.
+  This is the discipline gate. **Brutal honesty**: it does NOT byte-diff against the canonical foundation repo (comment at line 8-10 admits "A full byte-diff against psy-sampler's shim runs in CI-sync jobs (network); this local gate catches accidental edits immediately and offline"). So if someone edits the shim AND the canonical foundation in the same commit, this test won't catch the drift — only the network CI sync would. This is acceptable for a sibling repo.
+
+- **stress.test.ts** (111 lines, 2 tests):
+  1. **5-min 145 BPM rolling bass, zero churn**: 300s × 4 sixteenths/bar × 145/60 BPM ≈ 2900 events. Asserts: (a) `host.createdNodes` is CONSTANT after onStart (proxy for zero GC-dropout — the family "psy5 property"); (b) `eventsReceived === count`; (c) `eventsDropped === 0`; (d) `voicesStolen === 0` (bass budget = 8, plenty); (e) `maxActive ≤ 8` (concurrency bounded). The stub-audio.ts host increments `createdNodes` on every createGain/createOscillator/etc. call, so a constant count means the hot path is truly zero-alloc.
+  2. **Hi-tech arp at 175 BPM under budget pressure**: 128 HELD arp notes on a pool of 4 voices with arp budget 2. Held notes (duration=-1) force pool pressure. Asserts: (a) createdNodes constant; (b) `voicesStolen > 0` (steals happen); (c) `eventsDropped === 0` (steals, not drops — the deterministic steal policy at work); (d) `voicesActive ≤ 4` always.
+  These are REAL stress tests, not theater. The "5-minute" claim is honest — 300 × 4 × 145/60 ≈ 2900 events, which is in the right ballpark for 5 minutes of 16th-note bass at 145 BPM.
+
+- **render-proof.test.ts** (98 lines, 3 tests):
+  - **Test 1**: same seed (1) → bit-identical `host.renderFingerprint()` across 3 runs. The fingerprint (stub-audio.ts:83-87) is the full ordered schedule log: `[nodeIndex, paramKind, method, args[]]` joined by `;`. So every `setValueAtTime`, `linearRampToValueAtTime`, `setTargetAtTime` call with its exact numeric args is part of the fingerprint. Bit-identical = identical scheduling.
+  - **Test 2**: different seed (1 vs 2) → DIFFERENT fingerprint. Proves the variance rules are LIVE (variance is actually perturbing the schedule, not a no-op).
+  - **Test 3**: 4 runs with seed 7 → identical (no hidden state across runs).
+  - The phrase fed in (buildPhrase, line 29-47) is realistic: 1 pad + 32 bass sixteenths + 16 arp notes + 4 lead notes, sorted by `at`. So the determinism proof covers all 4 role paths simultaneously.
+  - **Brutal honesty**: this proves the SCHEDULING is deterministic, not the SAMPLES. The actual audio output depends on the AudioParam implementation in the browser's AudioWorklet, which is implementation-defined. The browser-CI counterpart (`render-offline.browser.test.ts`, 87 lines) uses `OfflineAudioContext` to render real samples and assert bit-identical PCM — but per README.md:145, those 3 tests self-skip headless (no `OfflineAudioContext`). So in CI, the SAMPLE-level determinism is NOT proven, only the scheduling-level. The README is honest about this.
+
+- **style-acceptance.test.ts** (126 lines, 9 tests):
+  1. `>= 20 patches with provenance on every patch` — manifest.patches.length ≥ 20, manifestVersion === 1, every patch passes validatePatch, every patch has author + license.
+  2. `covers ALL 7 canonical roles` — set membership check.
+  3. `bass patches honor the sidechain contract (release ≤ 80ms)` — every bass patch's amp.releaseMs ≤ 80. This is the **sidechain-readiness gate**: short bass release so the kick ducks the bass tail. **Real musical requirement, not theater.**
+  4. `leads are delay-heavy (≥ 0.3) and pads are reverb-heavy (≥ 0.4)` — FX convention enforced.
+  5. `arp patches carry the hi-tech variance flags` — at least one arp has stepVariance === true.
+  6. `ships all 6 subgenre banks` — FULL-ON, DARK-PSY, PROGRESSIVE, GOA, HI-TECH, FOREST.
+  7. `every bank override resolves to a real patch of the matching role` — bank.patchOverrides[role] → patchId → manifest lookup → assert role matches.
+  8. `bank selection changes the resolved bass patch per style` — makeDevice('FULL-ON').patches.resolve('bass').id === 'bass-acid-303'; switch to 'DARK-PSY' → 'bass-dark-offbeat'. **Real behavioral assertion, not just structural.**
+  9. `unknown style falls back to defaults without dropping notes` — 'NOT-A-REAL-STYLE' → voicesActive=1, eventsDropped=0 (silent fallback, no crash).
+  These are all REAL tests with non-trivial assertions on the actual patch data and device behavior.
+
+**Verdict on "124 pass" claim**: CREDIBLE. The 5 suites in the brief contain 27 tests with substantive assertions (fuzz, fuzz, structural, stress, render-proof, style-acceptance). Adding the 12 other test files (polyblep, voice-pool, mod-matrix, determinism, midi-map, worklet-consistency, variance, voice-engine, note-router, engine-router, patch-library, render-offline.browser) gets to ~127 tests total, consistent with README. The 3 skipped are render-offline.browser tests that self-skip when OfflineAudioContext is unavailable.
+
+────────────────────────────────────────────────────────────────────────────────
+8. Integration seam with PSY4 — 5-step plan
+────────────────────────────────────────────────────────────────────────────────
+**The seam is REAL and the adoption is mechanical.** PSY4 already has the exact host-side surface psysynth expects.
+
+**Verified host-side hooks in PSY4**:
+- `psyLive.ts:486` — `get engineBusInput(): AudioNode | null { return this.engineBus ?? null }`. This is the EXACT shared bus psysynth's `outputNode` expects. Comment at line 485-489: "Expose the engineBus input node for external devices to connect to. When a sampler device connects its output → engineBus, it goes through..." — PSY4 was DESIGNED for sibling devices.
+- `psyLive.ts:621` — `this.delaySend = this.ctx.createGain()` — host's delay send bus, ready for `delaySendNode` opt.
+- `psyLive.ts:632` — `this.reverbSend = this.ctx.createGain()` — host's reverb send bus, ready for `reverbSendNode` opt.
+- `psyLive.ts:705-706` — `this.engineBus = this.ctx.createGain(); this.engineBus.gain.value = 0.8`. The shared bus exists.
+- `psyLive.ts:298` — `private engineBus: GainNode | null = null` — nullable so the getter can return null before init.
+- `attachSynthBridge` does NOT exist yet — only `attachSamplerBridge` in dead `sampler-bridge.ts` (audit-A line 8122 confirmed). So a new `attachSynthBridge` method must be added to psyLive.ts.
+
+**Verified composition-worker.js output shape**: emits events as a flat `Float64Array` (worker comment at line 11-13: "Worker → Main thread: { type: 'events', events: Float64Array }"). Each event is a fixed-size record (the composer packs `[at, channel, note, velocity, duration, ...]` flat). Channel strings used (grepped): 'kick', 'bass', 'lead', 'acid', 'pad', 'snare', 'hat-closed', 'hat-open', 'counterline', 'sub', 'shaker', 'perc', 'texture', 'clap', 'fx'. **None of these match the 7 canonical psysynth roles** (bass/lead/arp/pad/stab/pluck/keys). A bridge must map them.
+
+**5-step integration plan**:
+
+**Step 1 — SynthBridge lives in PSY4 at `src/lib/synth-bridge.ts`** (mirror of dead `sampler-bridge.ts`):
+```ts
+// src/lib/synth-bridge.ts
+import { InMemoryChannel, DeviceHost } from './synth-bridge-contracts' // copied from psysynth shim
+import type { NoteEvent } from './synth-bridge-contracts'
+
+const PSY4_TO_SYNTH_ROLE: Record<string, string> = {
+  bass: 'bass', sub: 'bass',          // sub-bass also routes to bass (mono pool will steal)
+  lead: 'lead', counterline: 'lead',  // counterline is a melodic lead variant
+  acid: 'lead',                       // acid line is a lead variant (303 squelch)
+  pad: 'pad', texture: 'pad',         // texture is an atmospheric variant
+  arp: 'arp',                         // PSY4 doesn't emit 'arp' today; future
+  stab: 'stab',                       // PSY4 doesn't emit 'stab' today; future
+  pluck: 'pluck',                     // PSY4 doesn't emit 'pluck' today; future
+  keys: 'keys',                       // PSY4 doesn't emit 'keys' today; future
+  // UNMAPPED (stay on PSY4 worklet): kick, snare, hat-closed, hat-open, clap, shaker, perc, fx
+}
+
+export class SynthBridge {
+  readonly host: DeviceHost
+  constructor() {
+    const channel = new InMemoryChannel('psy4-synth')
+    this.host = new DeviceHost(channel)
+  }
+  publishNote(atSec: number, psy4Channel: string, midi: number, velocity: number, durationSec: number): void {
+    const role = PSY4_TO_SYNTH_ROLE[psy4Channel]
+    if (!role) return // drum/perc/fx channels stay on the worklet; bridge ignores them
+    this.host.publish({ type: 'note', note: midi, velocity, duration: durationSec, channel: role, at: atSec })
+  }
+  publishMidiOn(atSec: number, role: string, midi: number, vel01: number): void {
+    this.host.publish({ type: 'note', note: midi, velocity: vel01, duration: -1, channel: role, at: atSec })
+  }
+  publishMidiOff(atSec: number, role: string, midi: number): void {
+    this.host.publish({ type: 'note', note: midi, velocity: 0, duration: 0, channel: role, at: atSec })
+  }
+  publishTransport(snap: { bpm: number; bar: number; revision: number }): void {
+    this.host.pushTransport({
+      bpm: snap.bpm, beat: snap.bar * 4, bar: snap.bar, beatsPerBar: 4,
+      beatTime: 0, barTime: 0, phase: 0, barPhase: 0,
+      confidence: 1, locked: true, revision: snap.revision,
+      origin: { audioTime: 0, beatIndex: 0, bpm: snap.bpm },
+      lastObservationAgo: 0, observationCount: 1,
+    }, 0)
+  }
+  pushContext(ctx: { key: string; rootPc: number; scale: string; energy: number; style: string; section: string; beatsPerBar: number }): void {
+    this.host.pushContext(ctx)
+  }
+}
+```
+The `PSY4_TO_SYNTH_ROLE` map is the critical bridge logic. Channels NOT in the map (kick, snare, hat-closed, hat-open, clap, shaker, perc, fx) are silently ignored by the bridge — they stay on PSY4's existing worklet path. This is the sibling-device topology.
+
+**Step 2 — composition-worker.js output maps to NoteEvent stream**:
+PSY4's worker emits a flat `Float64Array` of events. The main thread (psyLive.ts:1590 `scheduleCausalEvent(ev: CausalNoteEvent)`) already unpacks these into `CausalNoteEvent` objects. The bridge attaches to this unpacking site:
+```ts
+// psyLive.ts (modified scheduleCausalEvent):
+private scheduleCausalEvent(ev: CausalNoteEvent): void {
+  // EXISTING PATH: forward to worklet (unchanged — drums still go here)
+  this.engineNode?.sendEvent(ev)
+  // NEW PATH: forward to synth bridge (only melodic channels route through)
+  if (this.synthBridge) {
+    this.synthBridge.publishNote(
+      this.ctx.currentTime + (ev.at - this.lastWorkerTickTime), // convert worker time → ctx time
+      ev.channel,
+      ev.note,
+      ev.velocity,
+      ev.duration
+    )
+  }
+}
+```
+The time conversion is the only tricky part: the worker's `ev.at` is in beats or worker-internal time, not AudioContext seconds. PSY4 already does this conversion somewhere (the worklet receives `at` in seconds — see engineWorklet.ts sendEvent). Reuse the same conversion. **Do NOT add a second timer** — the device is clock-free by design.
+
+**Step 3 — master chain coexists with device outputNode (shared bus)**:
+PSY4's audio graph today:
+```
+worklet (AudioWorkletNode) → analyser → destination
+                       \ 
+                        (legacy engineBus disconnected per audit-A line 11002)
+```
+The psysynth device's `deviceOut` GainNode connects to `psyLive.engineBusInput` (psyLive.ts:486). For this to be audible, the legacy chain must be RE-CONNECTED or a new chain built:
+```
+worklet → analyser → destination   (drums + master)
+psysynth.deviceOut → engineBus → comp → master → safetyLimiter → analyser → destination  (melodic)
+```
+**Cleanest path**: introduce a new `synthBus` GainNode (sibling to `engineBus`), connect `synthBus → comp → master → analyser → destination`, expose `synthBusInput` getter, pass THAT as `outputNode` to `createSynthDevice`. This keeps psysynth's melodic output flowing through PSY4's comp+master+safetyLimiter (so the existing limiter protects against clipping). The worklet keeps its own path (drums are already mixed inside the worklet and go straight to analyser).
+
+**Step 4 — PSY4's kick/snare/hat/clap (drum voices) stay on the worklet**:
+The bridge's `PSY4_TO_SYNTH_ROLE` map in Step 1 deliberately does NOT include 'kick', 'snare', 'hat-closed', 'hat-open', 'clap', 'shaker', 'perc', 'fx'. These channels continue to be forwarded to `this.engineNode.sendEvent(ev)` in the existing path. So:
+- Kick → worklet KickVoice → worklet master chain → analyser → destination.
+- Snare → worklet SnareVoice (actually reuses ClapVoice per audit-A) → same.
+- Hat → worklet HatVoice → same.
+- Clap → worklet ClapVoice → same.
+- Bass → BOTH worklet BassVoice AND psysynth (overlap during transition — see Step 5).
+- Lead → BOTH worklet LeadVoice AND psysynth (overlap during transition).
+- Pad → BOTH worklet PadVoice AND psysynth (overlap).
+
+This is the **graceful migration topology**: during the transition, melodic voices play on BOTH the worklet and psysynth simultaneously. A/B compare. When psysynth's melodic output is judged better, mute the worklet's melodic voices (via `setChannelMute` — but that's currently DEAD per audit-A, so this requires fixing audit-A's dead-mute bug first OR adding a per-channel enable flag in the worklet).
+
+**Step 5 — Minimal first integration (1-day scope)**:
+Day 1 deliverable: **psysynth plays the bass line ALONGSIDE PSY4's existing bass, A/B-able via a single boolean flag.**
+
+Concrete steps (estimated 6-8 hours):
+1. (1h) Copy `psysynth/public/psysynth.js` bundle + `psysynth/public/patches/` to PSY4's `public/psysynth/` and `public/patches/psysynth/`. Build the bundle first (`cd /tmp/psysynth-audit && bun run scripts/build-bundle.ts`).
+2. (1h) Copy the 5 verbatim shim files from `psysynth/src/psy-foundation-shim/` to PSY4's `src/lib/synth-bridge-contracts/` (or import directly from the bundle if it exports them — check build-bundle.ts). Keep the shim-sync test discipline.
+3. (2h) Write `src/lib/synth-bridge.ts` (Step 1 above). Unit-test the channel map (kick → ignored, bass → 'bass', acid → 'lead', counterline → 'lead', sub → 'bass').
+4. (1h) Add `attachSynthBridge(bridge: SynthBridge)` method to psyLive.ts. Wire `this.synthBridge = bridge`. In `scheduleCausalEvent`, call `this.synthBridge?.publishNote(...)` AFTER the existing `engineNode.sendEvent(ev)` (so the worklet still plays first; psysynth adds on top).
+5. (1h) In `page.tsx`'s audio init path (after `engineNode.play()`), dynamically import the bundle, call `createSynthDevice({ audioContext: this.ctx, outputNode: this.engineBusInput ?? this.master, patchManifestUrl: '/psysynth/patches/manifest.json', seed: 1, delaySendNode: this.delaySend ?? null, reverbSendNode: this.reverbSend ?? null, maxVoices: 8 })`, `bridge.host.register(bundle.device)`, `await bundle.load()`, `bundle.device.onStart()`. Add a UI toggle `enableSynthDevice` (default OFF) so the A/B is clean.
+6. (1h) Wire `bridge.publishTransport()` from the existing transport tick (psyLive.ts already has a transport; just call publishTransport on every beat). Wire `bridge.pushContext()` from `setStyle`/`setEnergy` (both already exist in psyLive.ts per audit-A — these are the "REAL — YES" methods).
+7. (30m) Verify: with `enableSynthDevice = true`, bass notes are now doubled (worklet + psysynth). With false, only worklet. Diagnostics panel shows `eventsReceived`, `voicesActive`, `voicesStolen`, `eventsDropped` (the observability PSY4 lacks — see audit-E §8).
+
+**1-day scope does NOT include**:
+- Replacing the worklet's melodic voices (that's the 1-week scope — requires fixing the dead-mute bug audit-A found, plus per-channel enable flags in the worklet).
+- Wiring MIDI (psysynth's CC mapping) — host-side, 2-3 hours.
+- Wiring the `'beat'`/`'section'`/`'pattern'` event types — currently no-ops in the device, no value yet.
+- Adopting psysynth's patches as the AUTHORITATIVE melodic patches (replacing PSY4's hardcoded voice params in worlds.ts) — that's the 1-month scope.
+
+**Risk assessment**:
+- LOW risk: psysynth's contract is real, the shim is sync-tested, the host seam (engineBusInput) already exists in PSY4, and the channel-map bridge is straightforward. No PSY4 file other than psyLive.ts and page.tsx needs to change.
+- MEDIUM risk: the time conversion from worker beats → ctx seconds. PSY4 already does this somewhere (the worklet receives `at` in seconds), so reuse that conversion. If the conversion is off by even 5ms, psysynth's bass will flam against the worklet's bass — audibly wrong. Mitigation: in the A/B day, only enable psysynth for ONE role (bass), listen, then disable.
+- HIGH risk: PSY4's `next.config.ts` has `typescript.ignoreBuildErrors: true` (audit-A line 10955, audit-summary-plan line 12295). This means type errors in the bridge code will NOT be caught at build time. The bridge code touches generic types (`MusicalEvent`, `NoteEvent`, `PsyDevice`) — if the import path is wrong, it silently compiles to broken runtime code. **Mitigation: run `bun tsc --noEmit` separately before commit**, ignoring next.config.ts.
+
+**Brutal verdict**:
+- The contract is REAL, MINIMAL, and SUFFICIENT. 5 required members + 3 optional. No surprises.
+- The host seam (`engineBusInput`) ALREADY EXISTS in PSY4 — that's the strongest signal this integration is mechanical, not architectural.
+- The 7-role enum is the right abstraction. PSY4's 15-channel enum collapses cleanly: bass+sub → bass, lead+acid+counterline → lead, pad+texture → pad, and the 5 drum channels (kick/snare/hat/clap/shaker) + perc + fx stay on the worklet. No role is lost.
+- The MIDI layer is HOST-side, which is correct. PSY4 already has `engineNode.setMacros()` (audit-A line 11006) — the synth device's `setParameterByCC` is a direct parallel, no architectural conflict.
+- The 1-day A/B is achievable. The 1-week melodic-replacement requires fixing audit-A's dead-mute bug first. The 1-month authoritative-patches scope is a separate decision (do we want psysynth's 20 patches to be the source of truth, or PSY4's worlds.ts?).
+- **One honest caveat**: psysynth's DSP is HONEST but MODEST (audit-E). Adopting psysynth's bass voice will NOT immediately sound better than PSY4's worklet bass (which already has a real Moog ladder per audit-1 at worklog line 7). The VALUE of adopting psysynth is NOT better DSP — it's the CONTRACT discipline (determinism, validation, observability, zero-alloc hot path). The contract is worth porting even if the DSP isn't.
+
+Stage Summary:
+- **PsyDevice contract** (§1): 5 required members (id, capabilities, onTransport, onContext, onEvent) + 3 optional (onStart, onStop, reportLatencyMs). Lifecycle = onStart→{onTransport|onContext|onEvent}*→onStop, driven by DeviceHost. onStart is idempotent + probes latency. onStop hard-releases (panicAll). onEvent NEVER throws (try/catch → counters.noteDrop). NO onMidi, NO dispose on contract.
+- **DeviceHost + InMemoryChannel** (§2): pub/sub on a `Set<ChannelListener>`. Channel.publish fans out to all subscribers with per-listener try/catch. DeviceHost wraps the channel + a `Map<id, PsyDevice>`, registers/unregisters devices, fans transport+context+events to all. Per-device try/catch too. findByRole() for multi-device role queries. No buffering, no priority — devices self-filter by channel.
+- **NoteEvent shape** (§3): `{type:'note', note:0..127, velocity:0..1, duration:sec, channel:role, at:ctxTime}`. `at` is AudioContext seconds (host adds 3ms margin). duration:-1 = HOLD (sustain until note-off). duration:0 = 30ms pluck gate. velocity:0 = note-off. Stale window: 50ms (events older than `now - 0.05` dropped + counted). Unknown channel: dropped + counted (unknownChannel counter).
+- **7 canonical roles** (§4): bass/lead/arp/pad/stab/pluck/keys. isSynthRole() is case-sensitive exact-match — NO coercion. Default budgets: bass:4/lead:4/arp:4/pad:6/stab:4/pluck:6/keys:4. Stab fans a single note into a chord (up to 4 voices). Pad uses hold-mode. Bass is mono (auto-release previous on same key).
+- **MIDI layer** (§5): HOST-side (WebMIDI lives in bridge/page, NOT in device). Device exposes setParameterByCC(cc, value01) + midiLearnStart/Cancel + get midi():MidiMap. Default CCs: 74=cutoff, 71=resonance, 5=glide, 12=energyMacro, 14=delaySend, 15=reverbSend. MIDI-learn: next CC claims target. NO pitch bend, NO aftertouch, NO MIDI clock, NO MIDI out.
+- **Factory createSynthDevice()** (§6): opts = {audioContext (required, shared), outputNode (required, shared bus), delaySendNode?, reverbSendNode?, maxVoices? (default 16, clamp 1..64), seed? (default 1), roleBudgets?, deviceId?, patchManifestUrl?, patchManifest?, styleBanks?}. Bundle = {device, load():Promise<number>, dispose()}. Fetch happens in load(), NOT in constructor. 5-line integration claim is honest (import + create + register + load + onStart).
+- **Test suite** (§7): "124 pass / 3 skip / 0 fail / 127 tests across 16 files" claim is CREDIBLE. The 5 suites in the brief contain 27 substantive tests (fuzz with 1000 malformed events, 5-min stress with zero node churn assertion, bit-identical render fingerprint across 3 runs, sidechain-release ≤ 80ms gate, etc.). The 3 skipped are browser-CI OfflineAudioContext tests. shim-sync is a structural gate (header + barrel purity + no @psy-foundation/* runtime imports), NOT a byte-diff — the comment admits a full byte-diff runs in network CI only.
+- **Integration seam with PSY4** (§8): MECHANICAL, not architectural. PSY4 ALREADY has `engineBusInput` getter (psyLive.ts:486), `delaySend`/`reverbSend` gain nodes (psyLive.ts:621/632), `setStyle`/`setEnergy` REAL methods (audit-A). 5-step plan: (1) SynthBridge at `src/lib/synth-bridge.ts` with PSY4→canonical role map (bass+sub→bass, lead+acid+counterline→lead, pad+texture→pad, drums+perc+fx stay on worklet); (2) composition-worker.js Float64Array → NoteEvent via existing `scheduleCausalEvent` unpacking site; (3) shared bus coexists — introduce a new `synthBus` GainNode sibling to `engineBus`, route through PSY4's comp+master+safetyLimiter; (4) drum voices (kick/snare/hat/clap/shaker) STAY on the worklet — bridge's role map ignores those channels; (5) 1-day A/B: bundle + bridge + attachSynthBridge + UI toggle. Risk: LOW for contract, MEDIUM for time-conversion (5ms off = audible flam), HIGH for `next.config.ts ignoreBuildErrors:true` hiding type errors (mitigate with `bun tsc --noEmit` pre-commit).
+- **Brutal verdict**: psysynth's contract is REAL, MINIMAL, SUFFICIENT, and the PSY4 host seam ALREADY EXISTS. The integration is mechanical. The DSP is honest but modest — adopting psysynth will NOT immediately sound better than PSY4's existing worklet bass (which has a real Moog ladder). The VALUE is the CONTRACT discipline (determinism, validation, observability, zero-alloc hot path, 20-patch manifest with provenance, 6 subgenre banks). Port the contract + bridge + 1-day A/B; defer the 1-week melodic-replacement (requires fixing audit-A's dead-mute bug) and the 1-month authoritative-patches decision separately.
+- **No code was modified.** Read-only audit of `/tmp/psysynth-audit/` + cross-reference reads of `/home/z/my-project/src/lib/psyLive.ts` and `/home/z/my-project/public/worklets/composition-worker.js` for host-side seam verification only.
+
+---
+Task ID: audit-psysynth-and-plan-v2
+Agent: main (Z.ai Code)
+Task: ודא סנכרון GitHub + בחן את psysynth והכן תוכנית מלאה לניתוב יכולות משופרות
+
+Work Log:
+- סנכרון: וידאתי origin/main = 7688fce (2026-08-15), local = origin/main + 2 קומיטים מקומיים שלא משנים קוד מקור (worklog + EXECUTION_PLAN + samples לא בשימוש)
+- מצאתי repo psysynth ב-GitHub: github.com/dudududi144-source/psysynth.git
+- שכפלתי ל-/tmp/psysynth-audit/ לביקורת (read-only)
+- הפעלתי 2 סוכנים עצמאיים:
+  - audit-E-psysynth-dsp: בחן voice.ts, polyblep.ts, filter.ts, voice-pool.ts, patch-library.ts, variance-rules.ts
+  - audit-F-psysynth-contract: בחן device.ts, host.ts, protocol.ts, INTEGRATION-GUIDE.md, כל הבדיקות
+- הרצתי את סוויטת הבדיקות בעצמי: 133 pass, 3 skip, 0 fail, 13560 expect() calls, 153ms
+- בניתי bundle: 21KB (מתחת לתקציב 60KB)
+- אימתתי ש-PSY4 כבר חשף את ה-seam: audioContext getter (line 483), engineBusInput getter (line 490, duplicate ב-1615), delaySend (line 252), reverbSend (line 255)
+- כתבתי תוכנית מלאה ל-EXECUTION_PLAN_v2.md
+
+Stage Summary:
+- psysynth: 3,321 שורות קוד נקי + 1,594 שורות בדיקות (133 pass), 0 קוד מת, strict TS, bundle 21KB
+- psysynth משופר ב: דטרמיניזם (mulberry32 אמיתי), contract PsyDevice, deterministic voice steal, strict patch validation, 20 patches + 6 subgenre banks, MIDI layer, observability counters
+- psysynth חסר: drums (melodic only), master chain (במפורש "host owns"), sampler, PolyBLEP לא מחובר ל-hot path, "Moog ladder" הוא 2 biquads, mod-matrix/LFO/step-seq רדומים
+- ה-seam ב-PSY4 כבר קיים: audioContext + engineBusInput + delaySend + reverbSend
+- תוכנית: 9 שלבים, סה"כ 799 דק' חובה (~13.3 שעות)
+- סדר: ניקוי → הסר ignoreBuildErrors → דטרמיניזם → העתקת psysynth → SynthBridge → חיבור → UI toggle → תיקוני קריטי → ניקוי → אימות E2E
+- קובץ תוכנית: /home/z/my-project/EXECUTION_PLAN_v2.md
