@@ -871,7 +871,7 @@ export class PsyLive {
     if (!this.workerReady || !this.useWorklet || !this.engineNode) return;
     const snap = this.transport!.snapshot();
     const beatDur = 60 / snap.bpm;
-    const barOriginAudioTime = this.ctx.currentTime;
+    const barOriginAudioTime = this.ctx!.currentTime;
     const currentBar = 0;
     this.lastWorkerComposeBar = -1;
     this.compositionWorker?.postMessage({
@@ -1688,7 +1688,23 @@ export class PsyLive {
             if (at < now - 0.5) continue;
             if (voiceId === VOICE.KICK) this.kickCount++;
             if (voiceId === VOICE.BASS && note > 0) this.bassFreq = mtof(note);
-            this.engineNode.scheduleEvent(at, voiceId, note, velocity, duration, param);
+
+            // v3: Route melodic voices (bass/lead/acid/pad) to psysynth (ALWAYS, not toggle)
+            // Drum voices (kick/hat/snare/clap/perc/shaker) go to this worklet.
+            const isMelodic = voiceId === VOICE.BASS || voiceId === VOICE.LEAD ||
+                              voiceId === VOICE.ACID || voiceId === VOICE.PAD;
+            if (isMelodic) {
+              // Forward to psysynth (auto-enable if not enabled)
+              if (!this.synthDeviceEnabled) {
+                this.enableSynthDevice().catch(() => {});
+              }
+              if (this.synthBridge) {
+                this.synthBridge.publishNote(at, voiceId, note, velocity, duration);
+              }
+            } else {
+              // Drum/FX voice — schedule to worklet
+              this.engineNode.scheduleEvent(at, voiceId, note, velocity, duration, param);
+            }
             scheduled++;
           }
           if (scheduled > 0) {
@@ -3086,80 +3102,108 @@ export class PsyLive {
    */
   exportMIDI(): void {
     if (!this.transport) {
-      console.warn('[PSY4] Phase 10.1: Transport not ready for MIDI export');
+      console.warn('[PSY4] Transport not ready for MIDI export');
+      return;
+    }
+    // v3: Export REAL composition (not hardcoded 4 bars).
+    // Request the worker to compose 8 bars, then convert events to MIDI.
+    if (!this.compositionWorker || !this.workerReady) {
+      console.warn('[PSY4] Composition worker not ready for MIDI export');
       return;
     }
     const snap = this.transport.snapshot();
     const bpm = snap.bpm;
-    // FIX B6: read rootPc from cachedInsights (set by learnTick), not from undefined this.opts
     const rootPc = this.cachedInsights?.scale?.root ?? 0;
 
-    // Build MIDI bytes (format 0, 1 track)
+    // Request 8 bars from worker (async — we'll build MIDI when response arrives)
+    const barOriginAudioTime = 0;  // bar 0 = time 0
+    const startBar = 0;
+    const endBar = 8;
+    // One-shot handler for this specific compose response
+    const handler = (e: MessageEvent) => {
+      const msg = e.data;
+      if (msg.type !== 'events' || msg.startBar !== startBar) return;
+      this.compositionWorker?.removeEventListener('message', handler);
+      this.buildMIDIFromEvents(msg.events, msg.count, bpm, rootPc);
+    };
+    this.compositionWorker.addEventListener('message', handler);
+    this.compositionWorker.postMessage({
+      type: 'compose',
+      startBar,
+      endBar,
+      barOriginAudioTime,
+    });
+  }
+
+  /**
+   * Build a MIDI file (format 0) from composition events.
+   * Events: Float64Array [at, voiceId, note, vel, dur, param] × count
+   */
+  private buildMIDIFromEvents(flat: Float64Array, count: number, bpm: number, rootPc: number): void {
     const ticksPerQuarter = 480;
-    const tempo = Math.round(60000000 / bpm);  // microseconds per quarter
+    const tempo = Math.round(60000000 / bpm);
+    const tickDur = ticksPerQuarter / 4;  // 16th note ticks
 
-    // MIDI header: MThd
-    const header = [
-      0x4D, 0x54, 0x68, 0x64,  // "MThd"
-      0x00, 0x00, 0x00, 0x06,  // header length = 6
-      0x00, 0x00,              // format 0
-      0x00, 0x01,              // 1 track
-      (ticksPerQuarter >> 8) & 0xFF, ticksPerQuarter & 0xFF,  // ticks per quarter (480)
-    ];
+    // MIDI channels per voice type (drums on ch 9, melodic on 0-3)
+    const channelFor = (voiceId: number): number => {
+      switch (voiceId) {
+        case 0: return 9;   // kick → drums
+        case 5: case 6: return 9;  // hats → drums
+        case 7: return 9;   // clap → drums
+        case 8: return 9;   // perc → drums
+        case 9: return 9;   // shaker → drums
+        case 14: return 9;  // snare → drums
+        case 11: case 12: case 13: return 9; // FX → drums
+        case 1: return 0;   // bass → ch 0
+        case 2: return 1;   // lead → ch 1
+        case 3: return 2;   // acid → ch 2
+        case 4: return 3;   // pad → ch 3
+        default: return 0;
+      }
+    };
 
-    // Build track events
     const events: { tick: number; data: number[] }[] = [];
-
     // Tempo meta event
     events.push({ tick: 0, data: [0xFF, 0x51, 0x03, (tempo >> 16) & 0xFF, (tempo >> 8) & 0xFF, tempo & 0xFF] });
 
-    // Kick pattern: 4-on-the-floor
-    const beatDur = 60 / bpm;
-    const tickDur = ticksPerQuarter / 4;  // 16th note ticks
-    for (let bar = 0; bar < 4; bar++) {
-      for (let beat = 0; beat < 4; beat++) {
-        const tick = Math.round((bar * 4 + beat) * ticksPerQuarter);
-        events.push({ tick, data: [0x99, 36, 100] });  // note on, kick, vel 100
-        events.push({ tick: tick + Math.round(ticksPerQuarter * 0.8), data: [0x89, 36, 0] });  // note off
-      }
+    // Convert each composition event to MIDI note on/off
+    for (let i = 0; i < count; i++) {
+      const base = i * 6;
+      const at = flat[base];
+      const voiceId = flat[base + 1] | 0;
+      const note = flat[base + 2] | 0;
+      const vel = Math.max(1, Math.min(127, Math.round(flat[base + 3] * 127)));
+      const dur = flat[base + 4];
+      const ch = channelFor(voiceId);
+      const tick = Math.round(at * ticksPerQuarter * (bpm / 60));
+      const endTick = tick + Math.max(1, Math.round(dur * ticksPerQuarter * (bpm / 60)));
+      // Note on
+      events.push({ tick, data: [0x90 | ch, note, vel] });
+      // Note off
+      events.push({ tick: endTick, data: [0x80 | ch, note, 0] });
     }
 
-    // Bass pattern: offbeat 16ths
-    for (let bar = 0; bar < 4; bar++) {
-      for (let step = 0; step < 16; step++) {
-        if (step % 2 === 1) {  // offbeats
-          const tick = Math.round((bar * 16 + step) * tickDur);
-          const note = rootPc + 33;  // bass note
-          events.push({ tick, data: [0x91, note, 80] });
-          events.push({ tick: tick + Math.round(tickDur * 0.9), data: [0x81, note, 0] });
-        }
-      }
-    }
-
-    // Lead pattern: motif
-    const motifSteps = [0, 4, 8, 12];
-    const motifIntervals = [0, 4, 7, 4];
-    for (let bar = 0; bar < 4; bar++) {
-      for (let i = 0; i < motifSteps.length; i++) {
-        const tick = Math.round((bar * 16 + motifSteps[i]) * tickDur);
-        const note = rootPc + 60 + motifIntervals[i];
-        events.push({ tick, data: [0x92, note, 70] });
-        events.push({ tick: tick + Math.round(tickDur * 2), data: [0x82, note, 0] });
-      }
-    }
-
-    // End of track
-    events.push({ tick: 4 * 4 * ticksPerQuarter, data: [0xFF, 0x2F, 0x00] });
-
-    // Sort events by tick
+    // Sort by tick (note offs before note ons at same tick)
     events.sort((a, b) => a.tick - b.tick);
 
-    // Convert to MIDI bytes with delta times
+    // End of track
+    const lastTick = events.length > 0 ? events[events.length - 1].tick : 0;
+    events.push({ tick: lastTick + 1, data: [0xFF, 0x2F, 0x00] });
+
+    // Build MIDI header
+    const header = [
+      0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06,
+      0x00, 0x00,  // format 0
+      0x00, 0x01,  // 1 track
+      (ticksPerQuarter >> 8) & 0xFF, ticksPerQuarter & 0xFF,
+    ];
+
+    // Build track data with delta times
     const trackData: number[] = [];
-    let lastTick = 0;
+    let prevTick = 0;
     for (const ev of events) {
-      const delta = ev.tick - lastTick;
-      lastTick = ev.tick;
+      const delta = ev.tick - prevTick;
+      prevTick = ev.tick;
       // Variable-length quantity
       if (delta > 0x0FFFFFF) trackData.push((delta >> 21) | 0x80);
       if (delta > 0x3FFF) trackData.push((delta >> 14) | 0x80);
@@ -3168,14 +3212,12 @@ export class PsyLive {
       trackData.push(...ev.data);
     }
 
-    // Track header: MTrk
     const trackLen = trackData.length;
     const trackHeader = [
-      0x4D, 0x54, 0x72, 0x6B,  // "MTrk"
+      0x4D, 0x54, 0x72, 0x6B,
       (trackLen >> 24) & 0xFF, (trackLen >> 16) & 0xFF, (trackLen >> 8) & 0xFF, trackLen & 0xFF,
     ];
 
-    // Combine
     const midi = new Uint8Array(header.length + trackHeader.length + trackData.length);
     midi.set(header, 0);
     midi.set(trackHeader, header.length);
@@ -3186,10 +3228,12 @@ export class PsyLive {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `psy4-midi-${Date.now()}.mid`;
+    a.download = `psy4-composition-${bpm}bpm-${Date.now()}.mid`;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    console.log(`[PSY4] Phase 10.1: MIDI exported (${midi.length} bytes, ${bpm} BPM)`);
+    console.log(`[PSY4] MIDI exported: ${count} notes, ${bpm} BPM, format 0`);
   }
 
   // ── Phase 10.2: Preset Save/Load ──

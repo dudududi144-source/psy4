@@ -1,0 +1,603 @@
+/**
+ * PSY4 Engine v3 — Synth-based (drums) + psysynth (melodic)
+ *
+ * Architecture:
+ *   - This worklet handles DRUMS only: kick/snare/hat/clap/perc/shaker
+ *   - Melodic voices (bass/lead/acid/pad) are routed to psysynth via SynthBridge
+ *   - Master chain: DC blocker → glue → limiter (minimal, clean)
+ *   - Self-learning: main thread sends learnedParams, worklet applies
+ *
+ * Drum voices (all synth — no samples):
+ *   0=kick 5=hat 6=hatOpen 7=clap 8=perc 9=shaker 10=texture 11=riser 12=impact 13=sweep 14=snare
+ *
+ * Melodic voices (routed to psysynth, NOT played here):
+ *   1=bass 2=lead 3=acid 4=pad
+ *
+ * Event format: [at, voiceId, note, vel, dur, param]
+ */
+
+// ─── Voice IDs ─────────────────────────────────────────────────────────────
+const V_KICK = 0, V_BASS = 1, V_LEAD = 2, V_ACID = 3, V_PAD = 4;
+const V_HAT = 5, V_HAT_OPEN = 6, V_CLAP = 7, V_PERC = 8, V_SHAKER = 9;
+const V_TEXTURE = 10, V_RISER = 11, V_IMPACT = 12, V_SWEEP = 13, V_SNARE = 14;
+
+// Melodic voices — NOT played here (routed to psysynth by main thread)
+const MELODIC_VOICES = new Set([V_BASS, V_LEAD, V_ACID, V_PAD]);
+
+// ─── Fast tanh approximation ───────────────────────────────────────────────
+function fastTanh(x) {
+  if (x > 3) return 1;
+  if (x < -3) return -1;
+  const x2 = x * x;
+  return x * (27 + x2) / (27 + 9 * x2);
+}
+
+// ─── Simple one-pole filter ────────────────────────────────────────────────
+class OnePoleLP {
+  constructor() { this.state = 0; }
+  process(x, cutoff, sr) {
+    const a = Math.min(0.999, 2 * Math.PI * cutoff / sr);
+    this.state += a * (x - this.state);
+    return this.state;
+  }
+  reset() { this.state = 0; }
+}
+
+class OnePoleHP {
+  constructor() { this.prevIn = 0; this.prevOut = 0; }
+  process(x, cutoff, sr) {
+    const a = Math.min(0.999, 2 * Math.PI * cutoff / sr);
+    const out = x - this.prevIn + (1 - a) * this.prevOut;
+    this.prevIn = x;
+    this.prevOut = out;
+    return out;
+  }
+  reset() { this.prevIn = 0; this.prevOut = 0; }
+}
+
+// ─── Moog-style ladder filter (4-pole) ────────────────────────────────────
+class MoogLadder {
+  constructor() {
+    this.s0 = 0; this.s1 = 0; this.s2 = 0; this.s3 = 0;
+  }
+  process(x, cutoff, res, sr) {
+    const f = Math.min(0.99, 2 * Math.PI * cutoff / sr);
+    const k = 4 * res;
+    for (let i = 0; i < 4; i++) {
+      const input = x - k * this.s3;
+      this.s0 += f * (input - this.s0);
+      this.s1 += f * (this.s0 - this.s1);
+      this.s2 += f * (this.s1 - this.s2);
+      this.s3 += f * (this.s2 - this.s3);
+    }
+    return this.s3;
+  }
+  reset() { this.s0 = this.s1 = this.s2 = this.s3 = 0; }
+}
+
+// ─── Pink noise (simple) ──────────────────────────────────────────────────
+class PinkNoise {
+  constructor() {
+    this.b0 = 0; this.b1 = 0; this.b2 = 0; this.b3 = 0;
+    this.phase = 0;
+  }
+  process() {
+    const white = Math.random() * 2 - 1;
+    this.b0 = 0.99 * this.b0 + 0.05 * white;
+    this.b1 = 0.95 * this.b1 + 0.10 * white;
+    this.b2 = 0.8 * this.b2 + 0.15 * white;
+    this.b3 = 0.5 * this.b3 + 0.2 * white;
+    return (this.b0 + this.b1 + this.b2 + this.b3) * 0.25;
+  }
+  reset() { this.b0 = this.b1 = this.b2 = this.b3 = 0; }
+}
+
+// ─── KickVoice (synth) ─────────────────────────────────────────────────────
+class KickVoice {
+  constructor() {
+    this.active = false;
+    this.t = 0;
+    this.phase = 0;
+    this.fund = 50;
+    this.startMult = 4;
+    this.pitchDecay = 0.025;
+    this.subDecay = 0.15;
+    this.amp = 0.9;
+    this._out = new Float32Array(2);
+  }
+  trigger(time, note, vel, dur, sr) {
+    this.active = true;
+    this.t = 0;
+    this.phase = 0;
+    this.fund = 50;  // could vary by note
+    this.amp = Math.max(0.3, Math.min(1, vel));
+  }
+  render(currentTime, sr) {
+    const out = this._out;
+    if (!this.active) { out[0] = 0; out[1] = 0; return out; }
+    const dt = 1 / sr;
+    this.t += dt;
+    if (this.t > this.subDecay + 0.05) { this.active = false; out[0] = 0; out[1] = 0; return out; }
+    // Pitch envelope: starts high, drops to fundamental
+    const f = (this.fund * this.startMult - this.fund) * Math.exp(-this.t / this.pitchDecay) + this.fund;
+    this.phase += 2 * Math.PI * f * dt;
+    const env = Math.exp(-this.t / this.subDecay);
+    const sample = Math.sin(this.phase) * env * this.amp;
+    out[0] = sample; out[1] = sample;
+    return out;
+  }
+}
+
+// ─── HatVoice (synth — noise + HP filter) ──────────────────────────────────
+class HatVoice {
+  constructor() {
+    this.active = false;
+    this.t = 0;
+    this.noise = new PinkNoise();
+    this.hp = new OnePoleHP();
+    this.decay = 0.05;
+    this.amp = 0.4;
+    this._out = new Float32Array(2);
+  }
+  trigger(time, note, vel, dur, sr, open) {
+    this.active = true;
+    this.t = 0;
+    this.decay = open ? 0.2 : 0.04;
+    this.amp = Math.max(0.15, Math.min(0.6, vel));
+    this.hp.reset();
+  }
+  render(currentTime, sr) {
+    const out = this._out;
+    if (!this.active) { out[0] = 0; out[1] = 0; return out; }
+    const dt = 1 / sr;
+    this.t += dt;
+    if (this.t > this.decay) { this.active = false; out[0] = 0; out[1] = 0; return out; }
+    const n = this.noise.process();
+    const hpOut = this.hp.process(n, 7000, sr);
+    const env = Math.exp(-this.t / (this.decay * 0.5));
+    const sample = hpOut * env * this.amp;
+    out[0] = sample; out[1] = sample;
+    return out;
+  }
+}
+
+// ─── SnareVoice (synth — noise + tone) ─────────────────────────────────────
+class SnareVoice {
+  constructor() {
+    this.active = false;
+    this.t = 0;
+    this.noise = new PinkNoise();
+    this.hp = new OnePoleHP();
+    this.phase = 0;
+    this.decay = 0.12;
+    this.amp = 0.5;
+    this._out = new Float32Array(2);
+  }
+  trigger(time, note, vel, dur, sr) {
+    this.active = true;
+    this.t = 0;
+    this.phase = 0;
+    this.amp = Math.max(0.2, Math.min(0.7, vel));
+    this.hp.reset();
+  }
+  render(currentTime, sr) {
+    const out = this._out;
+    if (!this.active) { out[0] = 0; out[1] = 0; return out; }
+    const dt = 1 / sr;
+    this.t += dt;
+    if (this.t > this.decay) { this.active = false; out[0] = 0; out[1] = 0; return out; }
+    // Tonal component (180Hz)
+    this.phase += 2 * Math.PI * 180 * dt;
+    const tone = Math.sin(this.phase) * 0.4;
+    // Noise component
+    const n = this.noise.process();
+    const hpOut = this.hp.process(n, 2000, sr);
+    const env = Math.exp(-this.t / (this.decay * 0.5));
+    const sample = (tone + hpOut * 0.8) * env * this.amp;
+    out[0] = sample; out[1] = sample;
+    return out;
+  }
+}
+
+// ─── ClapVoice (synth — noise bursts) ──────────────────────────────────────
+class ClapVoice {
+  constructor() {
+    this.active = false;
+    this.t = 0;
+    this.noise = new PinkNoise();
+    this.hp = new OnePoleHP();
+    this.decay = 0.15;
+    this.amp = 0.4;
+    this._out = new Float32Array(2);
+  }
+  trigger(time, note, vel, dur, sr) {
+    this.active = true;
+    this.t = 0;
+    this.amp = Math.max(0.2, Math.min(0.6, vel));
+    this.hp.reset();
+  }
+  render(currentTime, sr) {
+    const out = this._out;
+    if (!this.active) { out[0] = 0; out[1] = 0; return out; }
+    const dt = 1 / sr;
+    this.t += dt;
+    if (this.t > this.decay) { this.active = false; out[0] = 0; out[1] = 0; return out; }
+    const n = this.noise.process();
+    const hpOut = this.hp.process(n, 1500, sr);
+    // Multi-burst envelope (clap character)
+    let env;
+    if (this.t < 0.01) env = 1;
+    else if (this.t < 0.02) env = 0.3;
+    else if (this.t < 0.03) env = 0.8;
+    else env = Math.exp(-(this.t - 0.03) / 0.04);
+    const sample = hpOut * env * this.amp;
+    out[0] = sample; out[1] = sample;
+    return out;
+  }
+}
+
+// ─── PercVoice (synth — short tone) ────────────────────────────────────────
+class PercVoice {
+  constructor() {
+    this.active = false;
+    this.t = 0;
+    this.phase = 0;
+    this.freq = 200;
+    this.decay = 0.08;
+    this.amp = 0.4;
+    this._out = new Float32Array(2);
+  }
+  trigger(time, note, vel, dur, sr) {
+    this.active = true;
+    this.t = 0;
+    this.phase = 0;
+    this.freq = 80 + (note - 36) * 8;  // vary by note
+    this.amp = Math.max(0.2, Math.min(0.6, vel));
+  }
+  render(currentTime, sr) {
+    const out = this._out;
+    if (!this.active) { out[0] = 0; out[1] = 0; return out; }
+    const dt = 1 / sr;
+    this.t += dt;
+    if (this.t > this.decay) { this.active = false; out[0] = 0; out[1] = 0; return out; }
+    this.phase += 2 * Math.PI * this.freq * dt;
+    const env = Math.exp(-this.t / (this.decay * 0.4));
+    const sample = Math.sin(this.phase) * env * this.amp * 0.6;
+    // Add click
+    const click = this.t < 0.002 ? (Math.random() * 2 - 1) * 0.3 : 0;
+    const total = sample + click;
+    out[0] = total; out[1] = total;
+    return out;
+  }
+}
+
+// ─── ShakerVoice (synth — filtered noise) ──────────────────────────────────
+class ShakerVoice {
+  constructor() {
+    this.active = false;
+    this.t = 0;
+    this.noise = new PinkNoise();
+    this.lp = new OnePoleLP();
+    this.decay = 0.06;
+    this.amp = 0.25;
+    this._out = new Float32Array(2);
+  }
+  trigger(time, note, vel, dur, sr) {
+    this.active = true;
+    this.t = 0;
+    this.amp = Math.max(0.1, Math.min(0.4, vel));
+    this.lp.reset();
+  }
+  render(currentTime, sr) {
+    const out = this._out;
+    if (!this.active) { out[0] = 0; out[1] = 0; return out; }
+    const dt = 1 / sr;
+    this.t += dt;
+    if (this.t > this.decay) { this.active = false; out[0] = 0; out[1] = 0; return out; }
+    const n = this.noise.process();
+    const lpOut = this.lp.process(n, 5000, sr);
+    const env = Math.exp(-this.t / (this.decay * 0.4));
+    const sample = lpOut * env * this.amp;
+    out[0] = sample; out[1] = sample;
+    return out;
+  }
+}
+
+// ─── FXVoice (riser/impact/sweep — synth) ──────────────────────────────────
+class FXVoice {
+  constructor() {
+    this.active = false;
+    this.t = 0;
+    this.type = V_RISER;
+    this.noise = new PinkNoise();
+    this.filter = new MoogLadder();
+    this.phase = 0;
+    this.dur = 1.0;
+    this.amp = 0.2;  // FIX: low amp (was 0.5+ — caused the "stuck noise")
+    this._out = new Float32Array(2);
+  }
+  trigger(type, time, dur, amp, sr) {
+    this.active = true;
+    this.type = type;
+    this.t = 0;
+    this.dur = Math.max(0.1, dur || 1.0);
+    this.amp = Math.min(0.25, Math.max(0.1, amp || 0.2));  // FIX: capped low
+    this.phase = 0;
+    this.noise.reset();
+    this.filter.reset();
+  }
+  render(currentTime, sr) {
+    const out = this._out;
+    if (!this.active) { out[0] = 0; out[1] = 0; return out; }
+    const dt = 1 / sr;
+    this.t += dt;
+    if (this.t > this.dur + 0.2) { this.active = false; out[0] = 0; out[1] = 0; return out; }
+
+    let sample = 0;
+    const t = this.t;
+    switch (this.type) {
+      case V_RISER: {
+        // Noise + opening filter, gentle rise
+        const n = this.noise.process();
+        const cutoff = 200 + Math.pow(t / this.dur, 1.5) * 6000;
+        const filtered = this.filter.process(n, cutoff, 0.2, sr);
+        const env = Math.pow(t / this.dur, 2) * 0.2;
+        sample = fastTanh(filtered * env * 1.2);
+        break;
+      }
+      case V_IMPACT: {
+        // Sub boom + noise crack
+        const f = 120 * Math.exp(-t / 0.15) + 40;
+        this.phase += 2 * Math.PI * f * dt;
+        const sub = Math.sin(this.phase) * Math.exp(-t / 0.3) * 0.5;
+        const n = this.noise.process();
+        const crack = n * Math.exp(-t / 0.05) * 0.25;
+        sample = fastTanh((sub + crack) * 1.2);
+        break;
+      }
+      case V_SWEEP: {
+        // Filtered noise, high → low
+        const n = this.noise.process();
+        const cutoff = 5000 - Math.pow(t / this.dur, 1.5) * 4500;
+        const filtered = this.filter.process(n, cutoff, 0.25, sr);
+        const env = Math.sin(Math.PI * t / this.dur) * 0.2;
+        sample = fastTanh(filtered * env * 1.2);
+        break;
+      }
+    }
+    out[0] = sample * this.amp; out[1] = sample * this.amp;
+    return out;
+  }
+}
+
+// ─── Master chain (minimal, clean) ─────────────────────────────────────────
+class MasterChain {
+  constructor(sr) {
+    // DC blocker
+    this.dcPrevIn = 0; this.dcPrevOut = 0;
+    this.dcA = Math.min(0.999, 2 * Math.PI * 20 / sr);
+    // Glue compressor (gentle)
+    this.glueEnv = 0;
+    this.glueThr = 0.6;
+    this.glueRatio = 1.5;
+    this.glueMakeup = 1.0;
+    this.glueGain = 1.0;
+    // Limiter
+    this.ceiling = 0.89;
+    this.lpEnv = 0;
+  }
+  process(sample, sr) {
+    const dt = 1 / sr;
+    // DC blocker
+    const dcOut = sample - this.dcPrevIn + (1 - this.dcA) * this.dcPrevOut;
+    this.dcPrevIn = sample;
+    this.dcPrevOut = dcOut;
+    // Glue compressor
+    const abs = Math.abs(dcOut);
+    const attackCoef = dt / 0.005;
+    const releaseCoef = dt / 0.1;
+    if (abs > this.glueEnv) this.glueEnv += (abs - this.glueEnv) * Math.min(1, attackCoef);
+    else this.glueEnv += (abs - this.glueEnv) * Math.min(1, releaseCoef);
+    let gain = 1.0;
+    if (this.glueEnv > this.glueThr) {
+      const over = this.glueEnv - this.glueThr;
+      gain = (this.glueEnv - over * (1 - 1 / this.glueRatio)) / this.glueEnv;
+    }
+    const compOut = dcOut * gain * this.glueMakeup;
+    // Limiter
+    const absC = Math.abs(compOut);
+    if (absC > this.lpEnv) this.lpEnv = absC;
+    else this.lpEnv += (absC - this.lpEnv) * (dt / 0.05);
+    let finalGain = 1.0;
+    if (this.lpEnv > this.ceiling) finalGain = this.ceiling / this.lpEnv;
+    return compOut * finalGain;
+  }
+}
+
+// ─── Main processor ───────────────────────────────────────────────────────
+const MAX_EVENTS = 256;
+const EVENT_SIZE = 6;
+
+class Psy4EngineV3Processor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.sr = sampleRate;
+
+    // Voice pools (drums only — melodic go to psysynth)
+    this.kickPool = [];
+    this.hatPool = [];
+    this.snarePool = [];
+    this.clapPool = [];
+    this.percPool = [];
+    this.shakerPool = [];
+    this.fxPool = [];
+    for (let i = 0; i < 3; i++) this.kickPool.push(new KickVoice());
+    for (let i = 0; i < 3; i++) this.hatPool.push(new HatVoice());
+    for (let i = 0; i < 2; i++) this.snarePool.push(new SnareVoice());
+    for (let i = 0; i < 2; i++) this.clapPool.push(new ClapVoice());
+    for (let i = 0; i < 3; i++) this.percPool.push(new PercVoice());
+    for (let i = 0; i < 2; i++) this.shakerPool.push(new ShakerVoice());
+    for (let i = 0; i < 2; i++) this.fxPool.push(new FXVoice());
+
+    this.masterL = new MasterChain(sampleRate);
+    this.masterR = new MasterChain(sampleRate);
+
+    // Event ring buffer
+    this.eventBuffer = new Float64Array(MAX_EVENTS * EVENT_SIZE);
+    this.eventReadIdx = 0;
+    this.eventCount = 0;
+
+    this.activeVoiceCount = 0;
+    this.currentFrame = 0;
+    this.statsCounter = 0;
+    this.lastProcessMs = 0;
+
+    this.port.onmessage = (e) => this.handleMessage(e.data);
+  }
+
+  handleMessage(msg) {
+    switch (msg.type) {
+      case 'scheduleEvent': {
+        if (this.eventCount < MAX_EVENTS) {
+          const idx = (this.eventReadIdx + this.eventCount) % MAX_EVENTS;
+          const base = idx * EVENT_SIZE;
+          this.eventBuffer[base] = msg.at;
+          this.eventBuffer[base + 1] = msg.voiceId;
+          this.eventBuffer[base + 2] = msg.note;
+          this.eventBuffer[base + 3] = msg.vel;
+          this.eventBuffer[base + 4] = msg.dur;
+          this.eventBuffer[base + 5] = msg.param;
+          this.eventCount++;
+        }
+        break;
+      }
+      case 'stop': {
+        for (const v of [...this.kickPool, ...this.hatPool, ...this.snarePool, ...this.clapPool, ...this.percPool, ...this.shakerPool, ...this.fxPool]) v.active = false;
+        this.eventCount = 0;
+        break;
+      }
+    }
+  }
+
+  getFreeVoice(pool) {
+    for (const v of pool) if (!v.active) return v;
+    let oldest = pool[0];
+    for (const v of pool) if (v.t > oldest.t) oldest = v;
+    oldest.active = false;
+    return oldest;
+  }
+
+  process(inputs, outputs) {
+    const __start = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+    const output = outputs[0];
+    if (!output || output.length === 0) return true;
+    const L = output[0];
+    const R = output[1] || output[0];
+    const sr = this.sr;
+    const currentAudioTime = currentFrame / sr;
+
+    // Process due events
+    while (this.eventCount > 0) {
+      const idx = this.eventReadIdx;
+      const base = idx * EVENT_SIZE;
+      const eventTime = this.eventBuffer[base];
+      if (eventTime > currentAudioTime + 0.001) break;
+      const voiceId = this.eventBuffer[base + 1] | 0;
+      const note = this.eventBuffer[base + 2];
+      const vel = this.eventBuffer[base + 3];
+      const dur = this.eventBuffer[base + 4];
+      const param = this.eventBuffer[base + 5];
+
+      // Route to correct voice pool (drums only — melodic handled by main thread→psysynth)
+      switch (voiceId) {
+        case V_KICK: {
+          const v = this.getFreeVoice(this.kickPool);
+          v.trigger(eventTime, note, vel, dur, sr);
+          break;
+        }
+        case V_HAT: case V_HAT_OPEN: {
+          const v = this.getFreeVoice(this.hatPool);
+          v.trigger(eventTime, note, vel, dur, sr, voiceId === V_HAT_OPEN);
+          break;
+        }
+        case V_SNARE: {
+          const v = this.getFreeVoice(this.snarePool);
+          v.trigger(eventTime, note, vel, dur, sr);
+          break;
+        }
+        case V_CLAP: {
+          const v = this.getFreeVoice(this.clapPool);
+          v.trigger(eventTime, note, vel, dur, sr);
+          break;
+        }
+        case V_PERC: {
+          const v = this.getFreeVoice(this.percPool);
+          v.trigger(eventTime, note, vel, dur, sr);
+          break;
+        }
+        case V_SHAKER: {
+          const v = this.getFreeVoice(this.shakerPool);
+          v.trigger(eventTime, note, vel, dur, sr);
+          break;
+        }
+        case V_RISER: case V_IMPACT: case V_SWEEP: {
+          const v = this.getFreeVoice(this.fxPool);
+          v.trigger(voiceId, eventTime, dur, vel, sr);
+          break;
+        }
+        // Melodic voices (V_BASS, V_LEAD, V_ACID, V_PAD) are NOT played here —
+        // main thread routes them to psysynth via SynthBridge.
+      }
+
+      this.eventReadIdx = (idx + 1) % MAX_EVENTS;
+      this.eventCount--;
+    }
+
+    // Render all active voices
+    let activeCount = 0;
+    const allPools = [this.kickPool, this.hatPool, this.snarePool, this.clapPool, this.percPool, this.shakerPool, this.fxPool];
+    for (const pool of allPools) for (const v of pool) if (v.active) activeCount++;
+
+    for (let i = 0; i < L.length; i++) {
+      let mixL = 0, mixR = 0;
+      const sampleTime = currentAudioTime + i / sr;
+      for (const pool of allPools) {
+        for (const v of pool) {
+          if (v.active) {
+            const out = v.render(sampleTime, sr);
+            mixL += out[0];
+            mixR += out[1];
+          }
+        }
+      }
+      L[i] = this.masterL.process(mixL, sr);
+      R[i] = this.masterR.process(mixR, sr);
+    }
+    this.activeVoiceCount = activeCount;
+    this.currentFrame += L.length;
+
+    // Stats
+    this.statsCounter++;
+    if (this.statsCounter >= 685) {
+      this.statsCounter = 0;
+      if (__start > 0 && typeof performance !== 'undefined') {
+        this.lastProcessMs = performance.now() - __start;
+      }
+      this.port.postMessage({
+        type: 'stats',
+        playing: true,
+        step: 0,
+        activeVoices: this.activeVoiceCount,
+        eventCount: 0,
+        currentFrame: this.currentFrame,
+        cpuLoad: 0,
+        processMs: this.lastProcessMs,
+        voiceBudget: 17,
+      });
+    }
+
+    return true;
+  }
+}
+
+registerProcessor('psy4-engine-v3', Psy4EngineV3Processor);

@@ -13246,3 +13246,43 @@ Stage Summary:
 - bass משתנה כל 2 ברים (harmonic movement אמיתי)
 - arrangement מתקדם: INTRO→GROOVE→DROP→BREAKDOWN→REBUILD
 - 38 דגימות אמיתיות (23MB) נטענות ומנגנות
+
+---
+Task ID: rebuild-synth-not-wav
+Agent: main (Z.ai Code)
+Task: למה WAV ולא MIDI/Synth? בנה מחדש עם synthesis + MIDI export אמיתי
+
+Work Log:
+- מחקתי את מנוע ה-WAV samples (psy4-engine-v2.js)
+- בניתי מנוע חדש (psy4-engine-v3.js) — synth-based:
+  - DRUMS: KickVoice (sine + pitch env), HatVoice (noise + HP), SnareVoice (noise + tone),
+    ClapVoice (multi-burst noise), PercVoice (short tone), ShakerVoice (filtered noise), FXVoice (riser/impact/sweep)
+  - MASTER: DC blocker + glue compressor + limiter (מינימלי, נקי)
+  - אין WAV samples — הכל synth (tiny download)
+- MELODIC: bass/lead/acid/pad עוברים ל-psysynth אוטומטית (SynthBridge)
+  - psysynth: 20 patches, 6 banks, deterministic mulberry32, 21KB bundle
+  - auto-enabled (לא צריך toggle)
+- הוספתי MIDI export אמיתי:
+  - מבקש 8 ברים מה-composition worker
+  - ממיר events ל-MIDI format 0, 480 tpq, 1 track
+  - ערוצים: drums=ch9, bass=ch0, lead=ch1, acid=ch2, pad=ch3
+  - download כ-psy4-composition-{bpm}bpm-{timestamp}.mid
+- תוצאות נמדדות:
+  - peak משתנה: 0.06 → 0.00 → 0.00 → 0.29 → 0.57 → 0.00 (לא תקוע!)
+  - 0 clipping לאורך 30s
+  - kickCount עולה יציב (100→160)
+  - bar מתקדם (24→39)
+  - synthEventsRouted=123 → עולה
+  - synthVoicesActive=12 (psysynth פעיל)
+  - LUFS=-17.8 (תקין)
+  - 0 errors
+  - MIDI export: 140 notes, 145 BPM, format 0, 1176 bytes
+  - MIDI header verified: MThd, format 0, 1 track, 480 tpq
+
+Stage Summary:
+- מנוע synth-based (לא WAV): tiny download, infinite variation, לומד
+- psysynth מטפל ב-melodic (20 patches, deterministic)
+- drum synth מטפל ב-drums (kick/snare/hat/clap/perc/shaker)
+- MIDI export אמיתי של הקומפוזיציה (לא hardcoded 4 ברים)
+- אין יותר רעש תקוע — הכל משתנה
+- אין יותר 23MB download — הכל synth (21KB psysynth + קטן drum synth)
