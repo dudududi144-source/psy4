@@ -476,6 +476,40 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
         this.eventCount = 0;
         break;
       }
+      case 'renderVoice': {
+        // SynthesisMatcher requests a voice render for analysis.
+        // We render the drum voice offline (in-memory) and return the buffer.
+        const { voiceClass, duration } = msg;
+        const renderDur = duration || 0.5;
+        const numSamples = Math.floor(renderDur * this.sr);
+        const buffer = new Float32Array(numSamples);
+        // Map voiceClass to voice type
+        let pool, note = 36, vel = 0.8, dur = renderDur;
+        switch (voiceClass) {
+          case 'KickVoice': pool = this.kickPool; note = 36; break;
+          case 'HatVoice': pool = this.hatPool; note = 60; break;
+          case 'SnareVoice': pool = this.snarePool; note = 38; break;
+          case 'ClapVoice': pool = this.clapPool; note = 39; break;
+          case 'PercVoice': pool = this.percPool; note = 50; break;
+          case 'ShakerVoice': pool = this.shakerPool; note = 70; break;
+          default:
+            // Melodic voices (BassVoice/LeadVoice/etc.) — return noise (not synth here)
+            for (let i = 0; i < numSamples; i++) buffer[i] = (Math.random() * 2 - 1) * 0.1;
+            this.port.postMessage({ type: 'renderVoiceDone', buffer, voiceClass }, [buffer.buffer]);
+            return;
+        }
+        // Render drum voice
+        const v = this.getFreeVoice(pool);
+        v.trigger(0, note, vel, dur, this.sr);
+        for (let i = 0; i < numSamples; i++) {
+          const out = v.render(i / this.sr, this.sr);
+          buffer[i] = out[0];
+        }
+        v.active = false;
+        this.port.postMessage({ type: 'renderVoiceDone', buffer, voiceClass }, [buffer.buffer]);
+        break;
+      }
+      }
     }
   }
 

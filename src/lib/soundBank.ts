@@ -29,6 +29,11 @@ export class SoundBank {
   private entries: Map<string, SoundBankEntry> = new Map();
   private loaded = false;
 
+  constructor() {
+    // FIX: auto-load on construction so entries survive page reloads
+    this.load();
+  }
+
   private load(): void {
     if (this.loaded) return;
     try {
