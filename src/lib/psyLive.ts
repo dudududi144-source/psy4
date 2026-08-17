@@ -1094,6 +1094,88 @@ export class PsyLive {
     return this.synthBridge.getDiagnostics();
   }
 
+  // ── MIDI Input (live keyboard playing) ──
+  private midiAccess: any = null;
+  private midiActive = false;
+
+  /**
+   * Initialize WebMIDI for live keyboard input.
+   * Returns true if MIDI is available and enabled.
+   */
+  async enableMidiInput(): Promise<boolean> {
+    if (this.midiActive) return true;
+    if (typeof navigator === 'undefined' || !navigator.requestMIDIAccess) {
+      console.warn('[PSY4] WebMIDI not supported in this browser');
+      return false;
+    }
+    try {
+      this.midiAccess = await navigator.requestMIDIAccess();
+      this.midiActive = true;
+      // Listen to all MIDI inputs
+      for (const input of this.midiAccess.inputs.values()) {
+        input.onmidimessage = (e: any) => this.handleMidiMessage(e);
+      }
+      console.log('[PSY4] MIDI input enabled — connect a keyboard and play!');
+      return true;
+    } catch (err) {
+      console.warn('[PSY4] MIDI access denied:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Disable MIDI input.
+   */
+  disableMidiInput(): void {
+    if (!this.midiActive) return;
+    if (this.midiAccess) {
+      for (const input of this.midiAccess.inputs.values()) {
+        input.onmidimessage = null;
+      }
+    }
+    this.midiActive = false;
+    console.log('[PSY4] MIDI input disabled');
+  }
+
+  isMidiActive(): boolean {
+    return this.midiActive;
+  }
+
+  /**
+   * Handle incoming MIDI messages.
+   * Routes note on/off to psysynth via SynthBridge.
+   */
+  private handleMidiMessage(e: any): void {
+    const [status, data1, data2] = e.data;
+    const cmd = status & 0xf0;
+    const channel = status & 0x0f;
+    // Map MIDI channel to psysynth role (ch 0 → 'lead', 1 → 'bass', etc.)
+    const roleMap = ['lead', 'bass', 'pad', 'keys', 'arp', 'stab', 'pluck'];
+    const role = roleMap[channel] || 'lead';
+
+    if (cmd === 0x90 && data2 > 0) {
+      // Note on
+      const midiNote = data1;
+      const velocity = data2 / 127;
+      if (this.synthBridge && this.synthDeviceEnabled) {
+        this.synthBridge.playMidiNote(midiNote, velocity, role);
+      }
+    } else if (cmd === 0x80 || (cmd === 0x90 && data2 === 0)) {
+      // Note off
+      const midiNote = data1;
+      if (this.synthBridge && this.synthDeviceEnabled) {
+        this.synthBridge.releaseMidiNote(midiNote, role);
+      }
+    } else if (cmd === 0xB0) {
+      // CC (control change)
+      const cc = data1;
+      const value = data2 / 127;
+      if (this.synthBridge && this.synthDeviceEnabled) {
+        this.synthBridge.setParameterByCC(cc, value);
+      }
+    }
+  }
+
   // STAGE 2: Energy — now routes to CausalComposer (was: dead session.setEnergy)
   setEnergy(v: number): void {
     // STAGE 2: CausalComposer uses energy for velocity scaling + threshold bias

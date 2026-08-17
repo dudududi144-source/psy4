@@ -76,6 +76,7 @@ export default function Page() {
   const [showRadio, setShowRadio] = useState(false);
   const [synthOn, setSynthOn] = useState(false);
   const [synthDiag, setSynthDiag] = useState<any>(null);
+  const [midiOn, setMidiOn] = useState(false);
 
   // שלב 4.7: נתוני learning (עדכון כל 2s — לא כל 100ms)
   const [bankStats, setBankStats] = useState<BankStats>({ kick: 0, bass: 0, lead: 0, hat: 0, perc: 0 });
@@ -268,6 +269,32 @@ export default function Page() {
             {synthOn && synthDiag && synthDiag.eventsRoutedToSynth > 0 && (
               <span className="text-[9px] tabular-nums opacity-70">·{synthDiag.eventsRoutedToSynth}</span>
             )}
+          </button>
+
+          {/* MIDI input toggle (live keyboard playing) */}
+          <button
+            onClick={async () => {
+              const e = engineRef.current; if (!e) return;
+              if (e.isMidiActive()) {
+                e.disableMidiInput();
+                setMidiOn(false);
+              } else {
+                const ok = await e.enableMidiInput();
+                setMidiOn(ok);
+                if (!ok) alert('WebMIDI not available. Use Chrome/Edge with a MIDI keyboard connected.');
+              }
+            }}
+            disabled={!s.playing}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all disabled:opacity-30 hover:scale-105"
+            style={{
+              background: midiOn ? 'rgba(168,85,247,0.2)' : 'rgba(255,255,255,0.05)',
+              color: midiOn ? '#a855f7' : '#94a3b8',
+              border: midiOn ? '1px solid rgba(168,85,247,0.5)' : '1px solid rgba(255,255,255,0.1)',
+            }}
+            title="Toggle MIDI input — play with a hardware keyboard"
+          >
+            <Activity className="w-3.5 h-3.5" />
+            <span>MIDI {midiOn ? 'ON' : 'OFF'}</span>
           </button>
         </div>
 

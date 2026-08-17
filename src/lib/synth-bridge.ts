@@ -290,6 +290,50 @@ export class SynthBridge {
     }
   }
 
+  // ── MIDI Input (live keyboard playing) ──
+  // These methods enable real-time MIDI input from a hardware keyboard.
+  // Notes are routed to psysynth as NoteEvents with duration=-1 (HOLD mode).
+
+  /**
+   * Play a MIDI note (from keyboard). Routes to psysynth as a note-on with hold.
+   * @param midiNote 0..127
+   * @param velocity 0..1
+   * @param channel psysynth role: 'bass' | 'lead' | 'arp' | 'pad' | 'stab' | 'pluck' | 'keys' (default: 'lead')
+   */
+  playMidiNote(midiNote: number, velocity: number, channel: string = 'lead'): void {
+    if (!this.device || !this.loaded) return;
+    const now = this.opts.audioContext.currentTime + 0.003;  // 3ms safety margin
+    const ev: NoteEvent = {
+      type: 'note',
+      note: Math.max(0, Math.min(127, Math.round(midiNote))),
+      velocity: Math.max(0, Math.min(1, velocity)),
+      duration: -1,  // HOLD — sustains until releaseMidiNote
+      channel,
+      at: now,
+    };
+    this.host.publish(ev);
+    this.eventsRoutedToSynth++;
+  }
+
+  /**
+   * Release a MIDI note (from keyboard). Sends note-off to psysynth.
+   * @param midiNote 0..127
+   * @param channel same channel as playMidiNote
+   */
+  releaseMidiNote(midiNote: number, channel: string = 'lead'): void {
+    if (!this.device || !this.loaded) return;
+    const now = this.opts.audioContext.currentTime + 0.003;
+    const ev: NoteEvent = {
+      type: 'note',
+      note: Math.max(0, Math.min(127, Math.round(midiNote))),
+      velocity: 0,  // note-off
+      duration: 0,
+      channel,
+      at: now,
+    };
+    this.host.publish(ev);
+  }
+
   /**
    * Get diagnostics for UI display.
    */
