@@ -509,7 +509,6 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
         this.port.postMessage({ type: 'renderVoiceDone', buffer, voiceClass }, [buffer.buffer]);
         break;
       }
-      }
     }
   }
 
