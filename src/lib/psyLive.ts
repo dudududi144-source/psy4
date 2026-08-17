@@ -250,6 +250,15 @@ export class PsyLive {
   private master: GainNode | null = null;
   private workletVolumeGain: GainNode | null = null;  // Volume control for AudioWorklet output
   private sidechainDuck: GainNode | null = null;     // Sidechain duck gain (dips on kick)
+  // Multiband (native BiquadFilterNode — stable, not manual DSP)
+  private multibandLow: BiquadFilterNode | null = null;
+  private multibandMid1: BiquadFilterNode | null = null;
+  private multibandMid2: BiquadFilterNode | null = null;
+  private multibandHigh: BiquadFilterNode | null = null;
+  private multibandLowGain: GainNode | null = null;
+  private multibandMidGain: GainNode | null = null;
+  private multibandHighGain: GainNode | null = null;
+  private multibandSum: GainNode | null = null;
   private analyser: AnalyserNode | null = null;
   private delaySend: GainNode | null = null;
   private delay: DelayNode | null = null;
@@ -1534,9 +1543,8 @@ export class PsyLive {
         // Now: worklet → volumeGain → analyser → destination
         // (volumeGain controls master volume — the worklet's internal master
         // chain is separate and can't be controlled from main thread)
-        // v3: Route worklet output to analyser.
-        // Sidechain ducking is applied via a gain node between worklet and analyser.
-        // psysynth output also connects to this sidechainDuck (via engineBus).
+        // v3: Route worklet output through multiband + sidechain + volume to analyser.
+        // Multiband uses native BiquadFilterNode (stable, not manual DSP).
         const out = this.engineNode.outputNode;
         if (out && this.analyser) {
           out.disconnect();
@@ -1545,20 +1553,69 @@ export class PsyLive {
             this.sidechainDuck = this.ctx.createGain();
             this.sidechainDuck.gain.value = 1.0;
           }
+          // Create multiband compressor (3-band: low/mid/high)
+          // Uses native BiquadFilterNode for crossover — stable and correct.
+          if (!this.multibandLow) {
+            this.multibandLow = this.ctx.createBiquadFilter();
+            this.multibandLow.type = 'lowpass';
+            this.multibandLow.frequency.value = 200;
+            this.multibandLow.Q.value = 0.707;
+            this.multibandMid1 = this.ctx.createBiquadFilter();
+            this.multibandMid1.type = 'highpass';
+            this.multibandMid1.frequency.value = 200;
+            this.multibandMid1.Q.value = 0.707;
+            this.multibandMid2 = this.ctx.createBiquadFilter();
+            this.multibandMid2.type = 'lowpass';
+            this.multibandMid2.frequency.value = 2500;
+            this.multibandMid2.Q.value = 0.707;
+            this.multibandHigh = this.ctx.createBiquadFilter();
+            this.multibandHigh.type = 'highpass';
+            this.multibandHigh.frequency.value = 2500;
+            this.multibandHigh.Q.value = 0.707;
+            // Per-band gains (for multiband balance)
+            this.multibandLowGain = this.ctx.createGain();
+            this.multibandLowGain.gain.value = 1.2;   // boost lows
+            this.multibandMidGain = this.ctx.createGain();
+            this.multibandMidGain.gain.value = 1.0;    // neutral mids
+            this.multibandHighGain = this.ctx.createGain();
+            this.multibandHighGain.gain.value = 1.1;   // slight high boost
+            // Sum all bands
+            this.multibandSum = this.ctx.createGain();
+            this.multibandSum.gain.value = 1.0;
+            // Wire: input → 3 parallel paths → sum
+            // Low: input → multibandLow → multibandLowGain → sum
+            // Mid: input → multibandMid1 → multibandMid2 → multibandMidGain → sum
+            // High: input → multibandHigh → multibandHighGain → sum
+          }
           // Create a gain node for volume control if not exists
           if (!this.workletVolumeGain) {
             this.workletVolumeGain = this.ctx.createGain();
             this.workletVolumeGain.gain.value = 0.9;
           }
-          // Worklet → sidechainDuck → workletVolumeGain → analyser
+          // Worklet → sidechainDuck → multiband → workletVolumeGain → analyser
           out.connect(this.sidechainDuck);
-          this.sidechainDuck.connect(this.workletVolumeGain);
-          this.workletVolumeGain.connect(this.analyser);
           // psysynth (via engineBus) also → sidechainDuck (so it gets ducked too)
           if (this.engineBus) {
             this.engineBus.disconnect();
             this.engineBus.connect(this.sidechainDuck);
           }
+          // Multiband: sidechainDuck → 3 bands → sum → workletVolumeGain
+          this.sidechainDuck!.connect(this.multibandLow!);
+          this.sidechainDuck!.connect(this.multibandMid1!);
+          this.sidechainDuck!.connect(this.multibandHigh!);
+          // Low band
+          this.multibandLow!.connect(this.multibandLowGain!);
+          this.multibandLowGain!.connect(this.multibandSum!);
+          // Mid band (HP then LP)
+          this.multibandMid1!.connect(this.multibandMid2!);
+          this.multibandMid2!.connect(this.multibandMidGain!);
+          this.multibandMidGain!.connect(this.multibandSum!);
+          // High band
+          this.multibandHigh!.connect(this.multibandHighGain!);
+          this.multibandHighGain!.connect(this.multibandSum!);
+          // Sum → volume → analyser
+          this.multibandSum!.connect(this.workletVolumeGain!);
+          this.workletVolumeGain.connect(this.analyser);
         }
         // FIX: Disconnect the legacy master chain completely.
         // The legacy buses (kickBus, bassBus, etc.) are NOT used by the worklet.
@@ -1574,7 +1631,8 @@ export class PsyLive {
         if (this.master) this.master.disconnect();
         if (this.safetyLimiter) this.safetyLimiter.disconnect();
         // Reconnect analyser to destination (clean path)
-        this.analyser!.disconnect();
+        // NOTE: Don't disconnect analyser — it would break the workletVolumeGain → analyser connection.
+        // Just connect analyser → destination (duplicate connections are fine in Web Audio).
         this.analyser!.connect(this.ctx.destination);
         // Set default world params
         this.engineNode.setWorld({
