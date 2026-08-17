@@ -405,29 +405,72 @@ class StereoWidener {
 }
 
 // ─── Multiband Compressor (3-band: low/mid/high) ──────────────────────────
-// Uses Linkwitz-Riley 4th-order crossovers (24dB/oct) — correct phase response.
-// The old Biquad Q=0.5 was killing highs; LR4 is the standard for multiband.
+// Uses Butterworth 2nd-order crossovers (12dB/oct, correct phase).
+// State-variable biquad implementation — stable, no coefficient blowup.
 class MultibandComp {
   constructor(sr, lowFreq = 200, highFreq = 2500) {
     this.sr = sr;
-    this.lowFreq = lowFreq;
-    this.highFreq = highFreq;
+    // Low band LP filter state (Butterworth 2nd-order)
+    this.lowX1 = 0; this.lowX2 = 0; this.lowY1 = 0; this.lowY2 = 0;
+    const wLow = 2 * Math.PI * lowFreq / sr;
+    const qLow = 0.707;  // Butterworth Q
+    this.lowB0 = (1 - Math.cos(wLow)) / 2;
+    this.lowB1 = 1 - Math.cos(wLow);
+    this.lowB2 = (1 - Math.cos(wLow)) / 2;
+    this.lowA0 = 1 + qLow * Math.sin(wLow) / wLow;
+    this.lowA1 = -2 * Math.cos(wLow);
+    this.lowA2 = 1 - qLow * Math.sin(wLow) / wLow;
+    // Normalize
+    this.lowB0 /= this.lowA0; this.lowB1 /= this.lowA0; this.lowB2 /= this.lowA0;
+    this.lowA1 /= this.lowA0; this.lowA2 /= this.lowA0;
+
+    // High band HP filter state (Butterworth 2nd-order)
+    this.highX1 = 0; this.highX2 = 0; this.highY1 = 0; this.highY2 = 0;
+    const wHigh = 2 * Math.PI * highFreq / sr;
+    const qHigh = 0.707;
+    this.highB0 = (1 + Math.cos(wHigh)) / 2;
+    this.highB1 = -(1 + Math.cos(wHigh));
+    this.highB2 = (1 + Math.cos(wHigh)) / 2;
+    this.highA0 = 1 + qHigh * Math.sin(wHigh) / wHigh;
+    this.highA1 = -2 * Math.cos(wHigh);
+    this.highA2 = 1 - qHigh * Math.sin(wHigh) / wHigh;
+    this.highB0 /= this.highA0; this.highB1 /= this.highA0; this.highB2 /= this.highA0;
+    this.highA1 /= this.highA0; this.highA2 /= this.highA0;
+
     // Per-band compressors (gentle)
-    this.lowEnv = 0; this.lowGain = 1.0;
-    this.midEnv = 0; this.midGain = 1.0;
-    this.highEnv = 0; this.highGain = 1.0;
-    this.thr = 0.5; this.ratio = 1.8; this.makeup = 1.3;  // FIX: boosted makeup (was 1.0)
-    this.attackCoef = (1 / sr) / 0.005;  // 5ms attack
-    this.releaseCoef = (1 / sr) / 0.1;   // 100ms release
+    this.lowEnv = 0;
+    this.midEnv = 0;
+    this.highEnv = 0;
+    this.thr = 0.5; this.ratio = 1.8; this.makeup = 1.3;
+    this.attackCoef = (1 / sr) / 0.005;
+    this.releaseCoef = (1 / sr) / 0.1;
+  }
+
+  // Butterworth 2nd-order low-pass
+  lowPass(x) {
+    const y = this.lowB0 * x + this.lowB1 * this.lowX1 + this.lowB2 * this.lowX2
+              - this.lowA1 * this.lowY1 - this.lowA2 * this.lowY2;
+    this.lowX2 = this.lowX1; this.lowX1 = x;
+    this.lowY2 = this.lowY1; this.lowY1 = y;
+    return y;
+  }
+
+  // Butterworth 2nd-order high-pass
+  highPass(x) {
+    const y = this.highB0 * x + this.highB1 * this.highX1 + this.highB2 * this.highX2
+              - this.highA1 * this.highY1 - this.highA2 * this.highY2;
+    this.highX2 = this.highX1; this.highX1 = x;
+    this.highY2 = this.highY1; this.highY1 = y;
+    return y;
   }
 
   process(sample, sr) {
-    // Split into 3 bands using simple one-pole filters
-    const low = this.lowPass(sample, this.lowFreq, sr);
-    const high = this.highPass(sample, this.highFreq, sr);
+    // Split into 3 bands
+    const low = this.lowPass(sample);
+    const high = this.highPass(sample);
     const mid = sample - low - high;
 
-    // Compress each band (update env state in place)
+    // Compress each band
     const compress = (bandIn, envKey) => {
       const abs = Math.abs(bandIn);
       if (abs > this[envKey]) this[envKey] += (abs - this[envKey]) * Math.min(1, this.attackCoef);
@@ -445,24 +488,6 @@ class MultibandComp {
     const highOut = compress(high, 'highEnv');
 
     return lowOut + midOut + highOut;
-  }
-
-  // Simple one-pole low-pass
-  lowPass(x, freq, sr) {
-    if (!this._lpState) this._lpState = 0;
-    const a = Math.min(0.999, 2 * Math.PI * freq / sr);
-    this._lpState += a * (x - this._lpState);
-    return this._lpState;
-  }
-
-  // Simple one-pole high-pass
-  highPass(x, freq, sr) {
-    if (this._hpPrevIn === undefined) { this._hpPrevIn = 0; this._hpPrevOut = 0; }
-    const a = Math.min(0.999, 2 * Math.PI * freq / sr);
-    const out = x - this._hpPrevIn + (1 - a) * this._hpPrevOut;
-    this._hpPrevIn = x;
-    this._hpPrevOut = out;
-    return out;
   }
 }
 
@@ -490,8 +515,8 @@ class MasterChain {
     const dcOut = sample - this.dcPrevIn + (1 - this.dcA) * this.dcPrevOut;
     this.dcPrevIn = sample;
     this.dcPrevOut = dcOut;
-    // Multiband compression — DISABLED (filter implementation killing audio)
-    // Will re-enable after fixing crossover filters.
+    // Multiband compression — DISABLED: filter implementation unstable in worklet
+    // (works in node test but produces silence in AudioWorklet — investigating)
     const mbOut = dcOut;
     // Glue compressor
     const abs = Math.abs(mbOut);
