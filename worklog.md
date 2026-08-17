@@ -13162,3 +13162,35 @@ Stage Summary:
 - STYLE_GRAMMARS עכשיו דטרמיניסטי (mulberry32(12345) במקום Math.random)
 - Factory Reset + seed=NNN מאפשר התחלה נקייה לחלוטין
 - אודיו בריא: peak=0.524, LUFS=-7.7, 0 clipping, spectrum מלא
+
+---
+Task ID: fix-terrible-noise-15-20s
+Agent: main (Z.ai Code)
+Task: טפל ברעש הנוראי שקופץ בין 15-20 שניות ותקוע
+
+Work Log:
+- בדיקה מעמיקה: מצאתי ש-first 10 samples תקועים ב-0.517 (DC offset ענקי!)
+- DC bin = 255 (saturated)
+- גיליתי: אין DC blocker ב-master chain
+- גיליתי: FXVoice amp היה Math.max(0.5, amp) — מינימום 0.5, חזק מדי
+- גיליתי: Riser/Impact/Sweep היו חזקים מדי (env *4, *2.0, *2.5)
+- הרעש נוראי נוצר ב-bar 15 (25 שניות) כשה-riser נורה לפני DROP_START ב-bar 16
+- תיקנתי psy4-engine.js:
+  1. הוספתי DC blocker (one-pole HP at 20Hz) בתחילת master chain
+  2. FXVoice amp: Math.max(0.5, amp) → Math.min(0.3, Math.max(0.1, amp))
+  3. Riser: env *0.6 → *0.25, saturation *4 → *1.5, drive 2.0 → 1.2
+  4. Impact: sub 0.9 → 0.6, crack 0.5 → 0.3, saturation 2.0 → 1.3
+  5. Sweep: env 0.5 → 0.25, saturation *2.5 → *1.5, drive 1.8 → 1.2
+- אימתתי:
+  - first 10 samples: 0.517 → 0.14 (לא תקוע!)
+  - DC offset: 0.517 → -0.068 (תקין)
+  - peak: 0.652, 0 clipping
+  - sustainedRatio: 0.265 (נורמלי לפסיטראנס)
+  - LUFS: -11.9 (תקין, לא חם מדי)
+  - bar 15-16: עובר חלק, אין רעש תקוע
+
+Stage Summary:
+- הרעש הנוראי נפתר: DC blocker + הורדת FX volume
+- first samples עברו מ-0.517 (תקוע) ל-0.14 (נורמלי)
+- 0 clipping, LUFS תקין
+- ה-riser/impact/sweep עכשיו ברמה סבירה (לא חזקים פי 4 מהשאר)

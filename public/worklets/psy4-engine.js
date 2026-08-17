@@ -1461,7 +1461,9 @@ class FXVoice {
     this.type = type;
     this.t = 0;
     this.dur = dur || 0.3;
-    this.amp = Math.max(0.5, amp || 0.5);  // FIX: was 0.2 default. FX need to be audible.
+    // FIX: was Math.max(0.5, amp || 0.5) — minimum 0.5 too loud for FX.
+    // Now max 0.3 so riser/impact/sweep don't dominate the mix.
+    this.amp = Math.min(0.3, Math.max(0.1, amp || 0.3));
     this.phase = 0;
     this.noise.reset();
     this.filter.reset();
@@ -1480,58 +1482,60 @@ class FXVoice {
     switch (this.type) {
       case V_RISER: {
         // Riser = noise through filter that opens up + amplitude rise
-        // FIX: louder, more dramatic build, longer filter sweep
+        // FIX: was too loud (*4 saturation *0.6 amp). Reduced to prevent
+        // the "terrible stuck noise" the user reported at 15-20s (bar 15 = riser).
         // Learned params: riserStartCutoff, riserEndCutoff, riserResonance, riserDrive
         const lp = this.lp || {};
-        const startCutoff = lp.riserStartCutoff || 100;
-        const endCutoff = lp.riserEndCutoff || 10000;
-        const resonance = lp.riserResonance || 0.3;
-        const drive = lp.riserDrive || 2.0;
+        const startCutoff = lp.riserStartCutoff || 200;
+        const endCutoff = lp.riserEndCutoff || 8000;
+        const resonance = lp.riserResonance || 0.2;
+        const drive = lp.riserDrive || 1.2;
         const n = this.noise.process();
-        // Filter opens over the duration — FIX: exponential curve, wider range
+        // Filter opens over the duration
         const cutoff = startCutoff + Math.pow(t / this.dur, 1.5) * (endCutoff - startCutoff);
         const filtered = this.filter.process(n, cutoff, resonance, drive, sr);
-        // Amplitude rises exponentially — FIX: steeper curve, louder
-        const env = Math.pow(t / this.dur, 3) * 0.6;
-        sample = fastTanh(filtered * env * 4);  // FIX: was *3 — more saturation
+        // Amplitude rises gently — FIX: was *3 env, now *1.5
+        const env = Math.pow(t / this.dur, 2) * 0.25;
+        sample = fastTanh(filtered * env * 1.5);  // FIX: was *4 — way too loud
         break;
       }
       case V_IMPACT: {
         // Impact = sub sine boom + noise burst (two layers)
+        // FIX: reduced levels to prevent clipping/distortion
         // Learned params: impactSubFreq, impactSubDecay, impactNoiseDecay
         const lp = this.lp || {};
-        const subFreqStart = lp.impactSubFreq || 150;
-        const subDecay = lp.impactSubDecay || 0.12;
-        const noiseDecay = lp.impactNoiseDecay || 0.04;
-        // Sub boom: sine from subFreqStart to 40Hz with exp decay — FIX: louder, deeper
+        const subFreqStart = lp.impactSubFreq || 120;
+        const subDecay = lp.impactSubDecay || 0.15;
+        const noiseDecay = lp.impactNoiseDecay || 0.05;
+        // Sub boom: sine from subFreqStart to 40Hz with exp decay
         const f = subFreqStart * Math.exp(-t / subDecay) + 40;
         this.phase += 2 * Math.PI * f * dt;
-        const subEnv = Math.exp(-t / 0.25);
-        const sub = Math.sin(this.phase) * subEnv * 0.9;  // FIX: was 0.7 — louder
-        // Noise burst: short percussive crack — FIX: louder, longer
+        const subEnv = Math.exp(-t / 0.3);
+        const sub = Math.sin(this.phase) * subEnv * 0.6;  // FIX: was 0.9
+        // Noise burst: short percussive crack
         const n = this.noise.process();
         const noiseEnv = Math.exp(-t / noiseDecay);
-        const crack = n * noiseEnv * 0.5;  // FIX: was 0.3 — louder
+        const crack = n * noiseEnv * 0.3;  // FIX: was 0.5
         sample = sub + crack;
-        sample = fastTanh(sample * 2.0);  // FIX: was 1.5 — more saturation = punchier
+        sample = fastTanh(sample * 1.3);  // FIX: was 2.0
         break;
       }
       case V_SWEEP: {
         // Sweep = filtered noise with filter moving + amplitude curve
+        // FIX: reduced levels
         // Learned params: sweepStartCutoff, sweepEndCutoff, sweepResonance, sweepDrive
         const lp = this.lp || {};
-        const startCutoff = lp.sweepStartCutoff || 6000;
-        const endCutoff = lp.sweepEndCutoff || 500;
-        const resonance = lp.sweepResonance || 0.4;
-        const drive = lp.sweepDrive || 1.8;
-        // FIX: louder, more dramatic filter movement
+        const startCutoff = lp.sweepStartCutoff || 5000;
+        const endCutoff = lp.sweepEndCutoff || 400;
+        const resonance = lp.sweepResonance || 0.25;
+        const drive = lp.sweepDrive || 1.2;
         const n = this.noise.process();
         const sweepPos = t / this.dur;
-        // Filter sweeps from high to low (downward) — FIX: clearer direction
+        // Filter sweeps from high to low (downward)
         const cutoff = startCutoff - Math.pow(sweepPos, 1.5) * (startCutoff - endCutoff);
         const filtered = this.filter.process(n, cutoff, resonance, drive, sr);
-        const env = Math.sin(Math.PI * sweepPos) * 0.5;  // FIX: was 0.2 — louder
-        sample = fastTanh(filtered * env * 2.5);  // FIX: add saturation
+        const env = Math.sin(Math.PI * sweepPos) * 0.25;  // FIX: was 0.5
+        sample = fastTanh(filtered * env * 1.5);  // FIX: was *2.5
         break;
       }
       case V_ZAP: {
@@ -2049,16 +2053,31 @@ class MasterChain {
   process(sample, sr) {
     const dt = 1 / sr;
 
-    // Lazy-init EQ + multiband (need sr)
+    // Lazy-init EQ + multiband + DC blocker (need sr)
     if (!this._srInit) {
       this.lsA = Math.min(0.999, 2 * Math.PI * 120 / sr);
       this.mb = new MultibandComp(sr);
+      // FIX: DC blocker — one-pole high-pass at 20Hz removes DC offset + sub-rumble
+      // This prevents the "terrible stuck noise" caused by DC accumulation from kick/bass voices.
+      // Without this, DC bin saturates at 255 and sub-bass clips.
+      this.dcA = Math.min(0.999, 2 * Math.PI * 20 / sr);
+      this.dcPrevIn = 0;
+      this.dcPrevOut = 0;
       this._srInit = true;
     }
 
+    // ── 0. DC BLOCKER (one-pole HP at 20Hz) ──
+    // FIX: removes DC offset + sub-rumble that accumulates from kick/bass.
+    // Without this, the analyser shows DC=255 (saturated) and the audio
+    // sounds like "stuck noise" — a constant low-frequency rumble.
+    const dcOut = sample - this.dcPrevIn + (1 - this.dcA) * this.dcPrevOut;
+    this.dcPrevIn = sample;
+    this.dcPrevOut = dcOut;
+    let dcBlocked = dcOut;
+
     // ── 1. EQ: Low shelf (+2dB warmth) ──
-    this.lsState += this.lsA * (sample - this.lsState);
-    let eqOut = sample + 0.259 * this.lsState;
+    this.lsState += this.lsA * (dcBlocked - this.lsState);
+    let eqOut = dcBlocked + 0.259 * this.lsState;
 
     // ── 2. MULTIBAND COMPRESSION ──
     // DISABLED: Biquad crossover with Q=0.5 was killing high frequencies.
