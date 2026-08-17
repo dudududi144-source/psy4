@@ -368,7 +368,7 @@ export interface Composition {
 }
 
 // ─── Chord progressions per scale type (for real harmony) ──────────────────
-const CHORD_PROGRESSIONS: Record<string, number[][]> = {
+const CHORD_PROGRESSIONS: Record<string, [number, number, number][][]> = {
   // Each progression = array of chords, each chord = [root_degree, third_offset, fifth_offset]
   // In scale degrees (0=root, 1=2nd, 2=3rd, etc.)
   'Minor': [
@@ -476,7 +476,7 @@ export function getNextRhythmVariation(currentIdx: number): number {
   return (currentIdx + 1) % RHYTHM_VARIATIONS.kickPatterns.length;
 }
 
-export function getRhythmPattern(type: 'kick' | 'bass' | 'hat', idx: number): number[] {
+export function getRhythmPattern(type: 'kick' | 'bass' | 'hat', idx: number): (number | null)[] {
   const patterns = RHYTHM_VARIATIONS[`${type}Patterns` as keyof typeof RHYTHM_VARIATIONS];
   return [...patterns[idx % patterns.length]];
 }

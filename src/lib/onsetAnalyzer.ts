@@ -266,6 +266,11 @@ export class OnsetAnalyzer {
       lead: 0,
       hat: 0,
       perc: 0,
+      acid: 0,
+      pad: 0,
+      clap: 0,
+      shaker: 0,
+      texture: 0,
     };
 
     // KICK: sub דומיננטי + sharp transient + low centroid
@@ -336,6 +341,11 @@ export class OnsetAnalyzer {
       lead: this.ringBuffer.get('lead')!.length,
       hat: this.ringBuffer.get('hat')!.length,
       perc: this.ringBuffer.get('perc')!.length,
+      acid: this.ringBuffer.get('acid')?.length ?? 0,
+      pad: this.ringBuffer.get('pad')?.length ?? 0,
+      clap: this.ringBuffer.get('clap')?.length ?? 0,
+      shaker: this.ringBuffer.get('shaker')?.length ?? 0,
+      texture: this.ringBuffer.get('texture')?.length ?? 0,
     };
   }
 

@@ -30,6 +30,9 @@ export interface EngineStats {
   currentFrame: number;
   cpuLoad: number;
   sampleUsage?: Record<string, number>; // which samples actually played (name → hit count)
+  // FIX B8: additional fields used by psyLive.ts (were missing, masked by ignoreBuildErrors)
+  processMs?: number;      // alias for cpuLoad (process() time in ms)
+  voiceBudget?: number;   // max voices budget
 }
 
 export interface WorldParams {
@@ -135,6 +138,20 @@ export class Psy4EngineNode {
     return this.node;
   }
 
+  /**
+   * FIX B8: Public accessor for the underlying AudioWorkletNode.
+   * Was: private (psyLive accessed .node directly, masked by ignoreBuildErrors).
+   * Needed for direct port.postMessage and port.addEventListener in psyLive.
+   */
+  get workletNode(): AudioWorkletNode | null {
+    return this.node;
+  }
+
+  /** Convenience: post a message to the worklet's port (null-safe). */
+  postToWorklet(msg: any): void {
+    this.node?.port.postMessage(msg);
+  }
+
   /** Set stats callback for transport state updates. */
   onStats(cb: (stats: EngineStats) => void) {
     this.statsCallback = cb;
@@ -186,8 +203,8 @@ export class Psy4EngineNode {
     let totalBytes = 0;
     const transferables: ArrayBuffer[] = [];
     for (const s of samples) {
-      totalBytes += s.data.buffer.byteLength;
-      transferables.push(s.data.buffer);
+      totalBytes += (s.data.buffer as ArrayBuffer).byteLength;
+      transferables.push(s.data.buffer as ArrayBuffer);
     }
     this.node.port.postMessage({ type: 'loadSamples', samples }, transferables);
     console.log(`[PSY4] Transferred ${samples.length} samples to worklet (${totalBytes} bytes)`);

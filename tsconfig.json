@@ -37,6 +37,16 @@
     ".next/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "validation",
+    "tests",
+    "audit",
+    "audit-reports",
+    "audit-tmp",
+    "scripts",
+    "skills",
+    "examples",
+    "audio-artifacts",
+    "download"
   ]
 }

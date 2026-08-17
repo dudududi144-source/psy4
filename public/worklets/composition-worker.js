@@ -232,6 +232,21 @@ const SCALE_INTERVALS = {
   'harmonicMinor': [0, 2, 3, 5, 7, 8, 11],
 };
 
+// FIX B3: scale-aware root candidates — returns scale degrees as valid roots
+// (keeps the scale harmonically valid when root changes).
+// Psytrance typically modulates to i (0), iv (5), v (7) — all are scale degrees.
+function getScaleRoots(styleName) {
+  // Resolve styleName → scaleName via STYLE_GRAMMARS (defined below; safe at runtime
+  // because getScaleRoots is only called from composeBar, which runs post-load).
+  let scaleName = 'phrygian-dominant';
+  if (typeof STYLE_GRAMMARS !== 'undefined') {
+    const g = STYLE_GRAMMARS[styleName] || STYLE_GRAMMARS.FULL_ON;
+    scaleName = g.scaleName;
+  }
+  const scale = SCALE_INTERVALS[scaleName] || SCALE_INTERVALS['phrygian-dominant'];
+  return scale;
+}
+
 function genMotifIntervals(rng, scaleName) {
   const scale = SCALE_INTERVALS[scaleName] || SCALE_INTERVALS['phrygian-dominant'];
   const intervals = [0];  // start on root
@@ -291,28 +306,32 @@ const STYLE_GRAMMARS = {
 // Regenerate grammar patterns for variety. Called every 32 bars so the
 // musical structure evolves over time instead of being fixed for the
 // entire session. (User feedback: "אותו מבנה קבוע" — same fixed structure.)
-function regenerateGrammar(styleName) {
+function regenerateGrammar(styleName, rng) {
   const g = STYLE_GRAMMARS[styleName] || STYLE_GRAMMARS.FULL_ON;
-  g.motifIntervals = genMotifIntervals(Math.random, g.scaleName);
-  g.motifSteps = genMotifSteps(Math.random);
+  // ADR-003: use seeded rng (passed from CausalComposerWorker) for determinism
+  const rand = rng || Math.random;
+  g.motifIntervals = genMotifIntervals(rand, g.scaleName);
+  g.motifSteps = genMotifSteps(rand);
   const density = styleName === 'FULL_ON' ? 0.7 : styleName === 'DARK' ? 0.35 : styleName === 'ACID' ? 0.4 : 0.5;
-  g.bassPattern = genBassPattern(Math.random, density);
+  g.bassPattern = genBassPattern(rand, density);
 }
 
 // Phase 6.3: Per-phrase variation — slightly mutates the grammar patterns
 // every 4 bars for continuous evolution without full regeneration.
 // This keeps the musical identity but adds subtle variation per phrase.
-function varyGrammar(styleName) {
+function varyGrammar(styleName, rng) {
   const g = STYLE_GRAMMARS[styleName] || STYLE_GRAMMARS.FULL_ON;
+  // ADR-003: use seeded rng (passed from CausalComposerWorker) for determinism
+  const rand = rng || Math.random;
   // Slightly shift motif intervals (±2 semitones on one note)
   if (g.motifIntervals && g.motifIntervals.length > 0) {
-    const idx = Math.floor(Math.random() * g.motifIntervals.length);
-    g.motifIntervals[idx] += (Math.random() - 0.5) * 4;
+    const idx = Math.floor(rand() * g.motifIntervals.length);
+    g.motifIntervals[idx] += (rand() - 0.5) * 4;
   }
   // Slightly shift one bass pattern step
   if (g.bassPattern && g.bassPattern.length > 0) {
-    const idx = Math.floor(Math.random() * g.bassPattern.length);
-    g.bassPattern[idx] = Math.max(0, Math.min(1, g.bassPattern[idx] + (Math.random() - 0.5) * 0.3));
+    const idx = Math.floor(rand() * g.bassPattern.length);
+    g.bassPattern[idx] = Math.max(0, Math.min(1, g.bassPattern[idx] + (rand() - 0.5) * 0.3));
   }
 }
 
@@ -384,19 +403,21 @@ class CausalComposerWorker {
     onBarAdvance(this.state, bar);
     // Regenerate grammar every 32 bars for musical variety.
     if (bar > 0 && bar % 32 === 0) {
-      regenerateGrammar(this.userStyle);
+      regenerateGrammar(this.userStyle, this.rng);
     }
     // Phase 7.2: Change root note every 64 bars (full arrangement cycle)
     // Picks a compatible root from the current scale for harmonic variety
+    // ADR-003: uses seeded rng for determinism
     if (bar > 0 && bar % 64 === 0) {
-      const compatibleRoots = [0, 2, 3, 5, 7, 8, 10]; // minor-compatible roots
-      const newRoot = compatibleRoots[Math.floor(Math.random() * compatibleRoots.length)];
+      // FIX B3: scale-aware roots (was hardcoded minor-compatible [0,2,3,5,7,8,10])
+      const scaleRoots = getScaleRoots(this.userStyle);
+      const newRoot = scaleRoots[Math.floor(this.rng() * scaleRoots.length)];
       this.opts.rootPc = newRoot;
       console.log(`[PSY4] Phase 7.2: Root note changed to ${newRoot} at bar ${bar}`);
     }
     // Phase 6.3: Per-phrase variation — slight mutation every 4 bars
     if (bar > 0 && bar % 4 === 0) {
-      varyGrammar(this.userStyle);
+      varyGrammar(this.userStyle, this.rng);
     }
     // Phase 6.1: Phrase planning — get energy/density for this bar
     const phrase = this.getPhraseEnergy(bar);
@@ -902,9 +923,9 @@ class CausalComposerWorker {
     const phrasePos = bar % 8;
     const bassChannel = grammar.acidBass ? 'acid' : 'bass';
     let bassOffsets = [0];
-    if (phrasePos >= 2) bassOffsets = [0, Math.floor(Math.random() * 5) + 2];
-    if (phrasePos >= 4) bassOffsets = [0, Math.floor(Math.random() * 7) + 3, Math.floor(Math.random() * 5) + 7];
-    if (phrasePos >= 6) bassOffsets = [0, Math.floor(Math.random() * 7) + 3, Math.floor(Math.random() * 7) + 7];
+    if (phrasePos >= 2) bassOffsets = [0, Math.floor(this.rng() * 5) + 2];
+    if (phrasePos >= 4) bassOffsets = [0, Math.floor(this.rng() * 7) + 3, Math.floor(this.rng() * 5) + 7];
+    if (phrasePos >= 6) bassOffsets = [0, Math.floor(this.rng() * 7) + 3, Math.floor(this.rng() * 7) + 7];
 
     // ── שלב 3.2: אם יש היסטוגרמת מרווחי bass נלמדת, החלף את bassOffsets ──
     // במקום [0, 7, 12] קבוע, בחר 3 מרווחים מובילים מתוך ההיסטוגרמה

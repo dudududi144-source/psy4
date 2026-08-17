@@ -217,8 +217,8 @@ export class SoundBank {
    * סטטיסטיקות לכל ה-roles (ל-UI).
    */
   async getStats(): Promise<Record<OnsetRole, number>> {
-    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'hat', 'perc'];
-    const stats: Record<OnsetRole, number> = { kick: 0, bass: 0, lead: 0, hat: 0, perc: 0 };
+    const roles: OnsetRole[] = ['kick', 'bass', 'lead', 'hat', 'perc', 'acid', 'pad', 'clap', 'shaker', 'texture'];
+    const stats: Record<OnsetRole, number> = { kick: 0, bass: 0, lead: 0, hat: 0, perc: 0, acid: 0, pad: 0, clap: 0, shaker: 0, texture: 0 };
     for (const role of roles) {
       stats[role] = await this.count(role);
     }
@@ -256,7 +256,8 @@ export class SoundBank {
   /**
    * מחק entry לפי ID.
    */
-  private async delete(id: string): Promise<void> {
+  // FIX B8: was private — psyLive needs to call delete() directly (was masked by ignoreBuildErrors)
+  async delete(id: string): Promise<void> {
     return new Promise((resolve, reject) => {
       if (!this.db) { reject(new Error('DB not open')); return; }
       const tx = this.db.transaction([STORE_NAME], 'readwrite');

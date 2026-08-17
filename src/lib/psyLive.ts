@@ -338,6 +338,8 @@ export class PsyLive {
   // SYNTH DEVICE: psysynth integration (A/B toggle, default OFF)
   private synthBridge: SynthBridge | null = null;
   private synthDeviceEnabled = false;
+  // FIX B3: composition seed for determinism (same seed → same composition)
+  private compositionSeed = 42;
   private workerReady = false;
   private workerState: { tensionLevel: number; contrastDebt: number; anticipationLevel: number; grooveStability: number; expectationLevel: number } = { tensionLevel: 0, contrastDebt: 0, anticipationLevel: 0, grooveStability: 0, expectationLevel: 0 };
   private workerAction = 'NO_CHANGE';
@@ -677,9 +679,24 @@ export class PsyLive {
     this.compositionWorker.onmessage = (e) => this.handleWorkerMessage(e.data);
     // תיקון קריטי: טען savedBpm מ-localStorage ב-init (לא 145 hardcode)
     const initBpm = this.loadMemoryBpm();
+    // FIX B3 (determinism): seed must be FIXED for reproducible composition.
+    // Was: Math.random() — made every session non-deterministic.
+    // Now: read from URL ?seed=NNN, fallback to localStorage 'psy4.seed', fallback to 42.
+    // rootPc also fixed (was Math.random() * 12) — start on C (0).
+    const urlSeed = (() => {
+      try {
+        const m = new URLSearchParams(window.location.search).get('seed');
+        return m ? parseInt(m, 10) : null;
+      } catch { return null; }
+    })();
+    const storedSeed = (() => {
+      try { const s = localStorage.getItem('psy4.seed'); return s ? parseInt(s, 10) : null; } catch { return null; }
+    })();
+    const seed = urlSeed ?? storedSeed ?? 42;
+    this.compositionSeed = seed;
     this.compositionWorker.postMessage({
       type: 'init',
-      opts: { bpm: initBpm, rootPc: Math.floor(Math.random() * 12), scaleName: 'phrygian-dominant', seed: Math.floor(Math.random() * 1000000) },
+      opts: { bpm: initBpm, rootPc: 0, scaleName: 'phrygian-dominant', seed },
     });
     // Keep causalComposer reference for getUserControls (worker sends state back)
     this.causalComposer = null; // Will be replaced by worker state
@@ -1049,6 +1066,11 @@ export class PsyLive {
 
   isSynthDeviceEnabled(): boolean {
     return this.synthDeviceEnabled;
+  }
+
+  /** Returns the current composition seed (for UI display + reproducibility). */
+  getCompositionSeed(): number {
+    return this.compositionSeed;
   }
 
   getSynthBridgeDiagnostics(): SynthBridgeDiagnostics | null {
@@ -1504,8 +1526,8 @@ export class PsyLive {
         // PERF: wire stats callback to monitor audio-thread CPU load.
         this.engineNode.onStats((stats) => {
           this.lastWorkletStats = stats;
-          if (stats.processMs > 3.0) {
-            console.warn(`[PSY4] AUDIO THREAD OVER BUDGET: processMs=${stats.processMs.toFixed(2)}ms cpuLoad=${(stats.cpuLoad*100).toFixed(0)}% voices=${stats.activeVoices}/${stats.voiceBudget}`);
+          if ((stats.processMs ?? stats.cpuLoad * 10) > 3.0) {
+            console.warn(`[PSY4] AUDIO THREAD OVER BUDGET: processMs=${(stats.processMs ?? stats.cpuLoad * 10).toFixed(2)}ms cpuLoad=${(stats.cpuLoad*100).toFixed(0)}% voices=${stats.activeVoices}/${stats.voiceBudget ?? '?'}`);
           }
         });
         // FIX: Connect worklet output directly to destination.
@@ -1540,8 +1562,8 @@ export class PsyLive {
         if (this.master) this.master.disconnect();
         if (this.safetyLimiter) this.safetyLimiter.disconnect();
         // Reconnect analyser to destination (clean path)
-        this.analyser.disconnect();
-        this.analyser.connect(this.ctx.destination);
+        this.analyser!.disconnect();
+        this.analyser!.connect(this.ctx.destination);
         // Set default world params
         this.engineNode.setWorld({
           kickFundamental: 50, kickDecay: 0.15,
@@ -1622,7 +1644,7 @@ export class PsyLive {
       // The worker composes 3 bars ahead and returns events as a Float64Array (Transferable, zero-copy)
       // Also push transport to synth bridge if enabled (for tempo-locked LFOs)
       if (this.synthBridge && this.synthDeviceEnabled) {
-        this.synthBridge.publishTransport({ bpm: snap.bpm, beat: snap.beat, bar: snap.bar, revision: snap.revision });
+        this.synthBridge.publishTransport({ bpm: snap.bpm, beat: snap.beat, bar: snap.bar, revision: Math.floor(snap.timestamp * 1000) });
       }
       const currentBar = snap.bar;
       const beatDur = 60 / snap.bpm;
@@ -1652,7 +1674,7 @@ export class PsyLive {
           const flat = msg.events;
           const EVENT_SIZE = 6;
           // FIX: Check if events are in the future — don't schedule past events
-          const now = this.ctx.currentTime;
+          const now = this.ctx!.currentTime;
           let scheduled = 0;
           for (let i = 0; i < msg.count; i++) {
             const base = i * EVENT_SIZE;
@@ -1712,10 +1734,7 @@ export class PsyLive {
   }
 
   // SamplerBridge FULLY REMOVED — was dead code causing confusion and errors
-
-  get engineBusInput(): AudioNode | null {
-    return this.engineBus ?? null;
-  }
+  // (duplicate engineBusInput getter also removed — see line 496 for the canonical one)
 
   // ── Composition mode ──
   // F1.18: tempo changes go through Transport.setTempo()
@@ -2780,7 +2799,7 @@ export class PsyLive {
       : role === 'clap' ? 'ClapVoice'
       : role === 'shaker' ? 'ShakerVoice'
       : 'TextureVoice';
-    this.engineNode.node.port.postMessage({
+    this.engineNode!.workletNode!.port.postMessage({
       type: 'setVoiceRecipe',
       voiceClass,
       recipe: entry.voiceParams,
@@ -2840,7 +2859,7 @@ export class PsyLive {
       if (!this.engineNode) return;
       // שלח כל voiceClass ל-engine
       for (const [voiceClass, recipe] of Object.entries(params)) {
-        this.engineNode.node.port.postMessage({
+        this.engineNode!.workletNode!.port.postMessage({
           type: 'setVoiceRecipe',
           voiceClass,
           recipe,
@@ -2885,7 +2904,7 @@ export class PsyLive {
     // שלח ל-engine רק את החסרים (או את כולם אם אין כלום שמור)
     const toSend = json ? toAdd : defaults;
     for (const [voiceClass, recipe] of Object.entries(toSend)) {
-      this.engineNode.node.port.postMessage({
+      this.engineNode!.workletNode!.port.postMessage({
         type: 'setVoiceRecipe',
         voiceClass,
         recipe,
@@ -3016,15 +3035,15 @@ export class PsyLive {
       const params = await new Promise<Record<string, Record<string, number>>>((resolve) => {
         const handler = (e: MessageEvent) => {
           if (e.data.type === 'debugResult' && e.data.query === 'learnedVoiceParams') {
-            this.engineNode!.node.port.removeEventListener('message', handler);
+            this.engineNode!.workletNode!.port.removeEventListener('message', handler);
             resolve(e.data.data || {});
           }
         };
-        this.engineNode!.node.port.addEventListener('message', handler);
-        this.engineNode!.node.port.postMessage({ type: 'debug', query: 'learnedVoiceParams' });
+        this.engineNode!.workletNode!.port.addEventListener('message', handler);
+        this.engineNode!.workletNode!.port.postMessage({ type: 'debug', query: 'learnedVoiceParams' });
         // Timeout 2s
         setTimeout(() => {
-          this.engineNode!.node.port.removeEventListener('message', handler);
+          this.engineNode!.workletNode!.port.removeEventListener('message', handler);
           resolve({});
         }, 2000);
       });
@@ -3064,7 +3083,10 @@ export class PsyLive {
   // ── Phase 10.1: MIDI Export ──
   /**
    * מייצא את ה-patterns הנוכחיים כקובץ MIDI.
-   * יוצר MIDI format 0 עם kick + bass + lead patterns.
+   * יוצא MIDI format 0 עם kick + bass + lead patterns.
+   * FIX B6: rootPc was `this.opts?.rootPc ?? 0` but `opts` was never declared on
+   * the class (only ignoreBuildErrors: true masked this). Now reads from
+   * cachedInsights (set by learnTick from radio/scale detection), fallback 0.
    */
   exportMIDI(): void {
     if (!this.transport) {
@@ -3073,7 +3095,8 @@ export class PsyLive {
     }
     const snap = this.transport.snapshot();
     const bpm = snap.bpm;
-    const rootPc = this.opts?.rootPc ?? 0;
+    // FIX B6: read rootPc from cachedInsights (set by learnTick), not from undefined this.opts
+    const rootPc = this.cachedInsights?.scale?.root ?? 0;
 
     // Build MIDI bytes (format 0, 1 track)
     const ticksPerQuarter = 480;
@@ -3297,7 +3320,7 @@ export class PsyLive {
     if (this.engineNode) {
       const defaults = PsyLive.generateDefaultLearnedParams();
       for (const [voiceClass, recipe] of Object.entries(defaults)) {
-        this.engineNode.node.port.postMessage({
+        this.engineNode!.workletNode!.port.postMessage({
           type: 'setVoiceRecipe',
           voiceClass,
           recipe,

@@ -185,7 +185,7 @@ export class ReferenceAnalyzer {
       frames.push(energy / frameSize);
     }
     // Autocorrelation of energy envelope
-    const bestBPMs: number[] = [];
+    const bestBPMs: { bpm: number; correlation: number }[] = [];
     for (let lag = Math.floor(60 / 180 * sr / hopSize); lag < Math.floor(60 / 100 * sr / hopSize); lag++) {
       let correlation = 0;
       for (let i = 0; i + lag < frames.length; i++) {

@@ -89,7 +89,7 @@ export default function Page() {
     const w = window as any;
     if (w.__psyLive && w.__psyLive.audioContext && w.__psyLive.audioContext.state !== 'closed') {
       engineRef.current = w.__psyLive;
-      engineRef.current.onState = setS;
+      engineRef.current!.onState = setS;
       return;
     }
     if (w.__psyLive) delete w.__psyLive;

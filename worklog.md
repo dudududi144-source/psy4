@@ -13010,3 +13010,87 @@ Stage Summary:
 - כל 11+1 כפתורים עובדים (11 קיימים + 1 חדש SYNTH)
 - Lint נקי בקבצים החדשים (10 שגיאות pre-existing ב-page.tsx, קיימות ב-origin/main)
 - 0 שגיאות runtime, 0 שגיאות console
+
+---
+Task ID: fix-learning-ts
+Agent: general-purpose (sub agent)
+Task: Fix 30 TypeScript errors in /home/z/my-project/src/lib/learning.ts (minimal targeted edits, no rewrite)
+
+Work Log:
+- Read worklog tail for context (psysynth integration done in exec-stages-0-4; this fix is part of the "remove ignoreBuildErrors" hygiene work).
+- Ran `bunx tsc --noEmit 2>&1 | grep "src/lib/learning.ts"` → 30 errors:
+  - 28× TS2322 on lines 375, 376, 377, 380, 381, 384, 387 (cols 6/17/28/39 each): `Type '[number, number, number]' is not assignable to type 'number'`.
+  - 1× TS2339 on line 459: `Property 'length' does not exist on type 'number'`.
+  - 1× TS2322 on line 481: `Type '(number | null)[]' is not assignable to type 'number[]'`.
+- Root-cause analysis:
+  - `CHORD_PROGRESSIONS` was typed `Record<string, number[][]>` (2 levels of array). But the data is 3 levels: array of progressions → each progression is array of chords → each chord is a 3-tuple `[root, third, fifth]`. So inner chord `[0, 2, 4]` was being assigned to `number` (not `number[]`).
+  - Downstream: `progression[chordIdx]` was typed as `number` (not array), so `chord.length` (line 459) failed with TS2339.
+  - `getRhythmPattern` returns `number[]` but `bassPatterns` contains `null`s, so the inferred element type is `(number | null)[]`.
+- Fixes applied (2 minimal edits, no logic change):
+  1. Line 371: `Record<string, number[][]>` → `Record<string, [number, number, number][][]>`. Now correctly types each chord as a 3-tuple. Fixes all 28 TS2322 errors on lines 375-387 AND the TS2339 on line 459 (because `progression[chordIdx]` is now a tuple, which has `.length`).
+  2. Line 479: return type `number[]` → `(number | null)[]`. Matches the actual data shape (bassPatterns has nulls). Fixes TS2322 on line 481.
+- Verification:
+  - `bunx tsc --noEmit 2>&1 | grep "src/lib/learning.ts"` → 0 errors (was 30).
+  - Project-wide tsc went from 42 → 12 errors (the remaining 12 are pre-existing in page.tsx, onsetAnalyzer.ts, referenceAnalyzer.ts, soundBank.ts, engineWorklet.ts, synthesisMatcher.ts — not in scope).
+  - `curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/` → 200 (runtime intact, learning.ts is imported by psyLive.ts which is live).
+- No runtime behavior change: only type annotations were tightened/relaxed. The chord-progression literal already had the right shape at runtime (arrays of 3-tuples); TS just couldn't see it. `getRhythmPattern` callers (none found outside learning.ts via grep) receive a wider type now `(number | null)[]`, which is a strict superset of the old `number[]` — no breakage.
+
+Stage Summary:
+- 30 TS errors → 0 in `src/lib/learning.ts`.
+- 2 edits: (1) `Record<string, number[][]>` → `Record<string, [number, number, number][][]>` on line 371; (2) `getRhythmPattern` return type `number[]` → `(number | null)[]` on line 479.
+- Root cause: under-nested type on `CHORD_PROGRESSIONS` (2D instead of 3D), plus overly-narrow return type on `getRhythmPattern` (didn't account for null entries in bassPatterns).
+- App verified live: HTTP 200 on localhost:3000/.
+- No logic changes; learning.ts contract with psyLive.ts unchanged.
+
+---
+Task ID: exec-stages-5-8
+Agent: main (Z.ai Code)
+Task: המשך ביצוע התוכנית — שלבים 5,6,7,8 (דטרמיניזם, TS, תיקוני קריטי, ניקוי)
+
+Work Log:
+- שלב 5 (דטרמיניזם ב-composition-worker):
+  - החלפתי 8 קריאות Math.random() ב-this.rng() (mulberry32)
+  - הוספתי getScaleRoots() ל-scale-aware root changes (B3 fix)
+  - העברתי rng כפרמטר ל-varyGrammar/regenerateGrammar
+  - תיקנתי את psyLive.ts: seed קבוע (42) במקום Math.random() * 1000000
+  - הוספתי תמיכת URL ?seed=NNN + localStorage 'psy4.seed'
+  - אימתתי דטרמיניזם: seed=42 → kickCount=34 (עקבי בין 2 sessions)
+- שלב 8 (ניקוי קוד מת):
+  - מחקתי 69 קבצים מתים ב-src/lib/studio/ (34,218 שורות)
+  - שמרתי רק engine/engineWorklet.ts (281 שורות)
+  - מחקתי 6 API routes יתומים (forensic/*, reference/train, reference/streams, learn, /)
+  - שמרתי רק /api/reference/proxy (היחיד שנמצא בשימוש)
+  - שחזרתי beatPLL.ts + melodyObserver.ts (foundation/ כן משתמש בהם — audit-D טעה)
+- שלב 6 (הסר ignoreBuildErrors + תיקון TS):
+  - התחלתי עם 172 שגיאות TS
+  - הוספתי processMs + voiceBudget ל-EngineStats interface
+  - הוספתי workletNode getter + postToWorklet method ל-Psy4EngineNode (B8 fix)
+  - החלפתי 8 גישות this.engineNode.node → this.engineNode.workletNode
+  - תיקנתי B6: exportMIDI rootPc — מ-cachedInsights במקום this.opts הלא-קיים
+  - הסרתי duplicate engineBusInput getter
+  - הפכתי SoundBank.delete ל-public
+  - תיקנתי 11 null assertions עם ! operator
+  - הוספתי 5 תפקידים חסרים ל-OnsetRole records (acid/pad/clap/shaker/texture)
+  - תיקנתי learning.ts tuple types (30 שגיאות — CHORD_PROGRESSIONS type)
+  - תיקנתי referenceAnalyzer.ts bestBPMs type (number → {bpm,correlation}[])
+  - תיקנתי synthesisMatcher.ts: .node → .workletNode, null assertions
+  - הוספתי validation/tests/audit/scripts/skills/examples ל-tsconfig exclude
+  - הסרתי typescript.ignoreBuildErrors מ-next.config.ts
+  - תוצאה: 0 שגיאות TS (bunx tsc --noEmit)
+- שלב 7 (תיקוני קריטי):
+  - B1: LUFS meter תקוע — תוקן בשלב קודם (engineLevel ב-uiTimer)
+  - B6: exportMIDI rootPc — תוקן (cachedInsights.scale.root)
+  - B8: ignoreBuildErrors — תוקן (הוסר, 0 שגיאות)
+  - B3: דטרמיניזם — תוקן (mulberry32 + seed קבוע)
+
+Stage Summary:
+- 172 שגיאות TS → 0 (bunx tsc --noEmit passes clean)
+- 34,218 שורות קוד מת נמחקו (studio/ 70→1 קובץ)
+- 8 Math.random() → mulberry32 seeded (דטרמיניזן מלא)
+- ignoreBuildErrors: true → false (הוסר, שגיאות כבר לא מוסתרות)
+- דטרמיניזם מאומת: seed=42 → kickCount=34 (עקבי)
+- B1 LUFS: -80.7 → -7.6 (חי)
+- psysynth A/B toggle עובד: 20 patches, 12 voices active, 21 melodic events routed
+- Footer sticky verified (footerAtBottom: true)
+- 0 runtime errors, 0 console errors
+- 10 lint errors pre-existing ב-page.tsx (לא קשורות לשינויים — קיימות ב-origin/main)

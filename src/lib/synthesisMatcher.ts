@@ -139,11 +139,11 @@ export class SynthesisMatcher {
     triggerArgs: object,
   ): Promise<Float32Array> {
     return new Promise((resolve, reject) => {
-      if (!this.engineNode || !this.engineNode.node) {
+      if (!this.engineNode || !this.engineNode.workletNode) {
         reject(new Error('SynthesisMatcher: engine node not set'));
         return;
       }
-      const port = this.engineNode.node.port;
+      const port = this.engineNode.workletNode.port;
       const handler = (e: MessageEvent) => {
         const msg = e.data;
         if (msg.type !== 'renderVoiceDone') return;
@@ -194,8 +194,8 @@ export class SynthesisMatcher {
     const magnitudes = new Float32Array(numBins);
     for (let k = 0; k < numBins; k++) {
       let re = 0, im = 0;
-      const cosRow = this._cosTable;
-      const sinRow = this._sinTable;
+      const cosRow = this._cosTable!;
+      const sinRow = this._sinTable!;
       const offset = k * fftSize;
       for (let i = 0; i < fftSize; i++) {
         re += windowed[i] * cosRow[offset + i];
