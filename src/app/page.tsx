@@ -69,7 +69,7 @@ export default function Page() {
   const [streamId, setStreamId] = useState('spaceunicorn');
   const [vol, setVol] = useState(0.9);
   const [recording, setRecording] = useState(false);
-  const [radioVol, setRadioVol] = useState(0.5);
+  const [radioVol, setRadioVol] = useState(0.15);  // FIX: was 0.5 — too loud with engine
   const [style, setStyle] = useState<MusicalStyle>('FULL_ON');
   const [energy, setEnergy] = useState(0.5);
   const [tension, setTension] = useState(0.3);

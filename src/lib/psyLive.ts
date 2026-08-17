@@ -361,6 +361,7 @@ export class PsyLive {
   private toneDelay: any = null;
   private toneReverb: any = null;
   private toneOutput: GainNode | null = null;
+  private masterLimiter: DynamicsCompressorNode | null = null;
   private workerReady = false;
   private workerState: { tensionLevel: number; contrastDebt: number; anticipationLevel: number; grooveStability: number; expectationLevel: number } = { tensionLevel: 0, contrastDebt: 0, anticipationLevel: 0, grooveStability: 0, expectationLevel: 0 };
   private workerAction = 'NO_CHANGE';
@@ -1079,17 +1080,20 @@ export class PsyLive {
       const Tone = await import('tone');
       Tone.setContext(this.ctx!);
 
-      // Create professional effects chain
-      this.toneDistortion = new Tone.Distortion({ distortion: 0.15, wet: 0.3 });
+      // Create professional effects chain — WET SEND ONLY (parallel, not series)
+      // The dry signal goes through multiband → workletVolumeGain as before.
+      // Tone.js is a parallel send: sidechainDuck → Tone.js → workletVolumeGain
+      // with low wet levels so it adds ambiance, not doubles the signal.
+      this.toneDistortion = new Tone.Distortion({ distortion: 0.1, wet: 0.15 });
       this.toneDelay = new Tone.FeedbackDelay({
         delayTime: '8n.',
-        feedback: 0.35,
-        wet: 0.25,
+        feedback: 0.3,
+        wet: 0.15,
       });
       this.toneReverb = new Tone.Reverb({
-        decay: 3.5,
+        decay: 2.5,
         preDelay: 0.01,
-        wet: 0.2,
+        wet: 0.15,
       });
       await this.toneReverb.ready;
 
@@ -1097,27 +1101,21 @@ export class PsyLive {
       this.toneDistortion.connect(this.toneDelay);
       this.toneDelay.connect(this.toneReverb);
 
-      // FIX: Tone.js v15 — use .send() and .receive() for bridging, or use raw AudioNodes.
-      // Tone.js nodes expose their internal AudioNodes via ._internalInput / ._internalOutput
-      // But the safest way is to create a Tone.Gain as a bridge.
-      const toneInput = new Tone.Gain(1);
-      const toneOutput = new Tone.Gain(1);
-
-      // Bridge: Web Audio sidechainDuck → toneInput (Tone.Gain) → distortion
-      // Tone.Gain accepts Web Audio connections because it wraps an AudioNode
+      // Bridge input: sidechainDuck → Tone.js (parallel send)
+      const toneInput = new Tone.Gain(0.3);  // FIX: 30% send level (was 1.0 = doubling)
       this.sidechainDuck!.connect(toneInput.input);
       toneInput.connect(this.toneDistortion);
 
-      // reverb → toneOutput (Tone.Gain) → workletVolumeGain (Web Audio)
+      // Bridge output: reverb → workletVolumeGain (parallel return)
+      const toneOutput = new Tone.Gain(0.5);  // 50% return level
       this.toneReverb.connect(toneOutput);
-      // toneOutput's internal node → workletVolumeGain
       const toneOutputNode = (toneOutput as any)._internalOutput || (toneOutput as any).output;
       if (toneOutputNode) {
         toneOutputNode.connect(this.workletVolumeGain!);
       }
 
       this.toneFx = true;
-      console.log('[PSY4] Tone.js FX chain active: Distortion(15%) → Delay(dotted-8th) → Reverb(3.5s)');
+      console.log('[PSY4] Tone.js FX send active (parallel): Distortion(10%) → Delay(15%) → Reverb(15%)');
     } catch (err) {
       console.warn('[PSY4] Tone.js FX init failed (non-fatal):', err);
     }
@@ -1609,13 +1607,19 @@ export class PsyLive {
           forcedSectionSent = 'DROP';
         }
       }
-      // אנרגיה נמוכה מתמשכת (<0.30) — force BREAK ל-4 תיבות
+      // אנרגיה נמוכה מתמשכת (<0.30) — DON'T force BREAK (it kills the music)
+      // FIX: was forcing BREAK when radio energy is low, which strips all instruments = silence
+      // Now: just log it, don't force section change
       else if (sustainedRecent < 0.30 && sustainedOlder < 0.40) {
-        if (this.cachedUserControls.forcedSection !== 'BREAK') {
-          this.compositionWorker.postMessage({ type: 'controls', forcedSection: 'BREAK', bars: 4 });
-          console.log(`[PSY4] שלב 3.5 Radio→Worker: force BREAK (sustained low energy=${sustainedRecent.toFixed(2)})`);
-          forcedSectionSent = 'BREAK';
+        // Only force BREAK if energy is EXTREMELY low (radio basically off)
+        if (sustainedRecent < 0.05) {
+          if (this.cachedUserControls.forcedSection !== 'BREAK') {
+            this.compositionWorker.postMessage({ type: 'controls', forcedSection: 'BREAK', bars: 4 });
+            console.log(`[PSY4] שלב 3.5 Radio→Worker: force BREAK (radio near-silent energy=${sustainedRecent.toFixed(2)})`);
+            forcedSectionSent = 'BREAK';
+          }
         }
+        // Otherwise: just let the arrangement continue naturally
       }
     }
 
@@ -1729,14 +1733,14 @@ export class PsyLive {
             this.multibandHigh.Q.value = 0.707;
             // Per-band gains (for multiband balance)
             this.multibandLowGain = this.ctx.createGain();
-            this.multibandLowGain.gain.value = 0.8;   // FIX: was 1.5 — too hot with Tone.js, now 0.8
+            this.multibandLowGain.gain.value = 1.0;
             this.multibandMidGain = this.ctx.createGain();
-            this.multibandMidGain.gain.value = 0.7;    // FIX: was 1.2 — too hot with Tone.js, now 0.7
+            this.multibandMidGain.gain.value = 1.0;
             this.multibandHighGain = this.ctx.createGain();
-            this.multibandHighGain.gain.value = 0.6;   // FIX: was 1.3 — too hot with Tone.js, now 0.6
+            this.multibandHighGain.gain.value = 1.0;
             // Sum all bands
             this.multibandSum = this.ctx.createGain();
-            this.multibandSum.gain.value = 0.6;  // FIX: was 1.2 — too hot with Tone.js, now 0.6
+            this.multibandSum.gain.value = 1.0;
             // Wire: input → 3 parallel paths → sum
             // Low: input → multibandLow → multibandLowGain → sum
             // Mid: input → multibandMid1 → multibandMid2 → multibandMidGain → sum
@@ -1745,7 +1749,7 @@ export class PsyLive {
           // Create a gain node for volume control if not exists
           if (!this.workletVolumeGain) {
             this.workletVolumeGain = this.ctx.createGain();
-            this.workletVolumeGain.gain.value = 0.5;  // FIX: was 1.2 — too hot with Tone.js, now 0.5
+            this.workletVolumeGain.gain.value = 0.8;  // FIX: was 0.5 — too quiet, now 0.8 with limiter
           }
           // Worklet → sidechainDuck → multiband → workletVolumeGain → analyser
           out.connect(this.sidechainDuck);
@@ -1770,9 +1774,19 @@ export class PsyLive {
           // High band
           this.multibandHigh!.connect(this.multibandHighGain!);
           this.multibandHighGain!.connect(this.multibandSum!);
-          // Sum → volume → analyser
+          // Sum → volume → limiter → analyser
           this.multibandSum!.connect(this.workletVolumeGain!);
-          this.workletVolumeGain.connect(this.analyser);
+          // FIX: Add a DynamicsCompressor as brick-wall limiter (prevents clipping)
+          if (!this.masterLimiter) {
+            this.masterLimiter = this.ctx.createDynamicsCompressor();
+            this.masterLimiter.threshold.value = -1;  // -1dB threshold
+            this.masterLimiter.knee.value = 0;        // hard knee
+            this.masterLimiter.ratio.value = 20;       // 20:1 ratio (brick-wall)
+            this.masterLimiter.attack.value = 0.001;   // 1ms attack
+            this.masterLimiter.release.value = 0.05;   // 50ms release
+          }
+          this.workletVolumeGain.connect(this.masterLimiter);
+          this.masterLimiter.connect(this.analyser);
         }
         // FIX: Disconnect the legacy master chain completely.
         // The legacy buses (kickBus, bassBus, etc.) are NOT used by the worklet.
@@ -2034,7 +2048,7 @@ export class PsyLive {
       this.radioSource = this.ctx.createMediaElementSource(this.radioEl);
       if (!this.radioGain) {
         this.radioGain = this.ctx.createGain();
-        this.radioGain.gain.value = 0.5;
+        this.radioGain.gain.value = 0.15;  // FIX: was 0.5 — too loud, caused clipping when summed with engine
         this.radioAnalyser = this.ctx.createAnalyser();
         this.radioAnalyser.fftSize = 512;
         this.radioAnalyser.smoothingTimeConstant = 0.2;
