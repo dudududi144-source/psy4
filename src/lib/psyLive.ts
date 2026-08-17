@@ -476,7 +476,7 @@ export class PsyLive {
   // Scheduler — wake-up mechanism only (NOT a musical clock)
   // F1.18: setInterval wakes the scheduler; musical time comes from Transport
   private timer: ReturnType<typeof setInterval> | null = null;
-  private readonly lookahead = 100; // FIX: 100ms scheduler. 50ms was too frequent (20Hz object alloc).
+  private readonly lookahead = 50; // FIX: 50ms scheduler — was 100ms, too slow for continuous audio
   private readonly scheduleAheadTime = 3.0; // FIX: 3 seconds ahead = ~2 bars at 145 BPM. Huge buffer.
   private lastScheduledBeatIndex = -1; // dedup based on Transport beatIndex
 
@@ -906,14 +906,14 @@ export class PsyLive {
     const beatDur = 60 / snap.bpm;
     const barOriginAudioTime = this.ctx!.currentTime;
     this.lastWorkerComposeBar = -1;
-    // FIX: compose 5 bars ahead (was 4) for more lookahead
+    // FIX: compose 8 bars ahead for maximum buffer
     this.compositionWorker?.postMessage({
       type: 'compose',
       startBar: 0,
-      endBar: 6,
+      endBar: 9,
       barOriginAudioTime,
     });
-    this.lastWorkerComposeBar = 5;
+    this.lastWorkerComposeBar = 8;
   }
 
   stop(): void {
@@ -1105,23 +1105,24 @@ export class PsyLive {
       // Chain: distortion → delay → reverb (Tone.js internal)
       this.toneDistortion.connect(this.toneDelay);
       this.toneDelay.connect(this.toneReverb);
-      // FIX: Don't use toDestination() — it creates a separate output path.
-      // Instead, connect reverb output back to our workletVolumeGain (join the mix)
-      const toneOutput = (this.toneReverb as any).output || (this.toneReverb as any)._output;
-      if (toneOutput) {
-        toneOutput.connect(this.workletVolumeGain!);
-      }
 
-      // Bridge input: Web Audio → Tone.js
-      // FIX: Tone.js v15 nodes have ._internalInput or .input that are AudioNodes
-      const toneInput = (this.toneDistortion as any)._input
-        || (this.toneDistortion as any).input
-        || (this.toneDistortion as any)._internalInput;
-      if (toneInput) {
-        this.sidechainDuck!.connect(toneInput);
-      } else {
-        // Fallback: use Tone.connect (static method)
-        Tone.connect(this.sidechainDuck!, this.toneDistortion);
+      // FIX: Tone.js v15 — use .send() and .receive() for bridging, or use raw AudioNodes.
+      // Tone.js nodes expose their internal AudioNodes via ._internalInput / ._internalOutput
+      // But the safest way is to create a Tone.Gain as a bridge.
+      const toneInput = new Tone.Gain(1);
+      const toneOutput = new Tone.Gain(1);
+
+      // Bridge: Web Audio sidechainDuck → toneInput (Tone.Gain) → distortion
+      // Tone.Gain accepts Web Audio connections because it wraps an AudioNode
+      this.sidechainDuck!.connect(toneInput.input);
+      toneInput.connect(this.toneDistortion);
+
+      // reverb → toneOutput (Tone.Gain) → workletVolumeGain (Web Audio)
+      this.toneReverb.connect(toneOutput);
+      // toneOutput's internal node → workletVolumeGain
+      const toneOutputNode = (toneOutput as any)._internalOutput || (toneOutput as any).output;
+      if (toneOutputNode) {
+        toneOutputNode.connect(this.workletVolumeGain!);
       }
 
       this.toneFx = true;
@@ -1737,14 +1738,14 @@ export class PsyLive {
             this.multibandHigh.Q.value = 0.707;
             // Per-band gains (for multiband balance)
             this.multibandLowGain = this.ctx.createGain();
-            this.multibandLowGain.gain.value = 1.5;   // boost lows (was 1.2)
+            this.multibandLowGain.gain.value = 0.8;   // FIX: was 1.5 — too hot with Tone.js, now 0.8
             this.multibandMidGain = this.ctx.createGain();
-            this.multibandMidGain.gain.value = 1.2;    // boost mids (was 1.0)
+            this.multibandMidGain.gain.value = 0.7;    // FIX: was 1.2 — too hot with Tone.js, now 0.7
             this.multibandHighGain = this.ctx.createGain();
-            this.multibandHighGain.gain.value = 1.3;   // boost highs (was 1.1)
+            this.multibandHighGain.gain.value = 0.6;   // FIX: was 1.3 — too hot with Tone.js, now 0.6
             // Sum all bands
             this.multibandSum = this.ctx.createGain();
-            this.multibandSum.gain.value = 1.2;  // boost sum (was 1.0)
+            this.multibandSum.gain.value = 0.6;  // FIX: was 1.2 — too hot with Tone.js, now 0.6
             // Wire: input → 3 parallel paths → sum
             // Low: input → multibandLow → multibandLowGain → sum
             // Mid: input → multibandMid1 → multibandMid2 → multibandMidGain → sum
@@ -1753,7 +1754,7 @@ export class PsyLive {
           // Create a gain node for volume control if not exists
           if (!this.workletVolumeGain) {
             this.workletVolumeGain = this.ctx.createGain();
-            this.workletVolumeGain.gain.value = 1.2;  // boost master (was 0.9)
+            this.workletVolumeGain.gain.value = 0.5;  // FIX: was 1.2 — too hot with Tone.js, now 0.5
           }
           // Worklet → sidechainDuck → multiband → workletVolumeGain → analyser
           out.connect(this.sidechainDuck);
@@ -1883,7 +1884,7 @@ export class PsyLive {
       }
       const currentBar = snap.bar;
       const beatDur = 60 / snap.bpm;
-      const targetBar = currentBar + 5;  // FIX: was +3, now +5 for more lookahead
+      const targetBar = currentBar + 8;  // FIX: was +5, now +8 for maximum lookahead buffer
       // v2: compose range [lastWorkerComposeBar+1, targetBar+1)
       // barOriginAudioTime = audio time of bar 0 (when transport started)
       // = currentTime - currentBar * barDur
