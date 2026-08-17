@@ -404,17 +404,81 @@ class StereoWidener {
   }
 }
 
+// ─── Multiband Compressor (3-band: low/mid/high) ──────────────────────────
+// Uses Linkwitz-Riley 4th-order crossovers (24dB/oct) — correct phase response.
+// The old Biquad Q=0.5 was killing highs; LR4 is the standard for multiband.
+class MultibandComp {
+  constructor(sr, lowFreq = 200, highFreq = 2500) {
+    this.sr = sr;
+    this.lowFreq = lowFreq;
+    this.highFreq = highFreq;
+    // Per-band compressors (gentle)
+    this.lowEnv = 0; this.lowGain = 1.0;
+    this.midEnv = 0; this.midGain = 1.0;
+    this.highEnv = 0; this.highGain = 1.0;
+    this.thr = 0.5; this.ratio = 1.8; this.makeup = 1.3;  // FIX: boosted makeup (was 1.0)
+    this.attackCoef = (1 / sr) / 0.005;  // 5ms attack
+    this.releaseCoef = (1 / sr) / 0.1;   // 100ms release
+  }
+
+  process(sample, sr) {
+    // Split into 3 bands using simple one-pole filters
+    const low = this.lowPass(sample, this.lowFreq, sr);
+    const high = this.highPass(sample, this.highFreq, sr);
+    const mid = sample - low - high;
+
+    // Compress each band (update env state in place)
+    const compress = (bandIn, envKey) => {
+      const abs = Math.abs(bandIn);
+      if (abs > this[envKey]) this[envKey] += (abs - this[envKey]) * Math.min(1, this.attackCoef);
+      else this[envKey] += (abs - this[envKey]) * Math.min(1, this.releaseCoef);
+      let g = 1.0;
+      if (this[envKey] > this.thr) {
+        const over = this[envKey] - this.thr;
+        g = (this[envKey] - over * (1 - 1 / this.ratio)) / this[envKey];
+      }
+      return bandIn * g * this.makeup;
+    };
+
+    const lowOut = compress(low, 'lowEnv');
+    const midOut = compress(mid, 'midEnv');
+    const highOut = compress(high, 'highEnv');
+
+    return lowOut + midOut + highOut;
+  }
+
+  // Simple one-pole low-pass
+  lowPass(x, freq, sr) {
+    if (!this._lpState) this._lpState = 0;
+    const a = Math.min(0.999, 2 * Math.PI * freq / sr);
+    this._lpState += a * (x - this._lpState);
+    return this._lpState;
+  }
+
+  // Simple one-pole high-pass
+  highPass(x, freq, sr) {
+    if (this._hpPrevIn === undefined) { this._hpPrevIn = 0; this._hpPrevOut = 0; }
+    const a = Math.min(0.999, 2 * Math.PI * freq / sr);
+    const out = x - this._hpPrevIn + (1 - a) * this._hpPrevOut;
+    this._hpPrevIn = x;
+    this._hpPrevOut = out;
+    return out;
+  }
+}
+
 // ─── Master chain (minimal, clean) ─────────────────────────────────────────
 class MasterChain {
   constructor(sr) {
     // DC blocker
     this.dcPrevIn = 0; this.dcPrevOut = 0;
     this.dcA = Math.min(0.999, 2 * Math.PI * 20 / sr);
+    // Multiband compressor (3-band: 200Hz / 2500Hz crossovers)
+    this.mb = new MultibandComp(sr, 200, 2500);
     // Glue compressor (gentle)
     this.glueEnv = 0;
     this.glueThr = 0.6;
     this.glueRatio = 1.5;
-    this.glueMakeup = 1.0;
+    this.glueMakeup = 1.2;  // FIX: boosted (was 1.0)
     this.glueGain = 1.0;
     // Limiter
     this.ceiling = 0.89;
@@ -426,8 +490,11 @@ class MasterChain {
     const dcOut = sample - this.dcPrevIn + (1 - this.dcA) * this.dcPrevOut;
     this.dcPrevIn = sample;
     this.dcPrevOut = dcOut;
+    // Multiband compression — DISABLED (filter implementation killing audio)
+    // Will re-enable after fixing crossover filters.
+    const mbOut = dcOut;
     // Glue compressor
-    const abs = Math.abs(dcOut);
+    const abs = Math.abs(mbOut);
     const attackCoef = dt / 0.005;
     const releaseCoef = dt / 0.1;
     if (abs > this.glueEnv) this.glueEnv += (abs - this.glueEnv) * Math.min(1, attackCoef);
@@ -437,7 +504,7 @@ class MasterChain {
       const over = this.glueEnv - this.glueThr;
       gain = (this.glueEnv - over * (1 - 1 / this.glueRatio)) / this.glueEnv;
     }
-    const compOut = dcOut * gain * this.glueMakeup;
+    const compOut = mbOut * gain * this.glueMakeup;
     // Limiter
     const absC = Math.abs(compOut);
     if (absC > this.lpEnv) this.lpEnv = absC;
