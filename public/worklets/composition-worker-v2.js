@@ -42,24 +42,34 @@ const SCALES = {
   dorian: [0, 2, 3, 5, 7, 9, 10],
 };
 
-// ─── Arrangement sections (64-bar cycle) ───────────────────────────────────
-// Bar 0-7:   INTRO (kick + bass only)
-// Bar 8-15:  GROOVE (add hats + shaker + perc)
-// Bar 16-23: DROP (add lead + acid — maximum energy)
-// Bar 24-27: BREAKDOWN (strip to kick + pad)
-// Bar 28-31: REBUILD (add hats + lead back)
-// Bar 32-63: VARIATION (repeat with changes)
+// ─── Arrangement sections (64-bar cycle with VARIATION per cycle) ──────────
+// FIX: Each 64-bar cycle sounds DIFFERENT — cycle 0 is standard, cycle 1+ varies.
+// This prevents the "stuck loop" feeling.
 function getSection(bar) {
   const p = bar % 64;
-  if (p < 8) return 'INTRO';
-  if (p < 16) return 'GROOVE';
-  if (p < 24) return 'DROP';
-  if (p < 28) return 'BREAKDOWN';
-  if (p < 32) return 'REBUILD';
-  if (p < 40) return 'DROP';
-  if (p < 44) return 'BREAKDOWN';
-  if (p < 52) return 'REBUILD';
-  if (p < 60) return 'DROP';
+  const cycle = Math.floor(bar / 64);
+  // Cycle 0: standard arrangement
+  if (cycle === 0) {
+    if (p < 8) return 'INTRO';
+    if (p < 16) return 'GROOVE';
+    if (p < 24) return 'DROP';
+    if (p < 28) return 'BREAKDOWN';
+    if (p < 32) return 'REBUILD';
+    if (p < 40) return 'DROP';
+    if (p < 44) return 'BREAKDOWN';
+    if (p < 52) return 'REBUILD';
+    if (p < 60) return 'DROP';
+    return 'OUTRO';
+  }
+  // Cycle 1+: VARIATION — different order, different energy
+  // Start with DROP (skip intro), longer breaks, more energy
+  if (p < 4) return 'DROP';          // jump straight to drop
+  if (p < 8) return 'BREAKDOWN';     // quick break
+  if (p < 24) return 'DROP';         // long drop
+  if (p < 32) return 'BREAKDOWN';    // long breakdown (pad-heavy)
+  if (p < 48) return 'REBUILD';     // long rebuild with acid
+  if (p < 56) return 'DROP';         // final drop
+  if (p < 60) return 'BREAKDOWN';
   return 'OUTRO';
 }
 
@@ -107,20 +117,24 @@ class CompositionWorkerV2 {
     const events = [];
     const beatDur = 60 / this.bpm;
     const stepDur = beatDur / 4; // 16th notes
-    // FIX: barStart = barOriginAudioTime + bar * 4 * beatDur
-    // barOriginAudioTime is the audio time of bar 0 (transport start).
-    // For events to play NOW, bar must be close to current bar being composed.
     const barStart = barOriginAudioTime + bar * 4 * beatDur;
     const section = getSection(bar);
     const velScale = 0.7 + this.userEnergy * 0.3;
 
+    // FIX: Root note CHANGES every 64 bars (per cycle) for harmonic variety
+    // Cycle 0: rootPc (default), Cycle 1: +5 (fourth), Cycle 2: +7 (fifth), Cycle 3: +3 (minor third)
+    const cycle = Math.floor(bar / 64);
+    const rootShifts = [0, 5, 7, 3, 10, 2];  // I, IV, V, iii, vi, ii
+    const cycleRootShift = rootShifts[cycle % rootShifts.length];
+    const effectiveRootPc = (this.rootPc + cycleRootShift) % 12;
+
     // Bass root (moves every 2 bars)
     const shiftIdx = Math.floor(bar / 2) % BASS_ROOT_SHIFTS.length;
-    const bassRoot = this.rootPc + 33 + BASS_ROOT_SHIFTS[shiftIdx]; // MIDI 33 = C1
+    const bassRoot = effectiveRootPc + 33 + BASS_ROOT_SHIFTS[shiftIdx]; // MIDI 33 = C1
     const subRoot = bassRoot - 12; // sub octave below
 
     // Lead root (octave above bass)
-    const leadRoot = this.rootPc + 60 + BASS_ROOT_SHIFTS[shiftIdx];
+    const leadRoot = effectiveRootPc + 60 + BASS_ROOT_SHIFTS[shiftIdx];
 
     // ── KICK: 4-on-the-floor (always) ──
     for (let beat = 0; beat < 4; beat++) {
@@ -267,7 +281,7 @@ class CompositionWorkerV2 {
         events.push({
           at: barStart,
           voiceId: V_PAD,
-          note: this.rootPc + 48 + interval,
+          note: effectiveRootPc + 48 + interval,
           vel: Math.min(1, 0.3 * velScale),
           dur: 4 * beatDur,
           param: 0,

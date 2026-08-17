@@ -1662,14 +1662,14 @@ export class PsyLive {
             this.multibandHigh.Q.value = 0.707;
             // Per-band gains (for multiband balance)
             this.multibandLowGain = this.ctx.createGain();
-            this.multibandLowGain.gain.value = 1.2;   // boost lows
+            this.multibandLowGain.gain.value = 1.5;   // boost lows (was 1.2)
             this.multibandMidGain = this.ctx.createGain();
-            this.multibandMidGain.gain.value = 1.0;    // neutral mids
+            this.multibandMidGain.gain.value = 1.2;    // boost mids (was 1.0)
             this.multibandHighGain = this.ctx.createGain();
-            this.multibandHighGain.gain.value = 1.1;   // slight high boost
+            this.multibandHighGain.gain.value = 1.3;   // boost highs (was 1.1)
             // Sum all bands
             this.multibandSum = this.ctx.createGain();
-            this.multibandSum.gain.value = 1.0;
+            this.multibandSum.gain.value = 1.2;  // boost sum (was 1.0)
             // Wire: input → 3 parallel paths → sum
             // Low: input → multibandLow → multibandLowGain → sum
             // Mid: input → multibandMid1 → multibandMid2 → multibandMidGain → sum
@@ -1678,7 +1678,7 @@ export class PsyLive {
           // Create a gain node for volume control if not exists
           if (!this.workletVolumeGain) {
             this.workletVolumeGain = this.ctx.createGain();
-            this.workletVolumeGain.gain.value = 0.9;
+            this.workletVolumeGain.gain.value = 1.2;  // boost master (was 0.9)
           }
           // Worklet → sidechainDuck → multiband → workletVolumeGain → analyser
           out.connect(this.sidechainDuck);
@@ -2180,7 +2180,7 @@ export class PsyLive {
     const t = Math.max(at, this.ctx.currentTime);
     // Dip to 0.4 (60% depth) over 5ms, recover to 1.0 over 150ms
     this.sidechainDuck.gain.cancelScheduledValues(t);
-    this.sidechainDuck.gain.setValueAtTime(0.4, t);
+    this.sidechainDuck.gain.setValueAtTime(0.6, t);  // FIX: was 0.4 — too aggressive (60% depth is standard)
     this.sidechainDuck.gain.exponentialRampToValueAtTime(1.0, t + 0.15);
   }
 
