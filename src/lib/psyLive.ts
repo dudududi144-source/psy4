@@ -353,6 +353,12 @@ export class PsyLive {
   private synthDeviceEnabled = false;
   // FIX B3: composition seed for determinism (same seed → same composition)
   private compositionSeed = 42;
+  // Tone.js effects (professional reverb/delay/distortion)
+  private toneFx = false;
+  private toneDistortion: any = null;
+  private toneDelay: any = null;
+  private toneReverb: any = null;
+  private toneOutput: GainNode | null = null;
   private workerReady = false;
   private workerState: { tensionLevel: number; contrastDebt: number; anticipationLevel: number; grooveStability: number; expectationLevel: number } = { tensionLevel: 0, contrastDebt: 0, anticipationLevel: 0, grooveStability: 0, expectationLevel: 0 };
   private workerAction = 'NO_CHANGE';
@@ -1031,7 +1037,7 @@ export class PsyLive {
           outputNode: this.engineBus,
           delaySendNode: this.delaySend,
           reverbSendNode: this.reverbSend,
-          maxVoices: 12,           // leave headroom for PSY4's worklet voices
+          maxVoices: 12,
           seed: 1,
           patchManifestUrl: '/patches/manifest.json',
         });
@@ -1047,12 +1053,61 @@ export class PsyLive {
         section: 'groove',
       });
       console.log('[PSY4] Synth device ENABLED (psysynth) — melodic voices routed to both worklet + psysynth');
+
+      // TONE.JS INTEGRATION — add professional effects to master chain
+      await this.initToneFx();
+
       this.emit();
       return true;
     } catch (err) {
       console.error('[PSY4] enableSynthDevice failed:', err);
       this.synthDeviceEnabled = false;
       return false;
+    }
+  }
+
+  /**
+   * Initialize Tone.js effects chain — adds professional reverb, delay, distortion.
+   * Uses the existing AudioContext (Tone.setContext).
+   * This is the "fat fish" — Tone.js effects make everything sound richer.
+   */
+  private async initToneFx(): Promise<void> {
+    if (this.toneFx) return;
+    try {
+      const Tone = await import('tone');
+      Tone.setContext(this.ctx!);
+
+      // Create professional effects chain
+      this.toneDistortion = new Tone.Distortion({ distortion: 0.15, wet: 0.3 });
+      this.toneDelay = new Tone.FeedbackDelay({
+        delayTime: '8n.',
+        feedback: 0.35,
+        wet: 0.25,
+      });
+      this.toneReverb = new Tone.Reverb({
+        decay: 3.5,
+        preDelay: 0.01,
+        wet: 0.2,
+      });
+      await this.toneReverb.ready;
+
+      // FIX: Connect Tone.js chain internally, then bridge to Web Audio
+      // distortion → delay → reverb (Tone.js internal)
+      this.toneDistortion.connect(this.toneDelay);
+      this.toneDelay.connect(this.toneReverb);
+
+      // Bridge: use Tone.js to connect to destination directly
+      // (bypasses our master chain, but Tone.js has its own output level)
+      this.toneReverb.toDestination();
+
+      // Bridge input: connect Web Audio sidechainDuck → Tone.js distortion
+      // Use Tone.connect() which handles Web Audio ↔ Tone.js bridging
+      Tone.connect(this.sidechainDuck, this.toneDistortion);
+
+      this.toneFx = true;
+      console.log('[PSY4] Tone.js FX chain active: Distortion(15%) → Delay(dotted-8th) → Reverb(3.5s)');
+    } catch (err) {
+      console.warn('[PSY4] Tone.js FX init failed (non-fatal):', err);
     }
   }
 
