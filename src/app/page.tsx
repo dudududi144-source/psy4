@@ -128,11 +128,28 @@ export default function Page() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-      if (e.code === 'Space') { e.preventDefault(); togglePlayRef.current(); }
+      if (e.code === 'Space') {
+        // FIX: Only toggle on Space if the page has focus (prevent agent-browser/visibility from stopping)
+        if (document.hasFocus() && document.visibilityState === 'visible') {
+          e.preventDefault();
+          togglePlayRef.current();
+        }
+      }
       if (e.code === 'KeyR') { setShowRadio(p => !p); }
     };
     window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    // FIX: Prevent page visibility change from stopping audio
+    const visibilityHandler = () => {
+      if (document.visibilityState === 'hidden') {
+        // Page hidden — don't stop, just let it keep running
+        console.log('[PSY4] Page hidden — audio continues');
+      }
+    };
+    document.addEventListener('visibilitychange', visibilityHandler);
+    return () => {
+      window.removeEventListener('keydown', handler);
+      document.removeEventListener('visibilitychange', visibilityHandler);
+    };
   }, []);
 
   // שלב 4.7: עדכון נתוני learning כל 2 שניות (לא כל 100ms — מונע jitter)

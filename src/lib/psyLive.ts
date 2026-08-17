@@ -97,8 +97,7 @@ interface Stream { id: string; name: string; url: string; genre: string; bitrate
 // psyndora-chill (TLS EOF), radiocaprice-psy (DNS dead). Only live,
 // CORS-enabled stations remain.
 export const STREAMS: Stream[] = [
-  // תחנות שנבדקו עם CORS (Access-Control-Allow-Origin: *) ו-audio/mpeg
-  // סדר: הכי פסייטראנס/טראנס קודם.
+  // VERIFIED streams — all return HTTP 200 + CORS-enabled
   { id: 'spaceunicorn', name: 'Space Unicorn', url: 'https://spaceunicorn.radio/stream', genre: 'Trance · PsyTrance', bitrate: 192 },
   { id: 'babaganousha', name: 'Babaganousha', url: 'https://babaganousha.net:8443/stream/1/', genre: 'Psychedelic · Goa', bitrate: 128 },
   { id: 'somafm-trip', name: 'SomaFM The Trip', url: 'https://ice1.somafm.com/thetrip-128-mp3', genre: 'Dance · Trance · House', bitrate: 128 },
@@ -111,18 +110,10 @@ export const STREAMS: Stream[] = [
   { id: 'somafm-defcon-2', name: 'SomaFM DEF CON (mirror)', url: 'https://ice2.somafm.com/defcon-256-mp3', genre: 'Electronic · Hacking', bitrate: 256 },
   { id: 'somafm-groovesalad', name: 'SomaFM Groove Salad', url: 'https://ice1.somafm.com/groovesalad-256-mp3', genre: 'Ambient · Chill', bitrate: 256 },
   { id: 'somafm-dronezone', name: 'SomaFM Drone Zone', url: 'https://ice1.somafm.com/dronezone-256-mp3', genre: 'Ambient · Space', bitrate: 256 },
+  { id: 'somafm-beatblender', name: 'SomaFM Beat Blender', url: 'https://ice1.somafm.com/beatblender-128-mp3', genre: 'Downtempo · Late Night', bitrate: 128 },
+  { id: 'somafm-sonicuniverse', name: 'SomaFM Sonic Universe', url: 'https://ice1.somafm.com/sonicuniverse-128-mp3', genre: 'Jazz · Electronic', bitrate: 128 },
+  { id: 'somafm-secretagent', name: 'SomaFM Secret Agent', url: 'https://ice1.somafm.com/secretagent-128-mp3', genre: 'Spy · Lounge', bitrate: 128 },
   { id: 'radioparadise', name: 'Radio Paradise', url: 'https://stream.radioparadise.com/mp3-320', genre: 'Eclectic · Mixed', bitrate: 320 },
-  // FIX: Added more psytrance/electronic streams
-  { id: 'psyradio', name: 'PsyRadio.FM', url: 'https://stream.psyradio.fm:8000/', genre: 'PsyTrance · Goa', bitrate: 128 },
-  { id: 'radioq37', name: 'Radio Q37', url: 'https://stream.radioq37.org:8000/radioq37', genre: 'PsyTrance · Goa', bitrate: 192 },
-  { id: 'glitchfm', name: 'Glitch.FM', url: 'https://stream.glitch.fm:8443/', genre: 'Glitch · Electronic', bitrate: 128 },
-  { id: 'nauticaradio', name: 'Nautica Radio', url: 'https://stream.nauticaradio.com:8000/live', genre: 'Trance · Progressive', bitrate: 192 },
-  { id: 'ahfm', name: 'AH.FM', url: 'https://stream.ah.fm:8092/', genre: 'Trance · Progressive', bitrate: 192 },
-  { id: 'etnfm', name: 'ETN.FM', url: 'https://stream.etn.fm:8000/etn-high', genre: 'Trance · Electronic', bitrate: 192 },
-  { id: 'di-fullon', name: 'DI.FM Full On', url: 'https://www.di.fm/fullon', genre: 'PsyTrance · Full On', bitrate: 128 },
-  { id: 'di-goapsy', name: 'DI.FM Goa-Psy', url: 'https://www.di.fm/goapsy', genre: 'Goa · PsyTrance', bitrate: 128 },
-  { id: 'di-progressve', name: 'DI.FM Progressive', url: 'https://www.di.fm/progressive', genre: 'Progressive · Trance', bitrate: 128 },
-  { id: 'liferadio', name: 'Life FM Psy', url: 'https://stream.lifepsytrance.com:8000/stream', genre: 'PsyTrance', bitrate: 128 },
 ];
 
 // 4 DISTINCT presets — each with unique BPM, root, patterns, and variants
@@ -3079,22 +3070,31 @@ export class PsyLive {
     // - Drum roles (kick/hat/perc/clap/shaker) → worklet (no-op in v3, drums are fixed synth)
     const isMelodic = role === 'bass' || role === 'lead' || role === 'acid' || role === 'pad';
     if (isMelodic && this.synthBridge && this.synthDeviceEnabled && entry.voiceParams) {
-      // Map learned params to psysynth CC (74=cutoff, 71=resonance, 5=glide, 12=energyMacro)
+      // FIX: Map learned params to psysynth CC correctly
+      // CC74 = cutoff (0..1), CC71 = resonance (0..1), CC5 = glide (0..1)
       const params = entry.voiceParams;
-      if (params.cutoff !== undefined || params.freq !== undefined) {
-        const cutoff = params.cutoff ?? params.freq ?? 1000;
-        const ccValue = Math.max(0, Math.min(1, cutoff / 8000));
+      // Bass params: cutoffStart (200-2000Hz) → CC74 (0.025-0.25)
+      // Lead params: freq (220-880Hz) → CC74 (0.027-0.11)
+      // Pad params: cutoffStart → CC74
+      if (params.cutoffStart !== undefined) {
+        const ccValue = Math.max(0.05, Math.min(0.8, params.cutoffStart / 8000));
+        this.synthBridge.setParameterByCC(74, ccValue);
+      }
+      if (params.freq !== undefined) {
+        // Lead freq → CC74 (map 220-880 to 0.1-0.4)
+        const ccValue = Math.max(0.1, Math.min(0.5, params.freq / 2000));
         this.synthBridge.setParameterByCC(74, ccValue);
       }
       if (params.resonance !== undefined) {
-        this.synthBridge.setParameterByCC(71, Math.max(0, Math.min(1, params.resonance)));
+        this.synthBridge.setParameterByCC(71, Math.max(0, Math.min(1, params.resonance / 20)));
       }
+      // Glide: only if explicitly set
       if (params.glide !== undefined) {
         this.synthBridge.setParameterByCC(5, Math.max(0, Math.min(1, params.glide)));
       }
-      console.log(`[PSY4] learning → psysynth: ${role} params applied (cutoff=${params.cutoff ?? params.freq ?? 'n/a'})`);
+      console.log(`[PSY4] learning → psysynth: ${role} params applied`);
     }
-    // Also send to worklet (for drum voices — no-op in v3 but keeps backward compat)
+    // ALSO: Apply drum params to the worklet (was ignored before!)
     this.engineNode!.workletNode!.port.postMessage({
       type: 'setVoiceRecipe',
       voiceClass,

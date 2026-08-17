@@ -541,7 +541,7 @@ class MasterChain {
 }
 
 // ─── Main processor ───────────────────────────────────────────────────────
-const MAX_EVENTS = 256;
+const MAX_EVENTS = 512;  // FIX: was 256, too small for 8-bar lookahead (160+ events)
 const EVENT_SIZE = 6;
 
 class Psy4EngineV3Processor extends AudioWorkletProcessor {
@@ -603,6 +603,12 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
         this.eventCount = 0;
         break;
       }
+      case 'setVoiceRecipe': {
+        // FIX: Apply learned params to drum voices (was ignored before)
+        const { voiceClass, recipe } = msg;
+        this.applyRecipe(voiceClass, recipe);
+        break;
+      }
       case 'renderVoice': {
         // SynthesisMatcher requests a voice render for analysis.
         // We render the drum voice offline (in-memory) and return the buffer.
@@ -636,6 +642,43 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
         this.port.postMessage({ type: 'renderVoiceDone', buffer, voiceClass }, [buffer.buffer]);
         break;
       }
+    }
+  }
+
+  // FIX: Apply learned params to drum voices (was ignored before — learning was dead code)
+  applyRecipe(voiceClass, recipe) {
+    if (!recipe) return;
+    switch (voiceClass) {
+      case 'KickVoice':
+        // Apply kick params to all kick voices
+        for (const v of this.kickPool) {
+          if (recipe.fund !== undefined) v.fund = recipe.fund;
+          if (recipe.subDecay !== undefined) v.subDecay = recipe.subDecay;
+          if (recipe.saturation !== undefined) v.amp = Math.max(0.3, Math.min(1, recipe.saturation * 0.5));
+          if (recipe.startMult !== undefined) v.startMult = recipe.startMult;
+          if (recipe.pitchDecay !== undefined) v.pitchDecay = recipe.pitchDecay;
+        }
+        break;
+      case 'HatVoice':
+        for (const v of this.hatPool) {
+          if (recipe.hatDecay !== undefined) v.decay = recipe.hatDecay;
+        }
+        break;
+      case 'SnareVoice':
+        for (const v of this.snarePool) {
+          if (recipe.snareDecay !== undefined) v.decay = recipe.snareDecay;
+        }
+        break;
+      case 'ClapVoice':
+        for (const v of this.clapPool) {
+          if (recipe.clapDecay !== undefined) v.decay = recipe.clapDecay;
+        }
+        break;
+      case 'ShakerVoice':
+        for (const v of this.shakerPool) {
+          if (recipe.shakerDecay !== undefined) v.decay = recipe.shakerDecay;
+        }
+        break;
     }
   }
 
