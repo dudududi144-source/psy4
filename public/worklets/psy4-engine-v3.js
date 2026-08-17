@@ -661,6 +661,8 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
       const idx = this.eventReadIdx;
       const base = idx * EVENT_SIZE;
       const eventTime = this.eventBuffer[base];
+      // FIX: If event is in the past, play it NOW (don't skip — that causes silence)
+      // Only break if the event is in the FUTURE
       if (eventTime > currentAudioTime + 0.001) break;
       const voiceId = this.eventBuffer[base + 1] | 0;
       const note = this.eventBuffer[base + 2];

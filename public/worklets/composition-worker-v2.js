@@ -149,15 +149,17 @@ class CompositionWorkerV2 {
       });
     }
 
-    // ── BASS: rolling 16ths (always except BREAKDOWN) ──
-    if (section !== 'BREAKDOWN' && section !== 'OUTRO') {
+    // ── BASS: rolling 16ths (ALWAYS — even in BREAKDOWN for continuous groove) ──
+    // FIX: BREAKDOWN was killing the bass = silence. Now bass always plays.
+    // In BREAKDOWN, bass plays softer (vel * 0.5) for a "strip down" feel.
+    const bassVelMult = section === 'BREAKDOWN' ? 0.5 : 1.0;
+    if (section !== 'OUTRO') {
       const acidBass = (section === 'DROP' || section === 'REBUILD') && this.userStyle === 'ACID';
       for (let step = 0; step < 16; step++) {
-        // Offbeat pattern: strong on steps 0,4,8,12 (downbeats), lighter on others
         const isDownbeat = step % 4 === 0;
         const isAfterKick = step % 4 === 2;
         if (isDownbeat || isAfterKick || this.rng() < 0.3) {
-          const vel = isDownbeat ? 0.8 : (isAfterKick ? 0.6 : 0.4);
+          const vel = (isDownbeat ? 0.8 : (isAfterKick ? 0.6 : 0.4)) * bassVelMult;
           const noteOffset = this.scale[step % this.scale.length] - this.scale[0];
           events.push({
             at: barStart + step * stepDur,
@@ -171,8 +173,8 @@ class CompositionWorkerV2 {
       }
     }
 
-    // ── HATS: 8th notes (GROOVE, DROP, REBUILD) ──
-    if (section === 'GROOVE' || section === 'DROP' || section === 'REBUILD') {
+    // ── HATS: 8th notes (GROOVE, DROP, REBUILD — and soft in BREAKDOWN) ──
+    if (section === 'GROOVE' || section === 'DROP' || section === 'REBUILD' || section === 'BREAKDOWN') {
       for (let step = 0; step < 16; step += 2) {
         const isOpen = step % 8 === 6; // open hat on offbeat
         events.push({
@@ -186,8 +188,8 @@ class CompositionWorkerV2 {
       }
     }
 
-    // ── SHAKER: 16th notes (GROOVE, DROP, REBUILD) ──
-    if (section === 'GROOVE' || section === 'DROP' || section === 'REBUILD') {
+    // ── SHAKER: 16th notes (GROOVE, DROP, REBUILD — and soft in BREAKDOWN) ──
+    if (section === 'GROOVE' || section === 'DROP' || section === 'REBUILD' || section === 'BREAKDOWN') {
       for (let step = 0; step < 16; step++) {
         if (step % 2 === 1) { // offbeats
           events.push({

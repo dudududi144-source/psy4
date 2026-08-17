@@ -112,6 +112,17 @@ export const STREAMS: Stream[] = [
   { id: 'somafm-groovesalad', name: 'SomaFM Groove Salad', url: 'https://ice1.somafm.com/groovesalad-256-mp3', genre: 'Ambient · Chill', bitrate: 256 },
   { id: 'somafm-dronezone', name: 'SomaFM Drone Zone', url: 'https://ice1.somafm.com/dronezone-256-mp3', genre: 'Ambient · Space', bitrate: 256 },
   { id: 'radioparadise', name: 'Radio Paradise', url: 'https://stream.radioparadise.com/mp3-320', genre: 'Eclectic · Mixed', bitrate: 320 },
+  // FIX: Added more psytrance/electronic streams
+  { id: 'psyradio', name: 'PsyRadio.FM', url: 'https://stream.psyradio.fm:8000/', genre: 'PsyTrance · Goa', bitrate: 128 },
+  { id: 'radioq37', name: 'Radio Q37', url: 'https://stream.radioq37.org:8000/radioq37', genre: 'PsyTrance · Goa', bitrate: 192 },
+  { id: 'glitchfm', name: 'Glitch.FM', url: 'https://stream.glitch.fm:8443/', genre: 'Glitch · Electronic', bitrate: 128 },
+  { id: 'nauticaradio', name: 'Nautica Radio', url: 'https://stream.nauticaradio.com:8000/live', genre: 'Trance · Progressive', bitrate: 192 },
+  { id: 'ahfm', name: 'AH.FM', url: 'https://stream.ah.fm:8092/', genre: 'Trance · Progressive', bitrate: 192 },
+  { id: 'etnfm', name: 'ETN.FM', url: 'https://stream.etn.fm:8000/etn-high', genre: 'Trance · Electronic', bitrate: 192 },
+  { id: 'di-fullon', name: 'DI.FM Full On', url: 'https://www.di.fm/fullon', genre: 'PsyTrance · Full On', bitrate: 128 },
+  { id: 'di-goapsy', name: 'DI.FM Goa-Psy', url: 'https://www.di.fm/goapsy', genre: 'Goa · PsyTrance', bitrate: 128 },
+  { id: 'di-progressve', name: 'DI.FM Progressive', url: 'https://www.di.fm/progressive', genre: 'Progressive · Trance', bitrate: 128 },
+  { id: 'liferadio', name: 'Life FM Psy', url: 'https://stream.lifepsytrance.com:8000/stream', genre: 'PsyTrance', bitrate: 128 },
 ];
 
 // 4 DISTINCT presets — each with unique BPM, root, patterns, and variants
@@ -894,15 +905,15 @@ export class PsyLive {
     const snap = this.transport!.snapshot();
     const beatDur = 60 / snap.bpm;
     const barOriginAudioTime = this.ctx!.currentTime;
-    const currentBar = 0;
     this.lastWorkerComposeBar = -1;
+    // FIX: compose 5 bars ahead (was 4) for more lookahead
     this.compositionWorker?.postMessage({
       type: 'compose',
       startBar: 0,
-      endBar: 4,
+      endBar: 6,
       barOriginAudioTime,
     });
-    this.lastWorkerComposeBar = 3;
+    this.lastWorkerComposeBar = 5;
   }
 
   stop(): void {
@@ -1091,18 +1102,27 @@ export class PsyLive {
       });
       await this.toneReverb.ready;
 
-      // FIX: Connect Tone.js chain internally, then bridge to Web Audio
-      // distortion → delay → reverb (Tone.js internal)
+      // Chain: distortion → delay → reverb (Tone.js internal)
       this.toneDistortion.connect(this.toneDelay);
       this.toneDelay.connect(this.toneReverb);
+      // FIX: Don't use toDestination() — it creates a separate output path.
+      // Instead, connect reverb output back to our workletVolumeGain (join the mix)
+      const toneOutput = (this.toneReverb as any).output || (this.toneReverb as any)._output;
+      if (toneOutput) {
+        toneOutput.connect(this.workletVolumeGain!);
+      }
 
-      // Bridge: use Tone.js to connect to destination directly
-      // (bypasses our master chain, but Tone.js has its own output level)
-      this.toneReverb.toDestination();
-
-      // Bridge input: connect Web Audio sidechainDuck → Tone.js distortion
-      // Use Tone.connect() which handles Web Audio ↔ Tone.js bridging
-      Tone.connect(this.sidechainDuck, this.toneDistortion);
+      // Bridge input: Web Audio → Tone.js
+      // FIX: Tone.js v15 nodes have ._internalInput or .input that are AudioNodes
+      const toneInput = (this.toneDistortion as any)._input
+        || (this.toneDistortion as any).input
+        || (this.toneDistortion as any)._internalInput;
+      if (toneInput) {
+        this.sidechainDuck!.connect(toneInput);
+      } else {
+        // Fallback: use Tone.connect (static method)
+        Tone.connect(this.sidechainDuck!, this.toneDistortion);
+      }
 
       this.toneFx = true;
       console.log('[PSY4] Tone.js FX chain active: Distortion(15%) → Delay(dotted-8th) → Reverb(3.5s)');
@@ -1863,7 +1883,7 @@ export class PsyLive {
       }
       const currentBar = snap.bar;
       const beatDur = 60 / snap.bpm;
-      const targetBar = currentBar + 3;
+      const targetBar = currentBar + 5;  // FIX: was +3, now +5 for more lookahead
       // v2: compose range [lastWorkerComposeBar+1, targetBar+1)
       // barOriginAudioTime = audio time of bar 0 (when transport started)
       // = currentTime - currentBar * barDur
@@ -1903,8 +1923,11 @@ export class PsyLive {
             const velocity = flat[base + 3];
             const duration = flat[base + 4];
             const param = flat[base + 5];
-            // Skip events that are too far in the past (> 0.5s behind)
-            if (at < now - 0.5) continue;
+            // FIX: Don't drop events here — the worklet handles stale events itself.
+            // The old "if (at < now - 2.0) continue" was dropping events from bars
+            // that were composed ahead but arrived "late" relative to AudioContext time.
+            // The worklet's own check (eventTime > currentAudioTime + 0.001) handles this correctly.
+            // if (at < now - 2.0) continue;  // REMOVED — was causing intermittent silence
             if (voiceId === VOICE.KICK) {
               this.kickCount++;
               // Sidechain ducking: dip the whole mix when kick plays.
