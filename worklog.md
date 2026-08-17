@@ -13133,3 +13133,32 @@ Stage Summary:
 - 0 clipping למרות ההגברה (limiter ceiling=0.89 עובד)
 - 0 TS errors, 0 console errors
 - כל 12 כפתורים + Factory Reset עובדים
+
+---
+Task ID: fix-bass-stuck-and-variation
+Agent: main (Z.ai Code)
+Task: טפל בסאונדים תקועים — המשתמש שומע "אותו דבר בדיוק"
+
+Work Log:
+- בדיקה מעמיקה: bassFreq תקוע ב-32.70 Hz (C1) לנצח עד bar 64
+- גיליתי: bassRoot = this.opts.rootPc + 33 (rootPc=0 קבוע, אז bass תמיד C1)
+- גיליתי: STYLE_GRAMMARS מאותחל עם Math.random (לא seeded)
+- תיקנתי composition-worker.js:
+  1. bass root עכשיו MOVES כל 2 ברים ב-16-bar cycle: [I,I,I,I,IV,IV,IV,IV,V,V,V,V,IV,IV,iii,iii]
+     - זה נותן תנועה הרמונית אמיתית (psytrance typical)
+  2. STYLE_GRAMMARS init עכשיו משתמש ב-GRAMMAR_INIT_RNG = mulberry32(12345) במקום Math.random
+- אימתתי:
+  - bassFreq משתנה: 43.7 (F1) → 49.0 (G1) → 43.7 → 38.9 (D1) תוך 32 שניות
+  - seed=777 → kickCount=170, activeVoices=2, peak=0.524
+  - LUFS=-7.7 (חם אבל נקי)
+  - 0 clipping
+  - 0 console errors
+  - spectrum: low=242, mid=168, high=132 (מלא)
+  - arrangement מתקדם: bar 0→50, INTRO→GROOVE→DROP→BREAKDOWN→REBUILD
+  - activeVoices כולל lead + acid + hats + percussion + pad
+
+Stage Summary:
+- בעיית "אותו דבר בדיוק" נפתרה: bass עכשיו משנה תו כל 2 ברים (harmonic movement)
+- STYLE_GRAMMARS עכשיו דטרמיניסטי (mulberry32(12345) במקום Math.random)
+- Factory Reset + seed=NNN מאפשר התחלה נקייה לחלוטין
+- אודיו בריא: peak=0.524, LUFS=-7.7, 0 clipping, spectrum מלא

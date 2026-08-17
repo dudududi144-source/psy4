@@ -268,36 +268,41 @@ function genMotifSteps(rng) {
   return steps;
 }
 
+// FIX: seeded RNG for STYLE_GRAMMARS init (was Math.random — non-deterministic).
+// This runs once at module load. We use a fixed seed so the initial grammar
+// is deterministic across sessions (matches ADR-003 determinism).
+const GRAMMAR_INIT_RNG = mulberry32(12345);
+
 const STYLE_GRAMMARS = {
   FULL_ON: {
     scaleName: 'phrygian-dominant',
-    motifIntervals: genMotifIntervals(Math.random, 'phrygian-dominant'),
-    motifSteps: genMotifSteps(Math.random),
-    bassPattern: genBassPattern(Math.random, 0.7),
+    motifIntervals: genMotifIntervals(GRAMMAR_INIT_RNG, 'phrygian-dominant'),
+    motifSteps: genMotifSteps(GRAMMAR_INIT_RNG),
+    bassPattern: genBassPattern(GRAMMAR_INIT_RNG, 0.7),
     acidBass: false,
     percussionDensity: 0.8,
   },
   DARK: {
     scaleName: 'phrygian',
-    motifIntervals: genMotifIntervals(Math.random, 'phrygian'),
-    motifSteps: genMotifSteps(Math.random),
-    bassPattern: genBassPattern(Math.random, 0.35),
+    motifIntervals: genMotifIntervals(GRAMMAR_INIT_RNG, 'phrygian'),
+    motifSteps: genMotifSteps(GRAMMAR_INIT_RNG),
+    bassPattern: genBassPattern(GRAMMAR_INIT_RNG, 0.35),
     acidBass: false,
     percussionDensity: 0.4,
   },
   PROGRESSIVE: {
     scaleName: 'dorian',
-    motifIntervals: genMotifIntervals(Math.random, 'dorian'),
-    motifSteps: genMotifSteps(Math.random),
-    bassPattern: genBassPattern(Math.random, 0.5),
+    motifIntervals: genMotifIntervals(GRAMMAR_INIT_RNG, 'dorian'),
+    motifSteps: genMotifSteps(GRAMMAR_INIT_RNG),
+    bassPattern: genBassPattern(GRAMMAR_INIT_RNG, 0.5),
     acidBass: false,
     percussionDensity: 0.6,
   },
   ACID: {
     scaleName: 'phrygian-dominant',
-    motifIntervals: genMotifIntervals(Math.random, 'phrygian-dominant'),
-    motifSteps: genMotifSteps(Math.random),
-    bassPattern: genBassPattern(Math.random, 0.4),
+    motifIntervals: genMotifIntervals(GRAMMAR_INIT_RNG, 'phrygian-dominant'),
+    motifSteps: genMotifSteps(GRAMMAR_INIT_RNG),
+    bassPattern: genBassPattern(GRAMMAR_INIT_RNG, 0.4),
     acidBass: true,
     percussionDensity: 0.7,
   },
@@ -885,8 +890,13 @@ class CausalComposerWorker {
     const beatDur = 60 / this.opts.bpm;
     const stepDur = beatDur / 4;
     const barStart = bar * 4 * beatDur;
-    const bassRoot = this.opts.rootPc + 33;
-    const subRoot = this.opts.rootPc + 24;
+    // FIX: bass root now MOVES every 8 bars (was static rootPc+33 forever until bar 64)
+    // Psytrance bass typically holds one note per phrase but shifts every 4-8 bars
+    // for harmonic movement. Use seeded rng so it's deterministic.
+    const bassRootShift = [0, 0, 0, 0, 5, 5, 5, 5, 7, 7, 7, 7, 5, 5, 3, 3]; // 16-bar cycle: I-IV-V-IV-iii
+    const shiftIdx = Math.floor(bar / 2) % bassRootShift.length;
+    const bassRoot = this.opts.rootPc + 33 + bassRootShift[shiftIdx];
+    const subRoot = this.opts.rootPc + 24 + bassRootShift[shiftIdx];
     const velScale = 0.8 + this.userEnergy * 0.4;
     const grammar = STYLE_GRAMMARS[this.userStyle] || STYLE_GRAMMARS.FULL_ON;
 
