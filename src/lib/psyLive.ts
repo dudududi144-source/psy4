@@ -249,6 +249,7 @@ export class PsyLive {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private workletVolumeGain: GainNode | null = null;  // Volume control for AudioWorklet output
+  private sidechainDuck: GainNode | null = null;     // Sidechain duck gain (dips on kick)
   private analyser: AnalyserNode | null = null;
   private delaySend: GainNode | null = null;
   private delay: DelayNode | null = null;
@@ -1533,16 +1534,31 @@ export class PsyLive {
         // Now: worklet → volumeGain → analyser → destination
         // (volumeGain controls master volume — the worklet's internal master
         // chain is separate and can't be controlled from main thread)
+        // v3: Route worklet output to analyser.
+        // Sidechain ducking is applied via a gain node between worklet and analyser.
+        // psysynth output also connects to this sidechainDuck (via engineBus).
         const out = this.engineNode.outputNode;
         if (out && this.analyser) {
           out.disconnect();
+          // Create sidechain duck gain (dips when kick plays)
+          if (!this.sidechainDuck) {
+            this.sidechainDuck = this.ctx.createGain();
+            this.sidechainDuck.gain.value = 1.0;
+          }
           // Create a gain node for volume control if not exists
           if (!this.workletVolumeGain) {
             this.workletVolumeGain = this.ctx.createGain();
             this.workletVolumeGain.gain.value = 0.9;
           }
-          out.connect(this.workletVolumeGain);
+          // Worklet → sidechainDuck → workletVolumeGain → analyser
+          out.connect(this.sidechainDuck);
+          this.sidechainDuck.connect(this.workletVolumeGain);
           this.workletVolumeGain.connect(this.analyser);
+          // psysynth (via engineBus) also → sidechainDuck (so it gets ducked too)
+          if (this.engineBus) {
+            this.engineBus.disconnect();
+            this.engineBus.connect(this.sidechainDuck);
+          }
         }
         // FIX: Disconnect the legacy master chain completely.
         // The legacy buses (kickBus, bassBus, etc.) are NOT used by the worklet.
@@ -1686,7 +1702,12 @@ export class PsyLive {
             const param = flat[base + 5];
             // Skip events that are too far in the past (> 0.5s behind)
             if (at < now - 0.5) continue;
-            if (voiceId === VOICE.KICK) this.kickCount++;
+            if (voiceId === VOICE.KICK) {
+              this.kickCount++;
+              // Sidechain ducking: dip the whole mix when kick plays.
+              // Psytrance signature "pumping" effect — bass/lead breathe with kick.
+              this.triggerSidechain(at);
+            }
             if (voiceId === VOICE.BASS && note > 0) this.bassFreq = mtof(note);
 
             // v3: Route melodic voices (bass/lead/acid/pad) to psysynth (ALWAYS, not toggle)
@@ -2001,6 +2022,20 @@ export class PsyLive {
   // B1 FIX: Extracted engine-level update from detect(). Runs from uiTimer (every 2s)
   // so LUFS meter moves even when radio is off. Previously inside detect() which
   // early-returns at line 1870 when !this.radioAnalyser, leaving engineLevel=0 forever.
+  /**
+   * Sidechain ducking: dip the master bus when kick plays.
+   * Creates the classic psytrance "pumping" effect where bass/lead
+   * breathe with the kick. 60% depth, 150ms recovery.
+   */
+  private triggerSidechain(at: number): void {
+    if (!this.sidechainDuck || !this.ctx) return;
+    const t = Math.max(at, this.ctx.currentTime);
+    // Dip to 0.4 (60% depth) over 5ms, recover to 1.0 over 150ms
+    this.sidechainDuck.gain.cancelScheduledValues(t);
+    this.sidechainDuck.gain.setValueAtTime(0.4, t);
+    this.sidechainDuck.gain.exponentialRampToValueAtTime(1.0, t + 0.15);
+  }
+
   private updateEngineLevel(): void {
     if (!this.analyser) return;
     // Reuse buffer to avoid per-tick allocation
