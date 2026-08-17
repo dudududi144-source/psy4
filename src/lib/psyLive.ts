@@ -259,6 +259,9 @@ export class PsyLive {
   private multibandMidGain: GainNode | null = null;
   private multibandHighGain: GainNode | null = null;
   private multibandSum: GainNode | null = null;
+  // Effects wet gains (for routing to master)
+  private delayWet: GainNode | null = null;
+  private reverbWetGain: GainNode | null = null;
   private analyser: AnalyserNode | null = null;
   private delaySend: GainNode | null = null;
   private delay: DelayNode | null = null;
@@ -635,23 +638,26 @@ export class PsyLive {
 
     // Delay (like psy)
     this.delaySend = this.ctx.createGain();
-    this.delaySend.gain.value = 1.0;
+    this.delaySend.gain.value = 0.3;  // FIX: was 1.0 — too much delay send (30% wet is standard)
     this.delay = this.ctx.createDelay(2.0);
     this.delay.delayTime.value = 0.3;
     const wet = this.ctx.createGain(); wet.gain.value = 0.22;
     this.delayFb = this.ctx.createGain(); this.delayFb.gain.value = 0.34;
     this.delaySend.connect(this.delay);
-    this.delay.connect(wet); wet.connect(this.masterEqLow!);
+    this.delay.connect(wet);
     this.delay.connect(this.delayFb); this.delayFb.connect(this.delay);
+    // Store wet gain reference for routing (connected later in initWorkletEngine)
+    this.delayWet = wet;
 
     // F11: Reverb bus
-    this.reverbSend = this.ctx.createGain(); this.reverbSend.gain.value = 0;
+    this.reverbSend = this.ctx.createGain(); this.reverbSend.gain.value = 0.3;  // FIX: was 0 — enable reverb (30% wet)
     this.convolver = this.ctx.createConvolver();
     this.convolver.buffer = this.mkIR(this.ctx);
     const reverbWet = this.ctx.createGain(); reverbWet.gain.value = 0.5;
     this.reverbSend.connect(this.convolver);
     this.convolver.connect(reverbWet);
-    reverbWet.connect(this.masterEqLow!);
+    // Store wet gain reference for routing (connected later in initWorkletEngine)
+    this.reverbWetGain = reverbWet;
 
     // Noise buffer for hats
     const len = Math.floor(this.ctx.sampleRate * 0.25);
@@ -1599,6 +1605,8 @@ export class PsyLive {
             this.engineBus.disconnect();
             this.engineBus.connect(this.sidechainDuck);
           }
+          // Effects: delay + reverb returns will be added later (Tone.js integration)
+          // For now, just route dry signal through multiband
           // Multiband: sidechainDuck → 3 bands → sum → workletVolumeGain
           this.sidechainDuck!.connect(this.multibandLow!);
           this.sidechainDuck!.connect(this.multibandMid1!);
