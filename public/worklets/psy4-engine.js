@@ -2022,16 +2022,17 @@ class MasterChain {
     this.glueRatio = 1.5;
     this.glueAttack = 0.005;
     this.glueRelease = 0.250;
-    this.glueMakeup = 0.9;  // was 1.1 — too hot without multiband
+    this.glueMakeup = 1.0;  // FIX: was 0.9 (too quiet), boosted to 1.0
     this.glueGain = 1.0;
 
     // ── LUFS targeting (Phase 3.2) ──
     // Measures running mean square, computes LUFS, adjusts makeup gain
     // to hit target LUFS (-10 = streaming loud, -12 = dynamic)
-    this.lufsMs = 0;              // running mean square (smoothed)
-    this.lufsTargetGain = 1.0;    // computed target gain
-    this.lufsAppliedGain = 1.0;   // current applied gain (smoothed)
-    this.lufsTarget = -10.0;      // target LUFS
+    // FIX: initial gain boosted so audio starts loud (was 1.0, too quiet for 3-5s)
+    this.lufsMs = 0.01;             // running mean square (seeded non-zero so LUFS calc works immediately)
+    this.lufsTargetGain = 1.6;     // start high (clamped max is 2.0)
+    this.lufsAppliedGain = 1.6;     // applied gain starts high so audio is loud from bar 1
+    this.lufsTarget = -10.0;       // target LUFS
     this.lufsCounter = 0;         // update counter
     this.lufsUpdateRate = 256;    // update every 256 samples (~6ms at 44.1kHz)
 

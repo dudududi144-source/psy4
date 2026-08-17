@@ -3331,6 +3331,51 @@ export class PsyLive {
     console.log('[PSY4] Reset complete — fresh random params applied');
   }
 
+  /**
+   * FACTORY RESET — complete wipe of ALL stored state.
+   * Clears: localStorage (all psy4 keys), IndexedDB SoundBank, composition seed.
+   * Then reloads the page so the engine starts completely fresh.
+   * Use this when "stuck sounds from previous sessions" are causing issues.
+   */
+  async factoryReset(): Promise<void> {
+    console.log('[PSY4] FACTORY RESET: wiping ALL stored state...');
+    // Stop playback first
+    if (this.playing) this.stop();
+    // Panic all voices
+    if (this.engineNode) {
+      this.engineNode.workletNode?.port.postMessage({ type: 'stop' });
+    }
+    // Disable synth device
+    if (this.synthDeviceEnabled) this.disableSynthDevice();
+    // Clear IndexedDB SoundBank
+    if (this.soundBank) {
+      try { await this.soundBank.clearAll(); } catch (e) { console.warn('factoryReset: SoundBank clear failed', e); }
+    }
+    // Clear ALL localStorage keys that start with 'psy'
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('psy') || k.startsWith('PSY'))) keysToRemove.push(k);
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+    console.log(`[PSY4] FACTORY RESET: cleared ${keysToRemove.length} localStorage keys:`, keysToRemove);
+    // Clear IndexedDB databases (psy4 related)
+    try {
+      const dbs = await indexedDB.databases?.();
+      if (dbs) {
+        for (const db of dbs) {
+          if (db.name && db.name.toLowerCase().includes('psy')) {
+            indexedDB.deleteDatabase(db.name);
+            console.log(`[PSY4] FACTORY RESET: deleted IndexedDB database: ${db.name}`);
+          }
+        }
+      }
+    } catch (e) { /* indexedDB.databases not available in all browsers */ }
+    // Reload the page to start completely fresh
+    console.log('[PSY4] FACTORY RESET: reloading page...');
+    setTimeout(() => window.location.reload(), 200);
+  }
+
   // ── Phase 4: Reference Analysis ──
   private referenceAnalyzer: ReferenceAnalyzer | null = null;
   private currentReference: ReferenceDNA | null = null;

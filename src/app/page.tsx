@@ -627,6 +627,19 @@ export default function Page() {
               </button>
               <button
                 onClick={() => {
+                  if (confirm('FACTORY RESET: wipes ALL stored state (localStorage + IndexedDB) and reloads the page.\n\nUse this when you hear stuck sounds from previous sessions.\n\nThis cannot be undone. Continue?')) {
+                    engineRef.current?.factoryReset();
+                  }
+                }}
+                disabled={!s.playing}
+                className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.4)' }}
+                title="Wipe ALL stored state (localStorage + IndexedDB) and reload"
+              >
+                ⨯ Factory
+              </button>
+              <button
+                onClick={() => {
                   const input = document.createElement('input');
                   input.type = 'file';
                   input.accept = 'audio/*';

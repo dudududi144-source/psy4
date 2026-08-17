@@ -13094,3 +13094,42 @@ Stage Summary:
 - Footer sticky verified (footerAtBottom: true)
 - 0 runtime errors, 0 console errors
 - 10 lint errors pre-existing ב-page.tsx (לא קשורות לשינויים — קיימות ב-origin/main)
+
+---
+Task ID: fix-stuck-sounds-and-volume
+Agent: main (Z.ai Code)
+Task: טפל בסאונדים קודמים תקועים + ודא שהמשתמש יכול לשמוע
+
+Work Log:
+- בדיקת מצב נוכחי: analyser avg=98.6, max=255 (אודיו זורם) אבל peak=0.158 (חלש מדי)
+- גיליתי: LUFS targeting מתחיל עם gain 1.0 ו-lufsMs=0, לוקח 5-10 שניות להגיע לערך נכון
+- גיליתי: glueMakeup=0.9 (הורד מ-1.1 בעבר כי "too hot")
+- תיקנתי master chain ב-psy4-engine.js:
+  - lufsMs: 0 → 0.01 (seeded non-zero so LUFS calc works immediately)
+  - lufsTargetGain: 1.0 → 1.6 (start high)
+  - lufsAppliedGain: 1.0 → 1.6 (start high)
+  - glueMakeup: 0.9 → 1.0 (boosted back)
+- הוספתי factoryReset() method ב-psyLive.ts:
+  - עוצר playback + panic all voices
+  - מנקה localStorage (כל keys שמתחילים ב-psy/PSY)
+  - מנקה IndexedDB SoundBank
+  - מוחק IndexedDB databases שמכילים 'psy'
+  - reload page
+- הוספתי כפתור "⨯ Factory" ב-UI (ליד ↻ Reset) עם confirm dialog
+- אימתתי:
+  - peak מ-0.158 → 0.485 (פי 3 חזק יותר מיד אחרי Play)
+  - LUFS -11.4 → -6.5 (חם אבל נקי)
+  - 0 clipping samples במשך 15 שניות monitoring
+  - Factory Reset: localStorage 2 keys → 1 key (psy-device-id only), page reloads
+  - SYNTH toggle ON: 57 melodic events routed, 12 voices, 20 patches
+  - SYNTH toggle OFF: peak 0.077 → 0.241 אחרי 5s (LUFS recovery)
+  - 0 zombie voices
+  - 0 console errors, 0 TS errors
+  - Footer sticky verified
+
+Stage Summary:
+- בעיית "סאונדים תקועים" נפתרה: Factory Reset מנקה הכל + reload
+- בעיית "לא מסוגל לשמוע" נפתרה: peak עלה פי 3 (0.158 → 0.485) על ידי boost של initial LUFS gain
+- 0 clipping למרות ההגברה (limiter ceiling=0.89 עובד)
+- 0 TS errors, 0 console errors
+- כל 12 כפתורים + Factory Reset עובדים
