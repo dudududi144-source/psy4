@@ -1,0 +1,884 @@
+{
+ "manifestVersion": 1,
+ "seed": 1,
+ "patches": [
+  {
+   "id": "bass-acid-303",
+   "role": "bass",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.7
+    },
+    "b": {
+     "wave": "square",
+     "semitones": -12,
+     "gain": 0.35
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.5
+    }
+   },
+   "glideMs": 40,
+   "filter": {
+    "type": "lp",
+    "cutoff": 1400,
+    "res": 0.35,
+    "envDepth": 0.75,
+    "envAttackMs": 1,
+    "envDecayMs": 180,
+    "velTrack": 0.15
+   },
+   "amp": {
+    "attackMs": 1,
+    "decayMs": 220,
+    "sustain": 0.55,
+    "releaseMs": 60
+   },
+   "driveDb": 3,
+   "sends": {
+    "delay": 0.1,
+    "reverb": 0.0
+   },
+   "humanize": false
+  },
+  {
+   "id": "bass-dark-offbeat",
+   "role": "bass",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.65
+    },
+    "b": {
+     "wave": "square",
+     "semitones": -12,
+     "gain": 0.4
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.6
+    }
+   },
+   "glideMs": 25,
+   "filter": {
+    "type": "lp",
+    "cutoff": 950,
+    "res": 0.4,
+    "envDepth": 0.6,
+    "envAttackMs": 1,
+    "envDecayMs": 150,
+    "velTrack": 0.1
+   },
+   "amp": {
+    "attackMs": 1,
+    "decayMs": 190,
+    "sustain": 0.5,
+    "releaseMs": 55
+   },
+   "driveDb": 4,
+   "sends": {
+    "delay": 0.08,
+    "reverb": 0.0
+   },
+   "humanize": false
+  },
+  {
+   "id": "bass-gallop",
+   "role": "bass",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.7
+    },
+    "b": {
+     "wave": "saw",
+     "semitones": -12,
+     "gain": 0.3
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.55
+    }
+   },
+   "glideMs": 45,
+   "filter": {
+    "type": "lp",
+    "cutoff": 1250,
+    "res": 0.42,
+    "envDepth": 0.7,
+    "envAttackMs": 1,
+    "envDecayMs": 140,
+    "velTrack": 0.12
+   },
+   "amp": {
+    "attackMs": 1,
+    "decayMs": 160,
+    "sustain": 0.5,
+    "releaseMs": 50
+   },
+   "driveDb": 3.5,
+   "sends": {
+    "delay": 0.08,
+    "reverb": 0.0
+   },
+   "humanize": false
+  },
+  {
+   "id": "bass-prog-minimal",
+   "role": "bass",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.6
+    },
+    "b": {
+     "wave": "triangle",
+     "semitones": -12,
+     "gain": 0.35
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.5
+    }
+   },
+   "glideMs": 15,
+   "filter": {
+    "type": "lp",
+    "cutoff": 1300,
+    "res": 0.3,
+    "envDepth": 0.55,
+    "envAttackMs": 1,
+    "envDecayMs": 240,
+    "velTrack": 0.18
+   },
+   "amp": {
+    "attackMs": 2,
+    "decayMs": 260,
+    "sustain": 0.6,
+    "releaseMs": 70
+   },
+   "driveDb": 2,
+   "sends": {
+    "delay": 0.12,
+    "reverb": 0.05
+   },
+   "humanize": true
+  },
+  {
+   "id": "bass-sub-deep",
+   "role": "bass",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "sine",
+     "gain": 0.5
+    },
+    "b": {
+     "wave": "saw",
+     "semitones": 0,
+     "gain": 0.3
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.7
+    }
+   },
+   "glideMs": 30,
+   "filter": {
+    "type": "lp",
+    "cutoff": 700,
+    "res": 0.25,
+    "envDepth": 0.45,
+    "envAttackMs": 1,
+    "envDecayMs": 200,
+    "velTrack": 0.08
+   },
+   "amp": {
+    "attackMs": 1,
+    "decayMs": 240,
+    "sustain": 0.6,
+    "releaseMs": 65
+   },
+   "driveDb": 2,
+   "sends": {
+    "delay": 0.05,
+    "reverb": 0.0
+   },
+   "humanize": false
+  },
+  {
+   "id": "lead-fullon-squelch",
+   "role": "lead",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.6,
+     "detuneCents": 6
+    },
+    "b": {
+     "wave": "saw",
+     "gain": 0.6,
+     "detuneCents": -6
+    }
+   },
+   "glideMs": 60,
+   "filter": {
+    "type": "lp",
+    "cutoff": 2600,
+    "res": 0.6,
+    "envDepth": 0.55,
+    "envAttackMs": 2,
+    "envDecayMs": 320,
+    "velTrack": 0.2,
+    "lfoHz": 1.5,
+    "lfoDepth": 0.25
+   },
+   "amp": {
+    "attackMs": 2,
+    "decayMs": 350,
+    "sustain": 0.8,
+    "releaseMs": 120
+   },
+   "driveDb": 4,
+   "sends": {
+    "delay": 0.4,
+    "reverb": 0.15
+   },
+   "humanize": true
+  },
+  {
+   "id": "lead-dark-square",
+   "role": "lead",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "square",
+     "gain": 0.5,
+     "detuneCents": 4
+    },
+    "b": {
+     "wave": "square",
+     "gain": 0.5,
+     "detuneCents": -4
+    }
+   },
+   "glideMs": 50,
+   "filter": {
+    "type": "lp",
+    "cutoff": 1500,
+    "res": 0.55,
+    "envDepth": 0.5,
+    "envAttackMs": 2,
+    "envDecayMs": 280,
+    "velTrack": 0.15
+   },
+   "amp": {
+    "attackMs": 2,
+    "decayMs": 300,
+    "sustain": 0.75,
+    "releaseMs": 140
+   },
+   "driveDb": 5,
+   "sends": {
+    "delay": 0.35,
+    "reverb": 0.12
+   },
+   "humanize": false
+  },
+  {
+   "id": "lead-hitech-sync",
+   "role": "lead",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.6,
+     "detuneCents": 10
+    },
+    "b": {
+     "wave": "saw",
+     "gain": 0.55,
+     "detuneCents": -10,
+     "sync": true
+    }
+   },
+   "glideMs": 20,
+   "filter": {
+    "type": "lp",
+    "cutoff": 3300,
+    "res": 0.65,
+    "envDepth": 0.6,
+    "envAttackMs": 1,
+    "envDecayMs": 220,
+    "velTrack": 0.22
+   },
+   "amp": {
+    "attackMs": 1,
+    "decayMs": 240,
+    "sustain": 0.7,
+    "releaseMs": 90
+   },
+   "driveDb": 5,
+   "sends": {
+    "delay": 0.45,
+    "reverb": 0.1
+   },
+   "humanize": true
+  },
+  {
+   "id": "lead-prog-pluck",
+   "role": "lead",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.55
+    },
+    "b": {
+     "wave": "triangle",
+     "semitones": 12,
+     "gain": 0.3
+    }
+   },
+   "glideMs": 0,
+   "filter": {
+    "type": "lp",
+    "cutoff": 2100,
+    "res": 0.45,
+    "envDepth": 0.65,
+    "envAttackMs": 1,
+    "envDecayMs": 190,
+    "velTrack": 0.2
+   },
+   "amp": {
+    "attackMs": 1,
+    "decayMs": 200,
+    "sustain": 0.25,
+    "releaseMs": 110
+   },
+   "driveDb": 2,
+   "sends": {
+    "delay": 0.35,
+    "reverb": 0.18
+   },
+   "humanize": true
+  },
+  {
+   "id": "arp-hitech-square",
+   "role": "arp",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "square",
+     "gain": 0.5
+    }
+   },
+   "glideMs": 0,
+   "filter": {
+    "type": "lp",
+    "cutoff": 3100,
+    "res": 0.5,
+    "envDepth": 0.55,
+    "envAttackMs": 1,
+    "envDecayMs": 90,
+    "velTrack": 0.25
+   },
+   "amp": {
+    "attackMs": 0.5,
+    "decayMs": 95,
+    "sustain": 0.0,
+    "releaseMs": 30
+   },
+   "driveDb": 3,
+   "sends": {
+    "delay": 0.45,
+    "reverb": 0.1
+   },
+   "humanize": false,
+   "stepVariance": true,
+   "arpOrnament": true
+  },
+  {
+   "id": "arp-forest-plucky",
+   "role": "arp",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "triangle",
+     "gain": 0.55
+    },
+    "b": {
+     "wave": "sine",
+     "semitones": 12,
+     "gain": 0.25
+    }
+   },
+   "glideMs": 0,
+   "filter": {
+    "type": "lp",
+    "cutoff": 1900,
+    "res": 0.4,
+    "envDepth": 0.6,
+    "envAttackMs": 1,
+    "envDecayMs": 110,
+    "velTrack": 0.2
+   },
+   "amp": {
+    "attackMs": 0.5,
+    "decayMs": 110,
+    "sustain": 0.0,
+    "releaseMs": 40
+   },
+   "driveDb": 1.5,
+   "sends": {
+    "delay": 0.3,
+    "reverb": 0.2
+   },
+   "humanize": true,
+   "stepVariance": true
+  },
+  {
+   "id": "arp-goa",
+   "role": "arp",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.5
+    }
+   },
+   "glideMs": 0,
+   "filter": {
+    "type": "bp",
+    "cutoff": 1600,
+    "res": 0.5,
+    "envDepth": 0.5,
+    "envAttackMs": 1,
+    "envDecayMs": 120,
+    "velTrack": 0.18
+   },
+   "amp": {
+    "attackMs": 1,
+    "decayMs": 130,
+    "sustain": 0.05,
+    "releaseMs": 45
+   },
+   "driveDb": 2.5,
+   "sends": {
+    "delay": 0.4,
+    "reverb": 0.15
+   },
+   "humanize": false,
+   "arpOrnament": true
+  },
+  {
+   "id": "pad-atmospheric",
+   "role": "pad",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.4,
+     "detuneCents": 12
+    },
+    "b": {
+     "wave": "saw",
+     "gain": 0.4,
+     "detuneCents": -12
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.25
+    }
+   },
+   "glideMs": 0,
+   "filter": {
+    "type": "lp",
+    "cutoff": 950,
+    "res": 0.15,
+    "envDepth": 0.2,
+    "envAttackMs": 800,
+    "envDecayMs": 1500,
+    "velTrack": 0.05
+   },
+   "amp": {
+    "attackMs": 1800,
+    "decayMs": 2000,
+    "sustain": 0.85,
+    "releaseMs": 2500
+   },
+   "driveDb": 0,
+   "sends": {
+    "delay": 0.1,
+    "reverb": 0.5
+   },
+   "humanize": true
+  },
+  {
+   "id": "pad-dark-drone",
+   "role": "pad",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.45,
+     "detuneCents": 8
+    },
+    "b": {
+     "wave": "square",
+     "semitones": -12,
+     "gain": 0.3,
+     "detuneCents": -8
+    }
+   },
+   "glideMs": 0,
+   "filter": {
+    "type": "lp",
+    "cutoff": 650,
+    "res": 0.2,
+    "envDepth": 0.15,
+    "envAttackMs": 1200,
+    "envDecayMs": 2000,
+    "velTrack": 0.03
+   },
+   "amp": {
+    "attackMs": 2200,
+    "decayMs": 2200,
+    "sustain": 0.8,
+    "releaseMs": 2800
+   },
+   "driveDb": 2,
+   "sends": {
+    "delay": 0.12,
+    "reverb": 0.45
+   },
+   "humanize": false
+  },
+  {
+   "id": "stab-goa-major",
+   "role": "stab",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "chordIntervals": [
+    4,
+    7,
+    12
+   ],
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.55
+    },
+    "b": {
+     "wave": "square",
+     "gain": 0.35,
+     "detuneCents": 5
+    }
+   },
+   "glideMs": 0,
+   "filter": {
+    "type": "bp",
+    "cutoff": 1400,
+    "res": 0.45,
+    "envDepth": 0.5,
+    "envAttackMs": 1,
+    "envDecayMs": 260,
+    "velTrack": 0.2
+   },
+   "amp": {
+    "attackMs": 1,
+    "decayMs": 300,
+    "sustain": 0.0,
+    "releaseMs": 150
+   },
+   "driveDb": 3,
+   "sends": {
+    "delay": 0.3,
+    "reverb": 0.25
+   },
+   "humanize": false
+  },
+  {
+   "id": "stab-dark-minor",
+   "role": "stab",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "chordIntervals": [
+    3,
+    7,
+    10
+   ],
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.5
+    },
+    "b": {
+     "wave": "saw",
+     "gain": 0.4,
+     "detuneCents": -6
+    }
+   },
+   "glideMs": 0,
+   "filter": {
+    "type": "lp",
+    "cutoff": 1100,
+    "res": 0.5,
+    "envDepth": 0.55,
+    "envAttackMs": 1,
+    "envDecayMs": 240,
+    "velTrack": 0.15
+   },
+   "amp": {
+    "attackMs": 1,
+    "decayMs": 280,
+    "sustain": 0.0,
+    "releaseMs": 140
+   },
+   "driveDb": 4,
+   "sends": {
+    "delay": 0.28,
+    "reverb": 0.2
+   },
+   "humanize": false
+  },
+  {
+   "id": "pluck-forest",
+   "role": "pluck",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "triangle",
+     "gain": 0.6
+    },
+    "b": {
+     "wave": "sine",
+     "semitones": 12,
+     "gain": 0.2,
+     "ringMod": 0.35
+    }
+   },
+   "glideMs": 0,
+   "filter": {
+    "type": "lp",
+    "cutoff": 1700,
+    "res": 0.35,
+    "envDepth": 0.7,
+    "envAttackMs": 1,
+    "envDecayMs": 95,
+    "velTrack": 0.25
+   },
+   "amp": {
+    "attackMs": 0.5,
+    "decayMs": 100,
+    "sustain": 0.0,
+    "releaseMs": 60
+   },
+   "driveDb": 1,
+   "sends": {
+    "delay": 0.25,
+    "reverb": 0.2
+   },
+   "humanize": true
+  },
+  {
+   "id": "pluck-organic",
+   "role": "pluck",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "sine",
+     "gain": 0.55
+    },
+    "b": {
+     "wave": "triangle",
+     "semitones": 7,
+     "gain": 0.25
+    }
+   },
+   "glideMs": 0,
+   "filter": {
+    "type": "lp",
+    "cutoff": 1500,
+    "res": 0.3,
+    "envDepth": 0.6,
+    "envAttackMs": 1,
+    "envDecayMs": 120,
+    "velTrack": 0.2
+   },
+   "amp": {
+    "attackMs": 1,
+    "decayMs": 130,
+    "sustain": 0.0,
+    "releaseMs": 70
+   },
+   "driveDb": 0.5,
+   "sends": {
+    "delay": 0.2,
+    "reverb": 0.22
+   },
+   "humanize": true
+  },
+  {
+   "id": "keys-break-soft",
+   "role": "keys",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "triangle",
+     "gain": 0.5
+    },
+    "b": {
+     "wave": "sine",
+     "gain": 0.3,
+     "detuneCents": 4
+    }
+   },
+   "glideMs": 0,
+   "filter": {
+    "type": "lp",
+    "cutoff": 2400,
+    "res": 0.12,
+    "envDepth": 0.25,
+    "envAttackMs": 8,
+    "envDecayMs": 400,
+    "velTrack": 0.15
+   },
+   "amp": {
+    "attackMs": 10,
+    "decayMs": 500,
+    "sustain": 0.7,
+    "releaseMs": 350
+   },
+   "driveDb": 0,
+   "sends": {
+    "delay": 0.18,
+    "reverb": 0.3
+   },
+   "humanize": true
+  },
+  {
+   "id": "keys-goan-flute",
+   "role": "keys",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-14"
+   },
+   "osc": {
+    "a": {
+     "wave": "sine",
+     "gain": 0.5
+    },
+    "b": {
+     "wave": "triangle",
+     "semitones": 12,
+     "gain": 0.2
+    }
+   },
+   "glideMs": 35,
+   "filter": {
+    "type": "lp",
+    "cutoff": 2800,
+    "res": 0.18,
+    "envDepth": 0.3,
+    "envAttackMs": 12,
+    "envDecayMs": 450,
+    "velTrack": 0.12
+   },
+   "amp": {
+    "attackMs": 14,
+    "decayMs": 550,
+    "sustain": 0.75,
+    "releaseMs": 400
+   },
+   "driveDb": 0,
+   "sends": {
+    "delay": 0.22,
+    "reverb": 0.32
+   },
+   "humanize": true
+  }
+ ]
+}

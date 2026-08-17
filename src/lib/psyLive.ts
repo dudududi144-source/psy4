@@ -45,6 +45,7 @@ import { LoopLearner } from './loopLearner';
 // SamplerBridge import REMOVED — fully dead code
 import { MaterialRealizer } from './material-realizer';
 import { Psy4EngineNode, VOICE, type VoiceId, type EngineStats } from './studio/engine/engineWorklet';
+import { SynthBridge, type SynthBridgeDiagnostics } from './synth-bridge';
 
 // Voice ID mapping: CausalComposer channels → AudioWorklet voice IDs
 const CHANNEL_TO_VOICE: Record<string, VoiceId> = {
@@ -334,6 +335,9 @@ export class PsyLive {
   // MusicalSession REMOVED — was 1403 lines of dead code. All composition goes through CausalComposer.
   // ADR-001: CausalComposer runs on a Web Worker. These fields manage the worker.
   private compositionWorker: Worker | null = null;
+  // SYNTH DEVICE: psysynth integration (A/B toggle, default OFF)
+  private synthBridge: SynthBridge | null = null;
+  private synthDeviceEnabled = false;
   private workerReady = false;
   private workerState: { tensionLevel: number; contrastDebt: number; anticipationLevel: number; grooveStability: number; expectationLevel: number } = { tensionLevel: 0, contrastDebt: 0, anticipationLevel: 0, grooveStability: 0, expectationLevel: 0 };
   private workerAction = 'NO_CHANGE';
@@ -961,6 +965,95 @@ export class PsyLive {
       const m = styleMap[style] || {};
       this.engineNode.setMacros(m);
     }
+    // SYNTH DEVICE: push context to psysynth for patch bank selection
+    if (this.synthBridge && this.synthDeviceEnabled) {
+      this.synthBridge.publishContext({
+        style: s,
+        energy: this.cachedUserControls.energy,
+        section: 'groove',
+      });
+    }
+  }
+
+  // ── SYNTH DEVICE (psysynth) integration ──
+  // A/B toggle: when enabled, melodic voices (bass/lead/acid/pad/texture/fm/wavetable)
+  // are ALSO forwarded to the psysynth device on the shared engine bus.
+  // Drums (kick/snare/hat/clap/perc/shaker) always stay on PSY4's worklet.
+  // Default: OFF (opt-in). User toggles via UI button "SYNTH DEVICE".
+
+  /**
+   * Enable the psysynth synth device. Lazily creates the SynthBridge on first call.
+   * Returns true on success, false on failure (with console error).
+   */
+  async enableSynthDevice(): Promise<boolean> {
+    if (this.synthDeviceEnabled) return true;
+    if (!this.ctx || !this.engineBus) {
+      console.error('[PSY4] enableSynthDevice: audio context or engineBus not ready');
+      return false;
+    }
+    try {
+      if (!this.synthBridge) {
+        this.synthBridge = new SynthBridge({
+          audioContext: this.ctx,
+          outputNode: this.engineBus,
+          delaySendNode: this.delaySend,
+          reverbSendNode: this.reverbSend,
+          maxVoices: 12,           // leave headroom for PSY4's worklet voices
+          seed: 1,
+          patchManifestUrl: '/patches/manifest.json',
+        });
+        await this.synthBridge.init();
+      } else {
+        this.synthBridge.resume();
+      }
+      this.synthDeviceEnabled = true;
+      // Push current context so the device picks the right bank
+      this.synthBridge.publishContext({
+        style: this.cachedUserControls.style,
+        energy: this.cachedUserControls.energy,
+        section: 'groove',
+      });
+      console.log('[PSY4] Synth device ENABLED (psysynth) — melodic voices routed to both worklet + psysynth');
+      this.emit();
+      return true;
+    } catch (err) {
+      console.error('[PSY4] enableSynthDevice failed:', err);
+      this.synthDeviceEnabled = false;
+      return false;
+    }
+  }
+
+  /**
+   * Disable the psysynth synth device. Fast-releases all synth voices.
+   */
+  disableSynthDevice(): void {
+    if (!this.synthDeviceEnabled) return;
+    this.synthBridge?.panic();
+    this.synthDeviceEnabled = false;
+    console.log('[PSY4] Synth device DISABLED — melodic voices back to worklet only');
+    this.emit();
+  }
+
+  /**
+   * Toggle the synth device on/off. Returns the new state.
+   */
+  async toggleSynthDevice(): Promise<boolean> {
+    if (this.synthDeviceEnabled) {
+      this.disableSynthDevice();
+      return false;
+    } else {
+      const ok = await this.enableSynthDevice();
+      return ok;
+    }
+  }
+
+  isSynthDeviceEnabled(): boolean {
+    return this.synthDeviceEnabled;
+  }
+
+  getSynthBridgeDiagnostics(): SynthBridgeDiagnostics | null {
+    if (!this.synthBridge) return null;
+    return this.synthBridge.getDiagnostics();
   }
 
   // STAGE 2: Energy — now routes to CausalComposer (was: dead session.setEnergy)
@@ -1527,6 +1620,10 @@ export class PsyLive {
 
       // ADR-001: Send compose request to Web Worker (composition thread)
       // The worker composes 3 bars ahead and returns events as a Float64Array (Transferable, zero-copy)
+      // Also push transport to synth bridge if enabled (for tempo-locked LFOs)
+      if (this.synthBridge && this.synthDeviceEnabled) {
+        this.synthBridge.publishTransport({ bpm: snap.bpm, beat: snap.beat, bar: snap.bar, revision: snap.revision });
+      }
       const currentBar = snap.bar;
       const beatDur = 60 / snap.bpm;
       const targetBar = currentBar + 3;
@@ -1571,6 +1668,10 @@ export class PsyLive {
             if (voiceId === VOICE.BASS && note > 0) this.bassFreq = mtof(note);
             this.engineNode.scheduleEvent(at, voiceId, note, velocity, duration, param);
             scheduled++;
+            // SYNTH DEVICE: also forward melodic events to psysynth bridge (A/B)
+            if (this.synthBridge && this.synthDeviceEnabled) {
+              this.synthBridge.publishNote(at, voiceId, note, velocity, duration);
+            }
           }
           if (scheduled > 0) {
             this.engineNode.flushEvents();
@@ -1866,6 +1967,21 @@ export class PsyLive {
     return { ...this.synthOccSmoothed };
   }
 
+  // B1 FIX: Extracted engine-level update from detect(). Runs from uiTimer (every 2s)
+  // so LUFS meter moves even when radio is off. Previously inside detect() which
+  // early-returns at line 1870 when !this.radioAnalyser, leaving engineLevel=0 forever.
+  private updateEngineLevel(): void {
+    if (!this.analyser) return;
+    // Reuse buffer to avoid per-tick allocation
+    if (!this.engineFreqBuf || this.engineFreqBuf.length !== this.analyser.frequencyBinCount) {
+      this.engineFreqBuf = new Uint8Array(this.analyser.frequencyBinCount);
+    }
+    const d = this.engineFreqBuf;
+    this.analyser.getByteFrequencyData(d as Uint8Array<ArrayBuffer>);
+    let s = 0; for (let i = 0; i < d.length; i++) s += d[i];
+    this.engineLevel = s / (d.length * 255);
+  }
+
   private detect(): void {
     if (!this.radioAnalyser || !this.ctx || !this.radioLayer) return;
     if (!this.radioFreqBuf || this.radioFreqBuf.length !== this.radioAnalyser.frequencyBinCount) {
@@ -2115,19 +2231,10 @@ export class PsyLive {
       if (this.pendingBassFreqs.length > 64) this.pendingBassFreqs.shift();
     }
 
-    // Engine level (light: 1 FFT pull + sum)
-    if (this.analyser) {
-      // Reuse buffer to avoid per-tick allocation
-      if (!this.engineFreqBuf || this.engineFreqBuf.length !== this.analyser.frequencyBinCount) {
-        this.engineFreqBuf = new Uint8Array(this.analyser.frequencyBinCount);
-      }
-      const d = this.engineFreqBuf;
-      this.analyser.getByteFrequencyData(d);
-      let s = 0; for (let i = 0; i < d.length; i++) s += d[i];
-      this.engineLevel = s / (d.length * 255);
-    }
-
-    // PERF: emit() NO LONGER called from detect(). The 250 ms uiTimer handles UI updates.
+    // B1 FIX: engineLevel update moved to updateEngineLevel() which runs from
+    // uiTimer (every 2s) regardless of radio state. Previously this was inside
+    // detect() which exits early when radio is off, leaving LUFS stuck at -80.7.
+    // PERF: emit() NO LONGER called from detect(). The 2000ms uiTimer handles UI updates.
     // Calling emit() here caused React to re-render the studio UI 10×/sec, which
     // competed with the audio thread for main-thread time and produced the
     // characteristic "jump every (round) second" stutter the user reported.
@@ -2233,6 +2340,9 @@ export class PsyLive {
     this._mergedTickCounter = 0;
     this.uiTimer = setInterval(() => {
       this._mergedTickCounter++;
+      // B1 FIX: update engineLevel every tick so LUFS meter moves even when radio is off.
+      // Was previously inside detect() which early-returns when radioAnalyser is null.
+      this.updateEngineLevel();
       // emit every tick (2000ms)
       this.emit();
       // learnTick every tick (2000ms — was 1000ms, but nothing changes that fast)

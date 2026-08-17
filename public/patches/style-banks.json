@@ -1,0 +1,90 @@
+[
+ {
+  "style": "FULL-ON",
+  "patchOverrides": {
+   "bass": "bass-acid-303",
+   "lead": "lead-fullon-squelch",
+   "arp": "arp-goa"
+  },
+  "macro": {
+   "cutoffBias": 1.1,
+   "resBias": 1.1,
+   "glideBias": 1.0,
+   "energyToCutoff": 800
+  }
+ },
+ {
+  "style": "DARK-PSY",
+  "patchOverrides": {
+   "bass": "bass-dark-offbeat",
+   "lead": "lead-dark-square",
+   "arp": "arp-hitech-square",
+   "pad": "pad-dark-drone"
+  },
+  "macro": {
+   "cutoffBias": 0.85,
+   "resBias": 0.95,
+   "glideBias": 1.0,
+   "energyToCutoff": 500
+  }
+ },
+ {
+  "style": "PROGRESSIVE",
+  "patchOverrides": {
+   "bass": "bass-prog-minimal",
+   "lead": "lead-prog-pluck",
+   "arp": "arp-forest-plucky",
+   "keys": "keys-break-soft"
+  },
+  "macro": {
+   "cutoffBias": 0.95,
+   "resBias": 0.85,
+   "glideBias": 0.5,
+   "energyToCutoff": 400
+  }
+ },
+ {
+  "style": "GOA",
+  "patchOverrides": {
+   "bass": "bass-acid-303",
+   "lead": "lead-fullon-squelch",
+   "arp": "arp-goa",
+   "stab": "stab-goa-major"
+  },
+  "macro": {
+   "cutoffBias": 1.0,
+   "resBias": 1.05,
+   "glideBias": 1.2,
+   "energyToCutoff": 600
+  }
+ },
+ {
+  "style": "HI-TECH",
+  "patchOverrides": {
+   "bass": "bass-gallop",
+   "lead": "lead-hitech-sync",
+   "arp": "arp-hitech-square"
+  },
+  "macro": {
+   "cutoffBias": 1.2,
+   "resBias": 1.15,
+   "glideBias": 0.7,
+   "energyToCutoff": 1000
+  }
+ },
+ {
+  "style": "FOREST",
+  "patchOverrides": {
+   "bass": "bass-sub-deep",
+   "lead": "lead-dark-square",
+   "arp": "arp-forest-plucky",
+   "pluck": "pluck-forest"
+  },
+  "macro": {
+   "cutoffBias": 0.9,
+   "resBias": 0.9,
+   "glideBias": 0.8,
+   "energyToCutoff": 450
+  }
+ }
+]

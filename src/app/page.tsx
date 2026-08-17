@@ -74,6 +74,8 @@ export default function Page() {
   const [energy, setEnergy] = useState(0.5);
   const [tension, setTension] = useState(0.3);
   const [showRadio, setShowRadio] = useState(false);
+  const [synthOn, setSynthOn] = useState(false);
+  const [synthDiag, setSynthDiag] = useState<any>(null);
 
   // שלב 4.7: נתוני learning (עדכון כל 2s — לא כל 100ms)
   const [bankStats, setBankStats] = useState<BankStats>({ kick: 0, bass: 0, lead: 0, hat: 0, perc: 0 });
@@ -158,6 +160,9 @@ export default function Page() {
         if (cls) {
           setDetectedStyle({ style: cls.style, confidence: cls.confidence, distance: cls.distance });
         }
+        // Synth device diagnostics
+        const sd = e.getSynthBridgeDiagnostics?.();
+        if (sd) setSynthDiag(sd);
       } catch (err) { console.warn('[PSY4] UI polling error:', err); }
     };
     updateLearning();
@@ -239,6 +244,30 @@ export default function Page() {
             style={{ background: s.radioOn ? `${syncMeta.color}20` : 'rgba(255,255,255,0.05)', color: syncMeta.color, border: `1px solid ${syncMeta.color}40` }}>
             <Radio className="w-3.5 h-3.5" />
             <span>RADIO {syncMeta.label}</span>
+          </button>
+
+          {/* SYNTH DEVICE toggle (psysynth A/B) */}
+          <button
+            onClick={async () => {
+              const e = engineRef.current; if (!e) return;
+              const next = await e.toggleSynthDevice();
+              setSynthOn(next);
+              if (next) setSynthDiag(e.getSynthBridgeDiagnostics());
+            }}
+            disabled={!s.playing}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all disabled:opacity-30 hover:scale-105"
+            style={{
+              background: synthOn ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.05)',
+              color: synthOn ? '#22c55e' : '#94a3b8',
+              border: synthOn ? '1px solid rgba(34,197,94,0.5)' : '1px solid rgba(255,255,255,0.1)',
+            }}
+            title="Toggle psysynth device (melodic voices route to psysynth + worklet)"
+          >
+            <Zap className="w-3.5 h-3.5" />
+            <span>SYNTH {synthOn ? 'ON' : 'OFF'}</span>
+            {synthOn && synthDiag && synthDiag.eventsRoutedToSynth > 0 && (
+              <span className="text-[9px] tabular-nums opacity-70">·{synthDiag.eventsRoutedToSynth}</span>
+            )}
           </button>
         </div>
 
