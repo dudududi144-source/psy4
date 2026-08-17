@@ -54,8 +54,6 @@ export function voiceIdToRole(voiceId: VoiceId): SynthRole | null {
     case VOICE.ACID: return 'lead';
     case VOICE.PAD: return 'pad';
     case VOICE.TEXTURE: return 'pad';
-    case VOICE.FM: return 'lead';
-    case VOICE.WAVETABLE: return 'lead';
     // Drums + FX — NOT routed to psysynth (stay on PSY4's worklet)
     case VOICE.KICK:
     case VOICE.SNARE:
@@ -67,9 +65,6 @@ export function voiceIdToRole(voiceId: VoiceId): SynthRole | null {
     case VOICE.RISER:
     case VOICE.IMPACT:
     case VOICE.SWEEP:
-    case VOICE.ZAP:
-    case VOICE.BLIP:
-    case VOICE.DOWNLIFTER:
       return null;
     default:
       return null;

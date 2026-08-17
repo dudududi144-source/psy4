@@ -93,7 +93,7 @@ export class PackageExporter {
     }
 
     // המר לפורמט חבילה
-    const voices: PackageVoice[] = allEntries.map(e => ({
+    const voices: PackageVoice[] = allEntries.map((e: any) => ({
       id: e.id,
       role: e.role,
       voiceParams: e.voiceParams || {},

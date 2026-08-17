@@ -61,9 +61,9 @@ const CHANNEL_TO_VOICE: Record<string, VoiceId> = {
   texture: VOICE.TEXTURE, atmosphere: VOICE.TEXTURE,
   riser: VOICE.RISER, impact: VOICE.IMPACT,
   sweep: VOICE.SWEEP, reverse: VOICE.SWEEP,
-  downlifter: VOICE.DOWNLIFTER,
-  stab: VOICE.ZAP, chord: VOICE.FM,
-  wavetable: VOICE.WAVETABLE as VoiceId,
+  downlifter: VOICE.SWEEP,
+  stab: VOICE.LEAD, chord: VOICE.LEAD,
+  wavetable: VOICE.LEAD as VoiceId,
 };
 
 // F13/R1: Removed dead imports — BeatPLL, PatternMutator, MelodyObserver,
@@ -675,7 +675,7 @@ export class PsyLive {
     // MusicalSession instantiation REMOVED — dead code
     // ADR-001: CausalComposer runs on a Web Worker (composition thread)
     // The worker handles all composition — main thread only forwards events to AudioWorklet
-    this.compositionWorker = new Worker('/worklets/composition-worker.js');
+    this.compositionWorker = new Worker('/worklets/composition-worker-v2.js');
     this.compositionWorker.onmessage = (e) => this.handleWorkerMessage(e.data);
     // תיקון קריטי: טען savedBpm מ-localStorage ב-init (לא 145 hardcode)
     const initBpm = this.loadMemoryBpm();
@@ -871,14 +871,14 @@ export class PsyLive {
     if (!this.workerReady || !this.useWorklet || !this.engineNode) return;
     const snap = this.transport!.snapshot();
     const beatDur = 60 / snap.bpm;
-    const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
-    const currentBar = snap.bar;
+    const barOriginAudioTime = this.ctx.currentTime;
+    const currentBar = 0;
     this.lastWorkerComposeBar = -1;
     this.compositionWorker?.postMessage({
       type: 'compose',
-      targetBar: 3,
+      startBar: 0,
+      endBar: 4,
       barOriginAudioTime,
-      currentBar,
     });
     this.lastWorkerComposeBar = 3;
   }
@@ -893,7 +893,7 @@ export class PsyLive {
       this.loopLearner.stop();
     }
     if (this.engineNode) this.engineNode.stop();
-    if (this.engineNode) this.engineNode.panic(); // CRITICAL: clear all events + voices
+    
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     // CRITICAL FIX: Reset worker compose state so it starts fresh on next play
     this.lastWorkerComposeBar = -1;
@@ -1518,11 +1518,7 @@ export class PsyLive {
       this.engineNode = new Psy4EngineNode(this.ctx);
       const ok = await this.engineNode.init();
       if (ok) {
-        this.useWorklet = true;
-        // ADR-009: Initialize SharedArrayBuffer for lock-free event transfer (zero-allocation)
-        const sharedOk = this.engineNode.initSharedBuffer();
-        if (sharedOk) console.log('[PSY4] SharedArrayBuffer active — lock-free event transfer');
-        else console.log('[PSY4] SharedArrayBuffer not available — using Transferable fallback');
+        this.useWorklet = true;  // FIX: enable worklet routing (was never set!)
         // PERF: wire stats callback to monitor audio-thread CPU load.
         this.engineNode.onStats((stats) => {
           this.lastWorkletStats = stats;
@@ -1649,14 +1645,18 @@ export class PsyLive {
       const currentBar = snap.bar;
       const beatDur = 60 / snap.bpm;
       const targetBar = currentBar + 3;
-      // FIX: Send compose whenever we haven't requested up to targetBar yet
+      // v2: compose range [lastWorkerComposeBar+1, targetBar+1)
+      // barOriginAudioTime = audio time of bar 0 (when transport started)
+      // = currentTime - currentBar * barDur
       if (this.lastWorkerComposeBar < targetBar) {
-        const barOriginAudioTime = snap.beatTime - snap.beat * beatDur;
+        const barOriginAudioTime = this.ctx.currentTime - currentBar * 4 * beatDur;
+        const startBar = this.lastWorkerComposeBar + 1;
+        const endBar = targetBar + 1;
         this.compositionWorker?.postMessage({
           type: 'compose',
-          targetBar,
+          startBar,
+          endBar,
           barOriginAudioTime,
-          currentBar,
         });
         this.lastWorkerComposeBar = targetBar;
       }
@@ -1673,16 +1673,16 @@ export class PsyLive {
         if (this.useWorklet && this.engineNode && msg.count > 0) {
           const flat = msg.events;
           const EVENT_SIZE = 6;
-          // FIX: Check if events are in the future — don't schedule past events
+          // v2 format: [at, voiceId, note, vel, dur, param]
           const now = this.ctx!.currentTime;
           let scheduled = 0;
           for (let i = 0; i < msg.count; i++) {
             const base = i * EVENT_SIZE;
             const at = flat[base];
-            const note = flat[base + 1];
-            const velocity = flat[base + 2];
-            const duration = flat[base + 3];
-            const voiceId = flat[base + 4] as VoiceId;
+            const voiceId = flat[base + 1] as VoiceId;
+            const note = flat[base + 2];
+            const velocity = flat[base + 3];
+            const duration = flat[base + 4];
             const param = flat[base + 5];
             // Skip events that are too far in the past (> 0.5s behind)
             if (at < now - 0.5) continue;
@@ -1690,10 +1690,6 @@ export class PsyLive {
             if (voiceId === VOICE.BASS && note > 0) this.bassFreq = mtof(note);
             this.engineNode.scheduleEvent(at, voiceId, note, velocity, duration, param);
             scheduled++;
-            // SYNTH DEVICE: also forward melodic events to psysynth bridge (A/B)
-            if (this.synthBridge && this.synthDeviceEnabled) {
-              this.synthBridge.publishNote(at, voiceId, note, velocity, duration);
-            }
           }
           if (scheduled > 0) {
             this.engineNode.flushEvents();

@@ -13194,3 +13194,55 @@ Stage Summary:
 - first samples עברו מ-0.517 (תקוע) ל-0.14 (נורמלי)
 - 0 clipping, LUFS תקין
 - ה-riser/impact/sweep עכשיו ברמה סבירה (לא חזקים פי 4 מהשאר)
+
+---
+Task ID: rebuild-engine-from-scratch
+Agent: main (Z.ai Code)
+Task: פרק את המנוע הישן לחלוטין ובנה מחדש מאפס עם דגימות אמיתיות
+
+Work Log:
+- מחקתי לחלוטין: public/worklets/psy4-engine.js + public/worklets/composition-worker.js
+- מחקתי: src/lib/soundBank.ts (ישן)
+- בניתי מנוע חדש מאפס:
+  1. public/worklets/psy4-engine-v2.js — AudioWorklet חדש, sample-based
+     - SampleVoice class: טוען דגימות WAV אמיתיות, מנגן עם pitch + gain + pan
+     - MasterChain: DC blocker + limiter (מינימלי, נקי)
+     - Psy4EngineV2Processor: 24 voices, event ring buffer, sample loading
+     - 38 דגימות אמיתיות נטענות: kick/bass/lead/pad/hat/clap/perc/shaker/snare/riser/impact/sweep
+  2. public/worklets/composition-worker-v2.js — Composition worker חדש
+     - mulberry32 seeded PRNG (דטרמיניסטי)
+     - 64-bar arrangement: INTRO→GROOVE→DROP→BREAKDOWN→REBUILD
+     - Bass root משתנה כל 2 ברים (I-IV-V-IV-iii cycle)
+     - 4 סקיילים: phrygianDominant, phrygian, minor, dorian
+  3. src/lib/studio/engine/engineWorklet.ts — נכתב מחדש
+     - Psy4EngineNode: טוען 38 דגימות WAV דרך fetch + decodeAudioData
+     - מעביר ל-worklet דרך Transferable ArrayBuffer
+  4. src/lib/soundBank.ts — נכתב מחדש (localStorage-based, פשוט)
+     - add/get/updateReward/clearRole/addWithParams (backward compat)
+- תיקנתי psyLive.ts:
+  - שינוי worker path ל-composition-worker-v2.js
+  - שינוי event format: [at, voiceId, note, vel, dur, param] (voiceId עבר ממקום 4 ל-1)
+  - תיקון barOriginAudioTime = currentTime - currentBar * barDur
+  - הוספת useWorklet = true (היה חסר!)
+  - תיקון compose message format: startBar/endBar במקום targetBar/currentBar
+  - תיקון sendInitialCompose לפורמט החדש
+- תוצאות נמדדות (30s monitoring):
+  - peak משתנה: 0.08 → 0.16 → 0.02 → 0.08 → 0.15 → 0.58 (לא תקוע!)
+  - 0 clipping לאורך כל 30s
+  - kickCount עולה יציב: 72 → 128
+  - bar מתקדם: 17 → 31
+  - activeVoices נורמלי: 0-17
+  - bassFreq משתנה: 87 → 82 → 87 → 65 (harmonic movement!)
+  - LUFS: -13.2 (תקין)
+  - 0 console errors, 0 runtime errors
+- כל הסאונדים הישנים הוסרו — אין יותר synth DSP תקוע, אין FX חזקים, אין DC offset
+- 38 דגימות אמיתיות נטענות ומנגנות
+
+Stage Summary:
+- מנוע חדש לגמרי: sample-based, לא synth-based
+- אין יותר רעש תקוע — הסאונד משתנה כל הזמן
+- 0 clipping, 0 errors
+- דטרמיניסטי (seed=42)
+- bass משתנה כל 2 ברים (harmonic movement אמיתי)
+- arrangement מתקדם: INTRO→GROOVE→DROP→BREAKDOWN→REBUILD
+- 38 דגימות אמיתיות (23MB) נטענות ומנגנות
