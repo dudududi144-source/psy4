@@ -370,6 +370,40 @@ class FXVoice {
   }
 }
 
+// ─── Stereo Widener (M/S processing + Haas) ────────────────────────────────
+// Mono lows (below 200Hz), wide highs — classic psytrance stereo image.
+class StereoWidener {
+  constructor(sr) {
+    this.sr = sr;
+    // Haas delay buffer (12ms = ~530 samples at 44.1kHz)
+    this.delayBuf = new Float32Array(2048);
+    this.delayIdx = 0;
+    this.delaySamples = Math.max(1, Math.floor(0.012 * sr));
+    // M/S side-channel HP filter (keep lows mono)
+    this.sideHP = 0;
+    this.sideHpA = Math.min(0.999, 2 * Math.PI * 200 / sr);
+    this.width = 0.3;  // 30% width boost
+  }
+  process(L, R) {
+    // Mid/Side
+    const mid = (L + R) * 0.5;
+    let side = (L - R) * 0.5;
+    // HP on side to keep lows mono (prevents phase issues in clubs)
+    this.sideHP += this.sideHpA * (side - this.sideHP);
+    side = side - this.sideHP * 0.8;
+    // Boost side for width
+    side *= (1 + this.width);
+    // Recombine
+    const outL = mid + side;
+    const outR = mid - side;
+    // Haas delay on right (12ms) for extra width
+    this.delayBuf[this.delayIdx] = outR;
+    const delayedR = this.delayBuf[(this.delayIdx + this.delaySamples) % this.delayBuf.length];
+    this.delayIdx = (this.delayIdx + 1) % this.delayBuf.length;
+    return [outL, delayedR];
+  }
+}
+
 // ─── Master chain (minimal, clean) ─────────────────────────────────────────
 class MasterChain {
   constructor(sr) {
@@ -441,6 +475,7 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
 
     this.masterL = new MasterChain(sampleRate);
     this.masterR = new MasterChain(sampleRate);
+    this.stereoWidener = new StereoWidener(sampleRate);
 
     // Event ring buffer
     this.eventBuffer = new Float64Array(MAX_EVENTS * EVENT_SIZE);
@@ -603,8 +638,11 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
           }
         }
       }
-      L[i] = this.masterL.process(mixL, sr);
-      R[i] = this.masterR.process(mixR, sr);
+      // Stereo widener (M/S + Haas) — before master so limiter catches peaks
+      const widened = this.stereoWidener.process(mixL, mixR);
+      // Master chain (separate L/R for stereo preservation)
+      L[i] = this.masterL.process(widened[0], sr);
+      R[i] = this.masterR.process(widened[1], sr);
     }
     this.activeVoiceCount = activeCount;
     this.currentFrame += L.length;
