@@ -2904,6 +2904,28 @@ export class PsyLive {
       : role === 'clap' ? 'ClapVoice'
       : role === 'shaker' ? 'ShakerVoice'
       : 'TextureVoice';
+
+    // v3: Apply learned params to the right engine.
+    // - Melodic roles (bass/lead/acid/pad) → psysynth via CC params
+    // - Drum roles (kick/hat/perc/clap/shaker) → worklet (no-op in v3, drums are fixed synth)
+    const isMelodic = role === 'bass' || role === 'lead' || role === 'acid' || role === 'pad';
+    if (isMelodic && this.synthBridge && this.synthDeviceEnabled && entry.voiceParams) {
+      // Map learned params to psysynth CC (74=cutoff, 71=resonance, 5=glide, 12=energyMacro)
+      const params = entry.voiceParams;
+      if (params.cutoff !== undefined || params.freq !== undefined) {
+        const cutoff = params.cutoff ?? params.freq ?? 1000;
+        const ccValue = Math.max(0, Math.min(1, cutoff / 8000));
+        this.synthBridge.setParameterByCC(74, ccValue);
+      }
+      if (params.resonance !== undefined) {
+        this.synthBridge.setParameterByCC(71, Math.max(0, Math.min(1, params.resonance)));
+      }
+      if (params.glide !== undefined) {
+        this.synthBridge.setParameterByCC(5, Math.max(0, Math.min(1, params.glide)));
+      }
+      console.log(`[PSY4] learning → psysynth: ${role} params applied (cutoff=${params.cutoff ?? params.freq ?? 'n/a'})`);
+    }
+    // Also send to worklet (for drum voices — no-op in v3 but keeps backward compat)
     this.engineNode!.workletNode!.port.postMessage({
       type: 'setVoiceRecipe',
       voiceClass,
