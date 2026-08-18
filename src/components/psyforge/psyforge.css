@@ -565,3 +565,171 @@
   color: var(--pf-ac);
   box-shadow: 0 0 8px rgba(184, 242, 46, 0.2);
 }
+
+/* ── IDLE STATE: elegant welcome screen ────────────────────────────────── */
+.pf-idle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  padding: 40px 0;
+}
+.pf-idle-card {
+  text-align: center;
+  padding: 48px 64px;
+  background: linear-gradient(145deg, var(--pf-p) 0%, var(--pf-p2) 100%);
+  border: 1px solid var(--pf-ln);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05);
+  max-width: 480px;
+}
+.pf-idle-logo {
+  font-size: 32px;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+.pf-idle-logo b { color: var(--pf-mg); }
+.pf-idle-logo i { color: var(--pf-ac); font-style: normal; }
+.pf-idle-subtitle {
+  font-size: 12px;
+  color: var(--pf-dm);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  margin-bottom: 24px;
+}
+.pf-idle-press {
+  font-size: 14px;
+  color: var(--pf-tx);
+  margin-bottom: 24px;
+}
+.pf-idle-key {
+  display: inline-block;
+  padding: 3px 10px;
+  background: var(--pf-p2);
+  border: 1px solid var(--pf-ac);
+  border-radius: 4px;
+  color: var(--pf-ac);
+  font-weight: 700;
+  font-size: 12px;
+  margin: 0 2px;
+  box-shadow: 0 2px 8px rgba(184,242,46,0.15);
+}
+.pf-idle-features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--pf-dm);
+}
+.pf-idle-features span {
+  color: var(--pf-dm);
+}
+.pf-idle-features span::first-letter {
+  color: var(--pf-ac);
+}
+
+/* ── PROFESSIONAL PANEL STYLING ────────────────────────────────────────── */
+.pf-m {
+  background: linear-gradient(145deg, var(--pf-p) 0%, color-mix(in srgb, var(--pf-p) 92%, #000) 100%);
+  border: 1px solid var(--pf-ln);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.03);
+  transition: border-color 0.2s;
+}
+.pf-m:hover {
+  border-color: color-mix(in srgb, var(--pf-ln) 60%, var(--pf-ac) 40%);
+}
+.pf-m h4 {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--pf-ln);
+}
+
+/* ── BUTTONS: luxury feel ──────────────────────────────────────────────── */
+.pf-btn {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--pf-ln);
+  background: linear-gradient(180deg, var(--pf-p2) 0%, color-mix(in srgb, var(--pf-p2) 85%, #000) 100%);
+  color: var(--pf-tx);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.pf-btn:hover {
+  border-color: var(--pf-ac);
+  background: linear-gradient(180deg, var(--pf-p2) 0%, color-mix(in srgb, var(--pf-p2) 70%, #1a1030) 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(0,0,0,0.4), 0 0 12px rgba(184,242,46,0.1);
+}
+.pf-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+.pf-btn.pw {
+  background: linear-gradient(180deg, var(--pf-ac) 0%, color-mix(in srgb, var(--pf-ac) 80%, #000) 100%);
+  color: #080512;
+  font-weight: 800;
+  border: none;
+  box-shadow: 0 2px 12px rgba(184,242,46,0.3), inset 0 1px 0 rgba(255,255,255,0.2);
+}
+.pf-btn.pw:hover {
+  box-shadow: 0 4px 20px rgba(184,242,46,0.5), inset 0 1px 0 rgba(255,255,255,0.3);
+}
+.pf-btn.pw.off {
+  background: linear-gradient(180deg, var(--pf-p2) 0%, color-mix(in srgb, var(--pf-p2) 85%, #000) 100%);
+  color: var(--pf-dm);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+
+/* ── KNOBS: subtle 3D ──────────────────────────────────────────────────── */
+.pf-d {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 28%, #3e2c64 0%, #1a0f2e 70%, #0d0820 100%);
+  border: 2px solid #000;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4), inset 0 1px 2px rgba(255,255,255,0.08), inset 0 -2px 4px rgba(0,0,0,0.5);
+  position: relative;
+  touch-action: none;
+  cursor: grab;
+  transition: box-shadow 0.15s;
+}
+.pf-d:hover {
+  box-shadow: 0 3px 10px rgba(0,0,0,0.5), 0 0 12px rgba(184,242,46,0.08), inset 0 1px 2px rgba(255,255,255,0.12), inset 0 -2px 4px rgba(0,0,0,0.5);
+}
+.pf-d:active { cursor: grabbing; }
+.pf-k {
+  font-size: 9px;
+  color: var(--pf-dm);
+  min-width: 46px;
+  text-align: center;
+}
+.pf-v {
+  color: var(--pf-tx);
+  font-size: 9px;
+  font-weight: 600;
+  min-height: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── STATUS STRIP: professional ────────────────────────────────────────── */
+.pf-stt {
+  position: sticky;
+  bottom: 0;
+  margin-top: auto;
+  padding: 10px 16px;
+  font-size: 11px;
+  color: var(--pf-dm);
+  background: linear-gradient(180deg, transparent 0%, var(--pf-bg) 30%, var(--pf-bg) 100%);
+  border-top: 1px solid var(--pf-ln);
+  z-index: 10;
+  backdrop-filter: blur(8px);
+}

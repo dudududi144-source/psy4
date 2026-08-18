@@ -277,11 +277,28 @@ export default function Page() {
             };
             const updated = savePreset(preset);
             setSavedPresets(updated);
-            alert(`Saved "${name}" (${updated.length} presets total)`);
           }}
+          onMIDI={onExportMIDI}
+          onWAV={onExportWAV}
         />
 
-        {/* 2-column layout: synth rack left, intelligence right */}
+        {/* When not playing: show elegant idle state */}
+        {!power ? (
+          <div className="pf-idle">
+            <div className="pf-idle-card">
+              <div className="pf-idle-logo"><b>PsyForge</b> <i>4</i></div>
+              <div className="pf-idle-subtitle">Psytrance Workstation</div>
+              <div className="pf-idle-press">Press <span className="pf-idle-key">POWER</span> or <span className="pf-idle-key">Space</span> to start</div>
+              <div className="pf-idle-features">
+                <span>● 7 Styles</span>
+                <span>● Smart Radio</span>
+                <span>● Learning Loop</span>
+                <span>● MIDI / WAV Export</span>
+              </div>
+            </div>
+          </div>
+        ) : (
+        /* 2-column layout: synth rack left, intelligence right */
         <div className="pf-layout">
           {/* ── LEFT: Synth rack + keyboard ── */}
           <div>
@@ -310,7 +327,7 @@ export default function Page() {
                 onSwing={setSwing}
               />
               <ModMatrix lfoAmt={lfoAmt} onLfoAmt={setLfoAmt} lfoRate={lfoRate} onLfoRate={setLfoRate} />
-              <FxSection drive={drive} onDrive={setDrive} delay={delay} onDelay={setDelay} reverb={reverb} onReverb={setReverb} volume={volume} onVolume={onVolume} onExportMIDI={onExportMIDI} onExportWAV={onExportWAV} />
+              <FxSection drive={drive} onDrive={setDrive} delay={delay} onDelay={setDelay} reverb={reverb} onReverb={setReverb} volume={volume} onVolume={onVolume} />
             </div>
             <Keyboard octave={octave} onOctave={setOctave} onNoteOn={onNoteOn} onNoteOff={onNoteOff} />
           </div>
@@ -337,6 +354,7 @@ export default function Page() {
             />
           </div>
         </div>
+        )}
 
         <StatusStrip state={s} arpOn={arpOn} seqOn={seqOn} />
       </div>
