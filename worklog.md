@@ -14415,3 +14415,44 @@ Stage Summary:
 - All other paths verified correct (CC, style-bank, MIDI, canvas)
 - 0 TS errors, 0 runtime errors
 - Pushed honestly with full explanation
+
+---
+Task ID: deep-roast-learning-brightness
+Agent: main (Z.ai Code)
+Task: Deep roast — learning reward didn't measure CC effect, fixed
+
+Work Log:
+- ROAST 1 (CC effect): tested CC74=0.2 vs 0.9 on single note.
+  at2k: 171→179 (+8), at5k: 151→161 (+10). Effect is REAL but small.
+  Reason: master chain compresses loudness, so peak reward doesn't change.
+  CC changes timbre (brightness), not loudness.
+
+- FIXED: learning reward now combines:
+  - 60% loudness (peak dB near -3dB)
+  - 40% brightness (spectral centroid 800-3000Hz = sweet spot)
+  - Spectral centroid computed from analyser freq data in getState()
+  - This makes CC74 (cutoff) actually affect the reward signal
+
+- ROAST 2 (Smart Radio): tested — lead patch changes lead-pro-layered5
+  → lead-fullon-squelch when style changes. WORKS. ✓
+
+- ROAST 5 (drum worklet): drumFrame=6.2M (advancing), sub-band=255 (max).
+  Drums produce real audio. ✓
+
+- ROAST 6 (memory): 20→27→21→19 MB over 90s. GC working, no leak. ✓
+
+- ROAST 4 (styles): eventsPerSec differs (16/12/14/14), peak/RMS differ.
+  Styles are measurably different. ✓
+
+- Verified learning with brightness reward:
+  T=10s: CC74 reward=0.65 (brightness in sweet spot)
+  T=40s: rewards 0.60, 0.54, 0.54, 0.59 (varied, not identical)
+
+- Pushed: 9dccd13..b5ccc00
+
+Stage Summary:
+- Found 1 more lie: learning reward didn't measure CC effect (only loudness)
+- FIXED: reward now measures brightness (spectral centroid) too
+- All other paths verified TRUE: CC, Smart Radio, drums, memory, styles
+- 0 TS errors, 0 runtime errors
+- Learning now has a meaningful reward signal that CC74 can actually affect
