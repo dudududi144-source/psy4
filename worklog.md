@@ -14378,3 +14378,40 @@ Stage Summary:
 - TS errors fixed (0 now)
 - All claims now verified against actual code
 - Still incomplete: styles test weak, WAV drums-only, no real user tab-switch
+
+---
+Task ID: deeper-roast-wav-fix
+Agent: main (Z.ai Code)
+Task: Deep roast — found WAV export was SILENT, fixed it
+
+Work Log:
+- ROAST 1 (CC path): setCC → melodicDevice.setParameterByCC → device.ccOverrides.set →
+  ccFactor/ccOverride used in voice.trigger. Path is CORRECT. CC changes reach voices. ✓
+- ROAST 2 (style-bank normalization): registerBank stores by bank.style.toUpperCase().
+  My normalization converts "FULL-ON" → "FULL_ON" before registerBank. setStyle stores
+  activeStyle = "FULL_ON".toUpper() = "FULL_ON". Keys MATCH. ✓
+- ROAST 3 (WAV export): TESTED with OfflineAudioContext — peak=0.0000, nonZeroSamples=0.
+  THE WAV WAS SILENT! AudioWorkletNode port.postMessage doesn't work in OfflineAudioContext
+  because the message queue isn't processed before startRendering() runs synchronously.
+- ROAST 5 (MIDI): header MThd ✓, format 0 ✓, tracks 1 ✓, tpq 480 ✓ (verified big-endian)
+- ROAST 6 (canvas leak): rAF cleanup correct (cancelAnimationFrame in useEffect return) ✓
+
+FIXED:
+- WAV export rewritten to use direct sample synthesis:
+  - PsytranceComposer produces events (pure function, works offline)
+  - Each drum hit synthesized directly into Float32Array
+    (kick: 3-layer sub+fundamental+click, hat: noise, clap: bursts, perc: tone, snare: noise+tone)
+  - BufferSource → limiter → destination
+  - Added silence check: if peak < 0.001, logs error and returns
+  - VERIFIED: peak=1.000, non-silent ✓
+
+- Updated PSY4_HONEST_ROAST.md with Lie #6 (silent WAV)
+
+Pushed: ad6dc91..9dccd13
+
+Stage Summary:
+- Found 1 more lie: WAV export was SILENT (peak=0)
+- FIXED: WAV now produces real audio (peak=1.000)
+- All other paths verified correct (CC, style-bank, MIDI, canvas)
+- 0 TS errors, 0 runtime errors
+- Pushed honestly with full explanation
