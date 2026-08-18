@@ -70,9 +70,20 @@ export class MelodicDevice implements PsyDevice {
 
   async init(): Promise<boolean> {
     try {
-      // Dynamically import the psysynth bundle (ESM, 21KB, served from /public).
-      // @ts-expect-error — /psysynth.js is a runtime asset, not a TS module.
-      const mod = await import('/psysynth.js');
+      // Load the psysynth ESM bundle from /public/psysynth.js.
+      // Turbopack tries to statically resolve `import(url)` even with
+      // ignore comments, so we use `new Function()` to hide the dynamic
+      // import from the bundler. This is a well-known Next.js pattern for
+      // loading runtime ESM assets.
+      const resp = await fetch('/psysynth.js');
+      if (!resp.ok) throw new Error(`psysynth fetch failed: ${resp.status}`);
+      const src = await resp.text();
+      const blob = new Blob([src], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+      // Hide dynamic import from Turbopack static analysis:
+      const dynImport = new Function('u', 'return import(u)');
+      const mod = await dynImport(url);
+      URL.revokeObjectURL(url);
       const createSynthDevice = mod.createSynthDevice ?? mod.default?.createSynthDevice;
       if (typeof createSynthDevice !== 'function') {
         throw new Error('psysynth bundle missing createSynthDevice export');

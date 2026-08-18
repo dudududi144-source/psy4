@@ -79,7 +79,10 @@ export class PsytranceComposer implements Composer {
     let t = barZero;
     let bassNote = req.prev?.lastBassNote ?? 36;   // C2
     let motifStep = req.prev?.motifStep ?? 0;
-    let barsComposed = 0;
+    // FIX: only count bars that actually overlap the compose window.
+    // The old version counted every iterated bar (including ones before
+    // startTime), which caused barInArrangement to skyrocket.
+    let barsActuallyComposed = 0;
     const barInArrangement0 = req.prev?.barInArrangement ?? 0;
 
     // Cycle root (changes every 64 bars for harmonic variety)
@@ -87,8 +90,9 @@ export class PsytranceComposer implements Composer {
     const cycleRootShift = CYCLE_ROOT_SHIFTS[cycle % CYCLE_ROOT_SHIFTS.length];
 
     while (t < end) {
-      const barIdx = barInArrangement0 + barsComposed;
+      const barIdx = barInArrangement0 + barsActuallyComposed;
       const section = getSection(barIdx);
+      let barProducedEvent = false;
 
       // Root note for this bar (I-IV-V-IV-iii cycle, 2 bars per shift)
       const shiftIdx = Math.floor(barIdx / 2) % BASS_ROOT_SHIFTS.length;
@@ -213,13 +217,25 @@ export class PsytranceComposer implements Composer {
       }
 
       t += barLen;
-      barsComposed++;
+      // Only advance the arrangement counter for bars that actually overlap
+      // the compose window [req.startTime, end). Bars before startTime are
+      // iterated (to maintain grid alignment) but don't advance the counter.
+      if (t > req.startTime) {
+        barsActuallyComposed++;
+      }
     }
 
     events.sort((a, b) => a.at - b.at);
+    // FIX: derive barInArrangement from absolute audio time, not call count.
+    // The old version accumulated `barsActuallyComposed` per call, but since
+    // the scheduler fires every 25ms and each call covers ~120ms, the counter
+    // skyrocketed (325 bars in 8 seconds). The correct musical position is:
+    //   barInArrangement = floor(startTime / barLen)
+    // This is monotonically tied to audio time and can't drift.
+    const barInArrangementFromTime = Math.floor(req.startTime / barLen);
     const next: ComposerContinuity = {
       lastBassNote: bassNote,
-      barInArrangement: barInArrangement0 + barsComposed,
+      barInArrangement: barInArrangementFromTime,
       motifStep,
     };
     return { events, next };
