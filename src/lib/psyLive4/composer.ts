@@ -180,22 +180,42 @@ export class PsytranceComposer implements Composer {
         }
       }
 
-      // ── LEAD/ACID: motif (DROP, REBUILD only, after bar 4) ──
-      if ((section === 'DROP' || section === 'REBUILD') && barIdx >= 4) {
-        for (let i = 0; i < g.motifSteps.length; i++) {
-          const step = g.motifSteps[i];
-          const at = t + step * sixteenth;
-          if (at >= req.startTime && at < end) {
-            const interval = g.motifIntervals[i % g.motifIntervals.length];
-            events.push({
-              at,
-              role: (g.acidBass ? 'acid' : 'lead') as SynthRole,
-              note: leadRoot + interval,
-              velocity: Math.min(1, 0.5 * velScale),
-              duration: sixteenth * 2,
-            });
-            motifStep = (motifStep + 1) % g.motifIntervals.length;
+      // ── LEAD/ACID: motif (GROOVE=soft, DROP/REBUILD=full) ──
+      // FIX: lead was only in DROP/REBUILD (bar 16+), user heard nothing for 2+ minutes
+      // Now lead plays from GROOVE (bar 8) with lower velocity, full in DROP
+      if (section === 'GROOVE' || section === 'DROP' || section === 'REBUILD') {
+        if (section === 'GROOVE' ? barIdx >= 8 : true) {
+          const leadVelMult = section === 'GROOVE' ? 0.4 : 0.6;
+          for (let i = 0; i < g.motifSteps.length; i++) {
+            const step = g.motifSteps[i];
+            const at = t + step * sixteenth;
+            if (at >= req.startTime && at < end) {
+              const interval = g.motifIntervals[i % g.motifIntervals.length];
+              events.push({
+                at,
+                role: (g.acidBass ? 'acid' : 'lead') as SynthRole,
+                note: leadRoot + interval,
+                velocity: Math.min(1, leadVelMult * velScale),
+                duration: sixteenth * (section === 'GROOVE' ? 3 : 2),  // longer notes in groove
+              });
+              motifStep = (motifStep + 1) % g.motifIntervals.length;
+            }
           }
+        }
+      }
+
+      // ── LEAD: atmospheric pad-like layer in INTRO (very soft) ──
+      if (section === 'INTRO' && barIdx >= 4) {
+        // Soft sustained lead notes for melody hint
+        const at = t;
+        if (at >= req.startTime && at < end) {
+          events.push({
+            at,
+            role: 'lead' as SynthRole,
+            note: leadRoot,
+            velocity: Math.min(1, 0.25 * velScale),
+            duration: beat * 4,  // whole bar
+          });
         }
       }
 

@@ -970,43 +970,43 @@
    "osc": {
     "a": {
      "wave": "saw",
-     "gain": 0.5,
-     "detuneCents": 7
+     "gain": 0.45,
+     "detuneCents": 8
     },
     "b": {
      "wave": "saw",
      "semitones": 12,
-     "gain": 0.35,
-     "detuneCents": -7,
+     "gain": 0.3,
+     "detuneCents": -8,
      "sync": false
     },
     "sub": {
      "semitones": -12,
-     "gain": 0.25
+     "gain": 0.15
     }
    },
-   "glideMs": 45,
+   "glideMs": 60,
    "filter": {
     "type": "lp",
-    "cutoff": 2400,
-    "res": 0.49999999999999994,
-    "envDepth": 0.6,
-    "envAttackMs": 2,
-    "envDecayMs": 400,
-    "velTrack": 0.3,
-    "lfoHz": 2.5,
-    "lfoDepth": 0.2
+    "cutoff": 1800,
+    "res": 0.35,
+    "envDepth": 0.45,
+    "envAttackMs": 5,
+    "envDecayMs": 500,
+    "velTrack": 0.15,
+    "lfoHz": 0.3,
+    "lfoDepth": 0.12
    },
    "amp": {
-    "attackMs": 2,
-    "decayMs": 350,
-    "sustain": 0.85,
-    "releaseMs": 150
+    "attackMs": 8,
+    "decayMs": 400,
+    "sustain": 0.7,
+    "releaseMs": 300
    },
-   "driveDb": 4,
+   "driveDb": 2,
    "sends": {
-    "delay": 0.55,
-    "reverb": 0.35
+    "delay": 0.35,
+    "reverb": 0.4
    },
    "humanize": true,
    "chordIntervals": [
