@@ -13506,3 +13506,58 @@ Stage Summary:
 - אומת בדפדפן: 4 סגנונות נותנים CC74 שונה, learning בטווח אודיו, engineLevel=0.271 (לא 0.00)
 - לא שיקרתי: ה-multiband compression ב-worklet עדיין מנוטרל — לא התיימר לתקן אותו, רק תיעדתי את האמת
 - נשאר לא פתור: multiband compression אמיתי ב-worklet (צריך crossover filters יציבים ב-AudioWorklet, מעבר ל-scope של ביקורת זו)
+
+---
+Task ID: final-honest-audit-multiband-fix
+Agent: main (Z.ai Code)
+Task: המשך — תקן את הפער היחיד שנשאר לא מתוקן מה-audit: multiband compression אמיתי
+
+Work Log:
+- קראתי את ה-audit הקודם (PSY4_FINAL_AUDIT.md) — Finding 1 תיעד שה-"multiband" היה רק 3-band EQ עם static gains (לא compressor אמיתי). התחייבתי לתקן.
+- בדקתי את הקוד הנוכחי:
+  - main thread (psyLive.ts ~1750-1812): 3 BiquadFilterNode crossovers + 3 GainNodes (static 1.0/1.0/1.0) + sum
+  - NO DynamicsCompressorNode בכלל — רק gain split/sum
+  - worklet (psy4-engine-v3.js:523): MultibandComp class מנוטרל (mbOut = dcOut)
+- הוספתי 3 שדות חדשים ל-PsyLive:
+  - multibandLowComp, multibandMidComp, multibandHighComp: DynamicsCompressorNode
+- החלפתי את ה-wiring:
+  - ישן: sidechainDuck → LP → LowGain → sum
+  - חדש: sidechainDuck → LP → LowComp → LowGain → sum (וכנ"ל ל-mid/high)
+- הגדרתי פרמטרים לכל band:
+  - Low: threshold=-18dB, ratio=3:1, attack=10ms, release=150ms, makeup=1.4 (+2.9dB)
+  - Mid: threshold=-20dB, ratio=2:1, attack=15ms, release=200ms, makeup=1.2 (+1.6dB)
+  - High: threshold=-22dB, ratio=2.5:1, attack=5ms, release=80ms, makeup=1.15 (+1.2dB)
+- עדכנתי את PSY4_FINAL_AUDIT.md:
+  - Finding 1: סומן כ-FIXED עם ציטוטי הגדרות וודאות
+  - Verdict table: עודכן
+  - Fix D section: החלפתי "honest naming" ב-"real multiband compression"
+  - REMAINING HONEST GAPS section חדש: 4 פערים שלא תוקנו (כנה על מה נשאר)
+
+Verification (browser):
+- agent-browser open → 0 errors
+- click Play → playing=true, kickCount=56, bar=6
+- וידאתי compressor gain reduction אמיתי:
+  - lowComp.reduction = -3.41 dB (לא 0 — דחיסה אמיתית!)
+  - midComp.reduction = -1.59 dB
+  - highComp.reduction = -0.01 dB (minimal)
+- וידאתי makeup gains מוחלים: 1.4, 1.2, 1.15
+- וידאתי כל 3 bands מייצרים פלט:
+  - low max = 255 (full scale — kick/bass)
+  - mid max = 208 (lead/acid)
+  - high max = 102 (hats/perc)
+  - allBandsActive = true
+- וידאתי peak/RMS בריא:
+  - peak = -14.6 dB (0.186 linear — בריא, לא clipping)
+  - rms = -21.2 dB (0.087 — תקין לפסיטראנס)
+- staleMs = 35 — scheduler ירה לפני 35ms
+- 0 errors, 0 NaN, 0 squeal
+
+Stage Summary:
+- Finding 1 (multiband compression) — FIXED: עכשיו יש DynamicsCompressorNode אמיתי לכל band עם threshold/ratio/attack/release/makeup
+- כל 5 הפערים מה-audit הקודם עכשיו FIXED
+- וידאתי בדפדפן: gain reduction אמיתי, 3 bands פעילים, peak בריא, 0 errors
+- נשארו 4 פערים כנים (לא תוקנו, מתועדים ב-REMAINING HONEST GAPS):
+  1. worklet MultibandComp עדיין מנוטרל (main thread מכסה את זה)
+  2. sound design (7 בעיות מ-PSY4_DEEP_ROAST.md — לא טופלו)
+  3. אין WAV rendering pipeline
+  4. אין repetition analysis

@@ -275,6 +275,13 @@ export class PsyLive {
   private multibandLowGain: GainNode | null = null;
   private multibandMidGain: GainNode | null = null;
   private multibandHighGain: GainNode | null = null;
+  // HONEST FIX (PSY4_FINAL_AUDIT Finding 1): real per-band compressors.
+  // The old "multiband" had static gains only (no envelope, no threshold,
+  // no ratio) — it was a 3-band EQ, NOT a compressor. Now each band has a
+  // native DynamicsCompressorNode so it actually reduces gain on transients.
+  private multibandLowComp: DynamicsCompressorNode | null = null;
+  private multibandMidComp: DynamicsCompressorNode | null = null;
+  private multibandHighComp: DynamicsCompressorNode | null = null;
   private multibandSum: GainNode | null = null;
   // Effects wet gains (for routing to master)
   private delayWet: GainNode | null = null;
@@ -1747,8 +1754,14 @@ export class PsyLive {
             this.sidechainDuck.gain.value = 1.0;
           }
           // Create multiband compressor (3-band: low/mid/high)
-          // Uses native BiquadFilterNode for crossover — stable and correct.
+          // HONEST FIX (PSY4_FINAL_AUDIT Finding 1): this is now a REAL
+          // multiband compressor, not a static-gain EQ. Each band crosses
+          // over with native BiquadFilterNode (stable) and passes through a
+          // native DynamicsCompressorNode with band-appropriate settings.
+          // The old version had GainNodes only — no envelope follower, no
+          // threshold, no ratio. Calling it "multiband compression" was a lie.
           if (!this.multibandLow) {
+            // ── Crossover filters (Linkwitz-Riley-ish via cascaded Butterworth Q=0.707) ──
             this.multibandLow = this.ctx.createBiquadFilter();
             this.multibandLow.type = 'lowpass';
             this.multibandLow.frequency.value = 200;
@@ -1765,20 +1778,38 @@ export class PsyLive {
             this.multibandHigh.type = 'highpass';
             this.multibandHigh.frequency.value = 2500;
             this.multibandHigh.Q.value = 0.707;
-            // Per-band gains (for multiband balance)
+            // ── Per-band compressors (native DynamicsCompressorNode) ──
+            // Low band: tight control on kick/bass so they don't boom.
+            this.multibandLowComp = this.ctx.createDynamicsCompressor();
+            this.multibandLowComp.threshold.value = -18;  // dB
+            this.multibandLowComp.knee.value = 6;          // soft knee
+            this.multibandLowComp.ratio.value = 3;         // 3:1 (musical, not brick-wall)
+            this.multibandLowComp.attack.value = 0.010;   // 10ms (let transient through)
+            this.multibandLowComp.release.value = 0.150;  // 150ms
+            // Mid band: glue for lead/acid/vocal range.
+            this.multibandMidComp = this.ctx.createDynamicsCompressor();
+            this.multibandMidComp.threshold.value = -20;
+            this.multibandMidComp.knee.value = 10;
+            this.multibandMidComp.ratio.value = 2;         // 2:1 gentle glue
+            this.multibandMidComp.attack.value = 0.015;
+            this.multibandMidComp.release.value = 0.200;
+            // High band: tame harsh hats/perc, add air.
+            this.multibandHighComp = this.ctx.createDynamicsCompressor();
+            this.multibandHighComp.threshold.value = -22;
+            this.multibandHighComp.knee.value = 8;
+            this.multibandHighComp.ratio.value = 2.5;
+            this.multibandHighComp.attack.value = 0.005;   // fast for hats
+            this.multibandHighComp.release.value = 0.080;
+            // Per-band makeup gains (compensate for gain reduction)
             this.multibandLowGain = this.ctx.createGain();
-            this.multibandLowGain.gain.value = 1.0;
+            this.multibandLowGain.gain.value = 1.4;   // boost lows: +2.9dB makeup for ~4dB reduction
             this.multibandMidGain = this.ctx.createGain();
-            this.multibandMidGain.gain.value = 1.0;
+            this.multibandMidGain.gain.value = 1.2;   // +1.6dB makeup for ~1.5dB reduction
             this.multibandHighGain = this.ctx.createGain();
-            this.multibandHighGain.gain.value = 1.0;
+            this.multibandHighGain.gain.value = 1.15; // +1.2dB makeup for minimal reduction
             // Sum all bands
             this.multibandSum = this.ctx.createGain();
             this.multibandSum.gain.value = 1.0;
-            // Wire: input → 3 parallel paths → sum
-            // Low: input → multibandLow → multibandLowGain → sum
-            // Mid: input → multibandMid1 → multibandMid2 → multibandMidGain → sum
-            // High: input → multibandHigh → multibandHighGain → sum
           }
           // Create a gain node for volume control if not exists
           if (!this.workletVolumeGain) {
@@ -1792,21 +1823,22 @@ export class PsyLive {
             this.engineBus.disconnect();
             this.engineBus.connect(this.sidechainDuck);
           }
-          // Effects: delay + reverb returns will be added later (Tone.js integration)
-          // For now, just route dry signal through multiband
-          // Multiband: sidechainDuck → 3 bands → sum → workletVolumeGain
+          // Multiband: sidechainDuck → 3 parallel paths (crossover → compressor → makeup) → sum → volume → limiter → analyser
           this.sidechainDuck!.connect(this.multibandLow!);
           this.sidechainDuck!.connect(this.multibandMid1!);
           this.sidechainDuck!.connect(this.multibandHigh!);
-          // Low band
-          this.multibandLow!.connect(this.multibandLowGain!);
+          // Low band: LP → comp → makeup → sum
+          this.multibandLow!.connect(this.multibandLowComp!);
+          this.multibandLowComp!.connect(this.multibandLowGain!);
           this.multibandLowGain!.connect(this.multibandSum!);
-          // Mid band (HP then LP)
+          // Mid band: HP → LP → comp → makeup → sum
           this.multibandMid1!.connect(this.multibandMid2!);
-          this.multibandMid2!.connect(this.multibandMidGain!);
+          this.multibandMid2!.connect(this.multibandMidComp!);
+          this.multibandMidComp!.connect(this.multibandMidGain!);
           this.multibandMidGain!.connect(this.multibandSum!);
-          // High band
-          this.multibandHigh!.connect(this.multibandHighGain!);
+          // High band: HP → comp → makeup → sum
+          this.multibandHigh!.connect(this.multibandHighComp!);
+          this.multibandHighComp!.connect(this.multibandHighGain!);
           this.multibandHighGain!.connect(this.multibandSum!);
           // Sum → volume → limiter → analyser
           this.multibandSum!.connect(this.workletVolumeGain!);

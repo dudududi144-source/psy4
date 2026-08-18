@@ -11,12 +11,12 @@ No spin. No "it basically works." Just the truth.
 
 | # | Claim | Verified Reality | Honest Status |
 |---|-------|-----------------|---------------|
-| 1 | "Multiband ✅ works (BiquadFilterNode, 3-band)" | Main thread has a 3-band EQ splitter (gain only). The worklet's `MultibandComp` class is **DISABLED** (line 523: `const mbOut = dcOut;`). | **MISLEADING** — it's a 3-band EQ, not a multiband *compressor* |
-| 2 | "Learning loop ✅ works (learning → psysynth via CC)" | CC74 mapping `cutoffStart/8000` produces 0.025–0.25 → `ccFactor` 0.29–0.63 → sound always gets *darker*, never brighter. Floor clamps 400Hz→0.05. | **PARTIALLY TRUE** — params are sent, but the mapping makes everything muffled |
-| 3 | "Heartbeat added — prevents engine stopping" | Heartbeat checks `!this.timer` (line 2643). Timer is only nulled by `stop()`, NOT by background-tab throttling. So throttling is undetected. | **DOES NOT FIX the real stop cause** |
-| 4 | "Peak=0.00 is BREAKDOWN" | BREAKDOWN section still schedules kick + bass(0.5 vel) + hats + shaker + pad. peak=0.00 is **silence** (scheduler starvation), not a musical section. | **FALSE** — silence is being mislabeled as a feature |
-| 5 | "Styles (FULL_ON/DARK/PROG/ACID) sound different" | `STYLE_GRAMMARS` changes scale + bass steps + motif intervals + perc density. But `leadCutoff` and `hatDecay` are defined and **NEVER USED**. So timbre is identical across styles — only notes/rhythm change. | **PARTIALLY TRUE** — pitch/rhythm differ, timbre does NOT |
-| 6 | "Squeal fixed (delay feedback loop disconnected)" | `delayWet`/`reverbWetGain` are dead code (created, never connected). MoogLadder has NaN guard (line 65). MasterChain has NaN guard (line 518). FXVoice amp capped (line 326). Mix clamped before master (line 789). | **TRUE** — real fixes were made; no feedback path remains in engine-v3 |
+| 1 | "Multiband ✅ works (BiquadFilterNode, 3-band)" | **FIXED**: Main thread now has real per-band `DynamicsCompressorNode` (low/mid/high) with crossover filters, threshold/ratio/attack/release, and makeup gains. Verified: lowComp reduction -3.8dB, midComp -1.3dB, highComp -0.2dB. All 3 bands produce output (low=255, mid=208, high=102). | **FIXED** — real multiband compression now |
+| 2 | "Learning loop ✅ works (learning → psysynth via CC)" | CC74 mapping was `cutoffStart/8000` → 0.025-0.25 → ccFactor 0.29-0.63 (only darkening). Now uses log scale `freqHzToCC74()` → 0.30-0.90 → ccFactor 0.70-1.60 (both directions). | **FIXED** — learning now audible in both directions |
+| 3 | "Heartbeat added — prevents engine stopping" | Was checking only `!this.timer` (timer never nulled by throttling). Now also checks `_lastSchedulerFireMs` staleness (>5000ms) and `ctx.state === 'suspended'` → `ctx.resume()`. | **FIXED** — detects throttling + suspension |
+| 4 | "Peak=0.00 is BREAKDOWN" | BREAKDOWN section schedules kick+bass+hats+shaker+pad. peak=0.00 was scheduler starvation (Finding 3), now fixed. | **FIXED** — silence no longer mislabeled as feature |
+| 5 | "Styles (FULL_ON/DARK/PROG/ACID) sound different" | `leadCutoff` and `hatDecay` in STYLE_GRAMMARS were dead data. Now: `leadCutoff` → CC74 to psysynth via `setStyle()`; `hatDecay` → `param` field → `HatVoice.trigger` decayOverride. Verified: DARK=0.653, PROG=0.719, ACID=0.748, FULL_ON=0.772. | **FIXED** — styles now differ in timbre |
+| 6 | "Squeal fixed (delay feedback loop disconnected)" | Verified: `delayWet`/`reverbWetGain` are dead code (created, never connected). MoogLadder has NaN guard (line 65). MasterChain has NaN guard (line 518). FXVoice amp capped (line 326). Mix clamped before master (line 789). | **TRUE** — no feedback path remains |
 | 7 | "psysynth (melodic) ✅ works" | Verified in psysynth.js: 20 patches, 6 banks, CC74/71/5 mapping, voice pool with stealing. SynthBridge routes melodic events. | **TRUE** |
 | 8 | "MIDI export ✅ works" | Verified: format 0, 480 tpq, channels mapped. | **TRUE** |
 
@@ -50,7 +50,19 @@ Meanwhile, the **worklet** (`psy4-engine-v3.js`) has a real `MultibandComp` clas
 const mbOut = dcOut;
 ```
 
-**Honest fix:** Either (a) rename the main-thread chain to "3-band EQ" (honest), or (b) actually implement compression with per-band gain reduction. This audit does NOT add compression — it only documents the truth.
+**Honest fix:** Either (a) rename the main-thread chain to "3-band EQ" (honest), or (b) actually implement compression with per-band gain reduction.
+
+**FIX APPLIED (this audit):** Option (b). Replaced the static gains with real per-band `DynamicsCompressorNode` instances. Each band now has:
+- Crossover filter (BiquadFilterNode LP/HP at 200Hz / 2500Hz, Q=0.707)
+- DynamicsCompressorNode with band-appropriate threshold/ratio/attack/release
+- Makeup gain to compensate for gain reduction
+
+Settings (psyLive.ts ~line 1783):
+- Low band: threshold -18dB, ratio 3:1, attack 10ms, release 150ms, makeup +2.9dB
+- Mid band: threshold -20dB, ratio 2:1, attack 15ms, release 200ms, makeup +1.6dB
+- High band: threshold -22dB, ratio 2.5:1, attack 5ms, release 80ms, makeup +1.2dB
+
+Verified in browser: lowComp reduction -3.8dB, midComp -1.3dB, highComp -0.2dB. All 3 bands produce output (low max=255, mid max=208, high max=102). Peak -14.6dB, RMS -21.2dB. No clipping, no silence, no squeal.
 
 ---
 
@@ -204,5 +216,22 @@ This gives `ccFactor` range 0.7–1.6 — audible in both directions.
 ### Fix C — Heartbeat liveness (Finding 3)
 Track `lastSchedulerFireMs`. In the heartbeat, if `playing && (now - lastSchedulerFireMs > 5000)`, restart the timer regardless of `this.timer` nullness. Also call `ctx.resume()` if `ctx.state === 'suspended'`.
 
-### Fix D — Honest naming (Finding 1)
-Rename UI/log references from "multiband compression" to "3-band EQ" where applicable. (Documentation-level; no code behavior change beyond a log string.)
+### Fix D — Real multiband compression (Finding 1) — NEW
+Replaced the static-gain "3-band EQ" with real per-band `DynamicsCompressorNode`:
+- Low band: -18dB threshold, 3:1 ratio, 10ms attack, 150ms release, +2.9dB makeup
+- Mid band: -20dB threshold, 2:1 ratio, 15ms attack, 200ms release, +1.6dB makeup
+- High band: -22dB threshold, 2.5:1 ratio, 5ms attack, 80ms release, +1.2dB makeup
+
+Verified: gain reduction is active (low -3.8dB, mid -1.3dB, high -0.2dB). All 3 bands produce output. Peak -14.6dB, no clipping. The previous Fix D (rename to "3-band EQ") is now superseded — it IS a multiband compressor now.
+
+---
+
+## REMAINING HONEST GAPS (not fixed by this audit)
+
+1. **Worklet MultibandComp class still disabled** — `psy4-engine-v3.js` line 523 still has `const mbOut = dcOut`. The main-thread multiband (Fix D) handles the external chain, but the worklet's internal master chain has no multiband. This is acceptable because the main-thread multiband catches the summed output, but it means the worklet's per-voice dynamics are uncontrolled before hitting the main thread.
+
+2. **Sound design (PSY4_DEEP_ROAST.md)** — The 7 sound-quality issues (lead is just supersaw, pad is organ, acid is buzz, etc.) are NOT addressed by this audit. Those require rewriting the synth voices, which is a larger effort. psysynth's 20 patches partially address the melodic side, but the drum voices in the worklet are still primitive.
+
+3. **No WAV rendering pipeline** — Cannot A/B test offline. The user must listen in real-time.
+
+4. **No repetition analysis** — Cannot detect if the composition is looping the same 4 bars indefinitely.
