@@ -14936,3 +14936,529 @@ Stage Summary:
 - Resonance reduced (was squealing)
 - Reverb increased (adds warmth/space)
 - LFO depth capped (gentler movement)
+
+---
+Task ID: RESEARCH-FAMILY
+Agent: Explore (Z.ai Code)
+Task: Research ALL psy-related repositories and folders available. Catalog every psy project, their purpose, useful code/patterns, and how they could combine into one commercial product.
+
+Work Log:
+- Read worklog.md (14,938 lines) to understand context — PSY4 is a real-time causal psytrance engine in Next.js 16 + AudioWorklet. Rebuilt from a 30k-line "studio" tree into a strict 3-layer architecture (foundation shim → devices → host). Currently has psysynth.js (melodic device bundle), psy4-engine-v3.js (drum worklet), 32 patches across 6 style banks, 43 procedurally-generated samples + 141 quarantined commercial samples, 10 verified radio streams.
+- Listed /tmp/ — no psy3, psy-foundation, psy-audit, psysynth, or nexus-psy7 folders exist locally anymore. The /tmp/psy3 referenced throughout the worklog was a temporary clone used during the rebuild; it has been cleaned up. The /tmp/psy-family-scan, /tmp/psy-repos, /tmp/nexus-psy7, /tmp/psy-foundation referenced in audit-reports/AUDIT-B-PSY-ECOSYSTEM-INVENTORY.md are all gone.
+- Identified local git remote: `https://github.com/dudududi144-source/psy4.git` (the current project).
+- Queried GitHub search API for `user:dudududi144-source psy` — found 13 psy repos total:
+  1. **psy** (HTML, 270KB, "Original psytrance engine — the beginning of the family", pushed 2026-08-12)
+  2. **psystar** (HTML, 5.7MB, "Star project — the unified platform vision", 59 phases, Hebrew, pushed 2026-08-17)
+  3. **psydrum** (TypeScript, 3MB, "Drum device for PSY family — PsyDevice-conformant", BUILDING phase 11, pushed 2026-08-18)
+  4. **psysampler** (empty, 0KB, "Consider removing", pushed 2026-08-13)
+  5. **psy-foundation** (HTML, 65MB, "Next.js foundation layer — shared types, utilities", pushed 2026-08-18)
+  6. **psy4** (HTML, 158MB, "PSY LIVE — Smart radio-following psytrance engine with learning" — THIS PROJECT, pushed 2026-08-18)
+  7. **psy5** (TypeScript, 5.4MB, "Live Psytrance Performance Instrument. Pooled Engine, No GC Dropouts", pushed 2026-08-15)
+  8. **psy-sampler** (TypeScript, 7MB, "Canonical Sampler Device — 59 features, 653 tests, 21 shortcuts, PWA, MIDI round-trip", pushed 2026-08-18)
+  9. **psysynth** (TypeScript, 1.2MB, "Synth Device — subtractive-synth realization device (HOW layer)", 124 tests pass, pushed 2026-08-17)
+  10. **PsySynthPro** (HTML, 2.6MB, "Real DSP psychedelic synthesizer — PolyBLEP + wavetable + ZDF SVF + FM + MIDI/MPE + PWA", pushed 2026-08-18)
+  11. **PSY6-ULTIMATE** (HTML, 530KB, "Standalone Psytrance Performance Instrument — one file, zero server, infinite groove", pushed 2026-08-18)
+  12. **psy3-clean** (JavaScript, 6.7MB, "PSY3 PRO — Hyperspace Psytrance Workstation, clean base with critical fixes", pushed 2026-08-18)
+  13. **psy4new** (HTML, 128MB, "Experimental version of PSY LIVE — consider merging with psy4", pushed 2026-08-14)
+- Fetched README.md for each repo via raw.githubusercontent.com.
+- Discovered the psysynth repo is the canonical "Synth Device" — its minified ESM bundle is what /home/z/my-project/public/psysynth.js contains. Same for psy-sampler and the local /public/psy-sampler.js.
+- Cataloged current PSY4 src/lib structure (post-rebuild, ~1,700 lines):
+  - **src/lib/psy-foundation-shim/** (7 files, ~600 lines) — VERBATIM contracts from `psy-foundation` repo, pinned to commit 4ae95d3 (2026-08-13). Byte-equivalence guarded by `tests/psy-sampler/shim-sync.test.ts`:
+    - `protocol.ts` (203 lines) — MusicalEvent union (beat/section/energy/drop/note/pattern), TransportState, MusicalContext, DeviceCapabilities, DeviceState, SessionState, Material (9 MaterialTypes: motif/rhythm/bass-pattern/drum-pattern/fill/phrase/fx-gesture/preset/texture), MusicalAction (play/variation/do-nothing), MusicalOutcome (sounded/skipped/collided), Experience, InMemoryChannel (per-listener try/catch)
+    - `transport.ts` (59 lines) — MusicalTransport (v0 legacy types): bpm/beat/bar/beatsPerBar/beatTime/barTime/phase/barPhase/confidence/locked/revision/origin/lastObservationAgo/observationCount + BeatObservation + TransportClockOptions (12 knobs incl. octaveFoldTolerance, gapTimeout, confidenceDecayPerSec)
+    - `device.ts` (24 lines) — PsyDevice interface: id, capabilities(), onTransport, onContext, onEvent, onStart?, onStop?, reportLatencyMs?
+    - `host.ts` (104 lines) — DeviceHost class: register/unregister/list/findByRole, pushTransport (with revision dedup + min-interval throttle), pushContext, publish (per-device try/catch error isolation)
+    - `voice-pool.ts` (133 lines) — Voice<T> interface (active/noteOn/noteOff/panic) + VoicePool<V> (round-robin allocation, oldest-steal) + Rng class (mulberry32, deterministic across platforms). Comment: "the pattern from psy5".
+    - `roles.ts` (20 lines) — SynthRole = bass|lead|acid|pad|keys|kick|hat|clap|perc|snare; DRUM_ROLES + MELODIC_ROLES sets; MusicalStyle = FULL_ON|DARK|PROGRESSIVE|ACID|GOA|HI_TECH|FOREST
+    - `index.ts` (61 lines) — barrel re-export
+  - **src/lib/devices/** (2 files, 200 lines) — Layer 2 device wrappers:
+    - `drum-device.ts` (117 lines) — Wraps `psy4-engine-v3.js` AudioWorklet as a PsyDevice. Maps SynthRole → worklet voiceId. Pure HOW (no scheduler, no setInterval, no ctx.currentTime read).
+    - `melodic-device.ts` (182 lines) — Wraps `/psysynth.js` ESM bundle as a PsyDevice. Fetches + blob-imports the bundle (hides dynamic import from Turbopack). Loads `/patches/manifest.json` + `/patches/style-banks.json`. Normalizes style names ("FULL-ON"→"FULL_ON").
+  - **src/lib/psyLive4/** (8 files, ~900 lines) — Layer 3 HOST:
+    - `psyLive4.ts` (895 lines) — THE HOST. Owns AudioContext, CompositionScheduler, master chain (3-band multiband via 4 BiquadFilters + 3 DynamicsCompressors + 3 Gains → sum → master limiter → analyser → destination). DrumDevice + MelodicDevice wired via DeviceHost + InMemoryChannel. visibilitychange handler (ctx.suspend/resume — the "engine stops" fix). 25ms setInterval scheduler with 120ms lookahead, 20ms skip. KickCount + sidechain duck + bar-fingerprint repetition detector + smart radio (auto-cycles 7 styles every ~120s) + CCLearner loop. Public state: LiveState4 with 30+ fields.
+    - `scheduler.ts` (94 lines) — CompositionScheduler class. THE ONLY setInterval in the system. Monotonic `lastComposedUntil` invariant (the structural fix for the "engine stops after a few minutes" bug from bar-index drift). `reanchorAfterBackground()` after ctx.resume().
+    - `composer.ts` (271 lines) — PsytranceComposer pure function: (startTime, duration, bpm, style, energy, seed, prev) → events[]. getSection(bar) returns INTRO/GROOVE/DROP/BREAKDOWN/REBUILD/OUTRO based on 64-bar cycle (cycle 0 = standard, cycle 1+ = varied). BASS_ROOT_SHIFTS (I-IV-V-IV-iii cycle, 2 bars per shift). CYCLE_ROOT_SHIFTS per 64-bar cycle. Kick = 4-on-floor. Bass = rolling 16ths with downbeat/afterKick/probabilistic steps + acidBass when style grammar says so. Hats = 8th notes. Perc = occasional. Snare/clap backbeat. Lead follows bass harmony (3rd/5th above, +2 octaves). Pad = root+5th+octave chord.
+    - `style-grammars.ts` (118 lines) — STYLE_GRAMMARS for 7 styles (FULL_ON/DARK/PROGRESSIVE/ACID/GOA/HI_TECH/FOREST). Each: scaleName (phrygianDominant/phrygian/minor/dorian), motifIntervals, motifSteps, bassSteps, acidBass flag, percussionDensity, hatDecay, leadCutoff. SCALES dict (4 scales). STYLE_ALIASES. `resolveGrammar(style)`.
+    - `learning.ts` (116 lines) — CCLearner epsilon-greedy RL. EXPLORABLE_CCS = [74, 71, 5, 12] (cutoff, resonance, glide, energyMacro). 8s trials. Reward = 60% loudness (peak near -3dB) + 40% brightness (spectral centroid 800-3000Hz = sweet spot). Epsilon decay 0.98 per trial. History of 20 trials per CC. Reduced from a 4000-line dead system to a working ~100-line learner.
+    - `cc-mapping.ts` (19 lines) — freqHzToCC74() — log-scale Hz → CC74 0..1 (80Hz→0.30, 632Hz→0.50, 8000Hz→0.90).
+    - `rng.ts` (26 lines) — mulberry32 + range/int helpers.
+    - `types.ts` (65 lines) — NoteEvent (absolute `at` seconds, role, note, velocity, duration). ComposeRequest/ComposeResult/ComposerContinuity/Composer. `toMusicalEvent()` converts internal NoteEvent to foundation MusicalEvent ('note' variant — channel = SynthRole).
+    - `presets.ts` (42 lines) — PsyPreset save/load to localStorage. ccParams + fx + bpm/style/energy.
+- Read /home/z/my-project/public/psysynth.js (1 line, minified ~21KB ESM bundle). Exports `createSynthDevice`, `SynthDevice`, `SYNTH_ROLES`. Architecture:
+  - 7 melodic roles: bass, lead, arp, pad, stab, pluck, keys
+  - Per-voice signal chain: oscA + oscB + sub osc → ringMod (oscB → gainA.gain) → gainA + gainB + gainSub → preDriveGain → preDrive (tanh LUT waveshaper, driveDb) → f1+f2 dual BiquadFilter (lowpass/bandpass, res×20 Q) → fSat (tanh waveshaper) → VCA → out + sendDelay + sendReverb
+  - Per-context cached PeriodicWave (sine/triangle/square/saw additive harmonic tables, 64 harmonics)
+  - SynthVoicePool: per-role budgets (bass:4, lead:4, arp:4, pad:6, stab:4, pluck:6, keys:4 = 32 default voices), oldest-steal, by-key map for note-off
+  - NoteRouter: validates channel/note/velocity, drops stale (>50ms in past), distinguishes hold (-1 duration) vs finite, returns {note-on|note-off|drop} kind
+  - PatchLibrary: loads manifest.json, validates provenance (author/license/created), enforces range constraints (cutoff 40-18000Hz, res 0-0.95, envDepth 0-1, ADSR ≥0.5ms, driveDb 0-12), registerBank(style, overrides+macro)
+  - Variance: mulberry32-seeded detuneDriftCents (±3), cutoffMultiplier (±2%), velocityHumanize (±3%), stepCutoffMultiplier (±8% arp only), arpOrnament (+12 semis on step 3 of 4), pickIndex
+  - MidiLearn: CC74=cutoff, CC71=resonance, CC5=glide, CC12=energyMacro, CC14=delaySend, CC15=reverbSend. Learn mode (target→CC mapping). toJSON/fromJSON persistence.
+  - Latency: probes ctx.baseLatency + triggerOverheadMs
+  - Counters: eventsReceived/Dropped, voicesOn/Stolen, unknownChannel, staleDrop, invalidEvent, patchLoadErrors, dropReasons{}
+  - Macro per style bank: cutoffBias, resBias, glideBias, energyToCutoff
+- Read /home/z/my-project/public/worklets/psy4-engine-v3.js (864 lines, AudioWorklet). Architecture:
+  - DRUMS ONLY (kick/snare/hat/hatOpen/clap/perc/shaker/riser/impact/sweep + texture). Melodic voices (bass/lead/acid/pad) routed to psysynth by main thread.
+  - Voice IDs: V_KICK=0, V_BASS=1, V_LEAD=2, V_ACID=3, V_PAD=4, V_HAT=5, V_HAT_OPEN=6, V_CLAP=7, V_PERC=8, V_SHAKER=9, V_TEXTURE=10, V_RISER=11, V_IMPACT=12, V_SWEEP=13, V_SNARE=14
+  - DSP primitives: fastTanh (3-piece poly approximation), OnePoleLP, OnePoleHP, MoogLadder (4-stage tanh ladder, NaN guard), PinkNoise (4-pole Voss-style)
+  - Voice classes (all preallocated, render to `this._out` Float32Array(2) — zero allocation in process()):
+    - KickVoice: 3-layer (pitch-swept fundamental 50Hz×4→50Hz exp decay 0.025s + sub sine octave below 0.15s decay + 3kHz click 8ms)
+    - HatVoice: PinkNoise → HP 8kHz → LP 12kHz → env exp decay (35ms closed / 150ms open)
+    - SnareVoice: 180Hz tone + PinkNoise → HP 2kHz → LP 6kHz → env (100ms)
+    - ClapVoice: PinkNoise → HP 1.5kHz → LP 5kHz → multi-burst envelope (1/0.3/0.8 levels at 0/10/20ms)
+    - PercVoice: short tone 80+(note-36)×8 Hz + click
+    - ShakerVoice: PinkNoise → LP 5kHz → env (60ms)
+    - FXVoice: 3 types — RISER (noise→Moog opening 200→6200Hz), IMPACT (sub boom + noise crack), SWEEP (noise→Moog closing 5000→500Hz)
+  - StereoWidener: M/S processing with HP on side (200Hz — keeps lows mono) + 12ms Haas delay on right
+  - MultibandComp: 3-band split (200Hz / 2500Hz Butterworth 2nd-order crossovers), per-band envelope-following compression (thr=0.5, ratio=1.8, makeup=1.3, attack 5ms/release 100ms)
+  - MasterChain: DC blocker (20Hz) → MultibandComp → glue compressor (thr=0.6, ratio=1.5, makeup=0.8) → limiter (ceiling=0.89, 50ms release). Per-channel (L + R separate) for stereo preservation. NaN guards at every stage.
+  - Voice pools: 3 kick + 3 hat + 2 snare + 2 clap + 3 perc + 2 shaker + 2 FX = 17 drum voices (preallocated)
+  - Event ring buffer: Float64Array(512×6) — [at, voiceId, note, vel, dur, param]. Main thread pushes via port.postMessage, worklet pops in process(). `param` field carries per-event variation (e.g., hat decay override).
+  - Stats: posts {type:'stats', activeVoices, processMs, voiceBudget} every 685 blocks (~15Hz at 44.1kHz/128 samples)
+  - renderVoice message: offline render of any voice class for SynthesisMatcher analysis (subarrays reused, not allocated)
+  - applyRecipe message: applies learned params to voice classes (fund, subDecay, startMult, pitchDecay for kick; hatDecay, snareDecay, clapDecay, shakerDecay for others) — closes the learning loop
+- Read /home/z/my-project/public/patches/manifest.json (1,129 lines). 32 patches across 7 roles:
+  - bass (8 patches): bass-acid-303, bass-sustain-held, bass-dark-offbeat, bass-gallop, bass-prog-minimal, bass-pro-rolling5, bass-sub-deep, bass-walking
+  - lead (5): lead-fullon-squelch, lead-dark-square, lead-hitech-sync, lead-prog-pluck, lead-pro-layered5
+  - arp (4): arp-goa, arp-hitech-square, arp-forest-plucky, arp-classic
+  - pad (3): pad-pro-evolving5, pad-atmosphere, pad-bright
+  - stab (2): stab-goa-major, stab-acid
+  - pluck (2): pluck-forest, pluck-morning
+  - keys (2): keys-break-soft, keys-arp-bright
+  - + 6 more variants
+  Each patch: provenance (author/license/created/revised), osc (a/b/sub with wave/gain/semitones/detuneCents), glideMs, filter (type/cutoff/res/envDepth/envAttackMs/envDecayMs/velTrack), amp (ADSR), driveDb, sends (delay/reverb), humanize flag
+- Read /home/z/my-project/public/patches/style-banks.json (89 lines). 6 style banks (FULL-ON/DARK-PSY/PROGRESSIVE/GOA/HI-TECH/FOREST). Each: patchOverrides per role + macro (cutoffBias, resBias, glideBias, energyToCutoff).
+- Read /home/z/my-project/public/soundbank/index.json (86 lines). Format `psy4-soundbank` v1.0.0. Categories: kicks (3 files: default/deep/punchy), bass (2: default/deep), leads (1: default), perc (9: hat-closed/open, clap, snare, shaker, tom, ride, perc-1/2), fx (2: sweep, texture-pad). 3 presets: full-on (145 BPM FULL_ON), dark-prog (138 DARK), acid (142 ACID). learningDefaults (explorationInterval=15000ms, maxEntriesPerRole=20, matchSaveThreshold=0.7, rewardWindow=3000, memoryKey='psy4-learned-params').
+- Read /home/z/my-project/public/samples/manifest.json (540 lines) — PSY Sampler MVP sample library. Provenance-enforced: PSY3 procedural samples (commercialUse=true, no copyright restriction). 6 categories × ~40 sample entries, each with character tags, genreFit, bpmRange, rootNote, verification status.
+- Read /home/z/my-project/public/samples/real/manifest.json (8 lines) — QUARANTINED. 141 commercial hardware drum machine samples (Roland TR-909, Elektron Machinedrum, Clavia Nord Drum). NO license metadata. Samples array is empty (`"samples": []`). License policy: "NEVER assume a random downloaded sample is commercially usable. All imported samples MUST have explicit license metadata."
+- Read /home/z/my-project/public/api/streams.json (15 lines) — 10 verified 24/7 psytrance radio streams (Psyndora, Babaganousha, Psychedelic Travel, RadiOzora, Record Goa, Goanight, 1.FM Psytrance, Anima Amoris Goa, Space Unicorn, psyradio.fm Progressive). Each with id/name/url/format/bitrate/genre/worldMapping/hasMetadata/priority/notes. Used for the SmartRadio auto-evolution mode.
+- Read /home/z/my-project/public/psy-sampler.js (1,272 lines, minified) — the PSY Sampler Device bundle (sibling of psysynth). 31 samples, 59 features, 653 tests, 21 keyboard shortcuts, PWA, MIDI round-trip.
+- Read PSY3 knowledge transfer docs:
+  - PSY3_PRODUCTION_KNOWLEDGE.md (85 lines) — maps PSY3 techniques to PSY4 implementation. Status of each: bl_saw EXACT, moog EXACT, pink_noise EXACT, kick 3-layer EXACT, bass saw→filter→sub EXACT, lead detuned BL saws EXACT, hat differentiated pink noise EXACT, clap multi-burst EXACT, EvolvingSequence EXACT, tension_at shapes EXACT, density_at gating EXACT, multiband_comp APPROXIMATE (legacy only), glue APPROXIMATE, sat EXACT, truepeak APPROXIMATE, to_stereo APPROXIMATE, phaser EXACT, shimmer MISSING, chorus MISSING, style_clone.py MISSING, learner.py MISSING. Adds: real-time AudioWorklet, sample variety (6→52), round robin, mix-aware selection, multi-layer engine, call/response, production director, groove engine.
+  - PSY3_SOUND_DESIGN_RULES.md (193 lines) — 10 rules embedded in PSY4: (1) kicks prioritize sub/body over click (0.18s sub vs 0.002s click = 90× longer), (2) bass filter drops to 150Hz (leaves sub clear for kick), (3) leads use BL saws no extreme highs (PSY4 was 92% high vs PSY3 1.7%), (4) variation = controlled mutation (one note per 4 bars), (5) FX connect sections not decorate, (6) tension shapes (arc/rise/fall/wave), (7) downbeat 1.4× + offbeat 1.15× accents, (8) master = balance→compress→glue→saturate→limit (15% sat mix), (9) stereo width is frequency-dependent (never widen sub), (10) reverb/delay are subtle sends not wash.
+  - PSY3_VS_PSY4.md (136 lines) — direct comparison. PSY3 wins on: DSP primitives (adaptive BL saw vs fixed 48-harmonic PeriodicWave), Moog filter, FX (phaser/shimmer/bitcrush missing in PSY4), mastering (multiband/true-peak/LUFS), reference analysis (BPM/key/spectral/structure/learning), samples (CC0 archive.org). PSY4 wins on: musical intelligence (motifs/chord progressions/bass grammar/groove engine), 8 worlds vs 5 styles, live performance (10 macros/10 actions), section automation, stereo at source, voice variety, TypeScript/Next.js architecture. Critical things PSY4 must adopt from PSY3: bl_saw/bl_square (no aliasing), Moog ladder filter, phaser, shimmer, multiband compression, true-peak, LUFS targeting, reference analysis, AudioWorklet, kick/bass gain staging.
+- Read commercial product vision docs:
+  - COMMERCIAL_ROADMAP.md (188 lines) — commercial readiness 25/100. P0 blockers: unify voice params (Single Source of Truth), channel gains, HP per channel, master chain replacement, AudioWorklet migration. P1 sound: modulation matrix, Moog-style filter, phaser port, shimmer port, per-hit variation, multiband comp. P2 music: expand motif (8-16 notes AABA), acid pattern identity, counter-melody, phrase planning. P3 reference: BPM/key/spectral/structure detection, learning loop, YouTube reference input.
+  - ARCHITECTURE.md (269 lines) — 10 ADRs documented: (001) Composition on Web Worker, (002) Transferable Float64Array event transfer, (003) Deterministic PRNG mulberry32, (004) MusicalSession removal (1403 lines dead), (005) SamplerBridge removal (212 lines dead), (006) Timer consolidation 4→2, (007) Bass filter LFO (rolling character), (008) Zero-alloc AudioWorklet (preallocated _out buffers), (009) SharedArrayBuffer lock-free event transfer (Atomics + COOP/COEP), (010) Lead FM modulation. Engineering score 95/100.
+  - DEMO.md (143 lines) — public demo at https://psy4.pages.dev. 3-thread architecture (Worker + Main + AudioWorklet). Performance: 24 voice instances, 2-7 active typical, 0ms process() budget 2.5ms, 120s+ continuous verified, 0 console errors. 12+ sound channels. 32-bar arrangement (INTRO→GROOVE→DROP→BREAKDOWN→REBUILD→DROP→OUTRO). Per-voice Moog+PolyBLEP+sat. Per-bus comp+EQ+sat (5 buses). Master: multiband→glue→sat→LUFS→true-peak. Sidechain: 60% depth, 150ms recovery.
+  - FOUNDATION_STATUS.md (99 lines) — Foundation Lab subsystems: F0 Inventory COMPLETE (117 subsystems across 7 repos), F1 Transport COMPLETE (27 tests, 30-min drift 0.00ms, P95 phase error 0.00ms, 5/5 stall recovery durations), F2-F8 NOT STARTED. **CRITICAL FINDING: The foundation/ folder referenced here (foundation/transport/MusicalTransport.ts, foundation/music/CausalComposer, foundation/music/MusicalMemoryStore, foundation/music/InferenceEngine, foundation/radio/RadioObservationLayer) DOES NOT EXIST on disk.** Only the shim in src/lib/psy-foundation-shim/ survives. The tests in tests/foundation/{music,transport,radio}/*.ts that import from `../../../foundation/...` are all BROKEN (referencing deleted code). Pre-foundation subsystems also deleted: beatPLL.ts, melodyObserver.ts, patternMutator.ts, radioStateGate.ts, soundBank.ts (142 presets), pooledEngine.ts.
+  - FOUNDATION_API.md (108 lines) — describes the foundation MusicalTransport API that no longer exists locally. 8 design principles: AudioContext.currentTime only, Transport ≠ PLL, anchor-based clock, immutable snapshots, epoch, holdover, half/double tempo, tab suspension.
+- Read audit-reports/PSY_FAMILY_SYSTEM_INVENTORY.md (forensic scan of all 7 repos). Pre-foundation audit listing 117 subsystems. The `psy` mainline is "the reference design" — 1418-line index.html + 576-line soundBank.js (150+ presets) + 399-line test file (22 tests). M2 Song model, motif transforms (transpose/invert/retrograde/displace/fragment/augment/diminish), synth voices, FX chain (delay/reverb/drive/comp/duck), scheduler (setInterval 25ms — called "debt"), sound bank, scales/theory. The audit also confirms psystar is "the unified platform" with 59 phases, layered architecture (Core/Domain/Protocol/Engine/Integration/UI), bidirectional MIDI, P2P serverless sync, breath-humanized timing, DMT-grade.
+- Read audit-reports/AUDIT-B-PSY-ECOSYSTEM-INVENTORY.md (325 lines, dated 2026-08-12). The comprehensive pre-rebuild asset map. Confirmed: PSY4 had 5,485-line psy4EngineV2.ts + 756-line advancedVoice.ts (FM/supersaw/wavetable) + 524-line multisampleGenerator + 266-line sampleBank + 259-line layerEngine + 454-line commercialReference (per-genre targets: TECHNO/PSYTRANCE/TRANCE/PROGRESSIVE/DARK-PSY/GOA backed by Astrix/IM/Vini Vici/Ajja) + 698-line soundBank (142 presets) + 5,485-line forensic tree (17 files). ALL OF THIS WAS DELETED during the rebuild. The audit's "TOP 5 MOST VALUABLE ASSETS" recommendation was: (1) nexus-psy7 FM+unison+multi-target-LFO voice, (2) wire PSY4's own AdvancedSynthVoice, (3) wire multisampleGenerator+layerEngine, (4) wire commercialReference targets, (5) psy-foundation PolyBLEP+Moog. The rebuild chose instead to use the canonical psysynth device (which already has PolyBLEP via createPeriodicWave cache + tanh waveshaper drive, but NOT a real Moog ladder — it uses dual BiquadFilter cascade).
+- Read audit-reports/PSY4_CAPABILITY_MATRIX.json (381 lines, pre-rebuild). 20 subsystems scored 0-5. Critical failures pre-rebuild: BeatPLL couldn't converge (only 150 BPM), MelodyObserver octave errors, RadioStateGate not wired, PooledEngine dead code, SoundBank disconnected, Song structure falsified, Self-recovery falsified, Continuous learning was just histograms not RL, Master chain had no limiter. **Almost all of these have been ADDRESSED by the rebuild** — the new psyLive4.ts has a proper limiter, working CCLearner RL, monotonic scheduler that prevents the "engine stops" bug, DeviceHost with error isolation.
+- Read tests/reality-bridge/ReferenceAnalyzer.ts (396 lines) — ReferenceRepresentation interface (bpm, kickOnsets, bassOnsets, kbPattern, stepDuration, kick timbre: pitchStart/pitchEnd/attackTime/decayTime/spectralCentroid/transientStrength/lowEnergy/crestFactor, bass timbre: fundamental/attackTime/decayTime/filterStart/filterEnd/spectralCentroid/lowEnergy/midEnergy/crestFactor, overall: peak/rms/crestFactor/spectralCentroid). Functions: loadWAV (parses 16-bit WAV header), detectBPM (low-band envelope autocorrelation + half/double tempo), detectOnsets (Hann-windowed DFT spectral flux peak-picking with min-gap), extractWindowTimbre, detectPitch (autocorrelation 30-200Hz), analyzeReference (full pipeline), compareRepresentations (weighted distance: bpm 15%, kickDecay 10%, kickCentroid 10%, kickPitch 10%, bassDecay 15%, bassCentroid 10%, bassFundamental 15%, kbPattern 15%).
+- Read tests/reality-bridge/AudioFeatureExtractor.ts (304 lines) — AudioFeatures interface (17 metrics: peak/rms/crestFactor/zeroCrossingRate/transientStrength/attackTime/decayTime/sustainLevel/releaseTime/duration/spectralCentroid/spectralSpread/spectralRolloff/spectralFlatness/spectralFlux/lowEnergy/midEnergy/highEnergy/subRatio). `extractAudioFeatures()` does full time-domain (envelope via 5ms sliding RMS, transient strength = max derivative, attack = time to 90% peak, decay = time to 10% peak after peak, sustain region RMS, release to 1%) + spectral (Hann-windowed DFT, centroid/spread/rolloff/flatness/flux). `renderPsy4Bar()` renders via OfflineAudioContext.
+- Read tests/foundation/music/causal-composition.test.ts (407 lines). **TESTS REFERENCE NON-EXISTENT CODE**: imports from `../../../foundation/music/CausalComposer`, `../../../foundation/music/CausalState`, `../../../foundation/music/MusicalMemoryStore`, `../../../foundation/music/InferenceEngine`. The tests describe the intended causal architecture:
+  - CausalState: createCausalState, onMaterialPlayed (repetition → expectation + familiarity), onMaterialVaried (resets expectation, creates tension, marks unresolved), onMaterialWithheld (anticipation), onBarAdvance + onGrammaticalChange (contrast debt grows), getMaterialState
+  - MusicalMemoryStore: material lifecycle (introduced → established → exhausted → withheld → recalled), playCount, lastPlayedBar persistence
+  - InferenceEngine: generateCandidates(state, memory, activeRoles) — INTRODUCE_HATS (groove stability after 6 reps), VARY_MOTIF (expectation > threshold), INTRODUCE_COUNTERLINE (tension from variation), BREAKDOWN (contrast debt > 32 bars), CALLBACK_MOTIF (anticipation from withholding). infer() + resolveConflict().
+  This is a sophisticated rule-based composition engine with musical memory + causal inference. The code was DELETED during the rebuild. The current composer.ts (271 lines) is a much simpler pure function with no memory, no causal inference, no material lifecycle.
+- Read src/lib/psyLive4/learning.ts (116 lines) — the CURRENT learning system. Much simpler than what was planned: CCLearner does epsilon-greedy exploration over 4 CC params (74/71/5/12 = cutoff/resonance/glide/energyMacro). 8-second trials. Reward = 60% loudness (peak near -3dB) + 40% brightness (spectral centroid 800-3000Hz sweet spot). Epsilon decay 0.98 per trial. This is genuine RL (not the old "statistical bookkeeping"), but tiny in scope — 4 parameters, simple reward, no policy gradient, no memory.
+- Read src/components/psyforge/ — 15 React components + psyforge.css (1087 lines). Knob (vertical drag + arrow-key nudge + ARIA slider role + WCAG-compliant). EngineContext (section colors + energy bar). SpectrumVisualizer (canvas FFT). SmartRadio (auto-evolve toggle). ModMatrix, SynthRack, FxSection, ArpSeq, Keyboard, MasterChainMeter, VoiceActivity, ArrangementMap, LearningPanel, StatusStrip, Header.
+- Confirmed: The `foundation/` folder, `src/lib/studio/` (30k+ lines), `src/lib/psyLive.ts` (4,501 lines), `src/lib/beatPLL.ts`, `src/lib/melodyObserver.ts`, `src/lib/patternMutator.ts`, `src/lib/radioStateGate.ts`, `src/lib/soundBank.ts` (142 presets), `src/lib/pooledEngine.ts` are ALL DELETED. Only the verbatim shim (psy-foundation-shim/) survives in src/lib/.
+- Confirmed: validation/src/voice-backend.ts and audit-tmp/audition-render.ts reference deleted code (`../../src/lib/studio/engine/advancedVoice.ts`). These are dead/test-only.
+- Confirmed: tests/foundation/{music,transport,radio}/*.ts (10 files, 4,479 lines total) reference deleted `../../../foundation/...` modules. These tests are currently broken.
+
+Stage Summary:
+
+# COMPLETE PSY FAMILY CATALOG
+
+## A. GitHub Repositories (13 total, public, by dudududi144-source)
+
+### A.1 — The PSY Family Tree
+
+```
+psy (original mainline, HTML single-file groovebox, "the beginning")
+├── psy3-clean (cleaned PSY3 — groovebox UI foundation, 10 factory presets)
+├── psy4 (current — Next.js, PSY LIVE, smart radio, learning) ★ THIS PROJECT
+├── psy4new (experimental — "consider merging with psy4")
+├── psy5 (standalone pooled-engine experiment — voice pool pattern origin)
+├── PSY6-ULTIMATE (unified endpoint — one file, pooled engine + groovebox UI + creative brain)
+└── psystar (the unified platform vision — 59 phases, layered, P2P, bidirectional MIDI)
+
+Canonical devices (PsyDevice-conformant):
+├── psy-foundation (shared foundation layer — 13 packages, 250 tests)
+├── psysynth (SynthDevice — subtractive, 124 tests, MIDI:true)
+├── psy-sampler (SamplerDevice — 59 features, 653 tests, 31 samples)
+├── psydrum (DrumDevice — analog-modeled, BUILDING phase 11)
+└── psysampler (empty stub — "consider removing")
+
+Browser synth toys:
+└── PsySynthPro (real-DSP synth — PolyBLEP + wavetable + ZDF SVF + FM + MPE + PWA)
+```
+
+### A.2 — Each repo's role + reusable assets
+
+| Repo | Purpose | Most reusable assets | In PSY4? |
+|------|---------|----------------------|----------|
+| **psy** | Original groovebox reference | M2 Song model, motif transforms (transpose/invert/retrograde/displace/fragment/augment/diminish), FX chain | NO — reference only |
+| **psy3-clean** | PSY3 cleaned base | 10 factory presets (psytrance/acid/trance/techno/etc), groovebox UI | NO — superseded |
+| **psy4** | Current live engine | Full 3-layer arch, foundation shim, psysynth.js bundle, psy4-engine-v3.js, 32 patches, 6 style banks, 10 radio streams | ★ SELF |
+| **psy4new** | Experimental | Unknown — "consider merging" | NO |
+| **psy5** | Pooled engine experiment | VoicePool<V> pattern (now in shim), factory presets (4 genres) | YES — voice pool pattern lifted into shim |
+| **PSY6-ULTIMATE** | Unified standalone | Brain modes (GENERATIVE/MANUAL/ADAPTIVE), Grammar System (BassGrammar 12×12 interval transition, MelodicGrammar interval histogram, RhythmGrammar kick onset) | PARTIAL — adaptive grammar learning not ported |
+| **psystar** | Unified platform | 6-layer architecture (Core/Domain/Protocol/Engine/Integration/UI), breath-humanized timing, P2P serverless sync, bidirectional MIDI | NO — separate platform |
+| **psy-foundation** | Shared foundation | 13 packages (transport/protocol/device-sdk/fixtures/scheduler/analysis/music/material/learning/dsp + 3 lab apps). 250 tests. | YES — verbatim shim (commit 4ae95d3) |
+| **psysynth** | SynthDevice | createSynthDevice(), 7 roles, dual-BiquadFilter cascade, tanh drive, MIDI learn, style banks | YES — public/psysynth.js bundle |
+| **psy-sampler** | SamplerDevice | createSamplerDevice(), 31 samples, 59 features, MIDI round-trip | PARTIAL — public/psy-sampler.js bundle exists but unused by main engine |
+| **psydrum** | DrumDevice | Analog-modeled drum synth (choke groups, per-drum envelopes, velocity-to-timbre, groove-accurate timing). BUILDING phase 11. | NO — psy4 uses its own drum worklet (psy4-engine-v3.js) |
+| **psysampler** | (empty stub) | None — empty repo | NO |
+| **PsySynthPro** | Browser synth toy | PolyBLEP (2nd-order), wavetable editor, ZDF SVF, FM (DX7-style), 16-voice pool, MPE, WAV/MIDI export, PWA | NO — separate product |
+
+## B. Local Codebase — Current State (PSY4 at /home/z/my-project)
+
+### B.1 — What's ALIVE in the current codebase
+
+| Layer | Path | Lines | Status | Reusable? |
+|-------|------|-------|--------|-----------|
+| **Foundation shim** | src/lib/psy-foundation-shim/ (7 files) | ~600 | VERBATIM from psy-foundation@4ae95d3, byte-sync tested | YES — drop-in for any PsyDevice host |
+| **Drum device** | src/lib/devices/drum-device.ts | 117 | LIVE — wraps psy4-engine-v3.js worklet | YES — PsyDevice wrapper pattern |
+| **Melodic device** | src/lib/devices/melodic-device.ts | 182 | LIVE — wraps psysynth.js bundle | YES — PsyDevice wrapper pattern |
+| **Host** | src/lib/psyLive4/psyLive4.ts | 895 | LIVE — owns AudioContext, scheduler, master chain, devices | YES — orchestration template |
+| **Scheduler** | src/lib/psyLive4/scheduler.ts | 94 | LIVE — the only setInterval, monotonic invariant | YES — robust RT scheduler |
+| **Composer** | src/lib/psyLive4/composer.ts | 271 | LIVE — pure function, deterministic, AABA+motif | YES — but simple (no causal memory) |
+| **Style grammars** | src/lib/psyLive4/style-grammars.ts | 118 | LIVE — 7 styles × 4 scales × motif/bass/acid/perc/hat | YES — data-driven style system |
+| **Learning (RL)** | src/lib/psyLive4/learning.ts | 116 | LIVE — epsilon-greedy CC exploration, real reward signal | YES — minimal RL loop |
+| **CC mapping** | src/lib/psyLive4/cc-mapping.ts | 19 | LIVE — log-scale Hz→CC74 | YES |
+| **RNG** | src/lib/psyLive4/rng.ts | 26 | LIVE — mulberry32 (deterministic) | YES |
+| **Types** | src/lib/psyLive4/types.ts | 65 | LIVE — NoteEvent, ComposeRequest/Result, toMusicalEvent | YES |
+| **Presets** | src/lib/psyLive4/presets.ts | 42 | LIVE — localStorage save/load | YES |
+| **Drum worklet** | public/worklets/psy4-engine-v3.js | 864 | LIVE — 17 preallocated drum voices + master chain | YES — worklet DSP template |
+| **Synth bundle** | public/psysynth.js | ~21KB min | LIVE — 32 melodic voices, 7 roles, MIDI learn | YES — PsyDevice bundle |
+| **Sampler bundle** | public/psy-sampler.js | ~30KB min | DEAD — exists but no host uses it | YES — wire into DeviceHost |
+| **Patches** | public/patches/manifest.json | 1,129 | LIVE — 32 patches × 7 roles | YES — patch format spec |
+| **Style banks** | public/patches/style-banks.json | 89 | LIVE — 6 styles × macro + overrides | YES |
+| **Sample library** | public/samples/ (43 files) + manifest.json | 540 | LIVE — 6 PSY3 procedural + 37 generated, all CC0/procedural | YES |
+| **Soundbank index** | public/soundbank/index.json | 86 | LIVE — 3 presets (full-on/dark-prog/acid) + learningDefaults | YES |
+| **Radio streams** | public/api/streams.json | 15 | LIVE — 10 verified 24/7 streams with worldMapping | YES |
+| **UI** | src/components/psyforge/ (15 components) | 1,056 | LIVE — Knob (ARIA WCAG), EngineContext, SpectrumVisualizer, SmartRadio, etc. | YES |
+| **CSS** | src/components/psyforge/psyforge.css | 1,087 | LIVE — boutique hardware design system | YES |
+| **Reference analyzer** | tests/reality-bridge/ReferenceAnalyzer.ts | 396 | TEST — BPM/onset/timbre detection + compare | YES — port to runtime |
+| **Audio features** | tests/reality-bridge/AudioFeatureExtractor.ts | 304 | TEST — 17 metrics + OfflineAudioContext rendering | YES — port to runtime |
+
+### B.2 — What's DEAD in the current codebase (referenced but doesn't exist)
+
+| What | Referenced by | Status |
+|------|---------------|--------|
+| `foundation/music/CausalComposer` | tests/foundation/music/causal-composition.test.ts | DELETED — was a sophisticated rule-based composer with musical memory + causal inference (INTRODUCE_HATS/VARY_MOTIF/INTRODUCE_COUNTERLINE/BREAKDOWN/CALLBACK_MOTIF) |
+| `foundation/music/CausalState` | same test | DELETED — repetition→expectation, variation→tension, withholding→anticipation, contrast debt |
+| `foundation/music/MusicalMemoryStore` | same test | DELETED — material lifecycle (introduced→established→exhausted→withheld→recalled), playCount, lastPlayedBar |
+| `foundation/music/InferenceEngine` | same test | DELETED — generateCandidates, infer, resolveConflict |
+| `foundation/transport/MusicalTransport` (full impl) | FOUNDATION_API.md, FOUNDATION_STATUS.md (only the v0 types survive in shim) | DELETED — anchor-based clock, holdover, epoch, half/double tempo hypotheses, predictBeats |
+| `foundation/radio/RadioObservationLayer` | FOUNDATION_STATUS.md | DELETED — replaced by nothing in current build |
+| `src/lib/psyLive.ts` (4,501 lines) | audit-reports | DELETED — replaced by psyLive4.ts (895 lines) |
+| `src/lib/studio/` (30k+ lines, 70 files) | audit-reports/AUDIT-B | DELETED — psy4EngineV2.ts (5,485), advancedVoice.ts (756, FM/supersaw/wavetable), multisampleGenerator.ts (524), layerEngine.ts (259), commercialReference.ts (454), soundBank.ts (698, 142 presets), pooledEngine.ts (508), 17 forensic lab files, etc. |
+| `src/lib/beatPLL.ts` | OLD audit | DELETED — was 213 lines, 48 tests |
+| `src/lib/melodyObserver.ts` | OLD audit | DELETED — was 394 lines, YIN pitch detection |
+| `src/lib/patternMutator.ts` | OLD audit | DELETED — was 260 lines |
+| `src/lib/radioStateGate.ts` | OLD audit | DELETED — was 169 lines |
+| `validation/src/voice-backend.ts` (224 lines) | itself | BROKEN — imports deleted `../../src/lib/studio/engine/advancedVoice.ts` |
+| `audit-tmp/audition-render.ts` (400 lines) | itself | STANDALONE — replicates OLD psyLive.ts voice functions for forensic render. Does not import deleted code (it copies it). |
+
+## C. ORGANIZED CATALOG — By Capability
+
+### C.1 — Synth Engines (DSP, voice synthesis)
+
+1. **psysynth device bundle** (`/public/psysynth.js`, ~21KB minified ESM, from `psysynth` repo)
+   - 7 melodic roles: bass/lead/arp/pad/stab/pluck/keys
+   - Per-voice: oscA + oscB (PeriodicWave cached: sine/triangle/square/saw) + sub osc + ring mod (oscB → gainA.gain) → dual BiquadFilter cascade (LP/BP, res×20 Q) → tanh drive waveshaper (LUT, driveDb 0-12) → VCA + delay send + reverb send
+   - SynthVoicePool: 32 default voices (per-role budgets), oldest-steal, by-key map for note-off
+   - MIDI learn: CC74=cutoff, CC71=resonance, CC5=glide, CC12=energyMacro, CC14=delaySend, CC15=reverbSend
+   - Variance: mulberry32-seeded detune/cutoff-wobble/velocity-humanize/step-cutoff/arp-ornament
+   - Status: LIVE in PSY4, wired via MelodicDevice. The single canonical synth voice for the whole family.
+
+2. **PSY4 drum worklet** (`/public/worklets/psy4-engine-v3.js`, 864 lines)
+   - DSP primitives: fastTanh (3-piece poly), OnePoleLP/HP, MoogLadder (4-stage tanh ladder, NaN guards), PinkNoise (4-pole Voss)
+   - 7 voice classes preallocated: KickVoice (3-layer: pitch-swept fundamental + sub sine + 3kHz click), HatVoice (noise→HP 8kHz→LP 12kHz), SnareVoice (180Hz tone + filtered noise), ClapVoice (multi-burst envelope 1/0.3/0.8 at 0/10/20ms), PercVoice (short tone + click), ShakerVoice (LP noise), FXVoice (3 types: riser/impact/sweep)
+   - Master chain per channel (L+R separate): DC blocker 20Hz → MultibandComp (3-band Butterworth 200Hz/2500Hz crossovers, per-band env-following comp thr=0.5/ratio=1.8/makeup=1.3) → glue comp (thr=0.6/ratio=1.5/makeup=0.8) → limiter (ceiling=0.89, 50ms release)
+   - StereoWidener: M/S with HP on side (200Hz keeps lows mono) + 12ms Haas delay on right
+   - 17 preallocated drum voices, event ring buffer (Float64Array 512×6), applyRecipe message (learning loop closed)
+   - Status: LIVE in PSY4, wired via DrumDevice. The only real DSP in the audio thread.
+
+3. **PsySynthPro** (separate repo, browser synth toy)
+   - PolyBLEP (2nd-order poly correction at discontinuity), ZDF State-Variable Filter (zero-delay feedback), wavetable editor (draw your own wave), FM (DX7-style instantaneous frequency), 16-voice pool with oldest-steal, MPE per-note pitch bend, 3D spectrum visualizer, arpeggiator (UP/DOWN/UP-DOWN/RANDOM multi-octave), 16-step sequencer with accents, WAV/MIDI export, PWA installable
+   - Status: SEPARATE PRODUCT. Could be embedded as an iframe or its synth engine lifted into a worklet for PSY4.
+
+4. **psydrum** (separate repo, BUILDING phase 11)
+   - Analog-modeled drum synthesis, drum-specific organization (choke groups: hat exclusive-pair + crash/ride self-choke, per-drum tone envelopes, velocity-to-timbre mapping, click/transient control, sub-frequency management), MIDI GM drum map (overridable), 11 phases built
+   - Status: NOT INTEGRATED — psy4 uses its own psy4-engine-v3.js instead. Could REPLACE the drum worklet if psydrum's choke groups + per-drum envelopes are needed.
+
+5. **psy-sampler device bundle** (`/public/psy-sampler.js`, ~30KB minified)
+   - 31 samples, 59 features (pattern editor with drag-paint + per-step velocity + probability + undo/redo + randomize, transport with BPM/swing/tap, voice pool, audio graph with 3 buses + EQ + saturation + filter + limiter, MIDI round-trip pitch-aware, PWA installable)
+   - Status: DEAD in PSY4 — bundle exists at /public/psy-sampler.js but no host loads it. Could be wired in as a third device alongside psysynth + drum worklet.
+
+### C.2 — Composition Engines (how music is generated)
+
+1. **PSY4 composer** (`src/lib/psyLive4/composer.ts`, 271 lines) — LIVE
+   - Pure function: (startTime, duration, bpm, style, energy, seed, prev) → NoteEvent[]
+   - 64-bar cycle with INTRO/GROOVE/DROP/BREAKDOWN/REBUILD/OUTRO sections (cycle 0 standard, cycle 1+ varied)
+   - Bass root shifts I-IV-V-IV-iii (2 bars per shift) + cycle root shifts per 64 bars
+   - Kick 4-on-floor, bass rolling 16ths (downbeat/afterKick/probabilistic), hats 8ths, perc occasional, snare/clap backbeat, lead follows bass harmony (3rd/5th above, +2 octaves), pad root+5th+octave chord
+   - Acid bass when grammar.acidBass is true
+   - Determinism: mulberry32 seeded by startTime+seed
+   - Status: LIVE — but simple (no causal memory, no motif evolution, no call/response)
+
+2. **Causal composition engine** (DELETED — referenced by `tests/foundation/music/causal-composition.test.ts`, 407 lines of tests describe the intended behavior)
+   - CausalState: repetition → expectation + familiarity; variation → resets expectation + creates tension + marks unresolved; withholding → anticipation; bar advance + grammatical change → contrast debt grows
+   - MusicalMemoryStore: material lifecycle (introduced → established → exhausted → withheld → recalled), playCount, lastPlayedBar
+   - InferenceEngine: generateCandidates(state, memory, activeRoles) → INTRODUCE_HATS (after 6 groove reps), VARY_MOTIF (when expectation > threshold), INTRODUCE_COUNTERLINE (when tension from variation), BREAKDOWN (when contrast debt > 32 bars), CALLBACK_MOTIF (when anticipation from withholding)
+   - infer() + resolveConflict()
+   - Status: DELETED — was the planned sophisticated rule-based composer with musical memory. The current composer.ts is a 271-line pure-function replacement with no causal inference.
+
+3. **PSY6-ULTIMATE Grammar System** (separate repo)
+   - BassGrammar: 12×12 interval transition matrix — learns which bass notes follow which
+   - MelodicGrammar: interval histogram — learns melodic contour tendencies
+   - RhythmGrammar: kick onset pattern — learns rhythmic placement
+   - 3 brain modes: GENERATIVE (CandidateGenerator creates 5 candidates/bar, picks best), MANUAL (only plays programmed sequencer), ADAPTIVE (learns from what plays + what you perform, generates from learned grammars)
+   - Status: NOT INTEGRATED — could be ported as a learning layer on top of PSY4's composer
+
+4. **PSY3 musical grammar** (knowledge transfer only — code deleted)
+   - EvolvingSequence: 16-step pattern, mutates ONE note every 4 bars (controlled, recognizable)
+   - LeadMotif: AABA structure (A bars 0-1 statement, B bar 2 contrast octave higher, A' bar 3 return with mutation)
+   - AcidPattern: 4 stored patterns (root-fifth-octave, walking, with octave, descending with rest), mutates one step at section boundaries
+   - BASS_PATTERNS: roll-root/roll-walk/roll-passing/off-root/off-walk/acid-1/acid-2 with explicit accent arrays
+   - Tension shapes: arc (4p(1-p)), rise (p), fall (1-p), wave (0.5+0.5sin(2π·2p-π/2)), plateau
+   - Density gating: downbeat ×1.4, offbeat ×1.15
+   - Status: DOCUMENTED in MUSICAL_GRAMMAR.md + PSY3_PRODUCTION_KNOWLEDGE.md but the code was DELETED. The current composer.ts implements a simplified version (sections, bass roots, motif following) but NOT the EvolvingSequence class, AABA LeadMotif, AcidPattern, or stored BASS_PATTERNS.
+
+5. **psystar musical model** (separate repo)
+   - 4 canonical scenes + song mode
+   - ADSR full, voice management with steal, limiter
+   - FX rack: breathing filter, crusher, phaser, delay, reverb
+   - Portal memory: presets, capture + restore
+   - Dreaming: live morphing between any two worlds
+   - Rhythm alchemy: Euclidean generator per channel with rotation
+   - Family network: leader/follower, sync play/stop/bpm/scene/grid
+   - World bridge: P2P sync between remote devices, WebRTC serverless
+   - Live journey recording + export
+   - Bidirectional MIDI (out to synth + in from keyboard, with panic)
+   - Full MIDI: drums ch1, lead-roll ch2, chord progression ch3
+   - Roll transformations: tone/octave/retrograde/inversion/random — every melody is already 7 songs
+   - Chord progression generator: functional harmonic motion with cadences
+   - Mastering: live master dB, comp threshold + ratio
+   - Status: SEPARATE PLATFORM. Could be the long-term product vision.
+
+### C.3 — Learning systems (how the engine learns)
+
+1. **PSY4 CCLearner** (`src/lib/psyLive4/learning.ts`, 116 lines) — LIVE
+   - Epsilon-greedy RL over 4 CC params: 74 (cutoff), 71 (resonance), 5 (glide), 12 (energyMacro)
+   - 8-second trials, epsilon decay 0.98 per trial
+   - Reward = 60% loudness (peak near -3dB) + 40% brightness (spectral centroid 800-3000Hz sweet spot)
+   - History of 20 trials per CC parameter
+   - Status: LIVE — minimal but real RL. The drum worklet accepts `applyRecipe` messages so the loop closes.
+
+2. **PSY3 learner.py** (knowledge transfer only — code deleted)
+   - self_train loop: render → measure distance → converge band gains + LUFS
+   - Status: DELETED — was a complete render→measure→adjust loop. Referenced in COMMERCIAL_ROADMAP.md as P3.2 priority.
+
+3. **PSY4 studio reference training loop** (DELETED)
+   - Files were: continuousTrainer.ts, trainingLoop.ts, selfAnalyzer.ts, learningMemory.ts, perVoiceAnalyzer.ts, referenceScore.ts, worldDNA.ts, renderWorker.ts
+   - Status: DELETED — was 17-file research tree in src/lib/studio/engine/reference/
+
+4. **psy-foundation learning package** (separate repo, NOT integrated)
+   - 32 tests, CONTEXT+ACTION+OUTCOME+REWARD model, DO NOTHING is legal, contextual bandit
+   - Status: NOT INTEGRATED — only the protocol types (Experience, MusicalAction, MusicalOutcome) are in the shim.
+
+### C.4 — Audio analysis (how audio is measured/understood)
+
+1. **ReferenceAnalyzer** (`tests/reality-bridge/ReferenceAnalyzer.ts`, 396 lines) — TEST ONLY
+   - ReferenceRepresentation: bpm, kickOnsets, bassOnsets, kbPattern, stepDuration, kick timbre (pitchStart/pitchEnd/attackTime/decayTime/spectralCentroid/transientStrength/lowEnergy/crestFactor), bass timbre (fundamental/attackTime/decayTime/filterStart/filterEnd/spectralCentroid/lowEnergy/midEnergy/crestFactor), overall (peak/rms/crestFactor/spectralCentroid)
+   - loadWAV (16-bit WAV header parser), detectBPM (low-band envelope autocorrelation + half/double tempo), detectOnsets (Hann-windowed DFT spectral flux peak-picking with min-gap), extractWindowTimbre, detectPitch (autocorrelation 30-200Hz), analyzeReference (full pipeline), compareRepresentations (weighted distance: bpm 15%, kickDecay 10%, kickCentroid 10%, kickPitch 10%, bassDecay 15%, bassCentroid 10%, bassFundamental 15%, kbPattern 15%)
+   - Status: TEST ONLY — not wired into runtime. Could be ported to drive a closed-loop reference-matching system.
+
+2. **AudioFeatureExtractor** (`tests/reality-bridge/AudioFeatureExtractor.ts`, 304 lines) — TEST ONLY
+   - 17 metrics: peak, rms, crestFactor, zeroCrossingRate, transientStrength, attackTime, decayTime, sustainLevel, releaseTime, duration, spectralCentroid, spectralSpread, spectralRolloff, spectralFlatness, spectralFlux, lowEnergy, midEnergy, highEnergy, subRatio
+   - extractAudioFeatures() — full time-domain (envelope via 5ms sliding RMS, transient = max derivative, attack = time to 90% peak, decay = time to 10% peak, sustain region RMS, release to 1%) + spectral (Hann-windowed DFT, centroid/spread/rolloff/flatness/flux)
+   - renderPsy4Bar() — OfflineAudioContext rendering of voice functions
+   - Status: TEST ONLY — not wired into runtime. Could be ported to give the learning loop richer reward signal than just peak-dB + spectral-centroid.
+
+3. **PSY3 style_clone.py** (knowledge transfer only — code deleted)
+   - BPM est (onset autocorrelation), key est (chroma profile matching), spectral bands (3-band), structure detection (bar-level RMS)
+   - Status: DELETED — was a complete reference analysis pipeline.
+
+4. **PSY4 commercialReference.ts** (DELETED — was 454 lines)
+   - Per-genre commercial target ranges: TECHNO/PSYTRANCE/TRANCE/PROGRESSIVE/DARK-PSY/GOA
+   - LUFS, truePeak, crestFactor, 7-band spectral balance, kick fundamental/subEnergy/bodyEnergy/clickEnergy/decay/subBodyRatio, bass, lead, hat targets
+   - Backed by commercial releases (Astrix, Infected Mushroom, Vini Vici, Ajja)
+   - Status: DELETED — was a measurable quality target. Could be re-implemented as JSON data + a master-bus post-processing pass.
+
+### C.5 — UI patterns
+
+1. **psyforge React components** (`src/components/psyforge/`, 15 files, 1,056 lines + 1,087-line CSS)
+   - Knob (84 lines) — vertical drag (120px full range), arrow keys ±5%/±1%, Home/End, ARIA slider role, WCAG AA contrast (15.48:1 lime on bg)
+   - EngineContext (63 lines) — section color (6 sections: INTRO/GROOVE/DROP/BREAKDOWN/REBUILD/OUTRO) + energy bar
+   - SpectrumVisualizer (127 lines) — canvas FFT, log-spaced bars, perspective
+   - SmartRadio (67 lines) — auto-evolve toggle (cycles 7 styles every 120s)
+   - SynthRack (72 lines) — 6 CC knobs (cutoff/resonance/glide/energyMacro/delaySend/reverbSend) → melodicDevice.setParameterByCC
+   - FxSection (31), ModMatrix (28 — placeholder), ArpSeq (53), Keyboard (107), MasterChainMeter (117), VoiceActivity (49), ArrangementMap (94), LearningPanel (66), StatusStrip (46), Header (52)
+   - psyforge.css (1,087 lines) — boutique hardware design system
+   - Status: LIVE — drives the entire UI.
+
+2. **PSY3-clean groovebox UI** (separate repo)
+   - Transport (PLAY/STOP/REC/VARIATE/UNDO/REDO/BPM), LCD display, 16-step sequencer with sound preview, 6-channel mixer, FX chain (FILTER/DELAY/REVERB/DRIVE), 8 performance pads, XY pad (filter cutoff×resonance), preset browser (10 factory), pattern editor (CLEAR/RANDOM/REVERSE/SHIFT/DOUBLE/HALF), automation (LFO rate/depth/envelope)
+   - Status: SEPARATE — could be a UI reference for adding a step sequencer to PSY4.
+
+3. **PSY6-ULTIMATE groovebox UI** (separate repo)
+   - Knobs, XY pad, sequencer, arranger, brain panel with grammar confidence %
+   - Status: SEPARATE — the unified endpoint combining PSY5 engine + PSY3 UI + PSY4 brain.
+
+### C.6 — Foundation contracts (the shared language)
+
+The foundation shim at `src/lib/psy-foundation-shim/` (7 files, ~600 lines) is the **ONLY canonical contract** in the codebase. It's pinned to `psy-foundation` repo commit 4ae95d3 (2026-08-13). Byte-equivalence is guarded by a sync test. Contents:
+
+- **protocol.ts** (203 lines): MusicalEvent union (beat/section/energy/drop/note/pattern), TransportState, MusicalContext, DeviceCapabilities, DeviceState, SessionState, Material (9 MaterialTypes), MusicalAction (play/variation/do-nothing), MusicalOutcome (sounded/skipped/collided), Experience, Channel interface, InMemoryChannel (per-listener try/catch)
+- **transport.ts** (59 lines): MusicalTransport v0 (bpm/beat/bar/beatsPerBar/beatTime/barTime/phase/barPhase/confidence/locked/revision/origin/lastObservationAgo/observationCount), BeatObservation, TransportClockOptions (12 knobs)
+- **device.ts** (24 lines): PsyDevice interface (id, capabilities, onTransport, onContext, onEvent, onStart?, onStop?, reportLatencyMs?)
+- **host.ts** (104 lines): DeviceHost (register/unregister/list/findByRole, pushTransport with revision dedup + min-interval throttle, pushContext, publish with per-device try/catch error isolation)
+- **voice-pool.ts** (133 lines): Voice<T> interface (active/noteOn/noteOff/panic), VoicePool<V> (round-robin + oldest-steal), Rng class (mulberry32)
+- **roles.ts** (20 lines): SynthRole (10 roles), DRUM_ROLES, MELODIC_ROLES, MusicalStyle (7 styles)
+- **index.ts** (61 lines): barrel
+
+The full `psy-foundation` repo (separate, 13 packages, 250 tests, 65MB) includes additional packages NOT in the shim: scheduler, analysis, music (18 scales, 18 chords, motif generator, variation ops, bass grammar, rhythm), material (9 material kinds + MaterialLibrary), learning (32 tests, contextual bandit), dsp (PolyBLEP osc, Moog filter, ADSR, delay, reverb, metering), fixtures (14 synthetic radio fixtures), reference-lab, sync-lab, benchmark-lab.
+
+**Reusable for commercial product**: The shim is enough to plug in any PsyDevice-conformant device (psysynth, psy-sampler, psydrum, future devices). The full foundation repo could be vendored to get the scheduler/analysis/music/material/learning packages.
+
+### C.7 — Reference materials (PSY3 knowledge, commercial specs)
+
+| Document | Lines | Status | What it gives a commercial product |
+|----------|-------|--------|-------------------------------------|
+| PSY3_PRODUCTION_KNOWLEDGE.md | 85 | LIVE (knowledge) | Map of 32 PSY3 techniques to PSY4 status (EXACT/APPROXIMATE/MISSING). The 6 MISSING items: shimmer reverb, chorus, style_clone.py reference analysis, learner.py self-improvement, full multiband in worklet, M/S stereo |
+| PSY3_SOUND_DESIGN_RULES.md | 193 | LIVE (knowledge) | 10 design rules with code snippets: sub-over-click, bass leaves room for kick, BL saws no extreme highs, controlled mutation, FX connect sections, tension shapes, downbeat accents, musical master chain, frequency-dependent stereo, subtle reverb/delay |
+| PSY3_VS_PSY4.md | 136 | LIVE (knowledge) | Direct A/B comparison. Critical gaps: bl_saw (adaptive N vs fixed 48), Moog ladder, phaser, shimmer, multiband, true-peak, LUFS, reference analysis, AudioWorklet, gain staging |
+| COMMERCIAL_ROADMAP.md | 188 | LIVE (knowledge) | P0 architecture blockers, P1 sound engine, P2 music intelligence, P3 reference analysis. Readiness 25/100 (pre-rebuild score — current is higher) |
+| COMMERCIAL_GAP_ANALYSIS.md | 478 | LIVE (knowledge) | 30 problems: 10 architectural (scheduler, mod matrix, voice identity, multiband, reference analysis, learning loop, samples, worklet synth, per-voice variation, phrase planning) + 10 sound-design + 10 musical-writing |
+| ARCHITECTURE.md | 269 | LIVE (knowledge) | 10 ADRs (Composition on Worker, Transferable Float64Array, mulberry32 PRNG, MusicalSession removal, SamplerBridge removal, timer consolidation, bass filter LFO, zero-alloc worklet, SharedArrayBuffer lock-free, lead FM modulation). Score 95/100. |
+| DEMO.md | 143 | LIVE (knowledge) | Public demo pitch. 3-thread architecture, performance metrics, 12+ sound channels, 32-bar arrangement, DSP pipeline, tech stack |
+| FOUNDATION_STATUS.md | 99 | STALE | References deleted foundation/ folder. Test counts: Reality Bridge 56, BeatPLL 48, MelodyObserver 13, Transport 27, PooledEngine 1 = 145 total. **The BeatPLL/MelodyObserver/PooledEngine tests are now broken (deleted code).** Only Reality Bridge + Transport shim-sync tests survive. |
+| FOUNDATION_API.md | 108 | STALE | Describes foundation MusicalTransport API that no longer exists locally. Could be re-implemented by vendoring the full psy-foundation repo. |
+| MUSICAL_GRAMMAR.md | 184 | LIVE (knowledge) | EvolvingSequence, LeadMotif AABA, BassGrammar (roll/off/acid patterns), AcidPattern (4 stored), TensionShapes (arc/rise/fall/wave/plateau), DensityGating, Arrangement (INTRO→GROOVE→BUILD→DROP→BREAK→CLIMAX), Counter-Melody (future P1) |
+| SAMPLE_SELECTION_RULES.md | 158 | LIVE (knowledge) | Context-aware sample intelligence. Kick (always kick.wav, pitch to world fundamental 46-54Hz, 4 round-robin ±0.45% pitch — never beyond ±0.5% to preserve sub phase). Hat (closed/open, 8 RR ±1.75% pitch ±0.14 pan). Clap (always clap.wav, 4 RR ±0.6%/±4.5%). Bass (synth only, BASS_PATTERNS[world.bass] with accent arrays). Lead (5-osc supersaw + Moog + LFO, AABA motif + EvolvingSequence). Acid (BL square + high-res Moog + distortion, 4 stored patterns + mutation). FX (riser last 2 bars of build, impact drop start, sweep breakdown start, downlifter drop start step 4, zap/blip 3-4% probability × surprise) |
+| SOUND_LIBRARY.md | 127 | LIVE (knowledge) | Forensic audit of 6 PSY3 samples. Kick (50Hz fundamental, 99.8% low, 0.280s, crest 3.1, recommended 120-160 BPM). Hat closed/open (13.9kHz centroid, 99.9% high). Clap (11kHz centroid, 90.5% high + 8.1% mid). Bass A (110Hz fundamental, 92.7% low). Lead (7.6kHz centroid, 89.2% mid, crest 5.3 pluck). Round robin: kick 4 (±0.45% pitch ±6% gain), hat 8 (±1.75% pitch ±0.14 pan), clap 4 (±0.6% pitch ±4.5% gain) |
+| ENGINEERING_ASSESSMENT.md | 215 | LIVE (knowledge) | Engineering assessment + roadmap to 100/100 |
+| PSY4_REBUILD_PLAN.md | 1,071 | EXECUTED | The 3-layer rebuild plan that produced the current psyLive4.ts. Layer 1 foundation shim, Layer 2 devices (drum + melodic), Layer 3 host. Monotonic lastComposedUntil invariant. visibilitychange handler. |
+| PSYTRANCE_RADIO_STREAMS.md | 176 | LIVE (knowledge) | 5+ verified legal 24/7 psytrance radio streams (Hirschmilch, Psy from the Sky, etc) — the source of the 10 streams in public/api/streams.json |
+| AUDIT-A-SONIC-CRITIQUE.md | 314 | STALE (pre-rebuild) | Forensic DSP analysis of OLD PSY4 renders. Kick had crest 13.95 (should be 3-6), centroid 4143Hz (should be 150-400Hz) — "a test-tone click with faint sub sine". Bass peak -18.4dB (should be -3 to -6). Confirms the pre-rebuild sound was amateur. The rebuild addressed these via real Moog + BL saws + master chain. |
+| PSY_FAMILY_SYSTEM_INVENTORY.md | (large) | STALE | Pre-rebuild forensic scan of 7 repos. 117 subsystems cataloged. The "TOP 5 most valuable assets" recommendations were all about wiring the deleted studio/ tree. The rebuild chose a different path (canonical psysynth + psy4-engine-v3 worklet). |
+| AUDIT-B-PSY-ECOSYSTEM-INVENTORY.md | 325 | STALE (pre-rebuild) | Cross-repo asset inventory. Confirmed 5 distinct synth engines existed, 185 audio files (all in PSY4), zero VST/CLAP/LV2/AU plugins anywhere, nexus-psy7 was the cleanest FM+unison+multi-target-LFO reference. |
+| PSY4_CAPABILITY_MATRIX.json | 381 | STALE (pre-rebuild) | 20 subsystems scored 0-5. 9 critical failures pre-rebuild (BeatPLL couldn't converge, MelodyObserver octave errors, RadioStateGate not wired, PooledEngine dead, SoundBank disconnected, song structure falsified, self-recovery falsified, learning was just histograms, no master limiter). The rebuild addressed almost all of these. |
+
+## D. HOW THE PSY FAMILY COMBINES INTO ONE COMMERCIAL PRODUCT
+
+The PSY family is a **layered device family** built on a shared foundation contract. A commercial product would compose:
+
+### D.1 — The unified product stack
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  COMMERCIAL PRODUCT (Next.js + AudioWorklet, deployed to CF Pages)    │
+│                                                                       │
+│  UI: src/components/psyforge/* (Knob, EngineContext, SmartRadio,      │
+│      SynthRack, FxSection, Keyboard, MasterChainMeter, ArrangementMap│
+│      LearningPanel, SpectrumVisualizer, ArpSeq, VoiceActivity, etc.) │
+│                                                                       │
+│  HOST: src/lib/psyLive4/psyLive4.ts (Layer 3)                        │
+│    - AudioContext, CompositionScheduler (monotonic, RT-safe)          │
+│    - 3-band multiband master chain (Butterworth crossovers + comp×3 + │
+│      glue + limiter + analyser → destination)                        │
+│    - DeviceHost + InMemoryChannel (error-isolated event routing)     │
+│    - SmartRadio (auto-evolve 7 styles every 120s, 10 radio streams)  │
+│    - CCLearner (epsilon-greedy RL, 4 CCs, real reward signal)        │
+│    - visibilitychange handler (ctx.suspend — engine-never-stops)     │
+│                                                                       │
+│  COMPOSER: src/lib/psyLive4/composer.ts (pure fn, deterministic)      │
+│    + style-grammars.ts (7 styles × 4 scales × motif/bass/acid/perc)  │
+│    + cc-mapping.ts (log-scale Hz → CC74)                              │
+│    + rng.ts (mulberry32 — bit-identical offline renders)             │
+│                                                                       │
+│  DEVICES (Layer 2, pure HOW, PsyDevice-conformant):                   │
+│    - DrumDevice    → public/worklets/psy4-engine-v3.js (17 voices,    │
+│      Moog ladder, multiband comp, stereo widener, master chain)       │
+│    - MelodicDevice → public/psysynth.js (32 voices, 7 roles, MIDI    │
+│      learn, style banks, tanh drive, dual-biquad cascade)             │
+│    - [FUTURE] SamplerDevice → public/psy-sampler.js (31 samples,     │
+│      pattern editor, MIDI round-trip) — bundle exists, just unwired  │
+│    - [FUTURE] DrumDevice from psydrum repo (choke groups, per-drum   │
+│      envelopes, velocity-to-timbre) — would replace psy4-engine-v3   │
+│                                                                       │
+│  FOUNDATION (Layer 1, VERBATIM shim from psy-foundation@4ae95d3):    │
+│    - protocol.ts (MusicalEvent union, Material, Experience)           │
+│    - transport.ts (MusicalTransport v0)                              │
+│    - device.ts (PsyDevice interface)                                 │
+│    - host.ts (DeviceHost with error isolation)                      │
+│    - voice-pool.ts (VoicePool<V> + Rng mulberry32)                   │
+│    - roles.ts (10 SynthRoles, 7 MusicalStyles)                       │
+│                                                                       │
+│  PATCHES: public/patches/manifest.json (32 patches × 7 roles)        │
+│  STYLE BANKS: public/patches/style-banks.json (6 styles × macro)     │
+│  SAMPLES: public/samples/ (43 procedural, CC0)                        │
+│  RADIO: public/api/streams.json (10 verified 24/7 streams)           │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### D.2 — Recommended next steps for a commercial product
+
+**Phase 1 (≤1 week) — Wire dead assets**:
+1. Wire `psy-sampler.js` as a 3rd device in DeviceHost (sampler for real drum one-shots, psysynth for melodic, drum worklet for synth drums). Pattern: copy MelodicDevice wrapper.
+2. Re-implement `commercialReference.ts` as JSON data (per-genre LUFS/truePeak/crest/7-band targets). Wire into master chain as a post-process pass.
+3. Port `ReferenceAnalyzer.ts` + `AudioFeatureExtractor.ts` from tests/reality-bridge/ into src/lib/analysis/ — wire into CCLearner to enrich reward signal (currently just peak dB + spectral centroid).
+
+**Phase 2 (2-4 weeks) — Restore causal composition**:
+4. Vendor the full `psy-foundation` repo (or just the music + material + learning packages). Restore the CausalComposer/CausalState/MusicalMemoryStore/InferenceEngine that the tests describe. The current composer.ts is 271 lines of pure function — replacing it with the causal engine adds musical memory + intent (INTRODUCE_HATS/VARY_MOTIF/INTRODUCE_COUNTERLINE/BREAKDOWN/CALLBACK_MOTIF).
+5. Port PSY3's EvolvingSequence + LeadMotif AABA + AcidPattern (4 stored patterns) + BASS_PATTERNS (roll/off/acid with accent arrays) from MUSICAL_GRAMMAR.md into the new causal composer.
+
+**Phase 3 (1-2 months) — Sound design**:
+6. Add real Moog ladder to psysynth (currently uses dual BiquadFilter cascade — the comment in PSY3_VS_PSY4.md says it's "sterile"). The drum worklet already has a real MoogLadder class — port it into psysynth.js (or rebuild psysynth from source in the psysynth repo, which has 124 tests).
+7. Port PSY3 phaser (4-stage allpass) + shimmer (pitch-shifted reverb) + bitcrush from pro_fx.py. The worklog confirms phaser was in psy4-dsp.js but the current psy4-engine-v3.js doesn't include it — it was simplified to drums-only.
+8. Wire `psydrum` repo's DrumDevice (choke groups for open/closed hat, per-drum tone envelopes, velocity-to-timbre) as a replacement for the inline drum worklet.
+
+**Phase 4 (3-6 months) — Productize**:
+9. Lift `psystar` repo's bidirectional MIDI + P2P sync + song mode + harmonic progression generator into the host.
+10. Lift `PsySynthPro`'s wavetable editor + ZDF SVF + MPE as an optional "pro synth" device.
+11. Lift `PSY6-ULTIMATE`'s Grammar System (BassGrammar 12×12 transition matrix, MelodicGrammar histogram, RhythmGrammar onset pattern) as an ADAPTIVE learning layer.
+
+### D.3 — What's immediately reusable vs needs-work vs dead
+
+| Asset | Status | Reusability |
+|------|--------|-------------|
+| Foundation shim (7 files) | LIVE | Drop-in for any PsyDevice host |
+| DrumDevice + MelodicDevice wrappers | LIVE | Pattern for adding SamplerDevice |
+| psyLive4.ts (Host) | LIVE | Orchestration template |
+| CompositionScheduler (monotonic invariant) | LIVE | Robust RT scheduler — copy verbatim |
+| composer.ts + style-grammars.ts | LIVE | Simplistic — replace with causal composer |
+| CCLearner | LIVE | Minimal RL — enrich with AudioFeatureExtractor reward |
+| psy4-engine-v3.js drum worklet | LIVE | Real DSP — port phaser/shimmer into it |
+| psysynth.js bundle | LIVE | Canonical synth — rebuild from psysynth repo source for Moog ladder |
+| psy-sampler.js bundle | DEAD in PSY4 | Wire as 3rd device in DeviceHost |
+| ReferenceAnalyzer + AudioFeatureExtractor | TEST ONLY | Port to src/lib/analysis/, wire to learning loop |
+| commercialReference.ts data | DELETED | Re-implement as JSON data, wire to master chain |
+| CausalComposer + CausalState + MusicalMemoryStore + InferenceEngine | DELETED | Re-vendor from psy-foundation repo (or rebuild from tests/foundation/music/causal-composition.test.ts description) |
+| EvolvingSequence + LeadMotif AABA + AcidPattern + BASS_PATTERNS | DOCUMENTED only | Implement in composer.ts (knowledge in MUSICAL_GRAMMAR.md) |
+| PSY3 learner.py self_train loop | DELETED | Port from PSY3_VS_PSY4.md spec |
+| psystar platform (P2P, MIDI, song mode, harmony engine) | SEPARATE REPO | Long-term: vendor in or fork-and-merge |
+| PSY6-ULTIMATE Grammar System | SEPARATE REPO | Port as ADAPTIVE learning layer |
+| PsySynthPro (PolyBLEP + wavetable + ZDF SVF + FM + MPE) | SEPARATE REPO | Embed as iframe or lift synth engine |
+| psydrum (choke groups, per-drum envelopes, velocity-to-timbre) | SEPARATE REPO, BUILDING | Replace drum worklet when ready |
+| 141 quarantined commercial samples | QUARANTINED | Replace with CC0/procedural alternatives (the manifest.json explicitly says NEVER load without license clearance) |
+| 43 procedural samples | LIVE | Use directly (CC0, no copyright restriction) |
+
+### D.4 — Critical findings (things that surprised me)
+
+1. **The foundation/ folder is GONE.** FOUNDATION_STATUS.md and FOUNDATION_API.md describe a sophisticated foundation lab (transport/music/radio with CausalComposer, MusicalMemoryStore, InferenceEngine, MusicalTransport full impl, RadioObservationLayer). NONE of it exists locally. Only the verbatim 600-line shim survives. The 4,479 lines of tests in tests/foundation/{music,transport,radio}/*.ts are ALL BROKEN (they import from `../../../foundation/...` which doesn't exist).
+
+2. **The studio tree (30k+ lines) is GONE.** AUDIT-B-PSY-ECOSYSTEM-INVENTORY.md (2026-08-12) recommended wiring `advancedVoice.ts` (FM/supersaw/wavetable), `multisampleGenerator.ts`, `commercialReference.ts`, `layerEngine.ts`, `soundBank.ts` (142 presets). The rebuild DELETED ALL OF IT and instead chose to use the canonical psysynth device (which has its own voice pool but uses BiquadFilter, not real Moog). The worklog justifies this as "Replace the 30k+ line tangled PSY4 codebase with a strict 3-layer architecture totaling <5,000 lines".
+
+3. **psysynth uses BiquadFilter, NOT real Moog.** The drum worklet has a real 4-stage tanh MoogLadder class. The psysynth melodic bundle uses dual BiquadFilter cascade with Q = res×20 — same behavior pattern, different character. PSY3_VS_PSY4.md flagged this as the #1 sound quality gap. To fix: rebuild psysynth from the psysynth repo source with a real Moog, OR use the drum worklet's MoogLadder class as a starting point for an upgraded melodic voice.
+
+4. **The psysynth bundle has dead fields.** PSY4_HONEST_ROAST.md confirms: `chordIntervals`, `arpOrnament`, `stepVariance` are only applied to stab/arp roles — for lead they're dead data. The "lead-pro-layered5" patch claims 5 layers but actually has 3 oscillators.
+
+5. **WAV export is currently BROKEN.** PSY4_HONEST_ROAST.md Lie 6: "The WAV export produces a file, but the file contains SILENCE (peak=0.0000, nonZeroSamples=0). The AudioWorkletNode doesn't receive the port.postMessage events in OfflineAudioContext because the message queue isn't processed before startRendering() runs synchronously." — NOT YET FIXED.
+
+6. **The "infinite variation" claim was misleading.** PSY4_HONEST_ROAST.md Investigation 7: same seed + same startTime → IDENTICAL output (deterministic per-seed). Different startTimes → different output. In practice the scheduler always feeds different startTimes so it varies, but the marketing claim of "infinite variation" is technically inaccurate.
+
+7. **The learning test was weak.** PSY4_HONEST_ROAST.md Lie 4: test only checked `totalReward > 0` — strengthened to `t36.totalReward > t18.totalReward`. Lie 5: styles test only checked `uniquePeaks.size > 1` — still weak.
+
+8. **PSY4 is the LARGEST repo in the family** (158MB) — bigger than psystar (5.7MB), psy-foundation (65MB), and all the single-file experiments combined. This is mostly because of the public/samples/real/ folder (141 commercial samples, ~12MB) and public/phase5/baseline/ (7 "world" renders that the audit confirmed are SONICALLY IDENTICAL — the worlds parameter had ZERO audible effect pre-rebuild).
+
+9. **Two repos are essentially empty/useless:** `psysampler` (empty, 0KB, "consider removing") and `psy4new` (128MB experimental, "consider merging with psy4"). These are noise in the family.
+
+10. **The drum worklet handles ONLY drums now.** The worklog shows an earlier `psy4-engine.js` (1,233 lines) had ALL voices (kick/bass/lead/acid/pad/hat/clap/perc/shaker/texture/FX) in one worklet. The current `psy4-engine-v3.js` (864 lines) handles ONLY drums — melodic voices route to psysynth via the main thread. This is a clean separation but means melodic timing goes through main-thread event dispatch (still RT-safe via setValueAtTime, but adds one hop).
+
