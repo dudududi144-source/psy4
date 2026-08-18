@@ -14295,3 +14295,41 @@ Stage Summary:
 - 11 validations total, all PASS
 - Engine is proven commercial-grade: correct loudness, full-range spectrum,
   stable for 3+ min, learning converges, styles differ, 0 errors, 0 regressions
+
+---
+Task ID: visualizer-presets-all-tests
+Agent: main (Z.ai Code)
+Task: Add spectrum visualizer + preset save/load + complete full test suite
+
+Work Log:
+- Ran stability tests (timed out before, now complete):
+  ✓ engine plays 60s without stopping (1.0m)
+  ✓ engine survives background tab simulation (8.8s)
+- Ran memory tests (timed out before, now complete):
+  ✓ heap does not grow over 60s (1.0m)
+  ✓ voice pool does not exhaust over 60s (1.0m)
+- ALL 8 Playwright tests now PASS (4.5 min total runtime)
+
+- Built SpectrumVisualizer component:
+  - Real-time 64-bar FFT (log-spaced, color-coded green→red)
+  - Waveform overlay in lime green
+  - Canvas-based, 60fps via requestAnimationFrame
+  - Verified: canvas 814×70, 2000 non-bg pixels, rendering=true
+
+- Built preset save/load (presets.ts):
+  - localStorage-based, saves bpm/style/energy/ccParams/fx
+  - SAVE button now functional (was alert TODO)
+  - Verified: save+load roundtrip works (1 preset saved correctly)
+
+- Wired into page.tsx:
+  - analyser exposed from engine → SpectrumVisualizer at top of left column
+  - onSave handler builds PsyPreset from current state + saves + updates list
+
+- Pushed: 78bc7df..8a88719
+
+Stage Summary:
+- 8/8 automated tests PASS (stability + learning + styles + memory)
+- New: spectrum visualizer (real-time FFT + waveform)
+- New: preset save/load (localStorage)
+- All features functional, 0 errors, 0 regressions
+- Total test runtime: ~4.5 min — ready for CI
