@@ -14214,3 +14214,36 @@ Stage Summary:
 - Engine proven via: manual browser tests + CDP measurement + automated Playwright tests
 - The "engine stops" bug is now PROVEN structurally impossible (ctx.suspend freezes time)
 - 4 automated tests pass, ready for CI
+
+---
+Task ID: close-remaining-gaps
+Agent: main (Z.ai Code)
+Task: Close commercial gaps — production build + pro patches + drum layers
+
+Work Log:
+- Gap #6 (deployment): `bun run build` succeeds. Compiled in 9.4s, 0 TS errors, static pages generated. Production build verified.
+- Gap #1 (melodic voice design): Added 3 pro patches to manifest.json (24 total):
+  - lead-pro-layered5: 5-layer lead (fundamental + octave + sub + chord [0,12,19] + drive=8 + stepVariance)
+  - pad-pro-evolving5: 5-layer pad (wide detune 22ct + slow sweep lfoHz=0.08 + deep reverb 0.7)
+  - bass-pro-rolling5: pro bass (sub + fundamental + harmonic + drive=6 + glide + lfoHz=0.5)
+- Fixed melodic-device.ts bank registration bug:
+  - Was storing styleBanks but not calling registerBank()
+  - Fixed: now calls device.patches.registerBank(bank) for each bank
+  - Fixed: normalized bank keys "FULL-ON" → "FULL_ON" to match activeStyle
+- Verified: leadId=lead-pro-layered5, leadChordIntervals=[0,12,19], leadDrive=8, bassId=bass-pro-rolling5
+- Gap #5 (drum synthesis): KickVoice rewritten as 3-layer:
+  - Layer 1: pitch-swept fundamental (existing)
+  - Layer 2: sub-bass sine (one octave below, 1.5x decay for weight)
+  - Layer 3: click transient (3kHz tone + noise, 8ms decay for punch)
+- Tests: styles.spec.ts passes 2/2 after voice changes (no regression)
+- Verified: 0 errors, peak=-2.9dB, 6 voices, 24 patches loaded, playing=true
+- Pushed: 45fc4c9..860e242
+
+Stage Summary:
+- 3 more gaps CLOSED:
+  1. ✓ Melodic voice design (5-layer pro patches)
+  2. ✓ Drum synthesis (3-layer kick)
+  3. ✓ Production build (next build succeeds)
+- Total gaps closed: 5/6 (only A/B reference comparison remains — requires subjective user judgment)
+- 24 patches loaded, style banks properly registered, 3-layer kick working
+- Production build verified, automated tests pass, 0 errors
