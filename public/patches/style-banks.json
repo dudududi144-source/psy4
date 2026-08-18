@@ -2,8 +2,8 @@
  {
   "style": "FULL-ON",
   "patchOverrides": {
-   "bass": "bass-acid-303",
-   "lead": "lead-fullon-squelch",
+   "bass": "bass-pro-rolling5",
+   "lead": "lead-pro-layered5",
    "arp": "arp-goa"
   },
   "macro": {
@@ -16,10 +16,10 @@
  {
   "style": "DARK-PSY",
   "patchOverrides": {
-   "bass": "bass-dark-offbeat",
-   "lead": "lead-dark-square",
+   "bass": "bass-pro-rolling5",
+   "lead": "lead-pro-layered5",
    "arp": "arp-hitech-square",
-   "pad": "pad-dark-drone"
+   "pad": "pad-pro-evolving5"
   },
   "macro": {
    "cutoffBias": 0.85,

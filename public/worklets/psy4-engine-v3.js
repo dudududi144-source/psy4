@@ -94,16 +94,20 @@ class PinkNoise {
   reset() { this.b0 = this.b1 = this.b2 = this.b3 = 0; }
 }
 
-// ─── KickVoice (synth) ─────────────────────────────────────────────────────
+// ─── KickVoice (synth — 3-layer: sub + fundamental + click) ──────────────
+// DEEP_ROAST improvement: commercial kicks have sub-bass + fundamental sine
+// + high-frequency click for punch. This adds those layers.
 class KickVoice {
   constructor() {
     this.active = false;
     this.t = 0;
     this.phase = 0;
+    this.clickPhase = 0;
     this.fund = 50;
     this.startMult = 4;
     this.pitchDecay = 0.025;
     this.subDecay = 0.15;
+    this.clickDecay = 0.008;  // 8ms click — punch transient
     this.amp = 0.9;
     this._out = new Float32Array(2);
   }
@@ -111,7 +115,8 @@ class KickVoice {
     this.active = true;
     this.t = 0;
     this.phase = 0;
-    this.fund = 50;  // could vary by note
+    this.clickPhase = 0;
+    this.fund = 50;
     this.amp = Math.max(0.3, Math.min(1, vel));
   }
   render(currentTime, sr) {
@@ -120,11 +125,22 @@ class KickVoice {
     const dt = 1 / sr;
     this.t += dt;
     if (this.t > this.subDecay + 0.05) { this.active = false; out[0] = 0; out[1] = 0; return out; }
-    // Pitch envelope: starts high, drops to fundamental
+    // Layer 1: Pitch-swept fundamental (sub + body)
     const f = (this.fund * this.startMult - this.fund) * Math.exp(-this.t / this.pitchDecay) + this.fund;
     this.phase += 2 * Math.PI * f * dt;
     const env = Math.exp(-this.t / this.subDecay);
-    const sample = Math.sin(this.phase) * env * this.amp;
+    const fundamental = Math.sin(this.phase) * env;
+    // Layer 2: Sub-bass sine (one octave below, longer decay for weight)
+    const subEnv = Math.exp(-this.t / (this.subDecay * 1.5));
+    const sub = Math.sin(this.phase * 0.5) * subEnv * 0.4;
+    // Layer 3: Click transient (noise burst, 8ms, adds punch)
+    let click = 0;
+    if (this.t < this.clickDecay) {
+      this.clickPhase += 2 * Math.PI * 3000 * dt;  // 3kHz click tone
+      click = (Math.sin(this.clickPhase) * 0.5 + (Math.random() * 2 - 1) * 0.5)
+              * Math.exp(-this.t / this.clickDecay) * 0.3;
+    }
+    const sample = (fundamental + sub + click) * this.amp;
     out[0] = sample; out[1] = sample;
     return out;
   }

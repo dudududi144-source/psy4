@@ -955,6 +955,165 @@
     "reverb": 0.32
    },
    "humanize": true
+  },
+  {
+   "id": "lead-pro-layered5",
+   "role": "lead",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-18",
+    "note": "DEEP_ROAST #1 — 5-layer lead: fundamental + octave + sub + detune pair + drive. Commercial-grade layering."
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.5,
+     "detuneCents": 7
+    },
+    "b": {
+     "wave": "saw",
+     "semitones": 12,
+     "gain": 0.35,
+     "detuneCents": -7,
+     "sync": true
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.25
+    }
+   },
+   "glideMs": 45,
+   "filter": {
+    "type": "lp",
+    "cutoff": 3200,
+    "res": 0.7,
+    "envDepth": 0.75,
+    "envAttackMs": 2,
+    "envDecayMs": 400,
+    "velTrack": 0.3,
+    "lfoHz": 2.5,
+    "lfoDepth": 0.4
+   },
+   "amp": {
+    "attackMs": 2,
+    "decayMs": 350,
+    "sustain": 0.85,
+    "releaseMs": 150
+   },
+   "driveDb": 8,
+   "sends": {
+    "delay": 0.55,
+    "reverb": 0.25
+   },
+   "humanize": true,
+   "chordIntervals": [0, 12, 19],
+   "arpOrnament": true,
+   "stepVariance": true
+  },
+  {
+   "id": "pad-pro-evolving5",
+   "role": "pad",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-18",
+    "note": "DEEP_ROAST #2 — 5-layer evolving pad: wide detune + slow filter sweep + shimmer + deep reverb."
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.4,
+     "detuneCents": 22
+    },
+    "b": {
+     "wave": "saw",
+     "semitones": 0,
+     "gain": 0.4,
+     "detuneCents": -22,
+     "sync": false
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.35
+    }
+   },
+   "glideMs": 0,
+   "filter": {
+    "type": "lp",
+    "cutoff": 1400,
+    "res": 0.4,
+    "envDepth": 0.55,
+    "envAttackMs": 1800,
+    "envDecayMs": 2800,
+    "velTrack": 0.05,
+    "lfoHz": 0.08,
+    "lfoDepth": 0.5
+   },
+   "amp": {
+    "attackMs": 2500,
+    "decayMs": 3000,
+    "sustain": 0.9,
+    "releaseMs": 3500
+   },
+   "driveDb": 3,
+   "sends": {
+    "delay": 0.2,
+    "reverb": 0.7
+   },
+   "humanize": true,
+   "chordIntervals": [0, 7, 12, 16]
+  },
+  {
+   "id": "bass-pro-rolling5",
+   "role": "bass",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-18",
+    "note": "DEEP_ROAST #5 — pro rolling bass: sub + fundamental + harmonic + drive + glide. Sustained mode option."
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.65,
+     "detuneCents": 3
+    },
+    "b": {
+     "wave": "square",
+     "semitones": -12,
+     "gain": 0.4,
+     "detuneCents": -3
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.6
+    }
+   },
+   "glideMs": 35,
+   "filter": {
+    "type": "lp",
+    "cutoff": 1200,
+    "res": 0.45,
+    "envDepth": 0.85,
+    "envAttackMs": 1,
+    "envDecayMs": 220,
+    "velTrack": 0.18,
+    "lfoHz": 0.5,
+    "lfoDepth": 0.15
+   },
+   "amp": {
+    "attackMs": 1,
+    "decayMs": 320,
+    "sustain": 0.75,
+    "releaseMs": 90
+   },
+   "driveDb": 6,
+   "sends": {
+    "delay": 0.08,
+    "reverb": 0.02
+   },
+   "humanize": false
   }
  ]
 }

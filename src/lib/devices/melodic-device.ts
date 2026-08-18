@@ -99,18 +99,24 @@ export class MelodicDevice implements PsyDevice {
       }) as PsynSynthBundle;
       // Load the manifest + style banks
       await this.bundle.load();
-      // Register style banks if present
+      this.device = this.bundle.device;  // set device BEFORE registering banks
+      // Register style banks — normalize style names to underscore form
+      // (psysynth stores by bank.style.toUpperCase(), but our MusicalStyle uses FULL_ON)
       try {
         const resp = await fetch(this.styleBanksUrl);
         if (resp.ok) {
           const banks = await resp.json();
-          // psysynth exposes registerBank via the patches library, but the
-          // minified bundle's device.patches may not expose it directly.
-          // We set the active style via onContext later.
+          if (Array.isArray(banks) && this.device?.patches?.registerBank) {
+            for (const bank of banks) {
+              // Normalize: "FULL-ON" → "FULL_ON" so it matches activeStyle
+              const normalizedBank = { ...bank, style: String(bank.style).toUpperCase().replace(/-/g, '_') };
+              this.device.patches.registerBank(normalizedBank);
+            }
+            console.log(`[MelodicDevice] registered ${banks.length} style banks (normalized)`);
+          }
           (this.bundle as any).styleBanks = banks;
         }
       } catch { /* non-fatal */ }
-      this.device = this.bundle.device;
       return true;
     } catch (err) {
       console.error('[MelodicDevice] init failed:', err);
