@@ -84,3 +84,31 @@
 - 1 more lie found (learning reward didn't measure CC effect) — FIXED
 - 1 misleading claim (deterministic composer, not "infinite variation") — documented
 - Everything else verified TRUE: sidechain, multiband, keyboard, presets, visualizer
+
+### Investigation 13-15: Architecture + UI fixes (2026-08-18 final)
+
+**Lie 12: No sticky footer**
+- Reality: StatusStrip used `margin-top: 8px` — not sticky, not fixed
+- When content was tall, status disappeared below scroll
+- FIXED: `.pf-root` now `display: flex; flex-direction: column`, `.pf-wrap` has `flex: 1`,
+  `.pf-stt` is `position: sticky; bottom: 0` with background + border-top
+
+**Lie 13: Dead knobs in SynthRack**
+- Reality: CC9, CC13, CC20, CC21, CC22, CC23 (EnvDep, VelTrk, Atk, Dec, Sus, Rel)
+  were shown as knobs but psysynth doesn't map them — they did NOTHING
+- FIXED: Removed 6 dead knobs. Replaced ENVELOPE panel with FX SENDS panel
+  that only uses mapped CCs (14=delay, 15=reverb, 71=reso, 74=cutoff)
+
+**Lie 14: ARP/SEQ are decorative only**
+- Reality: `arpOn` and `seqOn` only change React state. They don't route to the engine.
+  `seqOn` runs a setInterval that updates `currentStep` for the visualizer, but
+  doesn't play any notes. The engine has no concept of ARP/SEQ.
+- Status: NOT YET FIXED (documented honestly). ARP/SEQ would need a full
+  arpeggiator/sequencer implementation in the composer or a new module.
+
+**Lie 15: Circular dependency (architecture violation)**
+- Reality: devices (Layer 2) imported `SynthRole` from `psyLive4/types` (Layer 3)
+- This violates the 3-layer architecture: devices should only depend on foundation
+- FIXED: Created `psy-foundation-shim/roles.ts` with SynthRole + DRUM_ROLES + MELODIC_ROLES
+  devices now import from foundation shim (Layer 1), not host (Layer 3)
+  types.ts re-exports from roles.ts (no duplicate definitions)

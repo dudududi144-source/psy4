@@ -11,8 +11,8 @@
 import type { PsyDevice } from '@/lib/psy-foundation-shim/device';
 import type { MusicalEvent, DeviceCapabilities, MusicalContext } from '@/lib/psy-foundation-shim/protocol';
 import type { MusicalTransport } from '@/lib/psy-foundation-shim/transport';
-import type { SynthRole } from '@/lib/psyLive4/types';
-import { MELODIC_ROLES } from '@/lib/psyLive4/types';
+import type { SynthRole } from '@/lib/psy-foundation-shim/roles';
+import { MELODIC_ROLES } from '@/lib/psy-foundation-shim/roles';
 
 // Type-only view of the psysynth bundle (the actual JS is minified ESM).
 interface PsynSynthBundle {

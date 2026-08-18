@@ -1,29 +1,11 @@
 // src/lib/psyLive4/types.ts
 // Canonical types for the PSY4 rebuild (Layer 3 — HOST).
-// These are the ONLY types the scheduler, composer, and host exchange.
-// Devices (Layer 2) receive these via the PsyDevice.onEvent contract.
+// Re-exports role definitions from the foundation shim (no circular deps).
 
+export type { SynthRole, MusicalStyle } from '@/lib/psy-foundation-shim/roles';
+export { DRUM_ROLES, MELODIC_ROLES } from '@/lib/psy-foundation-shim/roles';
+import type { SynthRole, MusicalStyle } from '@/lib/psy-foundation-shim/roles';
 import type { MusicalEvent } from '@/lib/psy-foundation-shim/protocol';
-
-// ── Roles ────────────────────────────────────────────────────────────────
-// Single source of truth. SynthRole covers BOTH melodic (psysynth) and
-// drum (psy4-engine-v3) roles. The host routes by membership in DRUM_ROLES.
-export type SynthRole =
-  | 'bass' | 'lead' | 'acid' | 'pad' | 'keys'      // melodic → psysynth
-  | 'kick' | 'hat' | 'clap' | 'perc' | 'snare';     // drum → worklet
-
-export const DRUM_ROLES: ReadonlySet<SynthRole> = new Set([
-  'kick', 'hat', 'clap', 'perc', 'snare',
-]);
-
-export const MELODIC_ROLES: ReadonlySet<SynthRole> = new Set([
-  'bass', 'lead', 'acid', 'pad', 'keys',
-]);
-
-// ── Styles ───────────────────────────────────────────────────────────────
-export type MusicalStyle =
-  | 'FULL_ON' | 'DARK' | 'PROGRESSIVE' | 'ACID'
-  | 'GOA' | 'HI_TECH' | 'FOREST';
 
 // ── NoteEvent ────────────────────────────────────────────────────────────
 // This is the composer's output. The host converts each NoteEvent into a

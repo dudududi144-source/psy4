@@ -16,6 +16,8 @@
 /* ── PSYFORGE layout primitives ──────────────────────────────────────── */
 .pf-root {
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   background: var(--pf-bg);
   color: var(--pf-tx);
   font-family: system-ui, -apple-system, sans-serif;
@@ -23,7 +25,7 @@
   -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
-.pf-wrap { max-width: 1180px; margin: 0 auto; padding: 8px; }
+.pf-wrap { max-width: 1180px; margin: 0 auto; padding: 8px; width: 100%; flex: 1; }
 
 /* Header */
 .pf-hd {
@@ -130,7 +132,19 @@
 }
 
 /* Status strip */
-.pf-stt { margin-top: 8px; font-size: 11px; color: var(--pf-dm); min-height: 16px; }
+/* Status strip — sticky at bottom */
+.pf-stt {
+  position: sticky;
+  bottom: 0;
+  margin-top: 8px;
+  padding: 8px 16px;
+  font-size: 11px;
+  color: var(--pf-dm);
+  min-height: 16px;
+  background: var(--pf-p);
+  border-top: 1px solid var(--pf-ln);
+  z-index: 10;
+}
 
 /* Oct buttons */
 .pf-oct { display: flex; flex-direction: column; gap: 6px; }

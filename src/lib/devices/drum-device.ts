@@ -10,8 +10,8 @@
 import type { PsyDevice } from '@/lib/psy-foundation-shim/device';
 import type { MusicalEvent, DeviceCapabilities, MusicalContext } from '@/lib/psy-foundation-shim/protocol';
 import type { MusicalTransport } from '@/lib/psy-foundation-shim/transport';
-import type { SynthRole } from '@/lib/psyLive4/types';
-import { DRUM_ROLES } from '@/lib/psyLive4/types';
+import type { SynthRole } from '@/lib/psy-foundation-shim/roles';
+import { DRUM_ROLES } from '@/lib/psy-foundation-shim/roles';
 
 // Voice IDs in the worklet (must match psy4-engine-v3.js)
 const V_KICK = 0, V_HAT = 5, V_HAT_OPEN = 6, V_CLAP = 7, V_PERC = 8,
