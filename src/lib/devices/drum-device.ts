@@ -52,6 +52,13 @@ export class DrumDevice implements PsyDevice {
         numberOfOutputs: 1,
         outputChannelCount: [2],
       });
+      // Wire stats handler — worklet sends {type:'stats', activeVoices, processMs, ...}
+      this.node.port.onmessage = (e) => {
+        const msg = e.data;
+        if (msg.type === 'stats') {
+          this.lastStats = msg;
+        }
+      };
       this.node.connect(this.outputNode);
       return true;
     } catch (err) {
@@ -59,6 +66,12 @@ export class DrumDevice implements PsyDevice {
       return false;
     }
   }
+
+  // ── Telemetry (for diagnostics) ──
+  private lastStats: { activeVoices: number; processMs: number; voiceBudget?: number } | null = null;
+  getStats() { return this.lastStats; }
+  get activeVoices(): number { return this.lastStats?.activeVoices ?? 0; }
+  get processMs(): number { return this.lastStats?.processMs ?? 0; }
 
   capabilities(): DeviceCapabilities {
     return { audio: true, midi: false, inputs: 0, outputs: 1, voices: 16, latencyMs: 0, roles: [...DRUM_ROLES] };

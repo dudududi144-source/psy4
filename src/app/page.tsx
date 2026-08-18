@@ -163,6 +163,14 @@ export default function Page() {
     engineRef.current?.setSmartRadio(newOn);
   }, [smartRadioOn]);
 
+  const onExportMIDI = useCallback(() => {
+    engineRef.current?.exportMIDI(8);
+  }, []);
+
+  const onExportWAV = useCallback(() => {
+    engineRef.current?.exportWAV(8);
+  }, []);
+
   if (!ready) {
     return (
       <div className="pf-root">
@@ -219,7 +227,7 @@ export default function Page() {
                 onSwing={setSwing}
               />
               <ModMatrix lfoAmt={lfoAmt} onLfoAmt={setLfoAmt} lfoRate={lfoRate} onLfoRate={setLfoRate} />
-              <FxSection drive={drive} onDrive={setDrive} delay={delay} onDelay={setDelay} reverb={reverb} onReverb={setReverb} volume={volume} onVolume={onVolume} />
+              <FxSection drive={drive} onDrive={setDrive} delay={delay} onDelay={setDelay} reverb={reverb} onReverb={setReverb} volume={volume} onVolume={onVolume} onExportMIDI={onExportMIDI} onExportWAV={onExportWAV} />
             </div>
             <Keyboard octave={octave} onOctave={setOctave} onNoteOn={onNoteOn} onNoteOff={onNoteOff} />
           </div>

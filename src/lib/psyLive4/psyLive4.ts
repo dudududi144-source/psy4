@@ -30,6 +30,11 @@ export interface MasterChainMetrics {
   sidechainGain: number;        // 0..1 (1.0 = no duck)
   limiterReduction: number;     // dB
 }
+export interface DrumDeviceStats {
+  activeVoices: number;
+  processMs: number;
+  voiceBudget: number;
+}
 export interface ComposedEventLite {
   at: number;
   role: string;
@@ -63,6 +68,7 @@ export interface LiveState4 {
   ccParams: Record<number, number>;     // current CC parameter values
   smartRadioOn: boolean;
   smartRadioNextStyleChange: number;     // seconds until next auto style change
+  drumStats: DrumDeviceStats | null;     // drum worklet telemetry
 }
 
 export class PsyLive4 implements SchedulerHost {
@@ -566,19 +572,209 @@ export class PsyLive4 implements SchedulerHost {
       ccParams: { ...this.ccParams },
       smartRadioOn: this.smartRadioOn,
       smartRadioNextStyleChange: this.getSmartRadioNextChange(),
+      drumStats: this.drumDevice.getStats() as DrumDeviceStats | null,
     };
   }
 
-  // ── MIDI export (kept from old psyLive.ts — user requested it) ──
-  async exportMIDI(): Promise<void> {
-    // TODO: implement using the composer (pure function, easy to render 8 bars)
-    console.log('[PsyLive4] exportMIDI — TODO (composer is ready, just needs MIDI encoding)');
+  // ── MIDI export — renders N bars via composer, encodes as MIDI format 0 ──
+  async exportMIDI(bars = 8): Promise<void> {
+    const beatDur = 60 / this.bpm;
+    const duration = bars * 4 * beatDur;
+    const result = this.composer.compose({
+      startTime: 0,
+      duration,
+      bpm: this.bpm,
+      style: this.style,
+      energy: this.energy,
+      seed: this.seed,
+      prev: null,
+    });
+    if (result.events.length === 0) {
+      console.warn('[PsyLive4] MIDI export: no events');
+      return;
+    }
+    const midi = this.encodeMIDI(result.events, this.bpm);
+    const blob = new Blob([midi], { type: 'audio/midi' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `psy4-${this.style}-${bars}bars-${this.bpm}bpm-${Date.now()}.mid`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    console.log(`[PsyLive4] MIDI exported: ${result.events.length} events, ${bars} bars, ${this.bpm} BPM`);
   }
 
-  // ── WAV export (drums only, kept from old psyLive.ts) ──
+  /** Encode NoteEvents to MIDI format 0 (1 track, 480 tpq). */
+  private encodeMIDI(events: NoteEvent[], bpm: number): ArrayBuffer {
+    const ticksPerQuarter = 480;
+    const tickDur = ticksPerQuarter / 4;  // 16th note ticks
+    const beatDur = 60 / bpm;
+    // MIDI channel per role
+    const channelFor = (role: string): number => {
+      if (['kick', 'hat', 'clap', 'perc', 'snare'].includes(role)) return 9;  // drums on ch 9
+      if (role === 'bass') return 0;
+      if (role === 'lead') return 1;
+      if (role === 'acid') return 2;
+      if (role === 'pad') return 3;
+      return 0;
+    };
+    // MIDI note per role (drums use GM drum map)
+    const noteFor = (e: NoteEvent): number => {
+      switch (e.role) {
+        case 'kick': return 36;   // Bass Drum
+        case 'hat': return 42;    // Closed Hat
+        case 'clap': return 39;   // Hand Clap
+        case 'perc': return 50;   // High Tom
+        case 'snare': return 38;  // Acoustic Snare
+        default: return e.note;   // melodic: use composed note
+      }
+    };
+    // Build event list: (tick, data)
+    const midiEvents: Array<{ tick: number; data: number[] }> = [];
+    // Tempo meta event at tick 0
+    const tempo = Math.round(60000000 / bpm);
+    midiEvents.push({ tick: 0, data: [0xFF, 0x51, 0x03, (tempo >> 16) & 0xFF, (tempo >> 8) & 0xFF, tempo & 0xFF] });
+    for (const e of events) {
+      const tick = Math.round((e.at / beatDur) * ticksPerQuarter);
+      const ch = channelFor(e.role);
+      const note = noteFor(e);
+      const vel = Math.max(1, Math.min(127, Math.round(e.velocity * 127)));
+      midiEvents.push({ tick, data: [0x90 | ch, note, vel] });  // note on
+      const offTick = tick + Math.max(1, Math.round((e.duration > 0 ? e.duration : 0.1) / beatDur * ticksPerQuarter));
+      midiEvents.push({ tick: offTick, data: [0x80 | ch, note, 0] });  // note off
+    }
+    midiEvents.sort((a, b) => a.tick - b.tick);
+    // End of track
+    const lastTick = midiEvents.length > 0 ? midiEvents[midiEvents.length - 1].tick : 0;
+    midiEvents.push({ tick: lastTick + 1, data: [0xFF, 0x2F, 0x00] });
+    // Build track data with delta times
+    const trackData: number[] = [];
+    let prevTick = 0;
+    for (const ev of midiEvents) {
+      const delta = ev.tick - prevTick;
+      prevTick = ev.tick;
+      if (delta > 0x0FFFFFF) trackData.push((delta >> 21) | 0x80);
+      if (delta > 0x3FFF) trackData.push((delta >> 14) | 0x80);
+      if (delta > 0x7F) trackData.push((delta >> 7) | 0x80);
+      trackData.push(delta & 0x7F);
+      trackData.push(...ev.data);
+    }
+    const trackLen = trackData.length;
+    const header = [0x4D, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, 0, 0, 1, (ticksPerQuarter >> 8) & 0xFF, ticksPerQuarter & 0xFF];
+    const trackHeader = [0x4D, 0x54, 0x72, 0x6B, (trackLen >> 24) & 0xFF, (trackLen >> 16) & 0xFF, (trackLen >> 8) & 0xFF, trackLen & 0xFF];
+    const midi = new Uint8Array(header.length + trackHeader.length + trackData.length);
+    midi.set(header, 0);
+    midi.set(trackHeader, header.length);
+    midi.set(trackData, header.length + trackHeader.length);
+    return midi.buffer;
+  }
+
+  // ── WAV export — renders N bars of DRUMS offline via OfflineAudioContext ──
+  // Melodic voices (psysynth) can't be trivially cloned offline, so this is drums-only.
   async exportWAV(bars = 8): Promise<void> {
-    // TODO: implement using OfflineAudioContext + drum device
-    console.log('[PsyLive4] exportWAV — TODO');
+    const beatDur = 60 / this.bpm;
+    const duration = bars * 4 * beatDur + 0.5;
+    const sampleRate = 44100;
+    // Compose events
+    const result = this.composer.compose({
+      startTime: 0,
+      duration,
+      bpm: this.bpm,
+      style: this.style,
+      energy: this.energy,
+      seed: this.seed,
+      prev: null,
+    });
+    // Filter to drum roles only
+    const drumEvents = result.events.filter(e =>
+      e.role === 'kick' || e.role === 'hat' || e.role === 'clap' || e.role === 'perc' || e.role === 'snare'
+    );
+    if (drumEvents.length === 0) {
+      console.warn('[PsyLive4] WAV export: no drum events');
+      return;
+    }
+    // Create offline context + worklet
+    const offline = new OfflineAudioContext(2, Math.ceil(duration * sampleRate), sampleRate);
+    try {
+      await offline.audioWorklet.addModule('/worklets/psy4-engine-v3.js');
+    } catch (e) {
+      console.error('[PsyLive4] WAV: worklet load failed', e);
+      return;
+    }
+    const node = new AudioWorkletNode(offline, 'psy4-engine-v3', {
+      numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
+    });
+    // Schedule drum events
+    const V_KICK = 0, V_HAT = 5, V_CLAP = 7, V_PERC = 8, V_SNARE = 14;
+    const roleToVoice: Record<string, number> = { kick: V_KICK, hat: V_HAT, clap: V_CLAP, perc: V_PERC, snare: V_SNARE };
+    for (const e of drumEvents) {
+      node.port.postMessage({
+        type: 'scheduleEvent',
+        at: e.at,
+        voiceId: roleToVoice[e.role],
+        note: e.note,
+        vel: e.velocity,
+        dur: e.duration,
+        param: 0,
+      });
+    }
+    // Wire: worklet → limiter → destination
+    const limiter = offline.createDynamicsCompressor();
+    limiter.threshold.value = -0.3; limiter.ratio.value = 20;
+    limiter.attack.value = 0.001; limiter.release.value = 0.05;
+    const vol = offline.createGain(); vol.gain.value = 1.0;
+    node.connect(vol); vol.connect(limiter); limiter.connect(offline.destination);
+    console.log(`[PsyLive4] WAV: rendering ${bars} bars (${duration.toFixed(1)}s, ${drumEvents.length} drum events)...`);
+    const rendered = await offline.startRendering();
+    const wav = this.encodeWAV(rendered, sampleRate);
+    const blob = new Blob([wav], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `psy4-drums-${this.style}-${bars}bars-${this.bpm}bpm-${Date.now()}.wav`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    console.log(`[PsyLive4] WAV exported: ${bars} bars, ${drumEvents.length} events, ${rendered.length} samples`);
+  }
+
+  /** Encode AudioBuffer to 16-bit PCM WAV (RIFF). */
+  private encodeWAV(buffer: AudioBuffer, sampleRate: number): ArrayBuffer {
+    const numCh = buffer.numberOfChannels;
+    const len = buffer.length;
+    const blockAlign = numCh * 2;
+    const dataSize = len * blockAlign;
+    const buf = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buf);
+    const writeStr = (off: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numCh, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+    const chans: Float32Array[] = [];
+    for (let c = 0; c < numCh; c++) chans.push(buffer.getChannelData(c));
+    let off = 44;
+    for (let i = 0; i < len; i++) {
+      for (let c = 0; c < numCh; c++) {
+        let s = chans[c][i];
+        s = Math.max(-1, Math.min(1, s));
+        view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        off += 2;
+      }
+    }
+    return buf;
   }
 
   dispose(): void {

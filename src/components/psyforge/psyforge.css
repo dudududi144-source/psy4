@@ -442,3 +442,15 @@
   color: var(--pf-gr);
   box-shadow: 0 0 8px rgba(61, 240, 138, 0.2);
 }
+
+/* Export buttons */
+.export-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.export-btn {
+  flex: 1;
+  font-size: 10px !important;
+  padding: 6px !important;
+}
