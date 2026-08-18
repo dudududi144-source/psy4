@@ -16,5 +16,5 @@ Error: page.waitForTimeout: Target page, context or browser has been closed
 ```
 
 ```
-Error: write EPIPE
+Error: browserContext.close: Protocol error (Target.disposeBrowserContext): Failed to find context with id 94AC61B1D1F408ACCFDA183BF3974FF2
 ```

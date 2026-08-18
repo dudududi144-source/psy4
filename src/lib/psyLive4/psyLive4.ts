@@ -16,6 +16,7 @@ import { toMusicalEvent } from './types';
 import type { NoteEvent, SynthRole, MusicalStyle } from './types';
 import { DrumDevice } from '@/lib/devices/drum-device';
 import { MelodicDevice } from '@/lib/devices/melodic-device';
+import { LeadDevice } from '@/lib/devices/lead-device';
 import { freqHzToCC74 } from './cc-mapping';
 import { CCLearner, type CCExplorationState } from './learning';
 import { DeviceHost, InMemoryChannel } from '@/lib/psy-foundation-shim';
@@ -84,6 +85,7 @@ export class PsyLive4 implements SchedulerHost {
   private composer = new PsytranceComposer();
   private drumDevice: DrumDevice;
   private melodicDevice: MelodicDevice;
+  private leadDevice: LeadDevice;
   // ── Foundation DeviceHost: proper event routing + error isolation ──
   private host: DeviceHost;
   private channel: InMemoryChannel;
@@ -235,6 +237,7 @@ export class PsyLive4 implements SchedulerHost {
       maxVoices: 16,
       seed: this.seed,
     });
+    this.leadDevice = new LeadDevice({ ctx: this.ctx, outputNode: this.sidechainDuck });
 
     // ── Scheduler ──
     this.scheduler = new CompositionScheduler(this);
@@ -256,6 +259,7 @@ export class PsyLive4 implements SchedulerHost {
   async init(): Promise<boolean> {
     const drumOk = await this.drumDevice.init();
     const melodicOk = await this.melodicDevice.init();
+    const leadOk = await this.leadDevice.init();
     if (!drumOk) {
       console.error('[PsyLive4] drum device init failed');
       return false;
@@ -263,13 +267,14 @@ export class PsyLive4 implements SchedulerHost {
     if (!melodicOk) {
       console.warn('[PsyLive4] melodic device init failed — running drums only');
     }
+    if (!leadOk) {
+      console.warn('[PsyLive4] lead device init failed — using psysynth for lead');
+    }
     // Register devices with the Foundation DeviceHost
-    // This provides: error isolation (try/catch per device), transport routing,
-    // context routing, and event routing through InMemoryChannel.
     this.host.register(this.drumDevice);
     this.host.register(this.melodicDevice);
+    if (leadOk) this.host.register(this.leadDevice);
     console.log(`[PsyLive4] DeviceHost: ${this.host.deviceCount} devices registered`);
-    // Apply initial style leadCutoff to psysynth
     this.applyStyleToDevices();
     return true;
   }
@@ -282,10 +287,9 @@ export class PsyLive4 implements SchedulerHost {
     this.kickCount = 0;
     this.bar = 0;
     this.composerPrev = null;
-    // onStart is called by DeviceHost.register, but we call it again on play
-    // because devices may need re-initialization after a stop cycle
     this.drumDevice.onStart();
     this.melodicDevice.onStart();
+    this.leadDevice.onStart();
     this.scheduler.start();
     console.log('[PsyLive4] play — scheduler started');
   }
@@ -296,6 +300,7 @@ export class PsyLive4 implements SchedulerHost {
     this.scheduler.stop();
     this.drumDevice.onStop();
     this.melodicDevice.onStop();
+    this.leadDevice.onStop();
     console.log('[PsyLive4] stop');
   }
 
@@ -377,8 +382,10 @@ export class PsyLive4 implements SchedulerHost {
   // Value is 0..1 (the UI normalizes). Returns true if applied.
   setCC(cc: number, value: number): boolean {
     const v = Math.max(0, Math.min(1, value));
-    this.ccParams[cc] = v;  // track for diagnostics
-    return this.melodicDevice.setParameterByCC(cc, v);
+    this.ccParams[cc] = v;
+    this.melodicDevice.setParameterByCC(cc, v);
+    this.leadDevice.setCC(cc, v);
+    return true;
   }
 
   // ── Smart Radio: auto-evolution mode ──
