@@ -6,6 +6,7 @@
 //
 // Uses PsyLive4 (the new clean architecture — Layer 3 host).
 
+import '../components/psyforge/psyforge.css';  // CRITICAL: plain CSS, not Tailwind-processed
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { PsyLive4, type LiveState4 } from '@/lib/psyLive4/psyLive4';
 import type { MusicalStyle } from '@/lib/psyLive4/types';
