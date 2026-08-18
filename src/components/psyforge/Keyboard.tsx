@@ -24,7 +24,7 @@ export function Keyboard({ octave, onOctave, onNoteOn, onNoteOff }: KeyboardProp
   const activeNotes = useRef<Set<number>>(new Set());
 
   const noteOn = useCallback((midi: number) => {
-    if (activeNotes.current.has(midi)) return;
+    if (activeNotes.current.has(midi)) return;  // prevent double-trigger
     activeNotes.current.add(midi);
     onNoteOn(midi);
   }, [onNoteOn]);
@@ -34,6 +34,19 @@ export function Keyboard({ octave, onOctave, onNoteOn, onNoteOff }: KeyboardProp
     activeNotes.current.delete(midi);
     onNoteOff(midi);
   }, [onNoteOff]);
+
+  // HONEST FIX: use pointer capture + pointerup on window to catch releases
+  // outside the key (prevents stuck notes when finger slides off)
+  const onKeyPointerDown = useCallback((e: React.PointerEvent, midi: number) => {
+    e.preventDefault();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    noteOn(midi);
+  }, [noteOn]);
+
+  const onKeyPointerUp = useCallback((e: React.PointerEvent, midi: number) => {
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    noteOff(midi);
+  }, [noteOff]);
 
   const baseMidi = (octave + 1) * 12; // C2 = 36 when octave=2
 
@@ -60,9 +73,8 @@ export function Keyboard({ octave, onOctave, onNoteOn, onNoteOff }: KeyboardProp
             <div
               key={i}
               className="pf-key"
-              onPointerDown={(e) => { e.preventDefault(); (e.target as HTMLElement).setPointerCapture(e.pointerId); noteOn(midi); }}
-              onPointerUp={() => noteOff(midi)}
-              onPointerLeave={() => noteOff(midi)}
+              onPointerDown={(e) => onKeyPointerDown(e, midi)}
+              onPointerUp={(e) => onKeyPointerUp(e, midi)}
             />
           );
         })}
@@ -75,9 +87,8 @@ export function Keyboard({ octave, onOctave, onNoteOn, onNoteOff }: KeyboardProp
               key={`b${i}`}
               className="pf-key b"
               style={{ left: `${leftPct}%`, width: `${100 / 14 * 0.6}%` }}
-              onPointerDown={(e) => { e.preventDefault(); (e.target as HTMLElement).setPointerCapture(e.pointerId); noteOn(midi); }}
-              onPointerUp={() => noteOff(midi)}
-              onPointerLeave={() => noteOff(midi)}
+              onPointerDown={(e) => onKeyPointerDown(e, midi)}
+              onPointerUp={(e) => onKeyPointerUp(e, midi)}
             />
           );
         })}

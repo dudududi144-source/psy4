@@ -142,14 +142,33 @@ export default function Page() {
   }, []);
 
   const onPreset = useCallback(() => {
-    const next = (presetIdx + 1) % PRESETS.length;
-    const p = PRESETS[next];
-    setPresetIdx(next);
+    // Cycle through built-in presets + saved presets
+    const allPresets = [
+      ...PRESETS.map(p => ({ ...p, ccParams: {}, fx: { drive: 0.35, delay: 0.3, reverb: 0.22, volume: 0.85 } })),
+      ...savedPresets.map(p => ({ name: p.name, style: p.style as MusicalStyle, bpm: p.bpm, energy: p.energy, ccParams: p.ccParams, fx: p.fx })),
+    ];
+    const next = (presetIdx + 1) % allPresets.length;
+    const p = allPresets[next];
+    setPresetIdx(next < PRESETS.length ? next : 0);  // built-in index or 0 for saved
     setBpm(p.bpm);
     engineRef.current?.setBPM(p.bpm);
     engineRef.current?.setStyle(p.style);
     engineRef.current?.setEnergy(p.energy);
-  }, [presetIdx]);
+    // Apply CC params + FX (for saved presets)
+    if (p.ccParams && Object.keys(p.ccParams).length > 0) {
+      setCcParams(p.ccParams);
+      for (const [cc, val] of Object.entries(p.ccParams)) {
+        engineRef.current?.setCC(parseInt(cc), val as number);
+      }
+    }
+    if (p.fx) {
+      setDrive(p.fx.drive);
+      setDelay(p.fx.delay);
+      setReverb(p.fx.reverb);
+      setVolume(p.fx.volume);
+      engineRef.current?.setMasterVolume(p.fx.volume);
+    }
+  }, [presetIdx, savedPresets]);
 
   const onParam = useCallback((cc: number, value: number) => {
     setCcParams(prev => ({ ...prev, [cc]: value }));
@@ -224,9 +243,11 @@ export default function Page() {
   if (!ready) {
     return (
       <div className="pf-root">
-        <div className="pf-wrap" style={{ textAlign: 'center', padding: '60px' }}>
+        <div className="pf-wrap" style={{ textAlign: 'center', padding: '60px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
           <div className="pf-lg"><b>PsyForge</b> <i>4</i></div>
-          <div style={{ marginTop: '20px', color: 'var(--pf-dm)', fontSize: '13px' }}>Initializing engine…</div>
+          <div style={{ width: '40px', height: '40px', border: '3px solid var(--pf-ln)', borderTopColor: 'var(--pf-ac)', borderRadius: '50%', animation: 'pf-spin 0.8s linear infinite' }} />
+          <div style={{ color: 'var(--pf-dm)', fontSize: '13px' }}>Initializing audio engine…</div>
+          <style>{`@keyframes pf-spin { to { transform: rotate(360deg); } }`}</style>
         </div>
       </div>
     );
