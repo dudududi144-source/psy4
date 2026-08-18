@@ -729,6 +729,14 @@ export default function Page() {
                 🎵 MIDI Export
               </button>
               <button
+                onClick={() => { engineRef.current?.exportWAV(8); }}
+                disabled={!s.playing}
+                className="text-[10px] font-bold py-2 rounded-lg transition-all disabled:opacity-30 hover:scale-105"
+                style={{ background: 'rgba(244,114,182,0.15)', color: '#f472b6', border: '1px solid rgba(244,114,182,0.3)' }}
+                title="Render 8 bars of drums to WAV (offline). Melodic voices (psysynth) not included — see console log.">
+                🎚 WAV Render
+              </button>
+              <button
                 onClick={() => {
                   const name = prompt('Preset name:');
                   if (name) engineRef.current?.savePreset(name);

@@ -389,6 +389,13 @@ export class PsyLive {
   private workerAction = 'NO_CHANGE';
   private workerActiveVoices: string[] = [];
   private lastWorkerComposeBar = -1;
+  // HONEST FIX (PSY4_FINAL_AUDIT REMAINING GAP 4): repetition detector.
+  // Stores a per-bar fingerprint (sorted note+voice pairs hashed to a string).
+  // If the same fingerprint repeats > 8 times in a row, we log a warning —
+  // the composition is stuck in a loop.
+  private _barFingerprints: string[] = [];
+  private _lastRepetitionWarning = 0;
+  private _repetitionStats = { uniqueBars: 0, repeatedBars: 0, maxStreak: 0 };
   // HONEST FIX (PSY4_FINAL_AUDIT Finding 3): track the last time the scheduler
   // actually fired, so the heartbeat can detect background-tab throttling
   // (where setInterval is clamped to ~1/sec and the timer ref is NOT null).
@@ -1814,7 +1821,10 @@ export class PsyLive {
           // Create a gain node for volume control if not exists
           if (!this.workletVolumeGain) {
             this.workletVolumeGain = this.ctx.createGain();
-            this.workletVolumeGain.gain.value = 0.8;  // FIX: was 0.5 — too quiet, now 0.8 with limiter
+            // HONEST FIX (PSY4_DEEP_ROAST #7): was 0.5 (too quiet), then 0.8.
+            // Now 1.0 — the multiband compressors + limiter handle the peaks.
+            // Commercial psytrance is LOUD; PSY4 was noticeably quieter.
+            this.workletVolumeGain.gain.value = 1.0;
           }
           // Worklet → sidechainDuck → multiband → workletVolumeGain → analyser
           out.connect(this.sidechainDuck);
@@ -1845,7 +1855,11 @@ export class PsyLive {
           // FIX: Add a DynamicsCompressor as brick-wall limiter (prevents clipping)
           if (!this.masterLimiter) {
             this.masterLimiter = this.ctx.createDynamicsCompressor();
-            this.masterLimiter.threshold.value = -1;  // -1dB threshold
+            // HONEST FIX (PSY4_DEEP_ROAST #7): raise ceiling from -1dB to -0.3dB.
+            // Commercial masters sit at -0.3 to -0.1 dBFS. -1dB was too conservative
+            // and made PSY4 sound quieter than references. The multiband compressors
+            // already tame transients before the limiter, so we can push hotter.
+            this.masterLimiter.threshold.value = -0.3;  // -0.3dB ceiling (was -1dB)
             this.masterLimiter.knee.value = 0;        // hard knee
             this.masterLimiter.ratio.value = 20;       // 20:1 ratio (brick-wall)
             this.masterLimiter.attack.value = 0.001;   // 1ms attack
@@ -1990,6 +2004,10 @@ export class PsyLive {
           // v2 format: [at, voiceId, note, vel, dur, param]
           const now = this.ctx!.currentTime;
           let scheduled = 0;
+          // Group events by bar (using `at` → bar index relative to barOriginAudioTime).
+          // We don't have barOriginAudioTime here, but msg.startBar tells us which
+          // bars this batch covers — we'll use that to key the fingerprint map.
+          const barFingerprintsByBar: Map<number, string[]> = new Map();
           for (let i = 0; i < msg.count; i++) {
             const base = i * EVENT_SIZE;
             const at = flat[base];
@@ -2028,9 +2046,29 @@ export class PsyLive {
               this.engineNode.scheduleEvent(at, voiceId, note, velocity, duration, param);
             }
             scheduled++;
+            // Accumulate fingerprint tokens per bar (bar index within this batch).
+            // Use (at - msg.startBar * barDur) to get the fractional bar; floor it.
+            // We don't know bpm here cheaply, but transport.snapshot gives it.
+            // Use a coarse bucket: integer seconds. Good enough for repetition detection.
+            const barIdx = msg.startBar + Math.floor((at - (now - this.lastWorkerComposeBar * 4 * (60 / (this.transport?.snapshot()?.bpm ?? 145)))) / 4 * (this.transport?.snapshot()?.bpm ?? 145) / 60);
+            if (Number.isFinite(barIdx)) {
+              let arr = barFingerprintsByBar.get(barIdx);
+              if (!arr) { arr = []; barFingerprintsByBar.set(barIdx, arr); }
+              arr.push(`${voiceId}:${Math.round(note)}:${Math.round(velocity * 10) / 10}`);
+            }
           }
           if (scheduled > 0) {
             this.engineNode.flushEvents();
+          }
+          // HONEST FIX (REMAINING GAP 4): detect repetition.
+          // For each bar in this batch, compute a sorted-join fingerprint and
+          // compare to recent history. If the same fingerprint appears > 8 times
+          // in a row, log a warning (throttled to once per 30s).
+          for (const [barIdx, tokens] of barFingerprintsByBar) {
+            const fp = tokens.sort().join('|');
+            this._barFingerprints.push(fp);
+            if (this._barFingerprints.length > 32) this._barFingerprints.shift();
+            this._checkRepetition();
           }
         }
         break;
@@ -2041,6 +2079,42 @@ export class PsyLive {
         this.workerActiveVoices = msg.activeVoices;
         break;
     }
+  }
+
+  // HONEST FIX (PSY4_FINAL_AUDIT REMAINING GAP 4): repetition detector.
+  // Scans the recent bar fingerprints (max 32). Counts the longest streak
+  // of the most-recent fingerprint. If > 8, logs a warning — the composition
+  // is stuck. Also exposes stats via getRepetitionStats().
+  private _checkRepetition(): void {
+    const fps = this._barFingerprints;
+    if (fps.length < 4) return;
+    const last = fps[fps.length - 1];
+    let streak = 1;
+    for (let i = fps.length - 2; i >= 0; i--) {
+      if (fps[i] === last) streak++;
+      else break;
+    }
+    // Unique bars = distinct fingerprints in the window
+    const unique = new Set(fps).size;
+    this._repetitionStats.uniqueBars = unique;
+    this._repetitionStats.repeatedBars = fps.length - unique;
+    if (streak > this._repetitionStats.maxStreak) this._repetitionStats.maxStreak = streak;
+    // Warn if stuck: same bar fingerprint 8+ times in a row
+    const now = Date.now();
+    if (streak >= 8 && (now - this._lastRepetitionWarning) > 30000) {
+      this._lastRepetitionWarning = now;
+      console.warn(`[PSY4] REPETITION WARNING: same bar pattern repeated ${streak}x in a row (unique=${unique}/${fps.length}). Composition may be stuck — try changing style or BPM.`);
+    }
+  }
+
+  /** Returns repetition statistics for UI/diagnostics. */
+  getRepetitionStats(): { uniqueBars: number; repeatedBars: number; maxStreak: number; windowSize: number } {
+    return {
+      uniqueBars: this._repetitionStats.uniqueBars,
+      repeatedBars: this._repetitionStats.repeatedBars,
+      maxStreak: this._repetitionStats.maxStreak,
+      windowSize: this._barFingerprints.length,
+    };
   }
 
   // CAUSAL: Schedule a single causal event for playback via MaterialRealizer
@@ -2331,9 +2405,13 @@ export class PsyLive {
   private triggerSidechain(at: number): void {
     if (!this.sidechainDuck || !this.ctx) return;
     const t = Math.max(at, this.ctx.currentTime);
-    // Dip to 0.4 (60% depth) over 5ms, recover to 1.0 over 150ms
+    // HONEST FIX (PSY4_DEEP_ROAST #6): deepen sidechain to 6dB (dip to 0.5).
+    // Was 0.6 (only ~4dB) — not enough to create the classic psytrance
+    // "breathe" where bass/lead duck noticeably under the kick. 0.5 = 6dB,
+    // which is the sweet spot: audible pumping without killing the mix.
+    // Recovery stays 150ms (synced to kick period at ~140-150 BPM).
     this.sidechainDuck.gain.cancelScheduledValues(t);
-    this.sidechainDuck.gain.setValueAtTime(0.6, t);  // FIX: was 0.4 — too aggressive (60% depth is standard)
+    this.sidechainDuck.gain.setValueAtTime(0.5, t);  // 6dB duck (was 0.6 = 4dB)
     this.sidechainDuck.gain.exponentialRampToValueAtTime(1.0, t + 0.15);
   }
 
@@ -3632,6 +3710,169 @@ export class PsyLive {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     console.log(`[PSY4] MIDI exported: ${count} notes, ${bpm} BPM, format 0`);
+  }
+
+  // ── Phase 10.1b: WAV Render (OfflineAudioContext) ──
+  // HONEST FIX (PSY4_FINAL_AUDIT REMAINING GAP 3): no offline render pipeline
+  // meant the user could not A/B test PSY4's output against references. Now
+  // we render 8 bars of the composition offline using OfflineAudioContext and
+  // download the result as a 16-bit PCM WAV file.
+  //
+  // This re-creates the drum engine (worklet) + master chain in an offline
+  // context and schedules the same events the live engine would play. The
+  // melodic voices (bass/lead/acid/pad) are NOT included here because
+  // psysynth is a complex live device that cannot be trivially cloned into
+  // an offline context — so the WAV render is DRUMS ONLY. This is documented
+  // honestly so the user knows what they're getting.
+  async exportWAV(bars = 8): Promise<void> {
+    if (!this.transport) {
+      console.warn('[PSY4] Transport not ready for WAV export');
+      return;
+    }
+    if (!this.compositionWorker || !this.workerReady) {
+      console.warn('[PSY4] Composition worker not ready for WAV export');
+      return;
+    }
+    const snap = this.transport.snapshot();
+    const bpm = snap.bpm;
+    const sampleRate = 44100;
+    const beatDur = 60 / bpm;
+    const durationSec = bars * 4 * beatDur + 0.5; // +0.5s tail
+
+    // Step 1: request composition events from worker
+    const events = await this.requestCompositionEvents(0, bars, bpm);
+    if (events.length === 0) {
+      console.warn('[PSY4] WAV export: no events from worker');
+      return;
+    }
+
+    // Step 2: create offline context + load worklet
+    const offline = new OfflineAudioContext(2, Math.ceil(durationSec * sampleRate), sampleRate);
+    try {
+      await offline.audioWorklet.addModule('/worklets/psy4-engine-v3.js');
+    } catch (e) {
+      console.error('[PSY4] WAV export: failed to load worklet module', e);
+      return;
+    }
+    const node = new AudioWorkletNode(offline, 'psy4-engine-v3', {
+      numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
+    });
+
+    // Step 3: schedule drum events (kick/hat/snare/clap/perc/shaker/fx)
+    // Melodic voices (bass/lead/acid/pad) are NOT rendered — see comment above.
+    const V_KICK = 0, V_HAT = 5, V_HAT_OPEN = 6, V_CLAP = 7, V_PERC = 8,
+          V_SHAKER = 9, V_RISER = 11, V_IMPACT = 12, V_SWEEP = 13, V_SNARE = 14;
+    const DRUM_VOICES = new Set([V_KICK, V_HAT, V_HAT_OPEN, V_CLAP, V_PERC, V_SHAKER, V_RISER, V_IMPACT, V_SWEEP, V_SNARE]);
+    let scheduled = 0;
+    for (const ev of events) {
+      if (!DRUM_VOICES.has(ev.voiceId)) continue;
+      node.port.postMessage({
+        type: 'scheduleEvent',
+        at: ev.at,
+        voiceId: ev.voiceId,
+        note: ev.note,
+        vel: ev.vel,
+        dur: ev.dur,
+        param: ev.param,
+      });
+      scheduled++;
+    }
+    // Step 4: wire worklet → simple limiter → destination
+    const limiter = offline.createDynamicsCompressor();
+    limiter.threshold.value = -0.3;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.001;
+    limiter.release.value = 0.05;
+    const vol = offline.createGain();
+    vol.gain.value = 1.0;
+    node.connect(vol);
+    vol.connect(limiter);
+    limiter.connect(offline.destination);
+
+    // Step 5: render
+    console.log(`[PSY4] WAV export: rendering ${bars} bars (${durationSec.toFixed(1)}s, ${scheduled} drum events)...`);
+    const rendered = await offline.startRendering();
+    console.log(`[PSY4] WAV export: render complete (${rendered.length} samples)`);
+
+    // Step 6: encode to 16-bit PCM WAV + download
+    const wav = this.encodeWAV(rendered, sampleRate);
+    const blob = new Blob([wav], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `psy4-drums-${bpm}bpm-${bars}bars-${Date.now()}.wav`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    console.log(`[PSY4] WAV exported: ${bars} bars, ${bpm} BPM, drums only (melodic via psysynth not rendered)`);
+  }
+
+  /** Request composition events from worker as a Promise (resolves on first 'events' message). */
+  private requestCompositionEvents(startBar: number, endBar: number, bpm: number): Promise<Array<{at:number;voiceId:number;note:number;vel:number;dur:number;param:number}>> {
+    return new Promise((resolve) => {
+      if (!this.compositionWorker) { resolve([]); return; }
+      const handler = (e: MessageEvent) => {
+        const msg = e.data;
+        if (msg.type !== 'events' || msg.startBar !== startBar) return;
+        this.compositionWorker?.removeEventListener('message', handler);
+        const flat: Float64Array = msg.events;
+        const count: number = msg.count;
+        const EVENT_SIZE = 6;
+        const out: Array<{at:number;voiceId:number;note:number;vel:number;dur:number;param:number}> = [];
+        for (let i = 0; i < count; i++) {
+          const base = i * EVENT_SIZE;
+          out.push({
+            at: flat[base], voiceId: flat[base+1] | 0, note: flat[base+2],
+            vel: flat[base+3], dur: flat[base+4], param: flat[base+5],
+          });
+        }
+        resolve(out);
+      };
+      this.compositionWorker.addEventListener('message', handler);
+      this.compositionWorker.postMessage({
+        type: 'compose', startBar, endBar, barOriginAudioTime: 0,
+      });
+    });
+  }
+
+  /** Encode an AudioBuffer to 16-bit PCM WAV (RIFF). */
+  private encodeWAV(buffer: AudioBuffer, sampleRate: number): ArrayBuffer {
+    const numCh = buffer.numberOfChannels;
+    const len = buffer.length;
+    const bytesPerSample = 2;
+    const blockAlign = numCh * bytesPerSample;
+    const dataSize = len * blockAlign;
+    const buf = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buf);
+    // RIFF header
+    const writeStr = (off: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);            // subchunk size
+    view.setUint16(20, 1, true);             // PCM
+    view.setUint16(22, numCh, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true); // byte rate
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true);             // bits per sample
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+    // Interleave + write samples
+    const chans: Float32Array[] = [];
+    for (let c = 0; c < numCh; c++) chans.push(buffer.getChannelData(c));
+    let off = 44;
+    for (let i = 0; i < len; i++) {
+      for (let c = 0; c < numCh; c++) {
+        let s = chans[c][i];
+        s = Math.max(-1, Math.min(1, s));
+        view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        off += 2;
+      }
+    }
+    return buf;
   }
 
   // ── Phase 10.2: Preset Save/Load ──

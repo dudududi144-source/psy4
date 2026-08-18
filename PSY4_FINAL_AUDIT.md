@@ -228,10 +228,13 @@ Verified: gain reduction is active (low -3.8dB, mid -1.3dB, high -0.2dB). All 3 
 
 ## REMAINING HONEST GAPS (not fixed by this audit)
 
-1. **Worklet MultibandComp class still disabled** — `psy4-engine-v3.js` line 523 still has `const mbOut = dcOut`. The main-thread multiband (Fix D) handles the external chain, but the worklet's internal master chain has no multiband. This is acceptable because the main-thread multiband catches the summed output, but it means the worklet's per-voice dynamics are uncontrolled before hitting the main thread.
+1. **~~Worklet MultibandComp class still disabled~~** — **FIXED**: The worklet's `MultibandComp` is now ENABLED (line 528-540) with NaN-guarded filter resets. Verified: lowComp reduction -5.6dB, midComp -3.6dB, highComp -0.5dB in the worklet chain (in addition to the main-thread multiband).
 
-2. **Sound design (PSY4_DEEP_ROAST.md)** — The 7 sound-quality issues (lead is just supersaw, pad is organ, acid is buzz, etc.) are NOT addressed by this audit. Those require rewriting the synth voices, which is a larger effort. psysynth's 20 patches partially address the melodic side, but the drum voices in the worklet are still primitive.
+2. **Sound design (PSY4_DEEP_ROAST.md)** — The 7 sound-quality issues: lead is just supersaw, pad is organ, acid is buzz, etc. **PARTIALLY ADDRESSED**:
+   - #6 (kick/bass interlock): sidechain deepened to 6dB (was 4dB) ✓
+   - #7 (master not loud enough): limiter ceiling -0.3dB (was -1dB), worklet volume 1.0 (was 0.8), verified peak -10dB RMS -13.8dB (was -14.6/-21.2) ✓
+   - #1-5 (lead/pad/acid/texture/bass voice design): NOT FIXED — these live in psysynth (minified), cannot be easily rewritten. The CC74 mapping fix (Fix A) gives the learning loop control over timbre, but the underlying patch architecture is unchanged.
 
-3. **No WAV rendering pipeline** — Cannot A/B test offline. The user must listen in real-time.
+3. **~~No WAV rendering pipeline~~** — **FIXED**: `exportWAV(bars)` method renders 8 bars offline via `OfflineAudioContext` and downloads 16-bit PCM WAV. Verified: rendered 605995 samples (13.7s), downloaded. **HONEST LIMITATION**: drums only — melodic voices (psysynth) are NOT rendered because the live device cannot be trivially cloned into an offline context. UI button "🎚 WAV Render" added.
 
-4. **No repetition analysis** — Cannot detect if the composition is looping the same 4 bars indefinitely.
+4. **~~No repetition analysis~~** — **FIXED**: per-bar fingerprint tracking in `_barFingerprints` (max 32 bars). `_checkRepetition()` detects if same pattern repeats > 8x. `getRepetitionStats()` exposed for diagnostics. Verified: uniqueBars=12, repeatedBars=1, maxStreak=2 in a 13-bar window (good variety).

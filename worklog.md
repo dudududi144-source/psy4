@@ -13561,3 +13561,64 @@ Stage Summary:
   2. sound design (7 בעיות מ-PSY4_DEEP_ROAST.md — לא טופלו)
   3. אין WAV rendering pipeline
   4. אין repetition analysis
+
+---
+Task ID: final-close-all-gaps
+Agent: main (Z.ai Code)
+Task: סגור את כל הפערים שנשארו מה-audit + ודא הכל בדפדפן
+
+Work Log:
+- קראתי את 4 ה-REMAINING HONEST GAPS מה-audit הקודם ותכננתי תיקון לכל אחד.
+
+Gap 1 — worklet MultibandComp disabled:
+  - psy4-engine-v3.js:528-540: החלפתי `const mbOut = dcOut;` ב-`mbOut = this.mb.process(dcOut, sr)` עם try/catch + isFinite guard
+  - אם ה-filter מייצר NaN, אני reset את ה-MultibandComp instance ונופל חזרה ל-dcOut
+  - וידאתי: lowComp_red=-5.63, midComp_red=-3.61, highComp_red=-0.47 (דחיסה אמיתית ב-worklet!)
+
+Gap 2 — sound design (DEEP_ROAST #6 + #7):
+  - #6 sidechain: triggerSidechain() dip מ-0.6 ל-0.5 (6dB duck, היה 4dB)
+  - #7 master loudness:
+    - workletVolumeGain: 0.8 → 1.0
+    - masterLimiter.threshold: -1dB → -0.3dB
+  - וידאתי: peak -10.1dB (היה -14.6dB, +4.5dB!), rms -13.8dB (היה -21.2dB, +7.4dB!)
+  - limiter_red=-0.01 — כמעט לא מתערב (no over-compression)
+  - #1-5 (lead/pad/acid/texture/bass voice design): לא תוקנו — ב-psysynth (minified). תועד בכנות.
+
+Gap 3 — WAV render pipeline:
+  - הוספתי exportWAV(bars=8) ב-psyLive.ts: OfflineAudioContext + AudioWorkletNode + limiter
+  - טוען events מ-composition worker, מסנן drum voices, מסדר ל-worklet, מרנדר offline
+  - encodeWAV(): 16-bit PCM, RIFF header, interleaved stereo
+  - הורדה כ-psy4-drums-{bpm}bpm-{bars}bars-{timestamp}.wav
+  - כפתור "🎚 WAV Render" נוסף ב-UI (page.tsx) ליד MIDI Export
+  - HONEST LIMITATION: drums only — psysynth (melodic) לא מתרנדר כי לא אפשרי לשכפל live device ל-offline context
+  - וידאתי: "WAV export: rendering 8 bars (13.7s, 32 drum events)..." → "render complete (605995 samples)" → "WAV exported"
+
+Gap 4 — repetition detector:
+  - הוספתי _barFingerprints: string[] (max 32) + _repetitionStats
+  - ב-handleWorkerMessage 'events': מחשב per-bar fingerprint (sorted voice:note:vel tokens)
+  - _checkRepetition(): סופר streak, מזהיר אם > 8 חזרות (throttled ל-30s)
+  - getRepetitionStats() חשוף ל-diagnostics
+  - וידאתי: uniqueBars=12, repeatedBars=1, maxStreak=2 ב-window של 13 bars (גיוון טוב!)
+
+Final browser verification:
+- agent-browser open → 0 errors
+- click Play → playing=true, kickCount=52, bar=4
+- וידאתי כל ה-fixes ב-runtime:
+  - peak_vol=1.00 (was 0.8), limiter_th=-0.3 (was -1.0)
+  - sidechain_duck=0.87 (mid-recovery, dips to 0.5)
+  - lowComp_red=-5.63, midComp_red=-3.61, highComp_red=-0.47 (worklet multiband ENABLED!)
+  - rep={uniqueBars:12, repeatedBars:1, maxStreak:2, windowSize:13}
+  - staleMs=20, ctxState=running
+- וידאתי WAV export: click → "render complete (605995 samples)" → download
+- וידאתי audio levels בריאים: peak=-10.1dB, rms=-13.8dB (louder by +4.5/+7.4dB!)
+- 0 errors, 0 NaN, 0 squeal
+- screenshot: psy4-final-verified.png
+
+Stage Summary:
+- כל 4 ה-REMAINING HONEST GAPS נסגרו:
+  1. ✅ worklet MultibandComp ENABLED (עם NaN guard)
+  2. ✅ sound design #6 (sidechain 6dB) + #7 (louder by +4.5dB peak) — #1-5 תועדו כלא פתורים (psysynth minified)
+  3. ✅ WAV render pipeline (drums only, honest limitation documented)
+  4. ✅ repetition detector (getRepetitionStats exposed)
+- וידאתי בדפדפן: הכל עובד, 0 errors, audio בריא ויותר חזק
+- נשאר 1 פער כנה: lead/pad/acid/texture/bass voice design ב-psysynth (minified, לא ניתן לעריכה קלה)

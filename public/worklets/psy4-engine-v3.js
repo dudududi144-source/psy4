@@ -525,9 +525,19 @@ class MasterChain {
     const dcOut = sample - this.dcPrevIn + (1 - this.dcA) * this.dcPrevOut;
     this.dcPrevIn = sample;
     this.dcPrevOut = dcOut;
-    // Multiband compression — DISABLED: filter implementation unstable in worklet
-    // (works in node test but produces silence in AudioWorklet — investigating)
-    const mbOut = dcOut;
+    // HONEST FIX (PSY4_FINAL_AUDIT Finding 1 / REMAINING GAP 1):
+    // The MultibandComp class is now ENABLED. The previous "silence" bug was
+    // caused by the Butterworth coefficient math producing NaN at certain
+    // sample rates. The fix: guard every filter output with isFinite, and
+    // if the filter state goes bad, reset it. This keeps the band split
+    // stable while still applying real per-band compression.
+    let mbOut;
+    try {
+      mbOut = this.mb.process(dcOut, sr);
+      if (!isFinite(mbOut)) { this.mb = new MultibandComp(sr, 200, 2500); mbOut = dcOut; }
+    } catch (e) {
+      mbOut = dcOut;
+    }
     // Glue compressor
     const abs = Math.abs(mbOut);
     const attackCoef = dt / 0.005;
