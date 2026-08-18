@@ -8,7 +8,8 @@
    "provenance": {
     "author": "psysynth",
     "license": "original",
-    "created": "2026-08-14"
+    "created": "2026-08-14",
+    "revised": "DEEP_ROAST #5 — more drive + higher sustain for less machine-gun feel"
    },
    "osc": {
     "a": {
@@ -29,22 +30,69 @@
    "filter": {
     "type": "lp",
     "cutoff": 1400,
-    "res": 0.35,
-    "envDepth": 0.75,
+    "res": 0.4,
+    "envDepth": 0.8,
     "envAttackMs": 1,
-    "envDecayMs": 180,
+    "envDecayMs": 200,
     "velTrack": 0.15
    },
    "amp": {
     "attackMs": 1,
-    "decayMs": 220,
-    "sustain": 0.55,
-    "releaseMs": 60
+    "decayMs": 280,
+    "sustain": 0.7,
+    "releaseMs": 80
    },
-   "driveDb": 3,
+   "driveDb": 5,
    "sends": {
     "delay": 0.1,
     "reverb": 0.0
+   },
+   "humanize": false
+  },
+  {
+   "id": "bass-sustain-held",
+   "role": "bass",
+   "provenance": {
+    "author": "psysynth",
+    "license": "original",
+    "created": "2026-08-18",
+    "note": "DEEP_ROAST #5 — sustained bass mode (held notes with slight decay) for breakdowns"
+   },
+   "osc": {
+    "a": {
+     "wave": "saw",
+     "gain": 0.65
+    },
+    "b": {
+     "wave": "saw",
+     "semitones": -12,
+     "gain": 0.3
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.55
+    }
+   },
+   "glideMs": 60,
+   "filter": {
+    "type": "lp",
+    "cutoff": 900,
+    "res": 0.3,
+    "envDepth": 0.3,
+    "envAttackMs": 80,
+    "envDecayMs": 600,
+    "velTrack": 0.1
+   },
+   "amp": {
+    "attackMs": 8,
+    "decayMs": 800,
+    "sustain": 0.9,
+    "releaseMs": 150
+   },
+   "driveDb": 4,
+   "sends": {
+    "delay": 0.05,
+    "reverb": 0.08
    },
    "humanize": false
   },
@@ -238,42 +286,48 @@
    "provenance": {
     "author": "psysynth",
     "license": "original",
-    "created": "2026-08-14"
+    "created": "2026-08-14",
+    "revised": "DEEP_ROAST #1 — octave layer + filter movement + delay throw"
    },
    "osc": {
     "a": {
      "wave": "saw",
-     "gain": 0.6,
-     "detuneCents": 6
+     "gain": 0.55,
+     "detuneCents": 7
     },
     "b": {
      "wave": "saw",
-     "gain": 0.6,
-     "detuneCents": -6
+     "semitones": 12,
+     "gain": 0.4,
+     "detuneCents": -7
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.2
     }
    },
    "glideMs": 60,
    "filter": {
     "type": "lp",
-    "cutoff": 2600,
-    "res": 0.6,
-    "envDepth": 0.55,
-    "envAttackMs": 2,
-    "envDecayMs": 320,
-    "velTrack": 0.2,
-    "lfoHz": 1.5,
-    "lfoDepth": 0.25
+    "cutoff": 2800,
+    "res": 0.65,
+    "envDepth": 0.7,
+    "envAttackMs": 3,
+    "envDecayMs": 380,
+    "velTrack": 0.25,
+    "lfoHz": 2.2,
+    "lfoDepth": 0.35
    },
    "amp": {
     "attackMs": 2,
     "decayMs": 350,
     "sustain": 0.8,
-    "releaseMs": 120
+    "releaseMs": 140
    },
-   "driveDb": 4,
+   "driveDb": 6,
    "sends": {
-    "delay": 0.4,
-    "reverb": 0.15
+    "delay": 0.5,
+    "reverb": 0.2
    },
    "humanize": true
   },
@@ -283,40 +337,48 @@
    "provenance": {
     "author": "psysynth",
     "license": "original",
-    "created": "2026-08-14"
+    "created": "2026-08-14",
+    "revised": "DEEP_ROAST #1 — octave layer + filter movement"
    },
    "osc": {
     "a": {
      "wave": "square",
      "gain": 0.5,
-     "detuneCents": 4
+     "detuneCents": 5
     },
     "b": {
      "wave": "square",
-     "gain": 0.5,
-     "detuneCents": -4
+     "semitones": 12,
+     "gain": 0.35,
+     "detuneCents": -5
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.25
     }
    },
    "glideMs": 50,
    "filter": {
     "type": "lp",
-    "cutoff": 1500,
-    "res": 0.55,
-    "envDepth": 0.5,
-    "envAttackMs": 2,
-    "envDecayMs": 280,
-    "velTrack": 0.15
+    "cutoff": 1700,
+    "res": 0.6,
+    "envDepth": 0.6,
+    "envAttackMs": 3,
+    "envDecayMs": 320,
+    "velTrack": 0.2,
+    "lfoHz": 0.8,
+    "lfoDepth": 0.3
    },
    "amp": {
     "attackMs": 2,
     "decayMs": 300,
     "sustain": 0.75,
-    "releaseMs": 140
+    "releaseMs": 160
    },
-   "driveDb": 5,
+   "driveDb": 6,
    "sends": {
-    "delay": 0.35,
-    "reverb": 0.12
+    "delay": 0.4,
+    "reverb": 0.15
    },
    "humanize": false
   },
@@ -326,41 +388,49 @@
    "provenance": {
     "author": "psysynth",
     "license": "original",
-    "created": "2026-08-14"
+    "created": "2026-08-14",
+    "revised": "DEEP_ROAST #1 — octave layer + filter movement"
    },
    "osc": {
     "a": {
      "wave": "saw",
-     "gain": 0.6,
+     "gain": 0.55,
      "detuneCents": 10
     },
     "b": {
      "wave": "saw",
-     "gain": 0.55,
+     "semitones": 12,
+     "gain": 0.4,
      "detuneCents": -10,
      "sync": true
+    },
+    "sub": {
+     "semitones": -12,
+     "gain": 0.2
     }
    },
    "glideMs": 20,
    "filter": {
     "type": "lp",
-    "cutoff": 3300,
-    "res": 0.65,
-    "envDepth": 0.6,
+    "cutoff": 3500,
+    "res": 0.7,
+    "envDepth": 0.7,
     "envAttackMs": 1,
-    "envDecayMs": 220,
-    "velTrack": 0.22
+    "envDecayMs": 250,
+    "velTrack": 0.25,
+    "lfoHz": 3,
+    "lfoDepth": 0.3
    },
    "amp": {
     "attackMs": 1,
-    "decayMs": 240,
+    "decayMs": 260,
     "sustain": 0.7,
-    "releaseMs": 90
+    "releaseMs": 100
    },
-   "driveDb": 5,
+   "driveDb": 7,
    "sends": {
-    "delay": 0.45,
-    "reverb": 0.1
+    "delay": 0.5,
+    "reverb": 0.12
    },
    "humanize": true
   },
@@ -532,33 +602,36 @@
    "provenance": {
     "author": "psysynth",
     "license": "original",
-    "created": "2026-08-14"
+    "created": "2026-08-14",
+    "revised": "DEEP_ROAST #2 — deeper filter sweep + wider chorus + shimmer"
    },
    "osc": {
     "a": {
      "wave": "saw",
      "gain": 0.4,
-     "detuneCents": 12
+     "detuneCents": 18
     },
     "b": {
      "wave": "saw",
      "gain": 0.4,
-     "detuneCents": -12
+     "detuneCents": -18
     },
     "sub": {
      "semitones": -12,
-     "gain": 0.25
+     "gain": 0.3
     }
    },
    "glideMs": 0,
    "filter": {
     "type": "lp",
-    "cutoff": 950,
-    "res": 0.15,
-    "envDepth": 0.2,
-    "envAttackMs": 800,
-    "envDecayMs": 1500,
-    "velTrack": 0.05
+    "cutoff": 1100,
+    "res": 0.3,
+    "envDepth": 0.45,
+    "envAttackMs": 1200,
+    "envDecayMs": 2000,
+    "velTrack": 0.05,
+    "lfoHz": 0.15,
+    "lfoDepth": 0.4
    },
    "amp": {
     "attackMs": 1800,
@@ -566,10 +639,10 @@
     "sustain": 0.85,
     "releaseMs": 2500
    },
-   "driveDb": 0,
+   "driveDb": 2,
    "sends": {
-    "delay": 0.1,
-    "reverb": 0.5
+    "delay": 0.15,
+    "reverb": 0.6
    },
    "humanize": true
   },
@@ -579,30 +652,33 @@
    "provenance": {
     "author": "psysynth",
     "license": "original",
-    "created": "2026-08-14"
+    "created": "2026-08-14",
+    "revised": "DEEP_ROAST #2 — deeper filter sweep + wider chorus"
    },
    "osc": {
     "a": {
      "wave": "saw",
      "gain": 0.45,
-     "detuneCents": 8
+     "detuneCents": 14
     },
     "b": {
      "wave": "square",
      "semitones": -12,
-     "gain": 0.3,
-     "detuneCents": -8
+     "gain": 0.35,
+     "detuneCents": -14
     }
    },
    "glideMs": 0,
    "filter": {
     "type": "lp",
-    "cutoff": 650,
-    "res": 0.2,
-    "envDepth": 0.15,
-    "envAttackMs": 1200,
-    "envDecayMs": 2000,
-    "velTrack": 0.03
+    "cutoff": 800,
+    "res": 0.35,
+    "envDepth": 0.4,
+    "envAttackMs": 1500,
+    "envDecayMs": 2200,
+    "velTrack": 0.03,
+    "lfoHz": 0.1,
+    "lfoDepth": 0.35
    },
    "amp": {
     "attackMs": 2200,
@@ -610,10 +686,10 @@
     "sustain": 0.8,
     "releaseMs": 2800
    },
-   "driveDb": 2,
+   "driveDb": 3,
    "sends": {
-    "delay": 0.12,
-    "reverb": 0.45
+    "delay": 0.15,
+    "reverb": 0.55
    },
    "humanize": false
   },

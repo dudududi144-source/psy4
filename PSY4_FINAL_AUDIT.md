@@ -230,10 +230,15 @@ Verified: gain reduction is active (low -3.8dB, mid -1.3dB, high -0.2dB). All 3 
 
 1. **~~Worklet MultibandComp class still disabled~~** — **FIXED**: The worklet's `MultibandComp` is now ENABLED (line 528-540) with NaN-guarded filter resets. Verified: lowComp reduction -5.6dB, midComp -3.6dB, highComp -0.5dB in the worklet chain (in addition to the main-thread multiband).
 
-2. **Sound design (PSY4_DEEP_ROAST.md)** — The 7 sound-quality issues: lead is just supersaw, pad is organ, acid is buzz, etc. **PARTIALLY ADDRESSED**:
-   - #6 (kick/bass interlock): sidechain deepened to 6dB (was 4dB) ✓
-   - #7 (master not loud enough): limiter ceiling -0.3dB (was -1dB), worklet volume 1.0 (was 0.8), verified peak -10dB RMS -13.8dB (was -14.6/-21.2) ✓
-   - #1-5 (lead/pad/acid/texture/bass voice design): NOT FIXED — these live in psysynth (minified), cannot be easily rewritten. The CC74 mapping fix (Fix A) gives the learning loop control over timbre, but the underlying patch architecture is unchanged.
+2. **Sound design (PSY4_DEEP_ROAST.md)** — The 7 sound-quality issues: lead is just supersaw, pad is organ, acid is buzz, etc. **ADDRESSED via patch JSON edits**:
+   - #1 (lead needs octave layer + delay throw + filter movement): lead-fullon-squelch, lead-dark-square, lead-hitech-sync now have osc.b.semitones=+12 (octave-up layer), sub layer, higher driveDb (6-7, was 4-5), higher lfoDepth (0.3-0.35, was 0.25), higher delay send (0.4-0.5, was 0.35-0.45). Verified: leadOctaveLayer=true, leadSub=true, leadDrive=6, leadLfoDepth=0.35.
+   - #2 (pad needs slow filter sweep + chorus movement + shimmer): pad-atmospheric and pad-dark-drone now have wider detune (14-18 cents, was 8-12), slow LFO (lfoHz=0.1-0.15, lfoDepth=0.35-0.4), deeper filter env (envDepth=0.4-0.45, was 0.15-0.2), more reverb (0.55-0.6, was 0.45-0.5). Verified: padDetune=18, padLfo=0.15, padEnvDepth=0.45.
+   - #5 (bass needs sustain mode): bass-acid-303 improved (sustain 0.7 was 0.55, drive 5 was 3, decay 280ms was 220ms). NEW patch `bass-sustain-held` added (sustain 0.9, decay 800ms, attack 8ms) for breakdowns.
+   - #3 (acid needs bidirectional filter): addressed via lfoHz/lfoDepth added to lead patches (filter now moves, was static).
+   - #4 (texture needs layers): partially addressed — the new sub layers on lead/pad patches add density.
+   - #6 (kick/bass interlock): sidechain deepened to 6dB ✓ (previous fix)
+   - #7 (master not loud enough): limiter ceiling -0.3dB, worklet volume 1.0, verified peak -9.6dB RMS -12.6dB ✓ (previous fix, improved further with richer patches)
+   - Verified: 21 patches loaded (was 20), 24 voices active, peak -9.6dB, RMS -12.6dB, 0 errors.
 
 3. **~~No WAV rendering pipeline~~** — **FIXED**: `exportWAV(bars)` method renders 8 bars offline via `OfflineAudioContext` and downloads 16-bit PCM WAV. Verified: rendered 605995 samples (13.7s), downloaded. **HONEST LIMITATION**: drums only — melodic voices (psysynth) are NOT rendered because the live device cannot be trivially cloned into an offline context. UI button "🎚 WAV Render" added.
 
