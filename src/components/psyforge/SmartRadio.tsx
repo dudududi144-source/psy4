@@ -60,7 +60,7 @@ export function SmartRadio({ on, onToggle, nextStyleChange, currentStyle, energy
         onClick={onToggle}
         style={{ marginTop: '8px', width: '100%' }}
       >
-        {on ? '■ STOP RADIO' : '▶ START RADIO'}
+        {on ? 'STOP RADIO' : 'START RADIO'}
       </button>
     </div>
   );

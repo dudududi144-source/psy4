@@ -290,10 +290,10 @@ export default function Page() {
               <div className="pf-idle-subtitle">Psytrance Workstation</div>
               <div className="pf-idle-press">Press <span className="pf-idle-key">POWER</span> or <span className="pf-idle-key">Space</span> to start</div>
               <div className="pf-idle-features">
-                <span>● 7 Styles</span>
-                <span>● Smart Radio</span>
-                <span>● Learning Loop</span>
-                <span>● MIDI / WAV Export</span>
+                <span>7 Styles</span>
+                <span>Smart Radio</span>
+                <span>Learning Loop</span>
+                <span>MIDI / WAV Export</span>
               </div>
             </div>
           </div>

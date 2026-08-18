@@ -22,7 +22,7 @@ export function StatusStrip({ state, arpOn, seqOn }: StatusStripProps) {
   if (!state.playing) {
     return (
       <div className="pf-stt" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px' }}>
-        <span style={{ color: 'var(--pf-dm)' }}>● READY</span>
+        <span style={{ color: 'var(--pf-dm)' }}><span className="pf-dot" /> READY</span>
         <span style={{ color: 'var(--pf-dm)' }}>{state.bpm} BPM</span>
         <span style={{ color: 'var(--pf-dm)' }}>{state.style.replace('_', '.')}</span>
         <span style={{ color: 'var(--pf-dm)' }}>Press POWER to start</span>
@@ -32,7 +32,7 @@ export function StatusStrip({ state, arpOn, seqOn }: StatusStripProps) {
 
   return (
     <div className="pf-stt" style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
-      <span style={{ color: ctxOk ? 'var(--pf-gr)' : 'var(--pf-or)' }}>● {state.ctxState.toUpperCase()}</span>
+      <span style={{ color: ctxOk ? 'var(--pf-gr)' : 'var(--pf-or)' }}><span className={`pf-dot ${ctxOk ? 'on' : ''}`} /> {state.ctxState.toUpperCase()}</span>
       <span style={{ color: 'var(--pf-tx)', fontWeight: 600 }}>{state.bpm} BPM</span>
       <span style={{ color: 'var(--pf-mg)' }}>{state.style.replace('_', '.')}</span>
       <span style={{ color: 'var(--pf-dm)' }}>{state.voicesActive} voices</span>

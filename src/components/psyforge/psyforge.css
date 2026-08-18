@@ -733,3 +733,129 @@
   z-index: 10;
   backdrop-filter: blur(8px);
 }
+
+/* ── Status dot (CSS, not emoji) ────────────────────────────────────────── */
+.pf-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pf-dm);
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.pf-dot.on {
+  background: var(--pf-gr);
+  box-shadow: 0 0 6px var(--pf-gr);
+}
+
+/* ── IDLE features: no emoji dots, use CSS ─────────────────────────────── */
+.pf-idle-features span {
+  color: var(--pf-dm);
+  position: relative;
+  padding-left: 14px;
+}
+.pf-idle-features span::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--pf-ac);
+  opacity: 0.7;
+}
+
+/* ── PRESET select: professional styling ────────────────────────────────── */
+.pf-sel {
+  background: var(--pf-p2);
+  border: 1px solid var(--pf-ln);
+  border-radius: 8px;
+  color: var(--pf-tx);
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  min-width: 140px;
+  text-align: left;
+}
+.pf-sel:hover {
+  border-color: var(--pf-ac);
+  color: var(--pf-ac);
+}
+
+/* ── BPM input: professional ───────────────────────────────────────────── */
+.pf-bpm input {
+  width: 56px;
+  background: none;
+  border: none;
+  color: var(--pf-ac);
+  font-size: 18px;
+  font-weight: 800;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+.pf-bpm input:focus {
+  color: var(--pf-gr);
+}
+
+/* ── HEADER: luxury gradient ───────────────────────────────────────────── */
+.pf-hd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: linear-gradient(180deg, var(--pf-p) 0%, color-mix(in srgb, var(--pf-p) 90%, #000) 100%);
+  border: 1px solid var(--pf-ln);
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.pf-lg {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin-right: 4px;
+}
+
+/* ── PANEL headers: consistent + professional ──────────────────────────── */
+.pf-m h4 {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--pf-ac);
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--pf-ln);
+}
+.pf-m.fl h4 { color: var(--pf-mg); }
+.pf-m.ar h4 { color: var(--pf-gr); }
+.pf-m.or h4 { color: var(--pf-or); }
+
+/* ── KNBS: consistent alignment ───────────────────────────────────────── */
+.pf-kn {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.pf-k {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  color: var(--pf-dm);
+  min-width: 48px;
+  text-align: center;
+}
+.pf-k > span:first-child {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}

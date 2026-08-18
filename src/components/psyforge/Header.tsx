@@ -26,7 +26,7 @@ export function Header(props: HeaderProps) {
     <div className="pf-hd">
       <div className="pf-lg"><b>PsyForge</b> <i>4</i></div>
       <button className="pf-sel" onClick={onPreset} style={{ cursor: 'pointer' }} title="Click to cycle presets">
-        {presetName} ▾
+        {presetName}
       </button>
       <div className="pf-bpm">
         <span style={{ fontSize: '10px', color: 'var(--pf-dm)' }}>BPM</span>
@@ -42,10 +42,10 @@ export function Header(props: HeaderProps) {
       <button className={`pf-btn${arpOn ? ' on' : ''}`} onClick={onArp}>ARP</button>
       <button className={`pf-btn${seqOn ? ' on' : ''}`} onClick={onSeq}>SEQ</button>
       <button className="pf-btn" onClick={onSave}>SAVE</button>
-      <button className="pf-btn" onClick={onMIDI} title="Export MIDI">🎵</button>
-      <button className="pf-btn" onClick={onWAV} title="Export WAV">🎚</button>
+      <button className="pf-btn" onClick={onMIDI} title="Export MIDI file">MIDI</button>
+      <button className="pf-btn" onClick={onWAV} title="Export WAV file">WAV</button>
       <button className={`pf-btn pw${power ? '' : ' off'}`} onClick={onPower}>
-        {power ? '■ STOP' : '▶ POWER'}
+        {power ? 'STOP' : 'POWER'}
       </button>
     </div>
   );

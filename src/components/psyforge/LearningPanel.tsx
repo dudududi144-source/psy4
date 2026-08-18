@@ -59,7 +59,7 @@ export function LearningPanel({ on, onToggle, states, currentCc, trialRemaining 
         onClick={onToggle}
         style={{ marginTop: '8px', width: '100%' }}
       >
-        {on ? '■ STOP LEARNING' : '▶ START LEARNING'}
+        {on ? 'STOP LEARNING' : 'START LEARNING'}
       </button>
     </div>
   );
