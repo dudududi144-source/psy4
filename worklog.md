@@ -14529,3 +14529,35 @@ Stage Summary:
 - UI: sticky footer works, dead knobs removed
 - Still incomplete: ARP/SEQ (decorative only, needs implementation)
 - 0 TS errors, 0 runtime errors
+
+---
+Task ID: ux-architecture-fixes
+Agent: main (Z.ai Code)
+Task: UX + architecture deep roast — preset load, keyboard, loading
+
+Work Log:
+- Lie 16 (preset load): onPreset only cycled built-in PRESETS, didn't load saved
+  presets from localStorage or apply ccParams/fx.
+  FIXED: onPreset now cycles built-in + saved, applies ccParams + fx to engine.
+
+- Lie 17 (keyboard stuck notes): used onPointerLeave to release notes, but
+  setPointerCapture means pointerLeave doesn't fire when finger moves.
+  FIXED: use pointer capture + pointerUp on same element. Removed pointerLeave.
+  Added activeNotes Set to prevent double-triggers.
+
+- Lie 18 (loading screen): plain text 'Initializing engine…' with no spinner.
+  FIXED: added CSS spinner animation (border-top-color: var(--pf-ac)).
+
+- Architecture: created psy-foundation-shim/roles.ts (SynthRole + DRUM_ROLES
+  + MELODIC_ROLES). Devices import from foundation (Layer 1), not host (Layer 3).
+  No circular dependencies.
+
+- Verified: 0 TS errors, engine plays, keyboard no stuck notes
+- Pushed: c2287d5..20c9b84
+
+Stage Summary:
+- 3 more lies found + fixed (preset load, keyboard, loading spinner)
+- Total lies found: 14
+- Architecture clean: FOUNDATION → DEVICES → HOST (no upward deps)
+- Still incomplete: ARP/SEQ decorative only (documented)
+- 0 TS errors, 0 runtime errors
