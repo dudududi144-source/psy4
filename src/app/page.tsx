@@ -1,44 +1,37 @@
 'use client';
 
-// PSY4 — Phase 1 test page
-// Minimal UI that uses PsyLive4 (the new clean architecture).
-// Purpose: PROVE the engine plays continuously without stopping,
-// even through background-tab cycles.
+// PSY4 — Phase 2 full synth UI
+// Built on the psyforge-pro.html design: knob-per-feature, 3-column rack,
+// 16-step sequencer, keyboard + wheels.
 //
-// This replaces the 800-line dashboard. Phase 2 will build the full
-// psyforge synth-rack UI.
+// Uses PsyLive4 (the new clean architecture — Layer 3 host).
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { PsyLive4, type LiveState4 } from '@/lib/psyLive4/psyLive4';
 import type { MusicalStyle } from '@/lib/psyLive4/types';
+import { Header } from '@/components/psyforge/Header';
+import { SynthRack } from '@/components/psyforge/SynthRack';
+import { ArpSeq } from '@/components/psyforge/ArpSeq';
+import { ModMatrix } from '@/components/psyforge/ModMatrix';
+import { FxSection } from '@/components/psyforge/FxSection';
+import { Keyboard } from '@/components/psyforge/Keyboard';
+import { StatusStrip } from '@/components/psyforge/StatusStrip';
 
-const STYLES: MusicalStyle[] = ['FULL_ON', 'DARK', 'PROGRESSIVE', 'ACID', 'GOA', 'HI_TECH', 'FOREST'];
-
-const STYLE_COLORS: Record<string, string> = {
-  FULL_ON: '#ff2e88',
-  DARK: '#8b5cf6',
-  PROGRESSIVE: '#06b6d4',
-  ACID: '#10b981',
-  GOA: '#f59e0b',
-  HI_TECH: '#ef4444',
-  FOREST: '#84cc16',
-};
+const PRESETS = [
+  { name: 'Full-On Rolling', style: 'FULL_ON' as MusicalStyle, bpm: 145, energy: 0.7 },
+  { name: 'Dark Psy', style: 'DARK' as MusicalStyle, bpm: 148, energy: 0.6 },
+  { name: 'Progressive', style: 'PROGRESSIVE' as MusicalStyle, bpm: 134, energy: 0.5 },
+  { name: 'Acid', style: 'ACID' as MusicalStyle, bpm: 140, energy: 0.65 },
+  { name: 'Goa', style: 'GOA' as MusicalStyle, bpm: 144, energy: 0.75 },
+  { name: 'Hi-Tech', style: 'HI_TECH' as MusicalStyle, bpm: 150, energy: 0.85 },
+  { name: 'Forest', style: 'FOREST' as MusicalStyle, bpm: 146, energy: 0.6 },
+];
 
 const initialState: LiveState4 = {
-  playing: false,
-  bpm: 145,
-  style: 'FULL_ON',
-  energy: 0.5,
-  kickCount: 0,
-  bar: 0,
-  engineLevel: 0,
-  voicesActive: 0,
-  patchesLoaded: 0,
-  peakDb: -Infinity,
-  rmsDb: -Infinity,
-  schedulerStaleMs: 0,
-  ctxState: 'suspended',
-  suspended: false,
+  playing: false, bpm: 145, style: 'FULL_ON', energy: 0.5,
+  kickCount: 0, bar: 0, engineLevel: 0, voicesActive: 0, patchesLoaded: 0,
+  peakDb: -Infinity, rmsDb: -Infinity, schedulerStaleMs: 0,
+  ctxState: 'suspended', suspended: false,
   repetition: { uniqueBars: 0, repeatedBars: 0, maxStreak: 0, windowSize: 0 },
 };
 
@@ -46,15 +39,48 @@ export default function Page() {
   const engineRef = useRef<PsyLive4 | null>(null);
   const [s, setS] = useState<LiveState4>(initialState);
   const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [bpm, setBpm] = useState(145);
-  const [style, setStyle] = useState<MusicalStyle>('FULL_ON');
-  const [energy, setEnergy] = useState(0.5);
-  const [vol, setVol] = useState(1.0);
-  const [logs, setLogs] = useState<string[]>([]);
-  const logRef = useRef<HTMLDivElement>(null);
+  const [power, setPower] = useState(false);
+  const [arpOn, setArpOn] = useState(false);
+  const [seqOn, setSeqOn] = useState(false);
+  const [presetIdx, setPresetIdx] = useState(0);
+  const [octave, setOctave] = useState(3);
 
-  // ── Init engine on mount ──
+  // Synth params (CC values 0..1)
+  const [ccParams, setCcParams] = useState<Record<number, number>>({
+    5: 0.2,   // glide
+    9: 0.7,   // env depth
+    12: 0.5,  // energy macro
+    13: 0.2,  // vel track
+    14: 0.3,  // delay send
+    15: 0.22, // reverb send
+    20: 0.0,  // attack
+    21: 0.3,  // decay
+    22: 0.55, // sustain
+    23: 0.2,  // release
+    71: 0.65, // resonance
+    74: 0.5,  // cutoff (CC74)
+  });
+
+  // FX
+  const [drive, setDrive] = useState(0.35);
+  const [delay, setDelay] = useState(0.3);
+  const [reverb, setReverb] = useState(0.22);
+  const [volume, setVolume] = useState(0.85);
+
+  // Arp
+  const [arpMode, setArpMode] = useState('up');
+  const [arpRate, setArpRate] = useState('1/8');
+  const [arpGate, setArpGate] = useState(0.55);
+  const [swing, setSwing] = useState(0);
+  const [seqSteps, setSeqSteps] = useState<boolean[]>(Array(16).fill(false).map((_, i) => i % 4 === 0));
+  const [currentStep, setCurrentStep] = useState(-1);
+
+  // Mod
+  const [lfoAmt, setLfoAmt] = useState(0.25);
+  const [lfoRate, setLfoRate] = useState(0.3);
+
+  // ── Init engine ──
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -63,19 +89,16 @@ export default function Page() {
         await engine.init();
         if (cancelled) { engine.dispose(); return; }
         engineRef.current = engine;
-        // Expose globally for browser diagnostics
         (window as any).__psyLive4 = engine;
         setReady(true);
-        addLog('Engine ready — PsyLive4 initialized');
-      } catch (e: any) {
-        setError(e?.message ?? String(e));
-        addLog('ERROR: ' + (e?.message ?? String(e)));
+      } catch (e) {
+        console.error('PsyLive4 init failed', e);
       }
     })();
     return () => { cancelled = true; };
   }, []);
 
-  // ── Poll state at 4Hz (not 10Hz — avoid main-thread pressure) ──
+  // ── Poll state at 4Hz ──
   useEffect(() => {
     if (!ready) return;
     const id = setInterval(() => {
@@ -85,292 +108,149 @@ export default function Page() {
     return () => clearInterval(id);
   }, [ready]);
 
-  // ── Capture console logs for the status panel ──
+  // ── Simulate step sequencer advance when seq is on ──
   useEffect(() => {
-    const orig = console.log;
-    const origWarn = console.warn;
-    const origErr = console.error;
-    const cap = (level: string) => (...args: any[]) => {
-      const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
-      if (msg.includes('PSY4') || msg.includes('PsyLive4') || msg.includes('REPETITION') || msg.includes('HEARTBEAT')) {
-        setLogs(prev => [...prev.slice(-12), msg.slice(0, 120)]);
-      }
-    };
-    console.log = cap('log');
-    console.warn = cap('warn');
-    console.error = cap('err');
-    return () => {
-      console.log = orig;
-      console.warn = origWarn;
-      console.error = origErr;
-    };
-  }, []);
-
-  // ── Auto-scroll logs ──
-  useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [logs]);
-
-  const addLog = useCallback((msg: string) => {
-    setLogs(prev => [...prev.slice(-12), msg.slice(0, 120)]);
-  }, []);
+    if (!seqOn || !power) return;
+    const stepDur = (60 / bpm) / 4;  // 16th note
+    let step = 0;
+    const id = setInterval(() => {
+      setCurrentStep(step);
+      step = (step + 1) % 16;
+    }, stepDur * 1000);
+    return () => clearInterval(id);
+  }, [seqOn, power, bpm]);
 
   // ── Controls ──
-  const onPlay = useCallback(async () => {
+  const onPower = useCallback(async () => {
     const e = engineRef.current;
     if (!e) return;
-    await e.play();
-    addLog('Play pressed');
-  }, [addLog]);
-
-  const onStop = useCallback(() => {
-    engineRef.current?.stop();
-    addLog('Stop pressed');
-  }, [addLog]);
+    if (power) {
+      e.stop();
+      setPower(false);
+    } else {
+      await e.play();
+      setPower(true);
+    }
+  }, [power]);
 
   const onBpm = useCallback((v: number) => {
     setBpm(v);
     engineRef.current?.setBPM(v);
   }, []);
 
-  const onStyle = useCallback((st: MusicalStyle) => {
-    setStyle(st);
-    engineRef.current?.setStyle(st);
-    addLog(`Style: ${st}`);
-  }, [addLog]);
+  const onPreset = useCallback(() => {
+    const next = (presetIdx + 1) % PRESETS.length;
+    const p = PRESETS[next];
+    setPresetIdx(next);
+    setBpm(p.bpm);
+    engineRef.current?.setBPM(p.bpm);
+    engineRef.current?.setStyle(p.style);
+    engineRef.current?.setEnergy(p.energy);
+  }, [presetIdx]);
 
-  const onEnergy = useCallback((v: number) => {
-    setEnergy(v);
-    engineRef.current?.setEnergy(v);
+  const onParam = useCallback((cc: number, value: number) => {
+    setCcParams(prev => ({ ...prev, [cc]: value }));
+    engineRef.current?.setCC(cc, value);
   }, []);
 
-  const onVol = useCallback((v: number) => {
-    setVol(v);
-    // TODO: wire to master gain (for now, just state)
+  const onVolume = useCallback((v: number) => {
+    setVolume(v);
+    engineRef.current?.setMasterVolume(v);
   }, []);
 
-  // ── Render ──
-  const peakOk = s.peakDb > -40 && s.peakDb < -0.5;
-  const schedulerOk = s.schedulerStaleMs < 200;
-  const ctxOk = s.ctxState === 'running';
+  const onNoteOn = useCallback((midi: number) => {
+    engineRef.current?.noteOn(midi);
+  }, []);
 
-  return (
-    <div style={{
-      minHeight: '100vh',
-      background: 'linear-gradient(180deg, #08051a 0%, #0a0820 100%)',
-      color: '#eee8fb',
-      fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
-      display: 'flex',
-      flexDirection: 'column',
-      padding: '16px',
-      gap: '12px',
-    }}>
-      {/* ── Header ── */}
-      <header style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '8px 16px',
-        background: 'rgba(255,255,255,0.03)',
-        borderRadius: '8px',
-        border: '1px solid rgba(255,255,255,0.06)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <span style={{ fontSize: '20px', fontWeight: 700, color: '#b8f22e' }}>PSY4</span>
-          <span style={{ fontSize: '11px', color: '#64748b' }}>Phase 1 — Clean Architecture</span>
-        </div>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button
-            onClick={onPlay}
-            disabled={!ready || s.playing}
-            style={{
-              padding: '8px 20px',
-              background: s.playing ? 'rgba(100,116,139,0.2)' : 'rgba(34,197,94,0.2)',
-              color: s.playing ? '#64748b' : '#22c55e',
-              border: `1px solid ${s.playing ? 'rgba(100,116,139,0.3)' : 'rgba(34,197,94,0.4)'}`,
-              borderRadius: '6px',
-              cursor: s.playing ? 'default' : 'pointer',
-              fontSize: '13px',
-              fontWeight: 600,
-            }}
-          >
-            ▶ Play
-          </button>
-          <button
-            onClick={onStop}
-            disabled={!s.playing}
-            style={{
-              padding: '8px 20px',
-              background: 'rgba(239,68,68,0.15)',
-              color: '#ef4444',
-              border: '1px solid rgba(239,68,68,0.3)',
-              borderRadius: '6px',
-              cursor: s.playing ? 'pointer' : 'default',
-              fontSize: '13px',
-              fontWeight: 600,
-              opacity: s.playing ? 1 : 0.4,
-            }}
-          >
-            ■ Stop
-          </button>
-        </div>
-      </header>
+  const onNoteOff = useCallback((midi: number) => {
+    engineRef.current?.noteOff(midi);
+  }, []);
 
-      {error && (
-        <div style={{ padding: '12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '6px', color: '#ef4444', fontSize: '12px' }}>
-          ERROR: {error}
-        </div>
-      )}
+  const onToggleStep = useCallback((i: number) => {
+    setSeqSteps(prev => prev.map((s, j) => j === i ? !s : s));
+  }, []);
 
-      {/* ── Status strip — THE key indicators ── */}
-      <section style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-        gap: '8px',
-      }}>
-        <StatusCell label="CTX STATE" value={s.ctxState} ok={ctxOk} />
-        <StatusCell label="SCHEDULER" value={`${s.schedulerStaleMs}ms stale`} ok={schedulerOk} />
-        <StatusCell label="PEAK" value={`${s.peakDb === -Infinity ? '-∞' : s.peakDb.toFixed(1)}dB`} ok={peakOk} />
-        <StatusCell label="RMS" value={`${s.rmsDb === -Infinity ? '-∞' : s.rmsDb.toFixed(1)}dB`} ok={s.rmsDb > -30} />
-        <StatusCell label="VOICES" value={`${s.voicesActive}`} ok={s.voicesActive < 32} />
-        <StatusCell label="PATCHES" value={`${s.patchesLoaded}`} ok={s.patchesLoaded > 0} />
-        <StatusCell label="KICKS" value={`${s.kickCount}`} ok={s.playing ? s.kickCount > 0 : true} />
-        <StatusCell label="BAR" value={`${s.bar}`} ok={s.playing ? s.bar > 0 : true} />
-        <StatusCell label="SUSPENDED" value={s.suspended ? 'YES' : 'no'} ok={!s.suspended} />
-        <StatusCell label="REP MAX" value={`${s.repetition.maxStreak}x`} ok={s.repetition.maxStreak < 8} />
-      </section>
-
-      {/* ── Controls ── */}
-      <section style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-        gap: '12px',
-      }}>
-        {/* BPM + Energy + Volume */}
-        <div style={{
-          padding: '16px',
-          background: 'rgba(255,255,255,0.03)',
-          borderRadius: '8px',
-          border: '1px solid rgba(255,255,255,0.06)',
-        }}>
-          <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '12px', letterSpacing: '0.1em' }}>TRANSPORT</div>
-          <Slider label="BPM" value={bpm} min={120} max={160} step={1} onChange={onBpm} display={`${bpm}`} />
-          <Slider label="ENERGY" value={energy} min={0} max={1} step={0.01} onChange={onEnergy} display={`${(energy * 100).toFixed(0)}%`} />
-          <Slider label="VOLUME" value={vol} min={0} max={1.5} step={0.01} onChange={onVol} display={`${(vol * 100).toFixed(0)}%`} />
-        </div>
-
-        {/* Style selector */}
-        <div style={{
-          padding: '16px',
-          background: 'rgba(255,255,255,0.03)',
-          borderRadius: '8px',
-          border: '1px solid rgba(255,255,255,0.06)',
-        }}>
-          <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '12px', letterSpacing: '0.1em' }}>STYLE</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(80px, 1fr))', gap: '6px' }}>
-            {STYLES.map(st => (
-              <button
-                key={st}
-                onClick={() => onStyle(st)}
-                style={{
-                  padding: '8px 4px',
-                  background: style === st ? `${STYLE_COLORS[st]}22` : 'rgba(255,255,255,0.03)',
-                  color: style === st ? STYLE_COLORS[st] : '#9a8cc4',
-                  border: `1px solid ${style === st ? STYLE_COLORS[st] : 'rgba(255,255,255,0.06)'}`,
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '10px',
-                  fontWeight: 600,
-                  letterSpacing: '0.05em',
-                }}
-              >
-                {st.replace('_', '.')}
-              </button>
-            ))}
-          </div>
-          <div style={{ marginTop: '12px', fontSize: '10px', color: '#64748b' }}>
-            Current: <span style={{ color: STYLE_COLORS[style] }}>{style}</span>
+  if (!ready) {
+    return (
+      <div className="pf-root">
+        <div className="pf-wrap" style={{ textAlign: 'center', padding: '60px' }}>
+          <div className="pf-lg"><b>PsyForge</b> <i>4</i></div>
+          <div style={{ marginTop: '20px', color: 'var(--pf-dm)', fontSize: '13px' }}>
+            Initializing engine…
           </div>
         </div>
-      </section>
-
-      {/* ── Log panel ── */}
-      <section style={{
-        flex: 1,
-        padding: '12px',
-        background: 'rgba(0,0,0,0.3)',
-        borderRadius: '8px',
-        border: '1px solid rgba(255,255,255,0.06)',
-        overflow: 'hidden',
-        display: 'flex',
-        flexDirection: 'column',
-        minHeight: '180px',
-      }}>
-        <div style={{ fontSize: '10px', color: '#64748b', marginBottom: '8px', letterSpacing: '0.1em' }}>CONSOLE (filtered: PSY4/PsyLive4/REPETITION/HEARTBEAT)</div>
-        <div ref={logRef} style={{ flex: 1, overflowY: 'auto', fontSize: '10px', fontFamily: 'inherit', lineHeight: 1.6 }}>
-          {logs.length === 0 ? (
-            <div style={{ color: '#475569' }}>— no logs yet —</div>
-          ) : (
-            logs.map((l, i) => (
-              <div key={i} style={{ color: l.includes('ERROR') || l.includes('WARN') ? '#f59e0b' : '#9a8cc4' }}>
-                {l}
-              </div>
-            ))
-          )}
-        </div>
-      </section>
-
-      {/* ── Footer ── */}
-      <footer style={{
-        textAlign: 'center',
-        fontSize: '10px',
-        color: '#475569',
-        padding: '8px',
-      }}>
-        PSY4 Phase 1 — PsyLive4 clean architecture · {ready ? 'READY' : 'INITIALIZING…'}
-      </footer>
-    </div>
-  );
-}
-
-// ── Sub-components ─────────────────────────────────────────────────────────
-
-function StatusCell({ label, value, ok }: { label: string; value: string; ok: boolean }) {
-  return (
-    <div style={{
-      padding: '8px 12px',
-      background: 'rgba(255,255,255,0.02)',
-      borderRadius: '6px',
-      border: `1px solid ${ok ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '2px',
-    }}>
-      <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '0.1em' }}>{label}</div>
-      <div style={{ fontSize: '13px', fontWeight: 600, color: ok ? '#22c55e' : '#ef4444' }}>{value}</div>
-    </div>
-  );
-}
-
-function Slider({ label, value, min, max, step, onChange, display }: {
-  label: string; value: number; min: number; max: number; step: number;
-  onChange: (v: number) => void; display: string;
-}) {
-  return (
-    <div style={{ marginBottom: '10px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', marginBottom: '4px' }}>
-        <span style={{ color: '#9a8cc4' }}>{label}</span>
-        <span style={{ color: '#eee8fb', fontWeight: 600 }}>{display}</span>
       </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        style={{ width: '100%', accentColor: '#b8f22e' }}
-      />
+    );
+  }
+
+  return (
+    <div className="pf-root">
+      <div className="pf-wrap">
+        <Header
+          bpm={bpm}
+          onBpm={onBpm}
+          power={power}
+          onPower={onPower}
+          arpOn={arpOn}
+          onArp={() => setArpOn(v => !v)}
+          seqOn={seqOn}
+          onSeq={() => setSeqOn(v => !v)}
+          presetName={PRESETS[presetIdx].name}
+          onPreset={onPreset}
+          onSave={() => alert('Preset save — TODO (localStorage)')}
+        />
+
+        <div className="pf-g3">
+          <SynthRack params={ccParams} onParam={onParam} />
+        </div>
+
+        <div className="pf-g2">
+          <ArpSeq
+            seqSteps={seqSteps}
+            currentStep={currentStep}
+            onToggleStep={onToggleStep}
+            arpMode={arpMode}
+            onArpMode={() => {
+              const modes = ['up', 'down', 'updn', 'rnd', 'conv', 'walk'];
+              setArpMode(modes[(modes.indexOf(arpMode) + 1) % modes.length]);
+            }}
+            arpRate={arpRate}
+            onArpRate={() => {
+              const rates = ['1/4', '1/8', '1/8.', '1/16', '1/16.', '1/32'];
+              setArpRate(rates[(rates.indexOf(arpRate) + 1) % rates.length]);
+            }}
+            arpGate={arpGate}
+            onArpGate={setArpGate}
+            swing={swing}
+            onSwing={setSwing}
+          />
+          <ModMatrix
+            lfoAmt={lfoAmt}
+            onLfoAmt={setLfoAmt}
+            lfoRate={lfoRate}
+            onLfoRate={setLfoRate}
+          />
+          <FxSection
+            drive={drive}
+            onDrive={setDrive}
+            delay={delay}
+            onDelay={setDelay}
+            reverb={reverb}
+            onReverb={setReverb}
+            volume={volume}
+            onVolume={onVolume}
+          />
+        </div>
+
+        <Keyboard
+          octave={octave}
+          onOctave={setOctave}
+          onNoteOn={onNoteOn}
+          onNoteOff={onNoteOff}
+        />
+
+        <StatusStrip state={s} arpOn={arpOn} seqOn={seqOn} />
+      </div>
     </div>
   );
 }

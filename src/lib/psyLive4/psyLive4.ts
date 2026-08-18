@@ -290,6 +290,48 @@ export class PsyLive4 implements SchedulerHost {
     this.energy = Math.max(0, Math.min(1, e));
   }
 
+  // ── Voice parameter control (for the synth rack UI) ──
+  // Maps CC numbers to psysynth params: 74=cutoff, 71=resonance, 5=glide,
+  // 12=energyMacro, 14=delaySend, 15=reverbSend.
+  // Value is 0..1 (the UI normalizes). Returns true if applied.
+  setCC(cc: number, value: number): boolean {
+    return this.melodicDevice.setParameterByCC(cc, Math.max(0, Math.min(1, value)));
+  }
+
+  // ── Master volume (0..1.5) ──
+  private _masterVolume = 1.0;
+  setMasterVolume(v: number): void {
+    this._masterVolume = Math.max(0, Math.min(1.5, v));
+    // Apply to the workletVolumeGain (post-multiband, pre-limiter)
+    this.workletVolumeGain.gain.setTargetAtTime(this._masterVolume, this.ctx.currentTime, 0.02);
+  }
+  getMasterVolume(): number { return this._masterVolume; }
+
+  // ── Live keyboard note on/off (routes to melodic device) ──
+  noteOn(midi: number, velocity: number = 0.8): void {
+    const at = this.ctx.currentTime + 0.005;  // 5ms latency for live input
+    this.melodicDevice.onEvent({
+      type: 'note',
+      at,
+      note: midi,
+      velocity,
+      duration: -1,  // hold until noteOff
+      channel: 'lead',
+    } as any);
+  }
+
+  noteOff(midi: number): void {
+    const at = this.ctx.currentTime;
+    this.melodicDevice.onEvent({
+      type: 'note',
+      at,
+      note: midi,
+      velocity: 0,   // velocity 0 = note-off convention
+      duration: 0,
+      channel: 'lead',
+    } as any);
+  }
+
   private applyStyleToDevices(): void {
     const g = resolveGrammar(this.style);
     // Push leadCutoff → CC74 to psysynth (style affects timbre, not just pitch)

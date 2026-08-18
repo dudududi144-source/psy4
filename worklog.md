@@ -13884,3 +13884,71 @@ Stage Summary:
 - Audio healthy: peak -0.9 to -3.3 dB, rms -9.8 dB, 4-7 voices active
 - Scheduler healthy: staleMs 3-15ms (well under 200ms threshold)
 - Ready for Phase 2: build the full psyforge synth-rack UI
+
+---
+Task ID: phase2-3-ui-and-cleanup
+Agent: main (Z.ai Code)
+Task: Phase 2 (psyforge UI) + Phase 3 (cleanup) — complete the rebuild
+
+Work Log:
+
+Phase 2 — Full synth UI:
+- Appended psyforge CSS tokens to globals.css (--pf-bg, --pf-ac, --pf-mg, etc.)
+  + layout primitives (.pf-root, .pf-hd, .pf-g3, .pf-m, .pf-d, .pf-seq, .pf-kbd)
+- Created 7 psyforge components (src/components/psyforge/):
+  - Knob.tsx — vertical drag primitive, --r CSS rotation, 4 accent colors
+  - Header.tsx — logo, preset select, BPM, ARP/SEQ/SAVE/POWER buttons
+  - SynthRack.tsx — 3-column OSC/FILTER/AMP with CC-mapped knobs
+  - ArpSeq.tsx — 16-step visualizer + mode/rate/gate/swing knobs + LED clock
+  - ModMatrix.tsx — static LED routing list + LFO knobs
+  - FxSection.tsx — Drive/Delay/Reverb/Volume knobs
+  - Keyboard.tsx — 14 white + 10 black keys, pointer-capture multi-touch, octave±
+  - StatusStrip.tsx — BPM/style/voices/peak/sched/bar/kicks inline
+- Added engine methods to PsyLive4:
+  - setCC(cc, value) — routes to psysynth via melodic device
+  - setMasterVolume(v) — applies to workletVolumeGain
+  - noteOn(midi)/noteOff(midi) — live keyboard input routes to psysynth 'lead' role
+- Rewrote src/app/page.tsx (~250 lines):
+  - Composes all psyforge components
+  - 7 presets (Full-On/Dark/Prog/Acid/Goa/HiTech/Forest)
+  - State: ccParams (12 CCs), FX (drive/delay/reverb/volume), arp (mode/rate/gate/swing/16 steps)
+  - 4Hz state polling, step sequencer advance on interval
+
+Phase 2 verification (browser):
+- Page renders: 3-column synth rack, 16-step sequencer, keyboard + wheels, status strip
+- Click POWER → playing=true, bar=3, kicks=12, peak=-1.9dB, voices=9, patches=21 ✓
+- Cycle presets (Full-On → Dark → Prog → Acid) → style=ACID, bpm=140, still playing ✓
+- 77s continuous: bar=44, kicks=178, peak=0.6dB, rms=-10.7dB, repMax=1 ✓
+- 0 errors, 0 NaN, 0 squeal
+- screenshot: psy4-phase2-playing.png
+
+Phase 3 — Cleanup:
+- Deleted 19 dead lib files (psyLive.ts, synth-bridge.ts, beatPLL.ts, db.ts, learning.ts,
+  loopLearner.ts, material-realizer.ts, melodyObserver.ts, onsetAnalyzer.ts,
+  qualityAnalyzer.ts, referenceAnalyzer.ts, rewardTracker.ts, smartExplorer.ts,
+  soundBank.ts, soundExplorer.ts, soundPackage.ts, styleClassifier.ts,
+  synthesisGenerator.ts, synthesisMatcher.ts, studio/engine/engineWorklet.ts)
+- Deleted public/worklets/composition-worker-v2.js (456 lines, replaced by PsytranceComposer)
+- Deleted foundation/ entirely (music/ 21 files, radio/ 4 files, transport/ 3 files)
+- Deleted 43 dead shadcn components (kept only button/select/slider/tooltip/sheet)
+- Deleted src/hooks/use-toast.ts, use-mobile.ts
+- Deleted src/app/api/ (reference proxy route)
+- Deleted prisma/schema.prisma
+- Fixed src/app/layout.tsx (removed Toaster import)
+
+Phase 3 verification (browser after cleanup):
+- Compiled cleanly (no module-not-found errors)
+- GET / 200
+- Click POWER → playing=true, bar=3, kicks=12, peak=-5.5dB, voices=9, patches=21, ctxState=running ✓
+- 0 errors
+
+Stage Summary:
+- TOTAL SOURCE: 3,136 lines (down from 30,000+ — 90% reduction)
+- Architecture: clean 3-layer (FOUNDATION shim → DEVICES → HOST)
+- Engine: PsyLive4 (~430 lines) replaces psyLive.ts (4,501 lines)
+- Composer: PsytranceComposer (~240 lines, pure function) replaces composition-worker-v2.js (456 lines)
+- Scheduler: ONE setInterval (was 6) — monotonic lastComposedUntil, never backfills
+- Engine STOPS bug: structurally fixed (ctx.suspend on visibilitychange + monotonic time)
+- UI: real synth rack (knob-per-feature, 3-col, 16-step seq, keyboard+wheels)
+- 7 psyforge components, 5 shadcn components (was 48)
+- Verified: 77s continuous play, 0 stops, 0 errors
