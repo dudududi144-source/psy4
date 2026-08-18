@@ -1,12 +1,10 @@
 'use client';
 
-// PSY4 — Phase 2 full synth UI
-// Built on the psyforge-pro.html design: knob-per-feature, 3-column rack,
-// 16-step sequencer, keyboard + wheels.
-//
-// Uses PsyLive4 (the new clean architecture — Layer 3 host).
+// PSY4 — Full synth UI with intelligence panel
+// Left: synth rack (OSC/FILTER/AMP + ARP/SEQ/MOD/FX + keyboard)
+// Right: engine intelligence (context + arrangement map + voices + master chain + smart radio)
 
-import '../components/psyforge/psyforge.css';  // CRITICAL: plain CSS, not Tailwind-processed
+import '../components/psyforge/psyforge.css';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { PsyLive4, type LiveState4 } from '@/lib/psyLive4/psyLive4';
 import type { MusicalStyle } from '@/lib/psyLive4/types';
@@ -17,6 +15,11 @@ import { ModMatrix } from '@/components/psyforge/ModMatrix';
 import { FxSection } from '@/components/psyforge/FxSection';
 import { Keyboard } from '@/components/psyforge/Keyboard';
 import { StatusStrip } from '@/components/psyforge/StatusStrip';
+import { EngineContext } from '@/components/psyforge/EngineContext';
+import { ArrangementMap } from '@/components/psyforge/ArrangementMap';
+import { VoiceActivity } from '@/components/psyforge/VoiceActivity';
+import { MasterChainMeter } from '@/components/psyforge/MasterChainMeter';
+import { SmartRadio } from '@/components/psyforge/SmartRadio';
 
 const PRESETS = [
   { name: 'Full-On Rolling', style: 'FULL_ON' as MusicalStyle, bpm: 145, energy: 0.7 },
@@ -30,10 +33,15 @@ const PRESETS = [
 
 const initialState: LiveState4 = {
   playing: false, bpm: 145, style: 'FULL_ON', energy: 0.5,
-  kickCount: 0, bar: 0, engineLevel: 0, voicesActive: 0, patchesLoaded: 0,
+  kickCount: 0, bar: 0, section: 'INTRO', barInCycle: 0, cycle: 0,
+  engineLevel: 0, voicesActive: 0, patchesLoaded: 0,
   peakDb: -Infinity, rmsDb: -Infinity, schedulerStaleMs: 0,
   ctxState: 'suspended', suspended: false,
   repetition: { uniqueBars: 0, repeatedBars: 0, maxStreak: 0, windowSize: 0 },
+  roleVoices: { kick: 0, bass: 0, lead: 0, acid: 0, pad: 0, hat: 0, clap: 0, perc: 0, snare: 0 },
+  masterChain: { lowCompReduction: 0, midCompReduction: 0, highCompReduction: 0, sidechainGain: 1, limiterReduction: 0 },
+  recentEvents: [], eventsPerSec: 0, ccParams: {},
+  smartRadioOn: false, smartRadioNextStyleChange: 0,
 };
 
 export default function Page() {
@@ -46,30 +54,19 @@ export default function Page() {
   const [seqOn, setSeqOn] = useState(false);
   const [presetIdx, setPresetIdx] = useState(0);
   const [octave, setOctave] = useState(3);
+  const [smartRadioOn, setSmartRadioOn] = useState(false);
 
   // Synth params (CC values 0..1)
   const [ccParams, setCcParams] = useState<Record<number, number>>({
-    5: 0.2,   // glide
-    9: 0.7,   // env depth
-    12: 0.5,  // energy macro
-    13: 0.2,  // vel track
-    14: 0.3,  // delay send
-    15: 0.22, // reverb send
-    20: 0.0,  // attack
-    21: 0.3,  // decay
-    22: 0.55, // sustain
-    23: 0.2,  // release
-    71: 0.65, // resonance
-    74: 0.5,  // cutoff (CC74)
+    5: 0.2, 9: 0.7, 12: 0.5, 13: 0.2, 14: 0.3, 15: 0.22,
+    20: 0.0, 21: 0.3, 22: 0.55, 23: 0.2, 71: 0.65, 74: 0.5,
   });
 
-  // FX
   const [drive, setDrive] = useState(0.35);
   const [delay, setDelay] = useState(0.3);
   const [reverb, setReverb] = useState(0.22);
   const [volume, setVolume] = useState(0.85);
 
-  // Arp
   const [arpMode, setArpMode] = useState('up');
   const [arpRate, setArpRate] = useState('1/8');
   const [arpGate, setArpGate] = useState(0.55);
@@ -77,7 +74,6 @@ export default function Page() {
   const [seqSteps, setSeqSteps] = useState<boolean[]>(Array(16).fill(false).map((_, i) => i % 4 === 0));
   const [currentStep, setCurrentStep] = useState(-1);
 
-  // Mod
   const [lfoAmt, setLfoAmt] = useState(0.25);
   const [lfoRate, setLfoRate] = useState(0.3);
 
@@ -109,10 +105,10 @@ export default function Page() {
     return () => clearInterval(id);
   }, [ready]);
 
-  // ── Simulate step sequencer advance when seq is on ──
+  // ── Step sequencer ──
   useEffect(() => {
     if (!seqOn || !power) return;
-    const stepDur = (60 / bpm) / 4;  // 16th note
+    const stepDur = (60 / bpm) / 4;
     let step = 0;
     const id = setInterval(() => {
       setCurrentStep(step);
@@ -125,13 +121,8 @@ export default function Page() {
   const onPower = useCallback(async () => {
     const e = engineRef.current;
     if (!e) return;
-    if (power) {
-      e.stop();
-      setPower(false);
-    } else {
-      await e.play();
-      setPower(true);
-    }
+    if (power) { e.stop(); setPower(false); }
+    else { await e.play(); setPower(true); }
   }, [power]);
 
   const onBpm = useCallback((v: number) => {
@@ -159,26 +150,25 @@ export default function Page() {
     engineRef.current?.setMasterVolume(v);
   }, []);
 
-  const onNoteOn = useCallback((midi: number) => {
-    engineRef.current?.noteOn(midi);
-  }, []);
-
-  const onNoteOff = useCallback((midi: number) => {
-    engineRef.current?.noteOff(midi);
-  }, []);
+  const onNoteOn = useCallback((midi: number) => { engineRef.current?.noteOn(midi); }, []);
+  const onNoteOff = useCallback((midi: number) => { engineRef.current?.noteOff(midi); }, []);
 
   const onToggleStep = useCallback((i: number) => {
-    setSeqSteps(prev => prev.map((s, j) => j === i ? !s : s));
+    setSeqSteps(prev => prev.map((st, j) => j === i ? !st : st));
   }, []);
+
+  const onSmartRadio = useCallback(() => {
+    const newOn = !smartRadioOn;
+    setSmartRadioOn(newOn);
+    engineRef.current?.setSmartRadio(newOn);
+  }, [smartRadioOn]);
 
   if (!ready) {
     return (
       <div className="pf-root">
         <div className="pf-wrap" style={{ textAlign: 'center', padding: '60px' }}>
           <div className="pf-lg"><b>PsyForge</b> <i>4</i></div>
-          <div style={{ marginTop: '20px', color: 'var(--pf-dm)', fontSize: '13px' }}>
-            Initializing engine…
-          </div>
+          <div style={{ marginTop: '20px', color: 'var(--pf-dm)', fontSize: '13px' }}>Initializing engine…</div>
         </div>
       </div>
     );
@@ -201,54 +191,54 @@ export default function Page() {
           onSave={() => alert('Preset save — TODO (localStorage)')}
         />
 
-        <div className="pf-g3">
-          <SynthRack params={ccParams} onParam={onParam} />
-        </div>
+        {/* 2-column layout: synth rack left, intelligence right */}
+        <div className="pf-layout">
+          {/* ── LEFT: Synth rack + keyboard ── */}
+          <div>
+            <div className="pf-g3">
+              <SynthRack params={ccParams} onParam={onParam} />
+            </div>
+            <div className="pf-g2">
+              <ArpSeq
+                seqSteps={seqSteps}
+                currentStep={currentStep}
+                onToggleStep={onToggleStep}
+                arpMode={arpMode}
+                onArpMode={() => {
+                  const modes = ['up', 'down', 'updn', 'rnd', 'conv', 'walk'];
+                  setArpMode(modes[(modes.indexOf(arpMode) + 1) % modes.length]);
+                }}
+                arpRate={arpRate}
+                onArpRate={() => {
+                  const rates = ['1/4', '1/8', '1/8.', '1/16', '1/16.', '1/32'];
+                  setArpRate(rates[(rates.indexOf(arpRate) + 1) % rates.length]);
+                }}
+                arpGate={arpGate}
+                onArpGate={setArpGate}
+                swing={swing}
+                onSwing={setSwing}
+              />
+              <ModMatrix lfoAmt={lfoAmt} onLfoAmt={setLfoAmt} lfoRate={lfoRate} onLfoRate={setLfoRate} />
+              <FxSection drive={drive} onDrive={setDrive} delay={delay} onDelay={setDelay} reverb={reverb} onReverb={setReverb} volume={volume} onVolume={onVolume} />
+            </div>
+            <Keyboard octave={octave} onOctave={setOctave} onNoteOn={onNoteOn} onNoteOff={onNoteOff} />
+          </div>
 
-        <div className="pf-g2">
-          <ArpSeq
-            seqSteps={seqSteps}
-            currentStep={currentStep}
-            onToggleStep={onToggleStep}
-            arpMode={arpMode}
-            onArpMode={() => {
-              const modes = ['up', 'down', 'updn', 'rnd', 'conv', 'walk'];
-              setArpMode(modes[(modes.indexOf(arpMode) + 1) % modes.length]);
-            }}
-            arpRate={arpRate}
-            onArpRate={() => {
-              const rates = ['1/4', '1/8', '1/8.', '1/16', '1/16.', '1/32'];
-              setArpRate(rates[(rates.indexOf(arpRate) + 1) % rates.length]);
-            }}
-            arpGate={arpGate}
-            onArpGate={setArpGate}
-            swing={swing}
-            onSwing={setSwing}
-          />
-          <ModMatrix
-            lfoAmt={lfoAmt}
-            onLfoAmt={setLfoAmt}
-            lfoRate={lfoRate}
-            onLfoRate={setLfoRate}
-          />
-          <FxSection
-            drive={drive}
-            onDrive={setDrive}
-            delay={delay}
-            onDelay={setDelay}
-            reverb={reverb}
-            onReverb={setReverb}
-            volume={volume}
-            onVolume={onVolume}
-          />
+          {/* ── RIGHT: Engine intelligence panel ── */}
+          <div className="pf-sidebar">
+            <EngineContext state={s} />
+            <ArrangementMap bar={s.bar} barInCycle={s.barInCycle} />
+            <VoiceActivity roleVoices={s.roleVoices} totalActive={s.voicesActive} />
+            <MasterChainMeter metrics={s.masterChain} peakDb={s.peakDb} rmsDb={s.rmsDb} />
+            <SmartRadio
+              on={smartRadioOn}
+              onToggle={onSmartRadio}
+              nextStyleChange={s.smartRadioNextStyleChange}
+              currentStyle={s.style}
+              energy={s.energy}
+            />
+          </div>
         </div>
-
-        <Keyboard
-          octave={octave}
-          onOctave={setOctave}
-          onNoteOn={onNoteOn}
-          onNoteOff={onNoteOff}
-        />
 
         <StatusStrip state={s} arpOn={arpOn} seqOn={seqOn} />
       </div>

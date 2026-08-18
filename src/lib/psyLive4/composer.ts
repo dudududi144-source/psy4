@@ -22,7 +22,7 @@ import type {
 // ── Section arrangement (64-bar cycle with variation) ────────────────────
 // Ported from composition-worker-v2.js getSection(). Each 64-bar cycle
 // sounds different: cycle 0 is standard, cycle 1+ varies the order.
-function getSection(bar: number): string {
+export function getSection(bar: number): string {
   const p = bar % 64;
   const cycle = Math.floor(bar / 64);
   if (cycle === 0) {

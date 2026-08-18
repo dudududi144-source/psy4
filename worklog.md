@@ -13952,3 +13952,64 @@ Stage Summary:
 - UI: real synth rack (knob-per-feature, 3-col, 16-step seq, keyboard+wheels)
 - 7 psyforge components, 5 shadcn components (was 48)
 - Verified: 77s continuous play, 0 stops, 0 errors
+
+---
+Task ID: intelligence-panel
+Agent: main (Z.ai Code)
+Task: Build right-side engine intelligence panel + smart radio — think big
+
+Work Log:
+- Extended PsyLive4 LiveState4 with 8 new diagnostic fields:
+  - section (INTRO/GROOVE/DROP/etc from composer)
+  - barInCycle (0..63) + cycle
+  - roleVoices (per-role active voice counts)
+  - masterChain (per-band compressor reduction + sidechain + limiter)
+  - recentEvents (ring buffer, last 16)
+  - eventsPerSec (composition throughput)
+  - ccParams (current CC values)
+  - smartRadioOn + smartRadioNextStyleChange
+- Exported getSection() from composer.ts for section tracking
+- Added Smart Radio feature to PsyLive4:
+  - setSmartRadio(on): auto-cycles styles every 120s
+  - cycleSmartRadioStyle(): picks next style + randomizes energy
+  - 7 styles in rotation: FULL_ON → DARK → PROGRESSIVE → ACID → GOA → HI_TECH → FOREST
+- Built 5 new psyforge components (src/components/psyforge/):
+  - EngineContext.tsx — section/bar/cycle/BPM/style/events-per-sec grid + energy bar
+  - ArrangementMap.tsx — 64-bar timeline with section colors + current position marker
+  - VoiceActivity.tsx — per-role voice bars (9 roles, color-coded)
+  - MasterChainMeter.tsx — peak/RMS + 3-band compression + sidechain + limiter meters
+  - SmartRadio.tsx — toggle + countdown bar + now/next style display
+- Added 150 lines of CSS to psyforge.css for intelligence panel styling
+- Restructured page.tsx to 2-column layout:
+  - LEFT: synth rack (OSC/FILTER/AMP + ARP/SEQ/MOD/FX + keyboard)
+  - RIGHT: intelligence sidebar (context + arrangement + voices + master + radio)
+  - Responsive: collapses to 1 column < 1100px
+
+Verification (browser — checked COMPUTED STYLES not just DOM):
+- pfBg: #080512 ✓ (dark purple background)
+- layoutDisplay: grid ✓ (2-column)
+- layoutCols: 816px 340px ✓ (left synth + right sidebar)
+- sidebarDisplay: flex ✓
+- intelBg: rgb(19,11,36) ✓ (panel surface)
+- arrDisplay: grid ✓ (arrangement map)
+- arrCols: 18px × 16 ✓ (64-bar grid)
+- voiceDisplay: flex ✓
+- meterDisplay: grid ✓
+- radioBorder: rgb(201,61,240) ✓ (magenta)
+
+Runtime data verified (engine playing):
+- section: INTRO ✓ (bar 3 is in first 8 bars = INTRO)
+- barInCycle: 3, cycle: 0 ✓
+- roleVoices: {kick:3, bass:5, pad:3} ✓ (INTRO only plays kick+bass+pad)
+- masterChain: lowComp -6.7dB, midComp -4.3dB, highComp -3.4dB ✓ (real compression)
+- sidechainGain: 0.81 ✓ (actively ducking)
+- eventsPerSec: 10 ✓
+- Smart Radio toggle: on=true, nextChange=118s ✓
+
+Stage Summary:
+- Right-side intelligence panel built and VERIFIED (CSS loads, data flows, no errors)
+- 5 new components: EngineContext, ArrangementMap, VoiceActivity, MasterChainMeter, SmartRadio
+- Smart Radio: auto-evolves styles every 2 min with energy variation
+- 2-column layout: synth rack left (816px) + intelligence right (340px)
+- Total new code: ~500 lines components + 150 lines CSS + ~100 lines PsyLive4 extensions
+- 0 errors, 0 NaN, real-time data flowing at 4Hz

@@ -10,7 +10,7 @@
 // This replaces src/lib/psyLive.ts (4,501 lines). Target: ~400 lines.
 
 import { CompositionScheduler, type SchedulerHost } from './scheduler';
-import { PsytranceComposer } from './composer';
+import { PsytranceComposer, getSection } from './composer';
 import { resolveGrammar } from './style-grammars';
 import { toMusicalEvent } from './types';
 import type { NoteEvent, SynthRole, MusicalStyle } from './types';
@@ -19,6 +19,23 @@ import { MelodicDevice } from '@/lib/devices/melodic-device';
 import { freqHzToCC74 } from './cc-mapping';
 
 // ── Public diagnostics ───────────────────────────────────────────────────
+export interface RoleVoiceCount {
+  kick: number; bass: number; lead: number; acid: number; pad: number;
+  hat: number; clap: number; perc: number; snare: number;
+}
+export interface MasterChainMetrics {
+  lowCompReduction: number;     // dB
+  midCompReduction: number;     // dB
+  highCompReduction: number;    // dB
+  sidechainGain: number;        // 0..1 (1.0 = no duck)
+  limiterReduction: number;     // dB
+}
+export interface ComposedEventLite {
+  at: number;
+  role: string;
+  note: number;
+  vel: number;
+}
 export interface LiveState4 {
   playing: boolean;
   bpm: number;
@@ -26,15 +43,26 @@ export interface LiveState4 {
   energy: number;
   kickCount: number;
   bar: number;
-  engineLevel: number;        // 0..1 (frequency-bin average from analyser)
+  section: string;              // INTRO/GROOVE/DROP/BREAKDOWN/REBUILD/OUTRO
+  barInCycle: number;           // 0..63
+  cycle: number;                // which 64-bar cycle
+  engineLevel: number;
   voicesActive: number;
   patchesLoaded: number;
-  peakDb: number;              // dBFS peak
-  rmsDb: number;               // dBFS RMS
-  schedulerStaleMs: number;    // heartbeat: ms since last scheduler fire
+  peakDb: number;
+  rmsDb: number;
+  schedulerStaleMs: number;
   ctxState: AudioContextState;
-  suspended: boolean;          // true when tab is hidden
+  suspended: boolean;
   repetition: { uniqueBars: number; repeatedBars: number; maxStreak: number; windowSize: number };
+  // ── NEW: engine intelligence fields ──
+  roleVoices: RoleVoiceCount;
+  masterChain: MasterChainMetrics;
+  recentEvents: ComposedEventLite[];   // last 16 events
+  eventsPerSec: number;                 // composition throughput
+  ccParams: Record<number, number>;     // current CC parameter values
+  smartRadioOn: boolean;
+  smartRadioNextStyleChange: number;     // seconds until next auto style change
 }
 
 export class PsyLive4 implements SchedulerHost {
@@ -77,6 +105,17 @@ export class PsyLive4 implements SchedulerHost {
   private barFingerprints: string[] = [];
   private lastRepetitionWarning = 0;
   private repetitionStats = { uniqueBars: 0, repeatedBars: 0, maxStreak: 0 };
+
+  // ── Engine intelligence tracking ──
+  private recentEvents: ComposedEventLite[] = [];     // ring buffer, last 16
+  private ccParams: Record<number, number> = {};      // current CC values
+  private smartRadioOn = false;
+  private smartRadioNextChange = 0;                    // ctx time of next auto style change
+  private smartRadioInterval = 120;                    // seconds between auto changes
+  private eventCountWindow = 0;                        // events in current 1s window
+  private eventWindowStart = 0;                        // ctx time of window start
+  private eventsPerSec = 0;                             // smoothed events/sec
+  private lastEventsPerSecUpdate = 0;
 
   // ── Analyser buffers (reused, no per-tick allocation) ──
   private freqBuf: Uint8Array;
@@ -264,12 +303,27 @@ export class PsyLive4 implements SchedulerHost {
         this.kickCount++;
       }
       barTokens.push(`${e.role}:${Math.round(e.note)}:${Math.round(e.velocity * 10) / 10}`);
+      // Track recent events (ring buffer, last 16)
+      this.recentEvents.push({ at: e.at, role: e.role, note: e.note, vel: e.velocity });
+      if (this.recentEvents.length > 16) this.recentEvents.shift();
+      this.eventCountWindow++;
     }
     // Repetition fingerprint (per compose window, coarse)
     if (barTokens.length > 0) {
       this.barFingerprints.push(barTokens.sort().join('|'));
       if (this.barFingerprints.length > 32) this.barFingerprints.shift();
       this.checkRepetition();
+    }
+    // Smart radio: auto-change style if enabled
+    if (this.smartRadioOn && this.ctx.currentTime >= this.smartRadioNextChange) {
+      this.cycleSmartRadioStyle();
+    }
+    // Events/sec calculation (updated every 1s)
+    const now = this.ctx.currentTime;
+    if (now - this.eventWindowStart >= 1.0) {
+      this.eventsPerSec = this.eventCountWindow;
+      this.eventCountWindow = 0;
+      this.eventWindowStart = now;
     }
   }
 
@@ -295,7 +349,42 @@ export class PsyLive4 implements SchedulerHost {
   // 12=energyMacro, 14=delaySend, 15=reverbSend.
   // Value is 0..1 (the UI normalizes). Returns true if applied.
   setCC(cc: number, value: number): boolean {
-    return this.melodicDevice.setParameterByCC(cc, Math.max(0, Math.min(1, value)));
+    const v = Math.max(0, Math.min(1, value));
+    this.ccParams[cc] = v;  // track for diagnostics
+    return this.melodicDevice.setParameterByCC(cc, v);
+  }
+
+  // ── Smart Radio: auto-evolution mode ──
+  // When enabled, the engine automatically cycles through styles every ~2 minutes,
+  // creating an endless "radio station" that evolves. Think of it as a DJ that
+  // never stops and always keeps the energy fresh.
+  private static readonly SMART_RADIO_STYLES: MusicalStyle[] = [
+    'FULL_ON', 'DARK', 'PROGRESSIVE', 'ACID', 'GOA', 'HI_TECH', 'FOREST',
+  ];
+  setSmartRadio(on: boolean): void {
+    this.smartRadioOn = on;
+    if (on) {
+      this.smartRadioNextChange = this.ctx.currentTime + this.smartRadioInterval;
+      console.log(`[PsyLive4] Smart Radio ON — next style change in ${this.smartRadioInterval}s`);
+    } else {
+      console.log('[PsyLive4] Smart Radio OFF');
+    }
+  }
+  isSmartRadioOn(): boolean { return this.smartRadioOn; }
+  private cycleSmartRadioStyle(): void {
+    const styles = PsyLive4.SMART_RADIO_STYLES;
+    const currentIdx = styles.indexOf(this.style);
+    const nextIdx = (currentIdx + 1) % styles.length;
+    const nextStyle = styles[nextIdx];
+    // Also vary energy for musical evolution
+    const newEnergy = 0.4 + Math.random() * 0.4;
+    this.setStyle(nextStyle);
+    this.setEnergy(newEnergy);
+    this.smartRadioNextChange = this.ctx.currentTime + this.smartRadioInterval;
+    console.log(`[PsyLive4] Smart Radio: → ${nextStyle} (energy=${newEnergy.toFixed(2)}), next in ${this.smartRadioInterval}s`);
+  }
+  getSmartRadioNextChange(): number {
+    return Math.max(0, this.smartRadioNextChange - this.ctx.currentTime);
   }
 
   // ── Master volume (0..1.5) ──
@@ -428,6 +517,29 @@ export class PsyLive4 implements SchedulerHost {
     const peakDb = 20 * Math.log10(peak || 0.0001);
     const rmsDb = 20 * Math.log10(rms || 0.0001);
 
+    // Section + arrangement position
+    const section = getSection(this.bar);
+    const barInCycle = this.bar % 64;
+    const cycle = Math.floor(this.bar / 64);
+
+    // Per-role voice counts (from recent events in the last ~1s)
+    const now = this.ctx.currentTime;
+    const roleVoices: RoleVoiceCount = { kick: 0, bass: 0, lead: 0, acid: 0, pad: 0, hat: 0, clap: 0, perc: 0, snare: 0 };
+    for (const e of this.recentEvents) {
+      if (now - e.at < 1.0 && e.role in roleVoices) {
+        (roleVoices as any)[e.role]++;
+      }
+    }
+
+    // Master chain metrics (read from DynamicsCompressorNode.reduction)
+    const masterChain: MasterChainMetrics = {
+      lowCompReduction: this.multibandLowComp ? this.multibandLowComp.reduction : 0,
+      midCompReduction: this.multibandMidComp ? this.multibandMidComp.reduction : 0,
+      highCompReduction: this.multibandHighComp ? this.multibandHighComp.reduction : 0,
+      sidechainGain: this.sidechainDuck ? this.sidechainDuck.gain.value : 1.0,
+      limiterReduction: this.masterLimiter ? this.masterLimiter.reduction : 0,
+    };
+
     return {
       playing: this.playing,
       bpm: this.bpm,
@@ -435,6 +547,9 @@ export class PsyLive4 implements SchedulerHost {
       energy: this.energy,
       kickCount: this.kickCount,
       bar: this.bar,
+      section,
+      barInCycle,
+      cycle,
       engineLevel,
       voicesActive: this.melodicDevice.voicesActive,
       patchesLoaded: this.melodicDevice.patchesLoaded,
@@ -444,6 +559,13 @@ export class PsyLive4 implements SchedulerHost {
       ctxState: this.ctx.state,
       suspended: this.suspended,
       repetition: { ...this.repetitionStats, windowSize: this.barFingerprints.length },
+      roleVoices,
+      masterChain,
+      recentEvents: [...this.recentEvents],
+      eventsPerSec: this.eventsPerSec,
+      ccParams: { ...this.ccParams },
+      smartRadioOn: this.smartRadioOn,
+      smartRadioNextStyleChange: this.getSmartRadioNextChange(),
     };
   }
 

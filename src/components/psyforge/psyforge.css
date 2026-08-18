@@ -144,3 +144,301 @@
   .pf-kbd { height: 96px; }
   .pf-whl { width: 44px; height: 44px; }
 }
+
+/* ── Intelligence panel (right side) ─────────────────────────────────── */
+.pf-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+@media (min-width: 1100px) {
+  .pf-layout {
+    grid-template-columns: 1fr 340px;
+  }
+}
+
+.pf-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Intel panel base */
+.pf-m.intel { padding: 10px; }
+.pf-m.intel h4 { font-size: 10px; margin-bottom: 8px; }
+
+/* Engine context grid */
+.intel-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.intel-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 4px;
+  background: rgba(0,0,0,0.25);
+  border-radius: 4px;
+  border: 1px solid var(--pf-ln);
+}
+.intel-label {
+  font-size: 8px;
+  color: var(--pf-dm);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.intel-value {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--pf-tx);
+}
+
+/* Energy bar */
+.energy-bar-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.energy-bar {
+  height: 8px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 4px;
+  border: 1px solid var(--pf-ln);
+  overflow: hidden;
+}
+.energy-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease, background 0.3s ease;
+}
+
+/* Arrangement map */
+.arr-grid {
+  display: grid;
+  grid-template-columns: repeat(16, 1fr);
+  gap: 2px;
+  margin-bottom: 6px;
+}
+.arr-cell {
+  height: 16px;
+  border-radius: 2px;
+  transition: opacity 0.2s, box-shadow 0.2s;
+}
+.arr-cell.current {
+  transform: scale(1.15);
+  z-index: 2;
+}
+.arr-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.arr-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 8px;
+  color: var(--pf-dm);
+}
+.arr-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.arr-pos {
+  font-size: 9px;
+  color: var(--pf-dm);
+  text-align: center;
+  padding-top: 4px;
+  border-top: 1px solid var(--pf-ln);
+}
+
+/* Voice activity */
+.voice-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.voice-row {
+  display: grid;
+  grid-template-columns: 40px 1fr 20px;
+  align-items: center;
+  gap: 6px;
+}
+.voice-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+.voice-bar-track {
+  height: 8px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 3px;
+  border: 1px solid var(--pf-ln);
+  overflow: hidden;
+}
+.voice-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.15s ease, box-shadow 0.15s;
+}
+.voice-count {
+  font-size: 10px;
+  font-weight: 700;
+  text-align: right;
+}
+
+/* Master chain meter */
+.meter-row {
+  display: grid;
+  grid-template-columns: 36px 1fr 48px;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+.meter-label {
+  font-size: 9px;
+  color: var(--pf-dm);
+  font-weight: 600;
+}
+.meter-bar-track {
+  height: 8px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 3px;
+  border: 1px solid var(--pf-ln);
+  overflow: hidden;
+}
+.meter-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.1s ease, background 0.2s;
+}
+.meter-value {
+  font-size: 9px;
+  color: var(--pf-tx);
+  font-weight: 600;
+  text-align: right;
+}
+.meter-section-title {
+  font-size: 8px;
+  color: var(--pf-dm);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-top: 6px;
+  margin-bottom: 3px;
+  padding-top: 4px;
+  border-top: 1px solid var(--pf-ln);
+}
+
+/* Smart radio */
+.pf-m.smart-radio {
+  border-color: var(--pf-mg);
+}
+.pf-m.smart-radio.active {
+  border-color: var(--pf-gr);
+  box-shadow: 0 0 12px rgba(61, 240, 138, 0.15);
+}
+.radio-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.radio-led {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #333;
+}
+.radio-led.on {
+  background: var(--pf-gr);
+  box-shadow: 0 0 8px var(--pf-gr);
+  animation: radio-pulse 1.5s infinite;
+}
+@keyframes radio-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.radio-status-text {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--pf-gr);
+}
+.radio-status-text:not(.on) {
+  color: var(--pf-dm);
+}
+.radio-now, .radio-next {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 6px;
+  margin-bottom: 3px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 4px;
+}
+.radio-label {
+  font-size: 9px;
+  color: var(--pf-dm);
+}
+.radio-style {
+  font-size: 13px;
+  font-weight: 700;
+}
+.radio-style-next {
+  font-size: 11px;
+  color: var(--pf-dm);
+}
+.radio-countdown {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+}
+.radio-countdown-bar {
+  flex: 1;
+  height: 6px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.radio-countdown-fill {
+  height: 100%;
+  background: var(--pf-gr);
+  border-radius: 2px;
+  transition: width 1s linear;
+}
+.radio-time {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--pf-gr);
+  font-variant-numeric: tabular-nums;
+}
+.radio-energy {
+  font-size: 10px;
+  color: var(--pf-dm);
+  text-align: center;
+  padding: 4px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 4px;
+}
+.radio-toggle {
+  padding: 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid var(--pf-ln);
+  background: var(--pf-p2);
+  color: var(--pf-tx);
+  transition: all 0.2s;
+}
+.radio-toggle.on {
+  border-color: var(--pf-gr);
+  color: var(--pf-gr);
+  box-shadow: 0 0 8px rgba(61, 240, 138, 0.2);
+}
