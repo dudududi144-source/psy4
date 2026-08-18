@@ -14640,3 +14640,42 @@ Stage Summary:
 - Export buttons moved to header
 - POWER button: clear ▶/■ labels
 - 0 errors, engine transitions correctly idle → playing
+
+---
+Task ID: remove-emojis-professional-ui
+Agent: main (Z.ai Code)
+Task: Remove ALL emojis — professional commercial UI
+
+Work Log:
+- User feedback: emojis are cheap and childish. We are commercial professionals.
+- Found ALL emojis in source: 🎵 🎚 ▶ ■ ● ▾
+- Removed from:
+  - Header: MIDI/WAV buttons → text labels 'MIDI'/'WAV'
+  - Header: POWER button → 'POWER'/'STOP' (was ▶/■)
+  - StatusStrip: ● dot → CSS .pf-dot class (6px circle, green glow)
+  - SmartRadio: ▶/■ → 'START/STOP RADIO'
+  - LearningPanel: ▶/■ → 'START/STOP LEARNING'
+  - Idle features: ● bullets → CSS ::before pseudo-element
+  - Preset selector: ▾ arrow removed
+
+- Professional CSS additions:
+  - .pf-dot: CSS status indicator (green glow when active)
+  - .pf-idle-features span::before: CSS bullet points (no emoji)
+  - .pf-sel: hover border-color transition
+  - .pf-bpm input: focus color change
+  - .pf-hd: gradient + shadow
+  - .pf-m h4: consistent letter-spacing + uppercase + border-bottom
+  - .pf-k: consistent knob alignment + uppercase labels
+
+- Verified: hasEmoji=false (both idle + playing states)
+- Verified: 0 TS errors, 0 runtime errors
+- Verified: engine transitions correctly (idle → playing)
+- Pushed: c1e2aab..10ad09d
+
+Stage Summary:
+- ALL emojis removed (6 types across 5 files)
+- Replaced with professional CSS alternatives
+- Status indicators use CSS dots, not emoji
+- Button labels are text-only (MIDI, WAV, POWER, STOP)
+- Feature bullets use CSS ::before, not emoji
+- UI is now professional/commercial-grade, no childish elements
