@@ -21,6 +21,8 @@ import { VoiceActivity } from '@/components/psyforge/VoiceActivity';
 import { MasterChainMeter } from '@/components/psyforge/MasterChainMeter';
 import { SmartRadio } from '@/components/psyforge/SmartRadio';
 import { LearningPanel } from '@/components/psyforge/LearningPanel';
+import { SpectrumVisualizer } from '@/components/psyforge/SpectrumVisualizer';
+import { loadPresets, savePreset, type PsyPreset } from '@/lib/psyLive4/presets';
 
 const PRESETS = [
   { name: 'Full-On Rolling', style: 'FULL_ON' as MusicalStyle, bpm: 145, energy: 0.7 },
@@ -58,6 +60,8 @@ export default function Page() {
   const [octave, setOctave] = useState(3);
   const [smartRadioOn, setSmartRadioOn] = useState(false);
   const [learningOn, setLearningOn] = useState(false);
+  const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
+  const [savedPresets, setSavedPresets] = useState<PsyPreset[]>([]);
 
   // Synth params (CC values 0..1)
   const [ccParams, setCcParams] = useState<Record<number, number>>({
@@ -90,6 +94,10 @@ export default function Page() {
         if (cancelled) { engine.dispose(); return; }
         engineRef.current = engine;
         (window as any).__psyLive4 = engine;
+        // Expose analyser for the visualizer
+        setAnalyser((engine as any).analyser as AnalyserNode);
+        // Load saved presets
+        setSavedPresets(loadPresets());
         setReady(true);
       } catch (e) {
         console.error('PsyLive4 init failed', e);
@@ -238,13 +246,25 @@ export default function Page() {
           onSeq={() => setSeqOn(v => !v)}
           presetName={PRESETS[presetIdx].name}
           onPreset={onPreset}
-          onSave={() => alert('Preset save — TODO (localStorage)')}
+          onSave={() => {
+            const name = prompt('Preset name:', PRESETS[presetIdx].name);
+            if (!name) return;
+            const preset: PsyPreset = {
+              name, bpm, style: s.style, energy: s.energy,
+              ccParams, fx: { drive, delay, reverb, volume },
+              savedAt: Date.now(),
+            };
+            const updated = savePreset(preset);
+            setSavedPresets(updated);
+            alert(`Saved "${name}" (${updated.length} presets total)`);
+          }}
         />
 
         {/* 2-column layout: synth rack left, intelligence right */}
         <div className="pf-layout">
           {/* ── LEFT: Synth rack + keyboard ── */}
           <div>
+            <SpectrumVisualizer analyser={analyser} height={70} />
             <div className="pf-g3">
               <SynthRack params={ccParams} onParam={onParam} />
             </div>
