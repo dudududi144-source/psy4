@@ -14820,3 +14820,33 @@ Stage Summary:
 - Error isolation: if one device throws, the other still receives events
 - Transport + context routing through host (not direct calls)
 - All tests pass, no regressions
+
+---
+Task ID: aria-accessibility-keyboard
+Agent: main (Z.ai Code)
+Task: Add ARIA labels + keyboard navigation + focus states for WCAG compliance
+
+Work Log:
+- Added ARIA attributes to Knob component:
+  role="slider", aria-label, aria-valuenow/min/max/text, tabIndex=0
+- Added keyboard support:
+  ArrowUp/Down = ±5%, ArrowLeft/Right = ±1%, Home = min, End = max
+- Added focus CSS:
+  :focus-visible outlines on knobs (lime), buttons (lime), selects, keys (green)
+  .pf-d:focus border glow
+- Verified:
+  - 0 TS errors
+  - 4/4 tests pass (stability 60s + background sim)
+  - Build succeeds
+  - Engine plays correctly
+- VLM rating: 7/10 (accessibility improved, contrast still borderline)
+
+- Pushed: 14f9c1c..54f47a2
+
+Stage Summary:
+- ARIA labels on all knobs ✓
+- Keyboard navigation (arrows + Home/End) ✓
+- Focus-visible states ✓
+- 4/4 tests pass ✓
+- Build succeeds ✓
+- VLM: 7/10 (contrast is the remaining gap)
