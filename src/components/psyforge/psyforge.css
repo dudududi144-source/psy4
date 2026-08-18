@@ -454,3 +454,100 @@
   font-size: 10px !important;
   padding: 6px !important;
 }
+
+/* Learning panel */
+.pf-m.learning { border-color: var(--pf-ac); }
+.pf-m.learning.active {
+  border-color: var(--pf-ac);
+  box-shadow: 0 0 12px rgba(184, 242, 46, 0.15);
+}
+.learning-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.learning-led {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #333;
+}
+.learning-led.on {
+  background: var(--pf-ac);
+  box-shadow: 0 0 8px var(--pf-ac);
+  animation: learning-pulse 2s infinite;
+}
+@keyframes learning-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.learning-status-text {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--pf-ac);
+}
+.learning-trial {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px;
+  margin-bottom: 6px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 4px;
+  font-size: 10px;
+}
+.learning-cc {
+  font-size: 13px;
+  font-weight: 700;
+}
+.learning-timer {
+  color: var(--pf-dm);
+  font-variant-numeric: tabular-nums;
+}
+.learning-params {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.learning-row {
+  display: grid;
+  grid-template-columns: 50px 1fr 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+.learning-row.current {
+  background: rgba(184, 242, 46, 0.08);
+}
+.learning-param-label {
+  font-size: 9px;
+  color: var(--pf-dm);
+  font-weight: 600;
+}
+.learning-bar-track {
+  height: 6px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.learning-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+.learning-reward {
+  font-size: 9px;
+  color: var(--pf-tx);
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.learning-toggle.on {
+  border-color: var(--pf-ac);
+  color: var(--pf-ac);
+  box-shadow: 0 0 8px rgba(184, 242, 46, 0.2);
+}

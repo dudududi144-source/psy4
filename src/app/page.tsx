@@ -20,6 +20,7 @@ import { ArrangementMap } from '@/components/psyforge/ArrangementMap';
 import { VoiceActivity } from '@/components/psyforge/VoiceActivity';
 import { MasterChainMeter } from '@/components/psyforge/MasterChainMeter';
 import { SmartRadio } from '@/components/psyforge/SmartRadio';
+import { LearningPanel } from '@/components/psyforge/LearningPanel';
 
 const PRESETS = [
   { name: 'Full-On Rolling', style: 'FULL_ON' as MusicalStyle, bpm: 145, energy: 0.7 },
@@ -42,6 +43,7 @@ const initialState: LiveState4 = {
   masterChain: { lowCompReduction: 0, midCompReduction: 0, highCompReduction: 0, sidechainGain: 1, limiterReduction: 0 },
   recentEvents: [], eventsPerSec: 0, ccParams: {},
   smartRadioOn: false, smartRadioNextStyleChange: 0,
+  drumStats: null, learningOn: false, learningStates: [], learningCurrentCc: 74, learningTrialRemaining: 0,
 };
 
 export default function Page() {
@@ -55,6 +57,7 @@ export default function Page() {
   const [presetIdx, setPresetIdx] = useState(0);
   const [octave, setOctave] = useState(3);
   const [smartRadioOn, setSmartRadioOn] = useState(false);
+  const [learningOn, setLearningOn] = useState(false);
 
   // Synth params (CC values 0..1)
   const [ccParams, setCcParams] = useState<Record<number, number>>({
@@ -163,6 +166,45 @@ export default function Page() {
     engineRef.current?.setSmartRadio(newOn);
   }, [smartRadioOn]);
 
+  const onLearning = useCallback(() => {
+    const newOn = !learningOn;
+    setLearningOn(newOn);
+    engineRef.current?.setLearning(newOn);
+  }, [learningOn]);
+
+  // ── Keyboard shortcuts ──
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Ignore if typing in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      switch (e.key) {
+        case ' ':
+          e.preventDefault();
+          onPower();
+          break;
+        case 'r': case 'R':
+          onSmartRadio();
+          break;
+        case 'l': case 'L':
+          onLearning();
+          break;
+        case '1': case '2': case '3': case '4': case '5': case '6': case '7':
+          const idx = parseInt(e.key) - 1;
+          if (idx < PRESETS.length) {
+            const p = PRESETS[idx];
+            setPresetIdx(idx);
+            setBpm(p.bpm);
+            engineRef.current?.setBPM(p.bpm);
+            engineRef.current?.setStyle(p.style);
+            engineRef.current?.setEnergy(p.energy);
+          }
+          break;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onPower, onSmartRadio, onLearning]);
+
   const onExportMIDI = useCallback(() => {
     engineRef.current?.exportMIDI(8);
   }, []);
@@ -244,6 +286,13 @@ export default function Page() {
               nextStyleChange={s.smartRadioNextStyleChange}
               currentStyle={s.style}
               energy={s.energy}
+            />
+            <LearningPanel
+              on={learningOn}
+              onToggle={onLearning}
+              states={s.learningStates}
+              currentCc={s.learningCurrentCc}
+              trialRemaining={s.learningTrialRemaining}
             />
           </div>
         </div>

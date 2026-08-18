@@ -17,6 +17,7 @@ import type { NoteEvent, SynthRole, MusicalStyle } from './types';
 import { DrumDevice } from '@/lib/devices/drum-device';
 import { MelodicDevice } from '@/lib/devices/melodic-device';
 import { freqHzToCC74 } from './cc-mapping';
+import { CCLearner, type CCExplorationState } from './learning';
 
 // ── Public diagnostics ───────────────────────────────────────────────────
 export interface RoleVoiceCount {
@@ -69,6 +70,10 @@ export interface LiveState4 {
   smartRadioOn: boolean;
   smartRadioNextStyleChange: number;     // seconds until next auto style change
   drumStats: DrumDeviceStats | null;     // drum worklet telemetry
+  learningOn: boolean;
+  learningStates: CCExplorationState[];
+  learningCurrentCc: number;
+  learningTrialRemaining: number;
 }
 
 export class PsyLive4 implements SchedulerHost {
@@ -122,6 +127,9 @@ export class PsyLive4 implements SchedulerHost {
   private eventWindowStart = 0;                        // ctx time of window start
   private eventsPerSec = 0;                             // smoothed events/sec
   private lastEventsPerSecUpdate = 0;
+  // ── Learning loop ──
+  private learner = new CCLearner();
+  private learningOn = false;
 
   // ── Analyser buffers (reused, no per-tick allocation) ──
   private freqBuf: Uint8Array;
@@ -393,6 +401,18 @@ export class PsyLive4 implements SchedulerHost {
     return Math.max(0, this.smartRadioNextChange - this.ctx.currentTime);
   }
 
+  // ── Learning loop: epsilon-greedy CC exploration ──
+  setLearning(on: boolean): void {
+    this.learningOn = on;
+    if (on) {
+      this.learner.reset();
+      console.log('[PsyLive4] Learning ON — exploring CC params');
+    } else {
+      console.log('[PsyLive4] Learning OFF');
+    }
+  }
+  isLearningOn(): boolean { return this.learningOn; }
+
   // ── Master volume (0..1.5) ──
   private _masterVolume = 1.0;
   setMasterVolume(v: number): void {
@@ -546,6 +566,16 @@ export class PsyLive4 implements SchedulerHost {
       limiterReduction: this.masterLimiter ? this.masterLimiter.reduction : 0,
     };
 
+    // Learning loop: explore CC params using peak dB as reward
+    if (this.learningOn && this.playing) {
+      const trial = this.learner.tick(this.ctx.currentTime, peakDb);
+      if (trial) {
+        this.setCC(trial.cc, trial.value);
+      }
+    }
+    const learningStates = this.learner.getStates();
+    const currentTrial = this.learner.getCurrentTrial();
+
     return {
       playing: this.playing,
       bpm: this.bpm,
@@ -573,6 +603,10 @@ export class PsyLive4 implements SchedulerHost {
       smartRadioOn: this.smartRadioOn,
       smartRadioNextStyleChange: this.getSmartRadioNextChange(),
       drumStats: this.drumDevice.getStats() as DrumDeviceStats | null,
+      learningOn: this.learningOn,
+      learningStates,
+      learningCurrentCc: currentTrial.cc,
+      learningTrialRemaining: currentTrial.remainingSec,
     };
   }
 
