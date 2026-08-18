@@ -379,6 +379,7 @@ class StereoWidener {
     this.sr = sr;
     // Haas delay buffer (12ms = ~530 samples at 44.1kHz)
     this.delayBuf = new Float32Array(2048);
+    this.delayBuf.fill(0);  // FIX: Clear buffer on init (prevents noise accumulation)
     this.delayIdx = 0;
     this.delaySamples = Math.max(1, Math.floor(0.012 * sr));
     // M/S side-channel HP filter (keep lows mono)

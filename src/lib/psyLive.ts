@@ -1039,9 +1039,9 @@ export class PsyLive {
         this.synthBridge = new SynthBridge({
           audioContext: this.ctx,
           outputNode: this.engineBus,
-          delaySendNode: this.delaySend,
-          reverbSendNode: this.reverbSend,
-          maxVoices: 12,
+          delaySendNode: null,   // FIX: was this.delaySend (gain=0, signal lost). Tone.js handles FX now.
+          reverbSendNode: null,  // FIX: was this.reverbSend (gain=0, signal lost). Tone.js handles FX now.
+          maxVoices: 24,  // FIX: was 12 — too small, 406 events dropped (pool-exhausted)
           seed: 1,
           patchManifestUrl: '/patches/manifest.json',
         });
