@@ -15500,3 +15500,48 @@ Work Log:
   - psysynth uses BiquadFilter, NOT real Moog (drum worklet has real Moog)
 
 - Pushed: 6a0898f..5ee4557
+
+---
+Task ID: phase0-real-moog-lead
+Agent: main (Z.ai Code)
+Task: Phase 0.1 — Build real Moog ladder lead device
+
+Work Log:
+- Created psy4-lead-worklet.js (~200 lines):
+  - Real 4-stage tanh Moog ladder filter (same algorithm as drum worklet)
+  - PolyBLEP sawtooth oscillator (anti-aliased)
+  - 3-layer voice: fundamental + octave + sub
+  - Slow LFO at 0.3Hz (flowing, not jittery)
+  - Envelope: 8ms attack, 500ms decay, 0.7 sustain, 300ms release (legato)
+  - 2dB drive (warm saturation)
+  - 60ms glide (smooth note transitions)
+  - 8-voice pool
+  - CC routing: CC74=cutoff, CC71=res, CC5=glide, CC12=drive, CC14/15=sends
+
+- Created LeadDevice wrapper (lead-device.ts):
+  - Implements PsyDevice interface
+  - Handles lead/acid roles
+  - Routes noteOn/noteOff via worklet port
+  - Routes CC via worklet port
+
+- Wired into PsyLive4:
+  - 3rd device registered in DeviceHost
+  - CC routing sends to both melodic + lead devices
+  - onStart/onStop/dispose all wired
+
+- Verified:
+  - 'LeadDevice initialized — real Moog ladder + PolyBLEP'
+  - 'DeviceHost: 3 devices registered'
+  - playing=true, peak=-4.2, voices=9
+  - Spectrum: low=255, mid=203, high=155, air=89 (balanced)
+  - 4/4 tests pass
+  - 0 TS errors, 0 runtime errors
+
+- Pushed: 5ee4557..327c1e4
+
+Stage Summary:
+- Phase 0.1 COMPLETE: Real Moog ladder lead device
+- 3 devices now: Drum + Melodic + Lead (dedicated Moog)
+- Lead uses PolyBLEP (no aliasing) + real Moog (warm, not BiquadFilter)
+- CC routing works to all 3 devices
+- Ready for Phase 0.2: rebuild learning reward system
