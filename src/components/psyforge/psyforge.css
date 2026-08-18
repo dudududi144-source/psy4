@@ -3,14 +3,14 @@
   --pf-bg: #080512;
   --pf-p:  #130b24;
   --pf-p2: #1a1030;
-  --pf-ln: #2c1c50;
-  --pf-tx: #eee8fb;
-  --pf-dm: #9a8cc4;
-  --pf-ac: #b8f22e;   /* lime accent — OSC */
-  --pf-mg: #c93df0;   /* magenta — FILTER */
-  --pf-vi: #8a4dff;   /* violet */
-  --pf-or: #ff9a2a;   /* orange — highlight */
-  --pf-gr: #3df08a;   /* green — ARP/active */
+  --pf-ln: #3c2a60;
+  --pf-tx: #f5f0ff;
+  --pf-dm: #b8a8d8;
+  --pf-ac: #c5f22e;
+  --pf-mg: #d93df0;
+  --pf-vi: #8a4dff;
+  --pf-or: #ff9a2a;
+  --pf-gr: #3df08a;
 }
 
 /* ── PSYFORGE layout primitives ──────────────────────────────────────── */
@@ -80,7 +80,7 @@
 .pf-kn { display: flex; gap: 8px; flex-wrap: wrap; }
 .pf-k {
   display: flex; flex-direction: column; align-items: center; gap: 3px;
-  font-size: 9px; color: var(--pf-dm); min-width: 44px;
+  font-size: 10px; color: var(--pf-dm); min-width: 44px;
 }
 .pf-d {
   width: 40px; height: 40px; border-radius: 50%;
@@ -98,7 +98,7 @@
 .pf-d.mg::after { background: var(--pf-mg); box-shadow: 0 0 4px var(--pf-mg); }
 .pf-d.or::after { background: var(--pf-or); box-shadow: 0 0 4px var(--pf-or); }
 .pf-d.gr::after { background: var(--pf-gr); box-shadow: 0 0 4px var(--pf-gr); }
-.pf-v { color: var(--pf-tx); font-size: 9px; min-height: 11px; }
+.pf-v { color: var(--pf-tx); font-size: 10px; min-height: 12px; font-weight: 700; }
 
 /* Sequencer */
 .pf-seq { display: flex; gap: 3px; align-items: flex-end; height: 52px; }
@@ -123,7 +123,8 @@
 }
 .pf-key { flex: 1; background: #f5f2fa; border-right: 1px solid #aaa; touch-action: none; }
 .pf-key.b { background: #150e26; position: absolute; top: 0; height: 62%; z-index: 2; border: 1px solid #000; border-radius: 0 0 4px 4px; }
-.pf-key.on { background: var(--pf-ac); }
+.pf-key.on { background: var(--pf-ac); box-shadow: 0 0 12px var(--pf-ac); }
+.pf-key.b.on { background: var(--pf-mg); box-shadow: 0 0 12px var(--pf-mg); }
 
 /* Wheels */
 .pf-wh { display: flex; gap: 8px; }
@@ -724,7 +725,7 @@
 }
 .pf-d:active { cursor: grabbing; }
 .pf-k {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--pf-dm);
   min-width: 46px;
   text-align: center;
@@ -860,7 +861,7 @@
 
 /* ── PANEL headers: consistent + professional ──────────────────────────── */
 .pf-m h4 {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   font-weight: 700;
@@ -885,7 +886,7 @@
   flex-direction: column;
   align-items: center;
   gap: 3px;
-  font-size: 9px;
+  font-size: 10px;
   color: var(--pf-dm);
   min-width: 48px;
   text-align: center;
@@ -988,4 +989,14 @@
   border-radius: 50%;
   background: var(--pf-ac);
   opacity: 0.6;
+}
+
+/* Arrangement map cell letter */
+.arr-cell-letter {
+  font-size: 8px;
+  font-weight: 800;
+  color: #000;
+  text-align: center;
+  line-height: 16px;
+  text-shadow: none;
 }

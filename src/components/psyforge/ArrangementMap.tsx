@@ -52,17 +52,20 @@ export function ArrangementMap({ bar, barInCycle }: ArrangementMapProps) {
     const color = SECTION_COLORS[section] ?? '#3a2b5e';
     const isCurrent = i === barInCycle;
     const isPast = i < barInCycle;
+    const letter = section[0];  // I/G/D/B/R/O
     cells.push(
       <div
         key={i}
         className={`arr-cell${isCurrent ? ' current' : ''}${isPast ? ' past' : ''}`}
         style={{
           background: color,
-          opacity: isPast ? 0.3 : isCurrent ? 1 : 0.5,
+          opacity: isPast ? 0.25 : isCurrent ? 1 : 0.55,
           boxShadow: isCurrent ? `0 0 8px ${color}` : 'none',
         }}
         title={`Bar ${i} — ${section}`}
-      />
+      >
+        <span className="arr-cell-letter">{isCurrent ? letter : ''}</span>
+      </div>
     );
   }
 

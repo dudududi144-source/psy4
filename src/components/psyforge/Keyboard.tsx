@@ -3,7 +3,7 @@
 // 14-key keyboard + pitch/mod wheels + octave buttons.
 // Plays notes on the melodic device (psysynth) via the engine.
 
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 
 interface KeyboardProps {
   octave: number;
@@ -22,16 +22,19 @@ const BLACK_KEYS = [
 
 export function Keyboard({ octave, onOctave, onNoteOn, onNoteOff }: KeyboardProps) {
   const activeNotes = useRef<Set<number>>(new Set());
+  const [pressedKeys, setPressedKeys] = useState<Set<number>>(new Set());
 
   const noteOn = useCallback((midi: number) => {
-    if (activeNotes.current.has(midi)) return;  // prevent double-trigger
+    if (activeNotes.current.has(midi)) return;
     activeNotes.current.add(midi);
+    setPressedKeys(prev => new Set(prev).add(midi));
     onNoteOn(midi);
   }, [onNoteOn]);
 
   const noteOff = useCallback((midi: number) => {
     if (!activeNotes.current.has(midi)) return;
     activeNotes.current.delete(midi);
+    setPressedKeys(prev => { const n = new Set(prev); n.delete(midi); return n; });
     onNoteOff(midi);
   }, [onNoteOff]);
 
@@ -72,7 +75,7 @@ export function Keyboard({ octave, onOctave, onNoteOn, onNoteOff }: KeyboardProp
           return (
             <div
               key={i}
-              className="pf-key"
+              className={`pf-key${pressedKeys.has(midi) ? ' on' : ''}`}
               onPointerDown={(e) => onKeyPointerDown(e, midi)}
               onPointerUp={(e) => onKeyPointerUp(e, midi)}
             />
@@ -85,7 +88,7 @@ export function Keyboard({ octave, onOctave, onNoteOn, onNoteOff }: KeyboardProp
           return (
             <div
               key={`b${i}`}
-              className="pf-key b"
+              className={`pf-key b${pressedKeys.has(midi) ? ' on' : ''}`}
               style={{ left: `${leftPct}%`, width: `${100 / 14 * 0.6}%` }}
               onPointerDown={(e) => onKeyPointerDown(e, midi)}
               onPointerUp={(e) => onKeyPointerUp(e, midi)}

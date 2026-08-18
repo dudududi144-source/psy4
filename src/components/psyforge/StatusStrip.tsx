@@ -21,11 +21,8 @@ export function StatusStrip({ state, arpOn, seqOn }: StatusStripProps) {
   // When not playing, show minimal status
   if (!state.playing) {
     return (
-      <div className="pf-stt" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px' }}>
-        <span style={{ color: 'var(--pf-dm)' }}><span className="pf-dot" /> READY</span>
-        <span style={{ color: 'var(--pf-dm)' }}>{state.bpm} BPM</span>
-        <span style={{ color: 'var(--pf-dm)' }}>{state.style.replace('_', '.')}</span>
-        <span style={{ color: 'var(--pf-dm)' }}>Press POWER to start</span>
+      <div className="pf-stt" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+        <span style={{ color: 'var(--pf-dm)' }}>Ready — {state.bpm} BPM — {state.style.replace('_', '.')}</span>
       </div>
     );
   }
