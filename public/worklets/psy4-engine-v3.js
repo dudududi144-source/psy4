@@ -697,7 +697,7 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
     const L = output[0];
     const R = output[1] || output[0];
     const sr = this.sr;
-    const currentAudioTime = currentFrame / sr;
+    const currentAudioTime = currentTime;  // FIX: use AudioWorkletGlobalScope.currentTime (was currentFrame/sr — caused timing mismatch)
 
     // Process due events
     while (this.eventCount > 0) {
