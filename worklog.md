@@ -15462,3 +15462,41 @@ The PSY family is a **layered device family** built on a shared foundation contr
 
 10. **The drum worklet handles ONLY drums now.** The worklog shows an earlier `psy4-engine.js` (1,233 lines) had ALL voices (kick/bass/lead/acid/pad/hat/clap/perc/shaker/texture/FX) in one worklet. The current `psy4-engine-v3.js` (864 lines) handles ONLY drums — melodic voices route to psysynth via the main thread. This is a clean separation but means melodic timing goes through main-thread event dispatch (still RT-safe via setValueAtTime, but adds one hop).
 
+
+---
+Task ID: master-plan-family-research
+Agent: main (Z.ai Code)
+Task: Research all psy repos on GitHub + write comprehensive product plan
+
+Work Log:
+- Launched Explore subagent to research all 13 psy-family repos on GitHub
+- Found:
+  - psy-foundation: 13 packages, 250 tests, CausalComposer with musical memory
+  - psysynth: 124 tests, melodic synth (already in PSY4)
+  - psy-sampler: 653 tests, sample-based drums (NOT wired)
+  - psydrum: dedicated drum synth (BUILDING phase 11)
+  - PsySynthPro: real DSP (PolyBLEP + wavetable + ZDF SVF + FM + MPE)
+  - PSY3: production knowledge (Moog ladder, BL-saw, EvolvingSequence)
+  - PSY6-ULTIMATE: Grammar System (BassGrammar 12x12, MelodicGrammar)
+  - psystar: full platform vision (59 phases)
+
+- Wrote PSY4_MASTER_PLAN.md with:
+  1. Product definition (what it IS, what value it delivers)
+  2. Commercial quality metrics (7 measurable criteria)
+  3. Family catalog (13 repos, what's reusable)
+  4. Learning system rebuild (why current is broken, how to fix)
+  5. Sound quality targets (what "good" means concretely)
+  6. Composition improvements (CausalComposer, Grammar System)
+  7. Imitation capability (analyze reference → match)
+  8. Phased plan (4 phases: fix sound → wire family → build brain → platform)
+  9. Success criteria (10 concrete tests)
+  10. What I need from user (priority, reference tracks, honesty)
+
+- Key honest findings:
+  - Learning is BROKEN: only measures loudness, not quality
+  - Sound is 4/10: lead still needs real Moog, drums primitive
+  - Composition is deterministic: no memory, no intent
+  - Imitation: not implemented at all
+  - psysynth uses BiquadFilter, NOT real Moog (drum worklet has real Moog)
+
+- Pushed: 6a0898f..5ee4557
