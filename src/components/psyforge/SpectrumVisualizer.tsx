@@ -1,6 +1,6 @@
 'use client';
 // src/components/psyforge/SpectrumVisualizer.tsx
-// Real-time frequency spectrum bars + waveform overlay.
+// Real-time frequency spectrum bars + waveform overlay + frequency axis labels.
 // Uses requestAnimationFrame (60fps) but reads from analyser (zero-copy).
 
 import React, { useRef, useEffect } from 'react';
@@ -10,7 +10,7 @@ interface SpectrumVisualizerProps {
   height?: number;
 }
 
-export function SpectrumVisualizer({ analyser, height = 80 }: SpectrumVisualizerProps) {
+export function SpectrumVisualizer({ analyser, height = 90 }: SpectrumVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
   const freqBufRef = useRef<Uint8Array | null>(null);
@@ -33,35 +33,65 @@ export function SpectrumVisualizer({ analyser, height = 80 }: SpectrumVisualizer
 
       const w = canvas.width;
       const h = canvas.height;
+      const axisH = 14;  // space for frequency labels at bottom
+      const specH = h - axisH;
+
       // Clear with dark bg
-      ctx.fillStyle = '#08051a';
+      ctx.fillStyle = '#050310';
       ctx.fillRect(0, 0, w, h);
 
-      // Draw spectrum bars (logarithmic, 64 bars)
-      const numBars = 64;
-      const barWidth = w / numBars;
-      for (let i = 0; i < numBars; i++) {
-        // Log-spaced bar index
-        const logIdx = Math.floor(Math.pow(i / numBars, 2) * freq.length);
-        const v = freq[logIdx] / 255;
-        const barH = v * h * 0.85;
-        // Color: green→yellow→red by intensity
-        const hue = 120 - v * 120;  // 120=green, 0=red
-        ctx.fillStyle = `hsl(${hue}, 80%, 55%)`;
-        ctx.fillRect(i * barWidth, h - barH, barWidth - 1, barH);
+      // Draw subtle grid lines (dB scale)
+      ctx.strokeStyle = 'rgba(60, 40, 100, 0.15)';
+      ctx.lineWidth = 1;
+      for (let i = 1; i < 4; i++) {
+        const y = (specH / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
       }
 
-      // Draw waveform overlay (top half)
-      ctx.strokeStyle = 'rgba(184, 242, 46, 0.6)';
-      ctx.lineWidth = 1.5;
+      // Draw spectrum bars (logarithmic, 48 bars)
+      const numBars = 48;
+      const barWidth = w / numBars;
+      for (let i = 0; i < numBars; i++) {
+        const logIdx = Math.floor(Math.pow(i / numBars, 2) * freq.length);
+        const v = freq[logIdx] / 255;
+        const barH = v * specH * 0.9;
+        const hue = 120 - v * 120;
+        ctx.fillStyle = `hsl(${hue}, 75%, 50%)`;
+        ctx.fillRect(i * barWidth, specH - barH, barWidth - 1, barH);
+      }
+
+      // Draw waveform overlay (center line)
+      ctx.strokeStyle = 'rgba(184, 242, 46, 0.5)';
+      ctx.lineWidth = 1;
       ctx.beginPath();
       const slice = w / td.length;
       for (let i = 0; i < td.length; i++) {
         const v = td[i];
-        const y = h * 0.5 + v * h * 0.35;
+        const y = specH * 0.5 + v * specH * 0.35;
         if (i === 0) ctx.moveTo(0, y);
         else ctx.lineTo(i * slice, y);
       }
+      ctx.stroke();
+
+      // Draw frequency axis labels at bottom
+      ctx.fillStyle = 'rgba(154, 140, 196, 0.5)';
+      ctx.font = '8px ui-monospace, monospace';
+      ctx.textAlign = 'left';
+      const labels = ['100', '500', '1k', '2k', '5k', '10k'];
+      const positions = [0.08, 0.22, 0.35, 0.5, 0.72, 0.92];
+      for (let i = 0; i < labels.length; i++) {
+        const x = positions[i] * w;
+        ctx.fillText(labels[i] + 'Hz', x, h - 3);
+      }
+
+      // Draw baseline
+      ctx.strokeStyle = 'rgba(60, 40, 100, 0.3)';
+      ctx.beginPath();
+      ctx.moveTo(0, specH);
+      ctx.lineTo(w, specH);
       ctx.stroke();
 
       rafRef.current = requestAnimationFrame(draw);
@@ -70,7 +100,6 @@ export function SpectrumVisualizer({ analyser, height = 80 }: SpectrumVisualizer
     return () => cancelAnimationFrame(rafRef.current);
   }, [analyser]);
 
-  // Resize canvas to match container
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;

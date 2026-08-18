@@ -25,7 +25,7 @@ const ROLE_META: Array<{ key: keyof RoleVoiceCount; label: string; color: string
 export function VoiceActivity({ roleVoices, totalActive }: VoiceActivityProps) {
   return (
     <div className="pf-m intel">
-      <h4>VOICE ACTIVITY ({totalActive} active)</h4>
+      <h4>VOICE ACTIVITY (recent hits)</h4>
       <div className="voice-grid">
         {ROLE_META.map(({ key, label, color, max }) => {
           const count = roleVoices[key] ?? 0;

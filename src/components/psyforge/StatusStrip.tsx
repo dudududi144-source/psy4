@@ -35,7 +35,7 @@ export function StatusStrip({ state, arpOn, seqOn }: StatusStripProps) {
       <span style={{ color: ctxOk ? 'var(--pf-gr)' : 'var(--pf-or)' }}><span className={`pf-dot ${ctxOk ? 'on' : ''}`} /> {state.ctxState.toUpperCase()}</span>
       <span style={{ color: 'var(--pf-tx)', fontWeight: 600 }}>{state.bpm} BPM</span>
       <span style={{ color: 'var(--pf-mg)' }}>{state.style.replace('_', '.')}</span>
-      <span style={{ color: 'var(--pf-dm)' }}>{state.voicesActive} voices</span>
+      <span style={{ color: 'var(--pf-dm)' }}>{state.voicesActive} synth voices</span>
       <span style={{ color: peakOk ? 'var(--pf-gr)' : 'var(--pf-or)' }}>peak {peakStr}dB</span>
       <span style={{ color: 'var(--pf-dm)' }}>rms {rmsStr}dB</span>
       <span style={{ color: 'var(--pf-dm)' }}>bar {state.bar}</span>
