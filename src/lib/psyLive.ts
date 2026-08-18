@@ -647,19 +647,20 @@ export class PsyLive {
 
     // Delay (like psy)
     this.delaySend = this.ctx.createGain();
-    this.delaySend.gain.value = 0.3;  // FIX: was 1.0 — too much delay send (30% wet is standard)
+    this.delaySend.gain.value = 0;  // FIX: was 0.3 — old delay feedback loop causes squeal/crash. Tone.js handles FX now.
     this.delay = this.ctx.createDelay(2.0);
     this.delay.delayTime.value = 0.3;
     const wet = this.ctx.createGain(); wet.gain.value = 0.22;
     this.delayFb = this.ctx.createGain(); this.delayFb.gain.value = 0.34;
     this.delaySend.connect(this.delay);
     this.delay.connect(wet);
-    this.delay.connect(this.delayFb); this.delayFb.connect(this.delay);
+    // FIX: Disconnect delay feedback — it causes squeal/crash over time
+    // this.delay.connect(this.delayFb); this.delayFb.connect(this.delay);  // REMOVED
     // Store wet gain reference for routing (connected later in initWorkletEngine)
     this.delayWet = wet;
 
     // F11: Reverb bus
-    this.reverbSend = this.ctx.createGain(); this.reverbSend.gain.value = 0.3;  // FIX: was 0 — enable reverb (30% wet)
+    this.reverbSend = this.ctx.createGain(); this.reverbSend.gain.value = 0;  // FIX: was 0.3 — old reverb sends to nowhere. Tone.js handles FX now.
     this.convolver = this.ctx.createConvolver();
     this.convolver.buffer = this.mkIR(this.ctx);
     const reverbWet = this.ctx.createGain(); reverbWet.gain.value = 0.5;

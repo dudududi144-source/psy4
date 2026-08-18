@@ -61,6 +61,8 @@ class MoogLadder {
     this.s0 = 0; this.s1 = 0; this.s2 = 0; this.s3 = 0;
   }
   process(x, cutoff, res, sr) {
+    // FIX: Guard against NaN/Infinity — if input is bad, return 0
+    if (!isFinite(x)) { this.s0 = this.s1 = this.s2 = this.s3 = 0; return 0; }
     const f = Math.min(0.99, 2 * Math.PI * cutoff / sr);
     const k = 4 * res;
     for (let i = 0; i < 4; i++) {
@@ -511,6 +513,8 @@ class MasterChain {
   }
   process(sample, sr) {
     const dt = 1 / sr;
+    // FIX: Guard against NaN — if input is bad, output 0
+    if (!isFinite(sample)) return 0;
     // DC blocker
     const dcOut = sample - this.dcPrevIn + (1 - this.dcA) * this.dcPrevOut;
     this.dcPrevIn = sample;
@@ -775,11 +779,17 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
           }
         }
       }
+      // FIX: Clamp mix before master chain — prevents overflow → NaN → squeal
+      mixL = Math.max(-1.0, Math.min(1.0, mixL));
+      mixR = Math.max(-1.0, Math.min(1.0, mixR));
       // Stereo widener (M/S + Haas) — before master so limiter catches peaks
       const widened = this.stereoWidener.process(mixL, mixR);
       // Master chain (separate L/R for stereo preservation)
       L[i] = this.masterL.process(widened[0], sr);
       R[i] = this.masterR.process(widened[1], sr);
+      // FIX: Final NaN guard — if output is NaN/Infinity, output 0
+      if (!isFinite(L[i])) L[i] = 0;
+      if (!isFinite(R[i])) R[i] = 0;
     }
     this.activeVoiceCount = activeCount;
     this.currentFrame += L.length;
