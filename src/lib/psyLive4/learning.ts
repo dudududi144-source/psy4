@@ -36,14 +36,14 @@ export class CCLearner {
   }
 
   /** Called by the host every poll tick. Returns the CC to adjust + its value. */
-  tick(now: number, peakDb: number): { cc: number; value: number } | null {
+  tick(now: number, peakDb: number, spectralCentroid: number = 0): { cc: number; value: number } | null {
     const cc = EXPLORABLE_CCS[this.currentIdx];
     const state = this.states.get(cc)!;
 
     // If trial duration passed, evaluate reward + move to next
     if (now - this.trialStartTime >= this.trialDuration) {
-      // Reward: peak near -1dB = 1.0, -40dB = 0, 0dB (clipping) = 0
-      const reward = this.computeReward(peakDb);
+      // Reward: peak near -3dB (loudness) + spectral centroid in useful range
+      const reward = this.computeReward(peakDb, spectralCentroid);
       state.reward = reward;
       state.history.push({ value: state.value, reward });
       if (state.history.length > HISTORY_MAX) state.history.shift();
@@ -69,13 +69,27 @@ export class CCLearner {
   }
 
   /** Reward function: peak dB near -1dB = high reward. */
-  private computeReward(peakDb: number): number {
+  private computeReward(peakDb: number, spectralCentroid: number = 0): number {
     if (peakDb === -Infinity) return 0;
-    if (peakDb > -0.3) return 0.2;  // clipping — bad
-    if (peakDb < -20) return 0.1;   // too quiet — bad
-    // Bell curve centered at -3dB
-    const dist = Math.abs(peakDb - (-3));
-    return Math.max(0, 1 - dist / 10);
+    // Loudness reward: peak near -3dB = high
+    let loudnessReward = 0;
+    if (peakDb > -0.3) loudnessReward = 0.2;  // clipping — bad
+    else if (peakDb < -20) loudnessReward = 0.1;  // too quiet — bad
+    else {
+      const dist = Math.abs(peakDb - (-3));
+      loudnessReward = Math.max(0, 1 - dist / 10);
+    }
+    // Brightness reward: spectral centroid in 800-3000Hz range = good
+    // (not too dark/muffled, not too harsh/bright)
+    let brightnessReward = 0.3;  // default if no centroid data
+    if (spectralCentroid > 0) {
+      if (spectralCentroid < 400) brightnessReward = 0.1;  // too dark
+      else if (spectralCentroid > 5000) brightnessReward = 0.2;  // too harsh
+      else if (spectralCentroid >= 800 && spectralCentroid <= 3000) brightnessReward = 1.0;  // sweet spot
+      else brightnessReward = 0.5;  // ok but not ideal
+    }
+    // Combined: 60% loudness + 40% brightness
+    return loudnessReward * 0.6 + brightnessReward * 0.4;
   }
 
   getStates(): CCExplorationState[] {

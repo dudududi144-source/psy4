@@ -566,9 +566,21 @@ export class PsyLive4 implements SchedulerHost {
       limiterReduction: this.masterLimiter ? this.masterLimiter.reduction : 0,
     };
 
-    // Learning loop: explore CC params using peak dB as reward
+    // Learning loop: explore CC params using peak dB + spectral centroid as reward
     if (this.learningOn && this.playing) {
-      const trial = this.learner.tick(this.ctx.currentTime, peakDb);
+      // Compute spectral centroid (brightness) from analyser
+      let centroid = 0;
+      let totalMag = 0;
+      const sr = this.ctx.sampleRate;
+      const binW = sr / this.analyser.fftSize;
+      for (let i = 0; i < this.freqBuf.length; i++) {
+        const freq = i * binW;
+        const mag = this.freqBuf[i];
+        centroid += freq * mag;
+        totalMag += mag;
+      }
+      centroid = totalMag > 0 ? centroid / totalMag : 0;
+      const trial = this.learner.tick(this.ctx.currentTime, peakDb, centroid);
       if (trial) {
         this.setCC(trial.cc, trial.value);
       }
