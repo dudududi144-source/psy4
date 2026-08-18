@@ -18,6 +18,8 @@ import { DrumDevice } from '@/lib/devices/drum-device';
 import { MelodicDevice } from '@/lib/devices/melodic-device';
 import { freqHzToCC74 } from './cc-mapping';
 import { CCLearner, type CCExplorationState } from './learning';
+import { DeviceHost, InMemoryChannel } from '@/lib/psy-foundation-shim';
+import type { MusicalEvent } from '@/lib/psy-foundation-shim/protocol';
 
 // ── Public diagnostics ───────────────────────────────────────────────────
 export interface RoleVoiceCount {
@@ -82,6 +84,9 @@ export class PsyLive4 implements SchedulerHost {
   private composer = new PsytranceComposer();
   private drumDevice: DrumDevice;
   private melodicDevice: MelodicDevice;
+  // ── Foundation DeviceHost: proper event routing + error isolation ──
+  private host: DeviceHost;
+  private channel: InMemoryChannel;
 
   // ── Master chain nodes ──
   private sidechainDuck: GainNode;
@@ -234,6 +239,10 @@ export class PsyLive4 implements SchedulerHost {
     // ── Scheduler ──
     this.scheduler = new CompositionScheduler(this);
 
+    // ── Foundation DeviceHost: proper event routing + error isolation ──
+    this.channel = new InMemoryChannel();
+    this.host = new DeviceHost(this.channel);
+
     // ── visibilitychange handler (THE FIX for "engine stops") ──
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.onVisibility);
@@ -254,6 +263,12 @@ export class PsyLive4 implements SchedulerHost {
     if (!melodicOk) {
       console.warn('[PsyLive4] melodic device init failed — running drums only');
     }
+    // Register devices with the Foundation DeviceHost
+    // This provides: error isolation (try/catch per device), transport routing,
+    // context routing, and event routing through InMemoryChannel.
+    this.host.register(this.drumDevice);
+    this.host.register(this.melodicDevice);
+    console.log(`[PsyLive4] DeviceHost: ${this.host.deviceCount} devices registered`);
     // Apply initial style leadCutoff to psysynth
     this.applyStyleToDevices();
     return true;
@@ -267,6 +282,8 @@ export class PsyLive4 implements SchedulerHost {
     this.kickCount = 0;
     this.bar = 0;
     this.composerPrev = null;
+    // onStart is called by DeviceHost.register, but we call it again on play
+    // because devices may need re-initialization after a stop cycle
     this.drumDevice.onStart();
     this.melodicDevice.onStart();
     this.scheduler.start();
@@ -305,12 +322,8 @@ export class PsyLive4 implements SchedulerHost {
     const barTokens: string[] = [];
     for (const e of result.events) {
       const me = toMusicalEvent(e);
-      // Route to device by role
-      if (e.role === 'kick' || e.role === 'hat' || e.role === 'clap' || e.role === 'perc' || e.role === 'snare') {
-        this.drumDevice.onEvent(me);
-      } else {
-        this.melodicDevice.onEvent(me);
-      }
+      // Route through Foundation DeviceHost (error isolation + proper routing)
+      this.host.publish(me);
       // Sidechain duck on kick
       if (e.role === 'kick') {
         this.triggerSidechain(e.at);
@@ -425,7 +438,7 @@ export class PsyLive4 implements SchedulerHost {
   // ── Live keyboard note on/off (routes to melodic device) ──
   noteOn(midi: number, velocity: number = 0.8): void {
     const at = this.ctx.currentTime + 0.005;  // 5ms latency for live input
-    this.melodicDevice.onEvent({
+    this.host.publish({
       type: 'note',
       at,
       note: midi,
@@ -437,7 +450,7 @@ export class PsyLive4 implements SchedulerHost {
 
   noteOff(midi: number): void {
     const at = this.ctx.currentTime;
-    this.melodicDevice.onEvent({
+    this.host.publish({
       type: 'note',
       at,
       note: midi,
@@ -452,8 +465,8 @@ export class PsyLive4 implements SchedulerHost {
     // Push leadCutoff → CC74 to psysynth (style affects timbre, not just pitch)
     const cc74 = freqHzToCC74(g.leadCutoff);
     this.melodicDevice.setParameterByCC(74, cc74);
-    // Push musical context for style bank selection
-    this.melodicDevice.onContext({
+    // Push musical context through Foundation DeviceHost
+    this.host.pushContext({
       style: this.style,
       energy: this.energy,
       section: 'groove',
@@ -874,6 +887,7 @@ export class PsyLive4 implements SchedulerHost {
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisibility);
     }
+    this.host.dispose();
     this.melodicDevice.dispose();
     this.ctx.close().catch(() => {});
   }
