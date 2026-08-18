@@ -14786,3 +14786,37 @@ Stage Summary:
 - Foundation gap: DeviceHost not wired (documented)
 - 0 TS errors, 0 runtime errors
 - Pushed to GitHub
+
+---
+Task ID: devicehost-wiring
+Agent: main (Z.ai Code)
+Task: Wire Foundation DeviceHost — proper event routing + error isolation
+
+Work Log:
+- IDENTIFIED GAP: PsyLive4 called device.onEvent() directly, bypassing the
+  Foundation DeviceHost + InMemoryChannel. This violated the 3-layer architecture
+  and meant no error isolation (one device crash would kill the other).
+
+- WIRED DeviceHost:
+  - Import DeviceHost + InMemoryChannel from psy-foundation-shim
+  - Create channel + host in constructor
+  - Register both devices (drum + melodic) in init()
+  - compose(): events publish through host.publish() instead of direct device calls
+  - noteOn/noteOff: publish through host instead of direct melodicDevice calls
+  - applyStyleToDevices: pushContext through host instead of direct call
+  - dispose: host.dispose() for proper cleanup
+
+- VERIFIED:
+  - "DeviceHost: 2 devices registered" in console ✓
+  - Engine plays: peak=-3.1, voices=7, patches=24, bar=3, kicks=12 ✓
+  - 4/4 Playwright tests pass (styles 2/2 + learning 2/2) ✓
+  - 0 TS errors, 0 runtime errors ✓
+
+- Pushed: c15c012..14f9c1c
+
+Stage Summary:
+- Foundation DeviceHost properly wired ✓
+- Architecture now truly 3-layer: FOUNDATION (DeviceHost+Channel) → DEVICES (drum+melodic) → HOST (PsyLive4)
+- Error isolation: if one device throws, the other still receives events
+- Transport + context routing through host (not direct calls)
+- All tests pass, no regressions
