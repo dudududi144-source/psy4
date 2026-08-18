@@ -146,7 +146,7 @@ class KickVoice {
   }
 }
 
-// ─── HatVoice (synth — noise + HP filter) ──────────────────────────────────
+// ─── HatVoice (synth — bandpass-filtered noise, commercial hi-hat) ─────────
 class HatVoice {
   constructor() {
     this.active = false;
@@ -154,17 +154,17 @@ class HatVoice {
     this.noise = new PinkNoise();
     this.hp = new OnePoleHP();
     this.lp = new OnePoleLP();
-    this.decay = 0.05;
-    this.amp = 0.08;  // FIX: was 0.15 — still too loud, causes 0.69 highRatio
+    this.decay = 0.04;
+    this.amp = 0.06;
     this._out = new Float32Array(2);
   }
   trigger(time, note, vel, dur, sr, open, decayOverride) {
     this.active = true;
     this.t = 0;
-    const baseDecay = open ? 0.15 : 0.035;  // FIX: shorter = less noise
+    const baseDecay = open ? 0.12 : 0.025;
     this.decay = (typeof decayOverride === 'number' && decayOverride > 0.01 && decayOverride < 1.0)
       ? decayOverride : baseDecay;
-    this.amp = Math.max(0.08, Math.min(0.25, vel * 0.3));  // FIX: much lower amp
+    this.amp = Math.max(0.04, Math.min(0.12, vel * 0.15));
     this.hp.reset();
     this.lp.reset();
   }
@@ -175,16 +175,20 @@ class HatVoice {
     this.t += dt;
     if (this.t > this.decay) { this.active = false; out[0] = 0; out[1] = 0; return out; }
     const n = this.noise.process();
-    const hpOut = this.hp.process(n, 8000, sr);  // FIX: higher HP = less harsh mids
-    const lpOut = this.lp.process(hpOut, 12000, sr);  // FIX: LP to tame extreme highs
-    const env = Math.exp(-this.t / (this.decay * 0.4));  // FIX: faster decay
-    const sample = lpOut * env * this.amp;
+    // Bandpass: HP at 7kHz + LP at 10kHz = focused hat sound (not wideband noise)
+    const hpOut = this.hp.process(n, 7000, sr);
+    const bpOut = this.lp.process(hpOut, 10000, sr);
+    // Metallic character: ring at 10kHz
+    const ringPhase = this.t * 2 * Math.PI * 10000;
+    const ring = Math.sin(ringPhase) * Math.exp(-this.t / 0.008) * 0.15;
+    const env = Math.exp(-this.t / (this.decay * 0.35));
+    const sample = (bpOut + ring) * env * this.amp;
     out[0] = sample; out[1] = sample;
     return out;
   }
 }
 
-// ─── SnareVoice (synth — noise + tone) ─────────────────────────────────────
+// ─── SnareVoice (synth — body + tone + noise, commercial snare) ──────────
 class SnareVoice {
   constructor() {
     this.active = false;
@@ -192,18 +196,22 @@ class SnareVoice {
     this.noise = new PinkNoise();
     this.hp = new OnePoleHP();
     this.lp = new OnePoleLP();
+    this.moog = new MoogLadder();
     this.phase = 0;
-    this.decay = 0.1;  // FIX: was 0.12
-    this.amp = 0.15;    // FIX: was 0.3 — reduce harshness
+    this.bodyPhase = 0;
+    this.decay = 0.12;
+    this.amp = 0.12;
     this._out = new Float32Array(2);
   }
   trigger(time, note, vel, dur, sr) {
     this.active = true;
     this.t = 0;
     this.phase = 0;
-    this.amp = Math.max(0.15, Math.min(0.4, vel * 0.5));  // FIX: lower
+    this.bodyPhase = 0;
+    this.amp = Math.max(0.08, Math.min(0.2, vel * 0.25));
     this.hp.reset();
     this.lp.reset();
+    this.moog.reset();
   }
   render(currentTime, sr) {
     const out = this._out;
@@ -211,13 +219,19 @@ class SnareVoice {
     const dt = 1 / sr;
     this.t += dt;
     if (this.t > this.decay) { this.active = false; out[0] = 0; out[1] = 0; return out; }
-    this.phase += 2 * Math.PI * 180 * dt;
-    const tone = Math.sin(this.phase) * 0.3;  // FIX: was 0.4
+    // Layer 1: Tone (200Hz sine — snare body)
+    this.phase += 2 * Math.PI * 200 * dt;
+    const tone = Math.sin(this.phase) * 0.3;
+    // Layer 2: Body (80Hz sub through Moog for warmth)
+    this.bodyPhase += 2 * Math.PI * 80 * dt;
+    const bodyRaw = Math.sin(this.bodyPhase) * 0.4;
+    const body = this.moog.process(bodyRaw, 300, 0.2, sr);
+    // Layer 3: Noise (bandpass 2-5kHz — snare crack)
     const n = this.noise.process();
     const hpOut = this.hp.process(n, 2000, sr);
-    const lpOut = this.lp.process(hpOut, 6000, sr);  // FIX: LP to tame harshness
-    const env = Math.exp(-this.t / (this.decay * 0.4));
-    const sample = (tone + lpOut * 0.5) * env * this.amp;  // FIX: noise reduced from 0.8 to 0.5
+    const noiseOut = this.lp.process(hpOut, 5000, sr);
+    const env = Math.exp(-this.t / (this.decay * 0.35));
+    const sample = (tone + body + noiseOut * 0.4) * env * this.amp;
     out[0] = sample; out[1] = sample;
     return out;
   }

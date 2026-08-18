@@ -128,12 +128,12 @@ export function analyzeQuality(analyser: AnalyserNode, sampleRate: number): Audi
   // Measure: high energy / total energy
   const totalEnergy = lowEnergy + midEnergy + highEnergy;
   const highRatio = totalEnergy > 0 ? highEnergy / totalEnergy : 0.5;
-  // Good smoothness: highRatio between 0.15 and 0.35
+  // Good smoothness: highRatio between 0.20 and 0.50 (realistic for electronic music)
   // Too low = muddy, too high = harsh
   let smoothness;
-  if (highRatio < 0.1) smoothness = 0.3;  // muddy
-  else if (highRatio > 0.5) smoothness = 0.2;  // harsh
-  else if (highRatio >= 0.15 && highRatio <= 0.35) smoothness = 1.0;  // smooth
+  if (highRatio < 0.15) smoothness = 0.3;  // muddy
+  else if (highRatio > 0.60) smoothness = 0.2;  // harsh
+  else if (highRatio >= 0.25 && highRatio <= 0.50) smoothness = 1.0;  // smooth
   else smoothness = 0.6;
 
   // ── 7. BALANCE: how even the spectrum is ──
