@@ -14712,3 +14712,39 @@ Stage Summary:
 - Power button, header alignment, knob indicators, spacing, contrast all improved
 - Idle state commercial-grade with radial glow + grid features
 - 0 errors, engine plays correctly
+
+---
+Task ID: vlm-round-2-polish
+Agent: main (Z.ai Code)
+Task: VLM round 2 — spectrum labels, STOP state, contrast, voice clarity
+
+Work Log:
+- VLM Round 1 found 8 issues, fixed 8 (rating 6.5→8.5)
+- VLM Round 2 found 3 more issues:
+  1. Spectrum lacks frequency labels → FIXED: added 100Hz-10kHz axis + dB grid lines
+  2. STOP button lacks distinct active state → FIXED: orange accent when playing
+  3. Low contrast on value labels → FIXED: text-shadow on .pf-v
+
+Additional fixes:
+  - Voice count clarity: 'synth voices' in status bar vs 'recent hits' in panel
+  - Removed duplicate active count from VoiceActivity header
+  - Arrangement map already had hover tooltips (title attribute verified)
+
+VLM ratings after fixes:
+  - Idle state: 8/10 (strong cyberpunk aesthetic, excellent neon contrast)
+  - Playing state: 6/10 (functional but accessibility gaps remain)
+
+Known remaining issues (documented honestly):
+  - WCAG contrast ratios on neon colors (partial fix with text-shadow)
+  - Small label sizes (10-11px)
+  - Color-only differentiation in arrangement map
+
+- Pushed: c48b0b4..64d75e5
+- 0 TS errors, 0 runtime errors
+
+Stage Summary:
+- 3 more VLM-found issues fixed
+- Spectrum analyzer now has frequency labels + grid lines
+- STOP button has distinct orange active state
+- Value labels have text-shadow for better readability
+- VLM ratings: idle 8/10, playing 6/10 (accessibility is the gap)
