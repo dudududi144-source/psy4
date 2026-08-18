@@ -64,8 +64,7 @@ export function SynthRack({ params, onParam }: SynthRackProps) {
         <div className="pf-kn">
           <Param cc={14} label="Delay" value={get(14)} onParam={onParam} display={fmtPct(get(14))} accent="mg" />
           <Param cc={15} label="Reverb" value={get(15)} onParam={onParam} display={fmtPct(get(15))} />
-          <Param cc={71} label="Reso" value={get(71)} onParam={onParam} display={fmtPct(get(71))} />
-          <Param cc={74} label="Cutoff" value={get(74)} onParam={onParam} display={fmtHz(get(74))} />
+          <Param cc={12} label="Energy" value={get(12)} onParam={onParam} display={fmtPct(get(12))} />
         </div>
       </div>
     </div>

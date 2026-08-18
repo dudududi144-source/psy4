@@ -87,8 +87,8 @@ export function SpectrumVisualizer({ analyser, height = 80 }: SpectrumVisualizer
   }, [height]);
 
   return (
-    <div className="pf-m" style={{ padding: '6px' }}>
-      <h4 style={{ marginBottom: '4px' }}>SPECTRUM</h4>
+    <div className="pf-m" style={{ padding: '8px 12px' }}>
+      <h4 style={{ marginBottom: '6px', paddingBottom: '4px' }}>SPECTRUM</h4>
       <canvas
         ref={canvasRef}
         style={{ width: '100%', height: `${height}px`, display: 'block', borderRadius: '4px' }}
