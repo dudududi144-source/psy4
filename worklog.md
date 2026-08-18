@@ -14595,3 +14595,48 @@ Stage Summary:
 - LUFS in commercial range
 - 0 regressions from any fix
 - Engine is production-ready: stable, tested, honest
+
+---
+Task ID: professional-ui-fixes
+Agent: main (Z.ai Code)
+Task: Fix dead/empty UI — idle state, luxury styling, clean status bar
+
+Work Log:
+- VLM analysis of user screenshot revealed:
+  - Dead panels when idle (all zeros, SUSPENDED, -80dB)
+  - Spectrum empty when not playing
+  - Status bar shows debug info (staleMs huge)
+  - Inconsistent spacing, no visual hierarchy
+  - Looks like a development prototype, not commercial
+
+FIXES:
+1. IDLE STATE: when !power, shows elegant welcome card
+   - Logo + subtitle + 'Press POWER or Space to start'
+   - Feature list (7 Styles, Smart Radio, Learning, MIDI/WAV Export)
+   - No dead panels with zeros
+2. STATUS BAR: minimal when idle (READY + BPM + style + 'Press POWER')
+   - Full info when playing (ctx state, bpm, style, voices, peak, rms, bar)
+   - Feature badges (ARP, SEQ, RADIO, LEARN) only when active
+   - Removed debug info (staleMs, kicks) from status bar
+3. LUXURY STYLING:
+   - Panels: gradient backgrounds + inner shadow + hover border glow
+   - Buttons: gradient + hover lift + glow shadows
+   - Knobs: 3D radial gradient + hover glow + grab cursor
+   - Status strip: backdrop blur + gradient fade
+   - Idle card: gradient + large shadow + feature list
+4. EXPORT BUTTONS moved to Header (🎵 MIDI, 🎚 WAV) — cleaner FX panel
+5. POWER button: ▶ POWER / ■ STOP (was OFF/POWER)
+
+Verified:
+- Idle state: hasIdle=true, hasCard=true, status shows READY + 'Press POWER'
+- After POWER click: playing=true, idle=false, layout=true, spectrum=true
+- peak=-3.7dB, voices=6, 0 errors
+- Pushed: bba9371..c1e2aab
+
+Stage Summary:
+- Dead/empty UI fixed — idle state shows elegant welcome card
+- Luxury styling: gradients, shadows, hover effects, 3D knobs
+- Status bar: clean + professional, no debug info
+- Export buttons moved to header
+- POWER button: clear ▶/■ labels
+- 0 errors, engine transitions correctly idle → playing
