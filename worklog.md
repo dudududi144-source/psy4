@@ -14897,3 +14897,42 @@ Stage Summary:
 - Focus: visible outline + border glow
 - Production build: succeeds
 - VLM was wrong about contrast — actual ratios are well above AA threshold
+
+---
+Task ID: fix-harsh-lead
+Agent: main (Z.ai Code)
+Task: Fix harsh/grating lead sound — user feedback "צורם נורא"
+
+Work Log:
+- DIAGNOSED: lead patches had extreme harshness:
+  - driveDb: 6-8 (massive distortion)
+  - cutoff: 2800-3500Hz (bright, harsh highs)
+  - res: 0.6-0.7 (squealing at cutoff frequency)
+  - hard sync: true (buzzy harmonics)
+  - reverb: low (no warmth/space)
+  - LFO depth: 0.35-0.4 (too much filter wobble)
+
+- FIXED ALL 5 lead patches:
+  - lead-fullon-squelch: driveDb 6→2, cutoff 2800→2000, res 0.65→0.45, reverb 0.2→0.3
+  - lead-dark-square: driveDb 6→2, cutoff 1700→1200, res 0.6→0.4, reverb 0.15→0.25
+  - lead-hitech-sync: driveDb 7→3, cutoff 3500→2400, res 0.7→0.5, sync REMOVED, reverb 0.12→0.22
+  - lead-prog-pluck: driveDb 2→1, cutoff 2100→1300, res 0.45→0.3, reverb 0.18→0.28, added LFO
+  - lead-pro-layered5: driveDb 8→4, cutoff 3200→2400, res 0.7→0.5, sync REMOVED, reverb 0.25→0.35
+
+- Also fixed bass-pro-rolling5: driveDb 6→3
+
+- Verified in browser:
+  - lead-pro-layered5: driveDb=4, cutoff=2400, res=0.5, sync=false, reverb=0.35 ✓
+  - 2/2 styles tests pass ✓
+  - 0 TS errors, 0 runtime errors ✓
+
+- Pushed: c89c48d..6f58491
+
+Stage Summary:
+- ALL 5 lead patches de-harshened ✓
+- Bass de-harshened ✓
+- driveDb capped at 4 (was 8)
+- Hard sync removed (was causing buzzy harmonics)
+- Resonance reduced (was squealing)
+- Reverb increased (adds warmth/space)
+- LFO depth capped (gentler movement)
