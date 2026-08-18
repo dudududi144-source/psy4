@@ -15545,3 +15545,51 @@ Stage Summary:
 - Lead uses PolyBLEP (no aliasing) + real Moog (warm, not BiquadFilter)
 - CC routing works to all 3 devices
 - Ready for Phase 0.2: rebuild learning reward system
+
+---
+Task ID: phase0-real-learning
+Agent: main (Z.ai Code)
+Task: Phase 0.2 — Rebuild learning with 7 real audio quality metrics
+
+Work Log:
+- Created audio-quality.ts (~200 lines):
+  - analyzeQuality(analyser, sampleRate) → 7 metrics:
+    1. WARMTH (15%): low/mid ratio — bass presence
+    2. BRIGHTNESS (10%): spectral centroid — 200-5000Hz mapped to 0-1
+    3. PUNCH (15%): crest factor — peak/rms in dB
+    4. CLARITY (15%): spectral flatness — geometric/arithmetic mean
+    5. LOUDNESS (15%): LUFS approximation
+    6. SMOOTHNESS (20%): inverse high-freq ratio — harshness detector
+    7. BALANCE (10%): spectrum evenness vs target 35%low/45%mid/20%high
+  - suggestAdjustments(metrics, targets) → actionable CC changes
+    - If too harsh → reduce CC74 (cutoff) + CC12 (drive)
+    - If too muddy → increase CC74 + reduce CC15 (reverb)
+    - If too quiet → increase CC12
+    - If too compressed → reduce CC12 (restore dynamics)
+  - COMMERCIAL_TARGETS: measurable targets
+
+- Rebuilt learning.ts:
+  - CCLearner.tick() now receives AudioQualityMetrics + suggestions
+  - Reward = metrics.overall (weighted combination of all 7)
+  - Suggestion-guided exploration (not just random)
+  - Tracks best params per CC across sessions
+  - 6 CCs explored: 74, 71, 5, 12, 14, 15
+
+- Updated psyLive4.ts:
+  - Import analyzeQuality + suggestAdjustments + COMMERCIAL_TARGETS
+  - getState(): calls analyzeQuality + suggestAdjustments + learner.tick
+
+- Verified:
+  - Learning produces varied rewards: 0.368-0.394 (NOT identical)
+  - All 6 CCs receive rewards from real quality metrics
+  - 2/2 learning tests pass (reward increases + CC applied)
+  - 0 TS errors, 0 runtime errors
+
+- Pushed: 327c1e4..797cfd7
+
+Stage Summary:
+- Phase 0.2 COMPLETE: Real learning with 7 quality metrics
+- Learning now measures: warmth, brightness, punch, clarity, loudness, smoothness, balance
+- Suggestion-guided: if harsh → reduce cutoff, if muddy → increase cutoff, etc.
+- Reward is REAL: 0.37 overall = audio has room to improve (good signal for learning)
+- 2/2 tests pass, 0 errors
