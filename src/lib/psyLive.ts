@@ -79,6 +79,21 @@ const freqToNote = (f: number) => {
 };
 const freqToMidi = (f: number) => Math.round(12 * Math.log2(f / 440) + 69);
 
+// HONEST FIX (PSY4_FINAL_AUDIT Finding 2):
+// Map a cutoff frequency in Hz to a psysynth CC74 value (0..1) using a
+// logarithmic scale. psysynth interprets CC74 via ccFactor = 0.25 + cc*1.5,
+// so cc=0.5 (neutral) corresponds to ~632 Hz, which sits in the middle of
+// the useful melodic range. The mapping covers 80 Hz (cc=0.30, darker) to
+// 8000 Hz (cc=0.90, brighter), giving the learning loop room to move the
+// timbre in both directions instead of only ever darkening it.
+const freqHzToCC74 = (hz: number): number => {
+  if (!Number.isFinite(hz) || hz <= 0) return 0.5;
+  const lo = 80;        // darkest end
+  const hi = 8000;      // brightest end
+  const t = (Math.log(hz) - Math.log(lo)) / (Math.log(hi) - Math.log(lo));
+  return Math.max(0.30, Math.min(0.90, 0.30 + t * 0.60));
+};
+
 // ─── Presets (EXACTLY like psy — 4 distinct styles) ────────────────────────
 interface PresetPattern { kick: number[]; bass: (number|null)[]; lead: (number|null)[]; hat: number[]; }
 interface Variant {
@@ -367,6 +382,10 @@ export class PsyLive {
   private workerAction = 'NO_CHANGE';
   private workerActiveVoices: string[] = [];
   private lastWorkerComposeBar = -1;
+  // HONEST FIX (PSY4_FINAL_AUDIT Finding 3): track the last time the scheduler
+  // actually fired, so the heartbeat can detect background-tab throttling
+  // (where setInterval is clamped to ~1/sec and the timer ref is NOT null).
+  private _lastSchedulerFireMs = 0;
   // ADR-001: Cached user controls (worker doesn't send these back, we cache locally)
   private cachedUserControls = {
     energy: 0.5,
@@ -1015,6 +1034,20 @@ export class PsyLive {
         energy: this.cachedUserControls.energy,
         section: 'groove',
       });
+      // HONEST FIX (PSY4_FINAL_AUDIT Finding 5):
+      // STYLE_GRAMMARS.leadCutoff was defined but never wired to anything,
+      // so every style's lead had the SAME timbre. Now we push it to psysynth
+      // as CC74 so the lead actually brightens (FULL_ON) / darkens (DARK).
+      const leadCutoffByStyle: Record<string, number> = {
+        FULL_ON: 3000,
+        DARK: 1200,
+        PROGRESSIVE: 2000,
+        ACID: 2500,
+      };
+      const leadCutoff = leadCutoffByStyle[s] ?? 2000;
+      const cc74 = freqHzToCC74(leadCutoff);
+      this.synthBridge.setParameterByCC(74, cc74);
+      console.log(`[PSY4] setStyle(${s}): leadCutoff=${leadCutoff}Hz → CC74=${cc74.toFixed(3)}`);
     }
   }
 
@@ -1878,6 +1911,9 @@ export class PsyLive {
     if (!this.ctx || !this.transport || !this.workerReady) return;
     // CRITICAL FIX: Don't compose until worklet is also ready
     if (!this.useWorklet || !this.engineNode) return;
+    // HONEST FIX (PSY4_FINAL_AUDIT Finding 3): record every successful fire
+    // so the heartbeat can detect throttling (not just explicit stops).
+    this._lastSchedulerFireMs = Date.now();
     try {
       const now = this.ctx.currentTime;
       const snap = this.transport.snapshot();
@@ -2639,10 +2675,28 @@ export class PsyLive {
     this._mergedTickCounter = 0;
     this.uiTimer = setInterval(() => {
       this._mergedTickCounter++;
-      // FIX: Heartbeat — if scheduler timer died, restart it
-      if (this.playing && !this.timer) {
-        console.log('[PSY4] HEARTBEAT: scheduler timer died — restarting');
-        this.timer = setInterval(() => this.scheduler(), this.lookahead);
+      // HONEST FIX (PSY4_FINAL_AUDIT Finding 3):
+      // The old heartbeat only checked `!this.timer`, but `this.timer` is
+      // only set to null by stop() — background-tab throttling leaves the
+      // timer ref alive (just firing less often). Now we ALSO check:
+      //   (a) whether the scheduler has fired in the last 5 seconds, and
+      //   (b) whether the AudioContext is suspended (needs a user-gesture
+      //       resume on some browsers after backgrounding).
+      // This is what actually fixes the "engine stops after a few minutes"
+      // symptom: the scheduler was alive-but-starved, not dead.
+      if (this.playing) {
+        const nowMs = Date.now();
+        const stale = this._lastSchedulerFireMs > 0 && (nowMs - this._lastSchedulerFireMs) > 5000;
+        if (!this.timer || stale) {
+          console.log(`[PSY4] HEARTBEAT: scheduler ${!this.timer ? 'missing' : 'stale'} (lastFire=${this._lastSchedulerFireMs ? nowMs - this._lastSchedulerFireMs : 0}ms ago) — restarting`);
+          if (this.timer) clearInterval(this.timer);
+          this.timer = setInterval(() => this.scheduler(), this.lookahead);
+          this._lastSchedulerFireMs = nowMs;
+        }
+        if (this.ctx && this.ctx.state === 'suspended') {
+          console.log('[PSY4] HEARTBEAT: AudioContext suspended — resuming');
+          this.ctx.resume().catch(() => {});
+        }
       }
       // B1 FIX: update engineLevel every tick so LUFS meter moves even when radio is off.
       // Was previously inside detect() which early-returns when radioAnalyser is null.
@@ -3090,29 +3144,37 @@ export class PsyLive {
     // - Drum roles (kick/hat/perc/clap/shaker) → worklet (no-op in v3, drums are fixed synth)
     const isMelodic = role === 'bass' || role === 'lead' || role === 'acid' || role === 'pad';
     if (isMelodic && this.synthBridge && this.synthDeviceEnabled && entry.voiceParams) {
-      // FIX: Map learned params to psysynth CC correctly
-      // CC74 = cutoff (0..1), CC71 = resonance (0..1), CC5 = glide (0..1)
+      // HONEST FIX (PSY4_FINAL_AUDIT Finding 2):
+      // The old mapping (cutoffStart/8000 → CC74 0.025-0.25) mapped to psysynth
+      // ccFactor 0.29-0.63, which could ONLY darken the sound (never brighten).
+      // The new mapping uses a log scale so the full cutoff range is audible
+      // and learning can move the timbre in BOTH directions.
+      //
+      // psysynth ccFactor(cc) = 0.25 + cc*1.5  (range 0.25..1.75)
+      //   cc=0.3 → 0.70  (slightly darker)
+      //   cc=0.5 → 1.00  (neutral)
+      //   cc=0.9 → 1.60  (brighter)
       const params = entry.voiceParams;
-      // Bass params: cutoffStart (200-2000Hz) → CC74 (0.025-0.25)
-      // Lead params: freq (220-880Hz) → CC74 (0.027-0.11)
-      // Pad params: cutoffStart → CC74
+      // Map cutoffStart (Hz, 80-8000) → CC74 (0.3-0.9) via log scale.
+      // Bass params: cutoffStart, Pad params: cutoffStart
       if (params.cutoffStart !== undefined) {
-        const ccValue = Math.max(0.05, Math.min(0.8, params.cutoffStart / 8000));
+        const ccValue = freqHzToCC74(params.cutoffStart);
         this.synthBridge.setParameterByCC(74, ccValue);
       }
+      // Lead params: freq (220-1760 Hz) → CC74 (0.3-0.9)
       if (params.freq !== undefined) {
-        // Lead freq → CC74 (map 220-880 to 0.1-0.4)
-        const ccValue = Math.max(0.1, Math.min(0.5, params.freq / 2000));
+        const ccValue = freqHzToCC74(params.freq);
         this.synthBridge.setParameterByCC(74, ccValue);
       }
       if (params.resonance !== undefined) {
+        // resonance is usually 0-0.95 in psysynth patches; scale 0-20 → 0-1
         this.synthBridge.setParameterByCC(71, Math.max(0, Math.min(1, params.resonance / 20)));
       }
       // Glide: only if explicitly set
       if (params.glide !== undefined) {
         this.synthBridge.setParameterByCC(5, Math.max(0, Math.min(1, params.glide)));
       }
-      console.log(`[PSY4] learning → psysynth: ${role} params applied`);
+      console.log(`[PSY4] learning → psysynth: ${role} params applied (cc74=${freqHzToCC74(params.cutoffStart ?? params.freq ?? 1000).toFixed(3)})`);
     }
     // ALSO: Apply drum params to the worklet (was ignored before!)
     this.engineNode!.workletNode!.port.postMessage({

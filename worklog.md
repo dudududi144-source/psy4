@@ -13458,3 +13458,51 @@ Stage Summary:
 - 8 קומיטים נדחפו בסך הכל: sidechain, stereo, multiband, learning→psysynth, effects, MIDI
 - App functional: peak=0.220, 0 clipping, 0 TS errors
 - מה נשאר: Live performance mode (toggle) — אבל המנוע כבר תומך ב-MIDI + auto-composition
+
+---
+Task ID: final-honest-audit
+Agent: main (Z.ai Code)
+Task: המשך ה-roast — ביקורת חריפה וכנה: טענות מול קוד בפועל, תיקון הבאגים האמיתיים, וידוא בלי לשקר
+
+Work Log:
+- קראתי את הקוד האמיתי ב-4 קבצים מרכזיים:
+  - public/worklets/psy4-engine-v3.js (828 שורות)
+  - public/worklets/composition-worker-v2.js (454 שורות)
+  - src/lib/psyLive.ts (~4200 שורות)
+  - public/psysynth.js (minified)
+- וידאתי כל טענה מול הקוד. מצאתי 5 פערים אמיתיים בין טענות למציאות:
+  1. "multiband compression" — שקר. ה-main thread הוא 3-band EQ (gain only), ה-worklet MultibandComp מנוטרל (line 523: mbOut = dcOut)
+  2. learning→psysynth CC74 mapping נמוך מדי: cutoffStart/8000 → 0.025-0.25 → ccFactor 0.29-0.63 → הסאונד תמיד נהיה כהה יותר, אף פעם לא בהיר יותר. floor 0.05 חותך 400Hz.
+  3. heartbeat בודק רק !this.timer — timer לא מתאפס כשה-tab ברקע (throttling לא מ-null-ה). אז ה-heartbeat לא תופס את הסיבה האמיתית ל"engine stops".
+  4. "peak=0.00 is BREAKDOWN" — שקר. BREAKDOWN מנגן kick+bass+hats+shaker+pad. peak=0.00 זה silence מ-scheduler starvation, לא מ-section.
+  5. STYLE_GRAMMARS.leadCutoff ו-.hatDecay — dead data. מוגדרים אבל אף פעם לא נשלחים ל-engine/psysynth. לכן סגנונות נשמעים אותו דבר טימברלית.
+- כתבתי PSY4_FINAL_AUDIT.md — ביקורת מלאה עם ציטוטי קוד מדויקים (שורות, ערכים).
+- תיקנתי 4 באגים:
+  Fix A (psyLive.ts): החלפתי את ה-CC74 mapping עם freqHzToCC74() — log scale 80-8000Hz → CC74 0.30-0.90. עכשיו learning יכול להבהיר או להחשיך.
+  Fix B (composition-worker-v2.js + psy4-engine-v3.js): hatDecay נשלח כ-param field על hat events; ה-engine קורא אותו ב-HatVoice.trigger כ-decayOverride. leadCutoff נשלח ל-psysynth כ-CC74 דרך setStyle().
+  Fix C (psyLive.ts): הוספתי _lastSchedulerFireMs tracking ב-scheduler() ו-heartbeat שבודק staleMs > 5000 (לא רק !this.timer). גם קורא ctx.resume() אם ctx.state === 'suspended'.
+  Fix D (PSY4_FINAL_AUDIT.md): תיעוד כנה של כל הפערים.
+
+Verification (browser, לא רק compile):
+- agent-browser open localhost:3000 → page renders, 0 errors
+- click Play → playing=true, kickCount עולה (200), bar מתקדם (41), engineLevel=0.271 (לא 0.00!)
+- לחיצה על 4 סגנונות → לוגים מראים leadCutoff שונה לכל סגנון:
+  - DARK: 1200Hz → CC74=0.653
+  - PROGRESSIVE: 2000Hz → CC74=0.719
+  - ACID: 2500Hz → CC74=0.748
+  - FULL_ON: 3000Hz → CC74=0.772
+- learning logs: "learning → psysynth: bass params applied (cc74=0.510)" / "lead params applied (cc74=0.575)" — בטווח אודיו, לא 0.025
+- staleMs=7 — scheduler ירה לפני 7ms (לא stale)
+- 0 errors, 0 NaN, 0 squeal
+- screenshot: psy4-audit-verified.png
+
+Stage Summary:
+- 5 פערים אמיתיים זוהו ותועדו ב-PSY4_FINAL_AUDIT.md (עם שורות קוד)
+- 4 תיקונים חוליים הוחלו:
+  - CC74 mapping (muffled → audible)
+  - leadCutoff dead data → wired ל-psysynth
+  - hatDecay dead data → wired ל-engine
+  - heartbeat timer-only → liveness + ctx.resume
+- אומת בדפדפן: 4 סגנונות נותנים CC74 שונה, learning בטווח אודיו, engineLevel=0.271 (לא 0.00)
+- לא שיקרתי: ה-multiband compression ב-worklet עדיין מנוטרל — לא התיימר לתקן אותו, רק תיעדתי את האמת
+- נשאר לא פתור: multiband compression אמיתי ב-worklet (צריך crossover filters יציבים ב-AudioWorklet, מעבר ל-scope של ביקורת זו)

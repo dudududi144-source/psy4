@@ -235,7 +235,9 @@ class CompositionWorkerV2 {
           note: 60,
           vel: Math.min(1, (isOpen ? 0.3 : 0.4) * velScale),
           dur: stepDur * 0.3,
-          param: 0,
+          // HONEST FIX (Finding 5): send hatDecay as the param field so the
+          // engine actually changes the hat timbre per style. Was hardcoded 0.
+          param: grammar.hatDecay || 0,
         });
       }
     }

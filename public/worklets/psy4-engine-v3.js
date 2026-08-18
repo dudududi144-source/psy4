@@ -141,10 +141,15 @@ class HatVoice {
     this.amp = 0.4;
     this._out = new Float32Array(2);
   }
-  trigger(time, note, vel, dur, sr, open) {
+  trigger(time, note, vel, dur, sr, open, decayOverride) {
     this.active = true;
     this.t = 0;
-    this.decay = open ? 0.2 : 0.04;
+    // HONEST FIX (PSY4_FINAL_AUDIT Finding 5): allow per-event decay override
+    // so STYLE_GRAMMARS.hatDecay (sent as the event `param` field) actually
+    // changes the hat timbre between styles. Was previously hardcoded.
+    const baseDecay = open ? 0.2 : 0.04;
+    this.decay = (typeof decayOverride === 'number' && decayOverride > 0.01 && decayOverride < 1.0)
+      ? decayOverride : baseDecay;
     this.amp = Math.max(0.15, Math.min(0.6, vel));
     this.hp.reset();
   }
@@ -732,7 +737,9 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
         }
         case V_HAT: case V_HAT_OPEN: {
           const v = this.getFreeVoice(this.hatPool);
-          v.trigger(eventTime, note, vel, dur, sr, voiceId === V_HAT_OPEN);
+          // HONEST FIX (Finding 5): pass `param` as decayOverride so styles
+          // with different hatDecay actually sound different.
+          v.trigger(eventTime, note, vel, dur, sr, voiceId === V_HAT_OPEN, param);
           break;
         }
         case V_SNARE: {
