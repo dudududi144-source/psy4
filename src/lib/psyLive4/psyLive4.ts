@@ -181,9 +181,9 @@ export class PsyLive4 implements SchedulerHost {
     this.multibandMidComp.attack.value = 0.015;
     this.multibandMidComp.release.value = 0.200;
     this.multibandHighComp = this.ctx.createDynamicsCompressor();
-    this.multibandHighComp.threshold.value = -22;
+    this.multibandHighComp.threshold.value = -28;  // FIX: lower threshold = compress highs more
     this.multibandHighComp.knee.value = 8;
-    this.multibandHighComp.ratio.value = 2.5;
+    this.multibandHighComp.ratio.value = 4;      // FIX: 4:1 = stronger high compression
     this.multibandHighComp.attack.value = 0.005;
     this.multibandHighComp.release.value = 0.080;
 
@@ -192,7 +192,7 @@ export class PsyLive4 implements SchedulerHost {
     this.multibandMidGain = this.ctx.createGain();
     this.multibandMidGain.gain.value = 1.2;
     this.multibandHighGain = this.ctx.createGain();
-    this.multibandHighGain.gain.value = 1.15;
+    this.multibandHighGain.gain.value = 0.85;  // FIX: was 1.15 — REDUCE highs, don't boost them
     this.multibandSum = this.ctx.createGain();
     this.multibandSum.gain.value = 1.0;
     this.workletVolumeGain = this.ctx.createGain();

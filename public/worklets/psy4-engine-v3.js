@@ -155,7 +155,7 @@ class HatVoice {
     this.hp = new OnePoleHP();
     this.lp = new OnePoleLP();
     this.decay = 0.05;
-    this.amp = 0.15;  // FIX: was 0.4 — way too loud, caused harshness
+    this.amp = 0.08;  // FIX: was 0.15 — still too loud, causes 0.69 highRatio
     this._out = new Float32Array(2);
   }
   trigger(time, note, vel, dur, sr, open, decayOverride) {
@@ -194,7 +194,7 @@ class SnareVoice {
     this.lp = new OnePoleLP();
     this.phase = 0;
     this.decay = 0.1;  // FIX: was 0.12
-    this.amp = 0.3;    // FIX: was 0.5
+    this.amp = 0.15;    // FIX: was 0.3 — reduce harshness
     this._out = new Float32Array(2);
   }
   trigger(time, note, vel, dur, sr) {
@@ -232,7 +232,7 @@ class ClapVoice {
     this.hp = new OnePoleHP();
     this.lp = new OnePoleLP();
     this.decay = 0.12;  // FIX: was 0.15
-    this.amp = 0.2;     // FIX: was 0.4
+    this.amp = 0.1;     // FIX: was 0.2 — reduce harshness
     this._out = new Float32Array(2);
   }
   trigger(time, note, vel, dur, sr) {
