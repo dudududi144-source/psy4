@@ -9,7 +9,7 @@
     "author": "psysynth",
     "license": "original",
     "created": "2026-08-14",
-    "revised": "DEEP_ROAST #5 — more drive + higher sustain for less machine-gun feel"
+    "revised": "DEEP_ROAST #5 \u2014 more drive + higher sustain for less machine-gun feel"
    },
    "osc": {
     "a": {
@@ -56,7 +56,7 @@
     "author": "psysynth",
     "license": "original",
     "created": "2026-08-18",
-    "note": "DEEP_ROAST #5 — sustained bass mode (held notes with slight decay) for breakdowns"
+    "note": "DEEP_ROAST #5 \u2014 sustained bass mode (held notes with slight decay) for breakdowns"
    },
    "osc": {
     "a": {
@@ -287,7 +287,7 @@
     "author": "psysynth",
     "license": "original",
     "created": "2026-08-14",
-    "revised": "DEEP_ROAST #1 — octave layer + filter movement + delay throw"
+    "revised": "DEEP_ROAST #1 \u2014 octave layer + filter movement + delay throw"
    },
    "osc": {
     "a": {
@@ -309,14 +309,14 @@
    "glideMs": 60,
    "filter": {
     "type": "lp",
-    "cutoff": 2800,
-    "res": 0.65,
-    "envDepth": 0.7,
+    "cutoff": 2000,
+    "res": 0.45,
+    "envDepth": 0.6,
     "envAttackMs": 3,
     "envDecayMs": 380,
     "velTrack": 0.25,
     "lfoHz": 2.2,
-    "lfoDepth": 0.35
+    "lfoDepth": 0.2
    },
    "amp": {
     "attackMs": 2,
@@ -324,10 +324,10 @@
     "sustain": 0.8,
     "releaseMs": 140
    },
-   "driveDb": 6,
+   "driveDb": 2,
    "sends": {
     "delay": 0.5,
-    "reverb": 0.2
+    "reverb": 0.30000000000000004
    },
    "humanize": true
   },
@@ -338,7 +338,7 @@
     "author": "psysynth",
     "license": "original",
     "created": "2026-08-14",
-    "revised": "DEEP_ROAST #1 — octave layer + filter movement"
+    "revised": "DEEP_ROAST #1 \u2014 octave layer + filter movement"
    },
    "osc": {
     "a": {
@@ -360,14 +360,14 @@
    "glideMs": 50,
    "filter": {
     "type": "lp",
-    "cutoff": 1700,
-    "res": 0.6,
+    "cutoff": 1200,
+    "res": 0.39999999999999997,
     "envDepth": 0.6,
     "envAttackMs": 3,
     "envDecayMs": 320,
     "velTrack": 0.2,
     "lfoHz": 0.8,
-    "lfoDepth": 0.3
+    "lfoDepth": 0.2
    },
    "amp": {
     "attackMs": 2,
@@ -375,10 +375,10 @@
     "sustain": 0.75,
     "releaseMs": 160
    },
-   "driveDb": 6,
+   "driveDb": 2,
    "sends": {
     "delay": 0.4,
-    "reverb": 0.15
+    "reverb": 0.25
    },
    "humanize": false
   },
@@ -389,7 +389,7 @@
     "author": "psysynth",
     "license": "original",
     "created": "2026-08-14",
-    "revised": "DEEP_ROAST #1 — octave layer + filter movement"
+    "revised": "DEEP_ROAST #1 \u2014 octave layer + filter movement"
    },
    "osc": {
     "a": {
@@ -402,7 +402,7 @@
      "semitones": 12,
      "gain": 0.4,
      "detuneCents": -10,
-     "sync": true
+     "sync": false
     },
     "sub": {
      "semitones": -12,
@@ -412,14 +412,14 @@
    "glideMs": 20,
    "filter": {
     "type": "lp",
-    "cutoff": 3500,
-    "res": 0.7,
-    "envDepth": 0.7,
+    "cutoff": 2400,
+    "res": 0.49999999999999994,
+    "envDepth": 0.6,
     "envAttackMs": 1,
     "envDecayMs": 250,
     "velTrack": 0.25,
     "lfoHz": 3,
-    "lfoDepth": 0.3
+    "lfoDepth": 0.2
    },
    "amp": {
     "attackMs": 1,
@@ -427,10 +427,10 @@
     "sustain": 0.7,
     "releaseMs": 100
    },
-   "driveDb": 7,
+   "driveDb": 3,
    "sends": {
     "delay": 0.5,
-    "reverb": 0.12
+    "reverb": 0.22
    },
    "humanize": true
   },
@@ -456,12 +456,14 @@
    "glideMs": 0,
    "filter": {
     "type": "lp",
-    "cutoff": 2100,
-    "res": 0.45,
-    "envDepth": 0.65,
+    "cutoff": 1300,
+    "res": 0.3,
+    "envDepth": 0.6,
     "envAttackMs": 1,
     "envDecayMs": 190,
-    "velTrack": 0.2
+    "velTrack": 0.2,
+    "lfoHz": 0.5,
+    "lfoDepth": 0.15
    },
    "amp": {
     "attackMs": 1,
@@ -469,10 +471,10 @@
     "sustain": 0.25,
     "releaseMs": 110
    },
-   "driveDb": 2,
+   "driveDb": 1,
    "sends": {
     "delay": 0.35,
-    "reverb": 0.18
+    "reverb": 0.28
    },
    "humanize": true
   },
@@ -603,7 +605,7 @@
     "author": "psysynth",
     "license": "original",
     "created": "2026-08-14",
-    "revised": "DEEP_ROAST #2 — deeper filter sweep + wider chorus + shimmer"
+    "revised": "DEEP_ROAST #2 \u2014 deeper filter sweep + wider chorus + shimmer"
    },
    "osc": {
     "a": {
@@ -653,7 +655,7 @@
     "author": "psysynth",
     "license": "original",
     "created": "2026-08-14",
-    "revised": "DEEP_ROAST #2 — deeper filter sweep + wider chorus"
+    "revised": "DEEP_ROAST #2 \u2014 deeper filter sweep + wider chorus"
    },
    "osc": {
     "a": {
@@ -963,7 +965,7 @@
     "author": "psysynth",
     "license": "original",
     "created": "2026-08-18",
-    "note": "DEEP_ROAST #1 — 5-layer lead: fundamental + octave + sub + detune pair + drive. Commercial-grade layering."
+    "note": "DEEP_ROAST #1 \u2014 5-layer lead: fundamental + octave + sub + detune pair + drive. Commercial-grade layering."
    },
    "osc": {
     "a": {
@@ -976,7 +978,7 @@
      "semitones": 12,
      "gain": 0.35,
      "detuneCents": -7,
-     "sync": true
+     "sync": false
     },
     "sub": {
      "semitones": -12,
@@ -986,14 +988,14 @@
    "glideMs": 45,
    "filter": {
     "type": "lp",
-    "cutoff": 3200,
-    "res": 0.7,
-    "envDepth": 0.75,
+    "cutoff": 2400,
+    "res": 0.49999999999999994,
+    "envDepth": 0.6,
     "envAttackMs": 2,
     "envDecayMs": 400,
     "velTrack": 0.3,
     "lfoHz": 2.5,
-    "lfoDepth": 0.4
+    "lfoDepth": 0.2
    },
    "amp": {
     "attackMs": 2,
@@ -1001,13 +1003,17 @@
     "sustain": 0.85,
     "releaseMs": 150
    },
-   "driveDb": 8,
+   "driveDb": 4,
    "sends": {
     "delay": 0.55,
-    "reverb": 0.25
+    "reverb": 0.35
    },
    "humanize": true,
-   "chordIntervals": [0, 12, 19],
+   "chordIntervals": [
+    0,
+    12,
+    19
+   ],
    "arpOrnament": true,
    "stepVariance": true
   },
@@ -1018,7 +1024,7 @@
     "author": "psysynth",
     "license": "original",
     "created": "2026-08-18",
-    "note": "DEEP_ROAST #2 — 5-layer evolving pad: wide detune + slow filter sweep + shimmer + deep reverb."
+    "note": "DEEP_ROAST #2 \u2014 5-layer evolving pad: wide detune + slow filter sweep + shimmer + deep reverb."
    },
    "osc": {
     "a": {
@@ -1062,7 +1068,12 @@
     "reverb": 0.7
    },
    "humanize": true,
-   "chordIntervals": [0, 7, 12, 16]
+   "chordIntervals": [
+    0,
+    7,
+    12,
+    16
+   ]
   },
   {
    "id": "bass-pro-rolling5",
@@ -1071,7 +1082,7 @@
     "author": "psysynth",
     "license": "original",
     "created": "2026-08-18",
-    "note": "DEEP_ROAST #5 — pro rolling bass: sub + fundamental + harmonic + drive + glide. Sustained mode option."
+    "note": "DEEP_ROAST #5 \u2014 pro rolling bass: sub + fundamental + harmonic + drive + glide. Sustained mode option."
    },
    "osc": {
     "a": {
@@ -1108,7 +1119,7 @@
     "sustain": 0.75,
     "releaseMs": 90
    },
-   "driveDb": 6,
+   "driveDb": 3,
    "sends": {
     "delay": 0.08,
     "reverb": 0.02
