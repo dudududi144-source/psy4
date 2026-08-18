@@ -42,6 +42,52 @@ const SCALES = {
   dorian: [0, 2, 3, 5, 7, 9, 10],
 };
 
+// ─── Style Grammars (copied from foundation/music/CausalComposer.ts) ──────
+// Each style defines: scale, motif shape, bass pattern, percussion density.
+// This is what makes FULL_ON sound different from DARK.
+const STYLE_GRAMMARS = {
+  FULL_ON: {
+    scaleName: 'phrygianDominant',
+    motifIntervals: [0, 4, 7, 4],           // root, third, fifth, third — bright, heroic
+    motifSteps: [0, 4, 8, 12],              // on the beat
+    bassSteps: [1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15], // rolling 16ths
+    acidBass: false,
+    percussionDensity: 0.8,
+    hatDecay: 0.04,
+    leadCutoff: 3000,
+  },
+  DARK: {
+    scaleName: 'phrygian',
+    motifIntervals: [0, 1, 3, 1],           // root, b2, b3, b2 — dark, minor second
+    motifSteps: [0, 6, 8, 14],              // sparse, off-beat
+    bassSteps: [0, 3, 6, 8, 11, 14],       // sparse, triplet feel
+    acidBass: false,
+    percussionDensity: 0.4,
+    hatDecay: 0.06,
+    leadCutoff: 1200,
+  },
+  PROGRESSIVE: {
+    scaleName: 'dorian',
+    motifIntervals: [0, 3, 5, 7],           // root, b3, 4, 5 — modal, uplifting
+    motifSteps: [0, 4, 8, 12],
+    bassSteps: [1, 3, 5, 7, 9, 11, 13, 15], // off-beat 8ths
+    acidBass: false,
+    percussionDensity: 0.6,
+    hatDecay: 0.05,
+    leadCutoff: 2000,
+  },
+  ACID: {
+    scaleName: 'phrygianDominant',
+    motifIntervals: [0, 1, 7, 1],           // root, b2, fifth, b2 — tense, acid
+    motifSteps: [0, 4, 8, 12],
+    bassSteps: [0, 3, 6, 9, 12, 15],       // spaced for acid 303 pattern
+    acidBass: true,                          // USE TB-303 acid voice!
+    percussionDensity: 0.7,
+    hatDecay: 0.04,
+    leadCutoff: 2500,
+  },
+};
+
 // ─── Arrangement sections (64-bar cycle with VARIATION per cycle) ──────────
 // FIX: Each 64-bar cycle sounds DIFFERENT — cycle 0 is standard, cycle 1+ varies.
 // This prevents the "stuck loop" feeling.
@@ -87,6 +133,7 @@ class CompositionWorkerV2 {
     this.userEnergy = 0.5;
     this.userTension = 0.3;
     this.userStyle = 'FULL_ON';
+    this.grammar = STYLE_GRAMMARS.FULL_ON;  // FIX: Initialize grammar
     this.lastComposedBar = -1;
   }
 
@@ -103,6 +150,8 @@ class CompositionWorkerV2 {
         ACID: 'phrygianDominant',
       };
       this.scale = SCALES[scaleMap[controls.style]] || SCALES.phrygianDominant;
+      // FIX: Also update style grammar (pattern, density, motif)
+      this.grammar = STYLE_GRAMMARS[controls.style] || STYLE_GRAMMARS.FULL_ON;
     }
   }
 
@@ -120,6 +169,7 @@ class CompositionWorkerV2 {
     const barStart = barOriginAudioTime + bar * 4 * beatDur;
     const section = getSection(bar);
     const velScale = 0.7 + this.userEnergy * 0.3;
+    const grammar = this.grammar || STYLE_GRAMMARS.FULL_ON;
 
     // FIX: Root note CHANGES every 64 bars (per cycle) for harmonic variety
     // Cycle 0: rootPc (default), Cycle 1: +5 (fourth), Cycle 2: +7 (fifth), Cycle 3: +3 (minor third)
@@ -154,8 +204,10 @@ class CompositionWorkerV2 {
     // In BREAKDOWN, bass plays softer (vel * 0.5) for a "strip down" feel.
     const bassVelMult = section === 'BREAKDOWN' ? 0.5 : 1.0;
     if (section !== 'OUTRO') {
-      const acidBass = (section === 'DROP' || section === 'REBUILD') && this.userStyle === 'ACID';
-      for (let step = 0; step < 16; step++) {
+      const acidBass = grammar.acidBass && (section === 'DROP' || section === 'REBUILD');
+      // FIX: Use style-specific bass steps (was hardcoded)
+      const bassSteps = grammar.bassSteps;
+      for (const step of bassSteps) {
         const isDownbeat = step % 4 === 0;
         const isAfterKick = step % 4 === 2;
         if (isDownbeat || isAfterKick || this.rng() < 0.3) {
@@ -204,9 +256,9 @@ class CompositionWorkerV2 {
       }
     }
 
-    // ── PERC: occasional hits (GROOVE, DROP, REBUILD) ──
+    // ── PERC: occasional hits (density from style grammar) ──
     if (section === 'GROOVE' || section === 'DROP' || section === 'REBUILD') {
-      if (this.rng() < 0.6) {
+      if (this.rng() < grammar.percussionDensity) {
         const step = 3 + Math.floor(this.rng() * 4) * 4; // steps 3,7,11,15
         events.push({
           at: barStart + step * stepDur,
@@ -241,15 +293,15 @@ class CompositionWorkerV2 {
       }
     }
 
-    // ── LEAD: melodic motif (DROP, REBUILD) ──
+    // ── LEAD: melodic motif (DROP, REBUILD) — uses style-specific motif ──
     if (section === 'DROP' || section === 'REBUILD') {
-      // 4-note motif on scale tones
-      const steps = [0, 4, 8, 12];
-      for (let i = 0; i < steps.length; i++) {
-        const scaleIdx = Math.floor(this.rng() * this.scale.length);
-        const note = leadRoot + this.scale[scaleIdx];
+      // FIX: Use style-specific motif intervals and steps (was hardcoded [0,4,8,12])
+      const motifSteps = grammar.motifSteps;
+      const motifIntervals = grammar.motifIntervals;
+      for (let i = 0; i < motifSteps.length; i++) {
+        const note = leadRoot + motifIntervals[i % motifIntervals.length];
         events.push({
-          at: barStart + steps[i] * stepDur,
+          at: barStart + motifSteps[i] * stepDur,
           voiceId: V_LEAD,
           note: note,
           vel: Math.min(1, 0.5 * velScale),

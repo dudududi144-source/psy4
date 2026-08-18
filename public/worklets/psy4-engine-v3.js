@@ -582,6 +582,7 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
     this.currentFrame = 0;
     this.statsCounter = 0;
     this.lastProcessMs = 0;
+    this._renderBuffer = null;  // FIX: Preallocated render buffer (prevents memory leak)
 
     this.port.onmessage = (e) => this.handleMessage(e.data);
   }
@@ -619,7 +620,11 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
         const { voiceClass, duration } = msg;
         const renderDur = duration || 0.5;
         const numSamples = Math.floor(renderDur * this.sr);
-        const buffer = new Float32Array(numSamples);
+        // FIX: Reuse preallocated render buffer (was new Float32Array every call = memory leak)
+        if (!this._renderBuffer || this._renderBuffer.length < numSamples) {
+          this._renderBuffer = new Float32Array(Math.max(numSamples, 22050));  // 0.5s at 44100
+        }
+        const buffer = this._renderBuffer.subarray(0, numSamples);
         // Map voiceClass to voice type
         let pool, note = 36, vel = 0.8, dur = renderDur;
         switch (voiceClass) {

@@ -2639,6 +2639,11 @@ export class PsyLive {
     this._mergedTickCounter = 0;
     this.uiTimer = setInterval(() => {
       this._mergedTickCounter++;
+      // FIX: Heartbeat — if scheduler timer died, restart it
+      if (this.playing && !this.timer) {
+        console.log('[PSY4] HEARTBEAT: scheduler timer died — restarting');
+        this.timer = setInterval(() => this.scheduler(), this.lookahead);
+      }
       // B1 FIX: update engineLevel every tick so LUFS meter moves even when radio is off.
       // Was previously inside detect() which early-returns when radioAnalyser is null.
       this.updateEngineLevel();
