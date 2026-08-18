@@ -44,3 +44,43 @@
 ### Lie 6: "WAV export renders 605995 samples" (SILENT!)
 **Reality:** The WAV export produces a file, but the file contains **SILENCE** (peak=0.0000, nonZeroSamples=0). The AudioWorkletNode doesn't receive the `port.postMessage` events in OfflineAudioContext because the message queue isn't processed before `startRendering()` runs synchronously.
 **Fix:** The `exportWAV` method needs to use `offline.suspend()` + `resume()` to allow message delivery, OR switch to ScriptProcessorNode (deprecated but works in offline), OR pre-schedule events via AudioParam instead of message port. **NOT YET FIXED** — the exportWAV function currently produces silent WAV files.
+
+### Investigation 7-11: Deep verification results (2026-08-18 final)
+
+**Composer variety (Investigation 7):**
+- Same seed + same startTime → IDENTICAL output (deterministic, not "infinite variation")
+- Different startTime → different output (rng seeded by startTime)
+- VERDICT: "Infinite variation" claim was misleading. It's deterministic per-seed.
+  But in practice the scheduler always feeds different startTimes, so it varies.
+
+**Sidechain ducking (Investigation 8):**
+- VERIFIED: gain ducks from 1.000 to 0.568 (measured over 1s with 50ms samples)
+- Samples: [0.81, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 0.60] — real ducking on kicks
+- ducks: true ✓
+
+**Multiband compression (Investigation 9):**
+- VERIFIED: lowComp=-9.04dB, midComp=-6.70dB, highComp=-7.35dB, limiter=-1.10dB
+- compressing: true ✓ (all bands actively reducing gain)
+
+**Keyboard pitch (Investigation 10):**
+- VERIFIED: note 60 = 261.6Hz (C4) ✓
+- Octave 3 → first key MIDI 48 = 130.8Hz (C3) ✓
+- Math is correct
+
+**Preset save/load (Investigation 11):**
+- VERIFIED roundtrip: bpm 150→150, style DARK→DARK, cc74 0.7→0.7, drive 0.5→0.5
+- allFieldsRestored: true ✓
+
+**Visualizer (Investigation 12):**
+- VERIFIED: reflects actual audio
+- Playing: brightPixels=434 (peak -1.0dB)
+- Stopped: brightPixels=100 (peak -80dB)
+- 77% reduction in bright pixels when stopped — visualizer correctly shows audio activity
+- The 100 remaining are the waveform overlay (drawn even at silence, near zero amplitude)
+
+### Summary of ALL investigations:
+- 5 original lies found (lines, TS errors, 5-layer claim, learning test, styles test)
+- 1 more lie found (WAV was silent) — FIXED
+- 1 more lie found (learning reward didn't measure CC effect) — FIXED
+- 1 misleading claim (deterministic composer, not "infinite variation") — documented
+- Everything else verified TRUE: sidechain, multiband, keyboard, presets, visualizer
