@@ -25,9 +25,19 @@ test.describe('PSY4 Learning Loop', () => {
     });
     expect(t0.totalReward).toBe(0);  // no history yet
 
-    // Wait for 4 trials (8s each = 32s)
-    await page.waitForTimeout(36000);
+    // Wait for 2 trials (8s each = 16s)
+    await page.waitForTimeout(18000);
+    const t18 = await page.evaluate(() => {
+      const states = (window as any).__psyLive4.getState().learningStates;
+      const explored = states.filter((s: any) => s.history.length > 0);
+      const totalReward = states.reduce((sum: number, s: any) => sum + s.reward, 0);
+      return { totalReward, explored: explored.length, epsilon: states[0].epsilon };
+    });
+    expect(t18.explored).toBeGreaterThanOrEqual(1);  // at least 1 trial completed
+    expect(t18.totalReward).toBeGreaterThan(0);
 
+    // Wait for more trials (total 36s)
+    await page.waitForTimeout(18000);
     const t36 = await page.evaluate(() => {
       const states = (window as any).__psyLive4.getState().learningStates;
       const totalReward = states.reduce((sum: number, s: any) => sum + s.reward, 0);
@@ -39,6 +49,9 @@ test.describe('PSY4 Learning Loop', () => {
     expect(t36.withHistory).toBeGreaterThanOrEqual(2);
     // Total reward should be higher than baseline (0)
     expect(t36.totalReward).toBeGreaterThan(0);
+    // HONEST convergence check: reward at T=36 should be HIGHER than at T=18
+    // (proves learning actually improves, not just runs)
+    expect(t36.totalReward).toBeGreaterThan(t18.totalReward);
     // Epsilon should have decayed
     expect(t36.epsilon).toBeLessThan(0.30);
   });

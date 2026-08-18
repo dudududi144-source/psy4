@@ -25,7 +25,7 @@ interface PsynSynthBundle {
     capabilities(): DeviceCapabilities;
     reportLatencyMs(): number;
     setParameterByCC(cc: number, value: number): boolean;
-    patches: { count(): number; resolve(role: string): any; setStyle(s: string): void };
+    patches: { count(): number; resolve(role: string): any; setStyle(s: string): void; registerBank(bank: any): void };
     pool: { activeCount(): number };
   };
   load(): Promise<boolean>;
