@@ -14494,3 +14494,38 @@ Stage Summary:
 - Everything else verified TRUE: sidechain, multiband, keyboard, presets, visualizer
 - 0 errors throughout all tests
 - Engine is now thoroughly audited — every claim backed by code + runtime measurement
+
+---
+Task ID: arch-ui-fixes-deep-roast
+Agent: main (Z.ai Code)
+Task: Deep roast architecture + UI — found 3 more lies, fixed
+
+Work Log:
+- Lie 12 (no sticky footer): StatusStrip used margin-top, not sticky.
+  FIXED: .pf-root = flex column, .pf-wrap flex:1, .pf-stt position:sticky bottom:0
+  Verified: position=sticky, bottom=0px, bg=rgb(19,11,36) ✓
+
+- Lie 13 (dead knobs): CC9/13/20/21/22/23 (EnvDep/VelTrk/Atk/Dec/Sus/Rel) shown as knobs
+  but psysynth doesn't map them — they did NOTHING. 6 dead knobs.
+  FIXED: Removed them, replaced ENVELOPE panel with FX SENDS panel (mapped CCs only)
+
+- Lie 14 (ARP/SEQ decorative): arpOn/seqOn only change React state, don't route to engine.
+  seqOn runs setInterval for visualizer but doesn't play notes.
+  Documented honestly (NOT FIXED — needs full arp/seq implementation)
+
+- Lie 15 (circular dependency): devices imported SynthRole from psyLive4/types (Layer 3).
+  This violates 3-layer architecture (devices should only depend on foundation).
+  FIXED: Created psy-foundation-shim/roles.ts. Devices now import from foundation (Layer 1).
+  types.ts re-exports from roles.ts. No duplicate definitions.
+  Architecture is now truly 3-layer: FOUNDATION → DEVICES → HOST (no upward deps)
+
+- Verified: 0 TS errors, engine plays (voices=7, peak=-3.7), sticky footer works
+- Pushed: 1019727..c2287d5
+
+Stage Summary:
+- 3 more lies found + 2 fixed + 1 documented
+- Total lies found: 11 (across all roasts)
+- Architecture now truly 3-layer (no circular deps)
+- UI: sticky footer works, dead knobs removed
+- Still incomplete: ARP/SEQ (decorative only, needs implementation)
+- 0 TS errors, 0 runtime errors
