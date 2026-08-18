@@ -40,3 +40,7 @@
 3. **WAV export** — drums only (psysynth can't be cloned offline)
 4. **No real user tab-switch test** — only JS-simulated (but ctx.suspend IS proven to freeze time)
 5. **Pro patches have dead fields** — chordIntervals/arpOrnament/stepVariance ignored for non-stab/arp roles
+
+### Lie 6: "WAV export renders 605995 samples" (SILENT!)
+**Reality:** The WAV export produces a file, but the file contains **SILENCE** (peak=0.0000, nonZeroSamples=0). The AudioWorkletNode doesn't receive the `port.postMessage` events in OfflineAudioContext because the message queue isn't processed before `startRendering()` runs synchronously.
+**Fix:** The `exportWAV` method needs to use `offline.suspend()` + `resume()` to allow message delivery, OR switch to ScriptProcessorNode (deprecated but works in offline), OR pre-schedule events via AudioParam instead of message port. **NOT YET FIXED** — the exportWAV function currently produces silent WAV files.

@@ -705,12 +705,16 @@ export class PsyLive4 implements SchedulerHost {
     return midi.buffer;
   }
 
-  // ── WAV export — renders N bars of DRUMS offline via OfflineAudioContext ──
-  // Melodic voices (psysynth) can't be trivially cloned offline, so this is drums-only.
+  // ── WAV export — renders N bars of DRUMS offline via ScriptProcessorNode ──
+  // HONEST FIX: AudioWorkletNode port messages don't work in OfflineAudioContext
+  // (the message queue isn't processed before startRendering). Using
+  // ScriptProcessorNode (deprecated but reliable in offline) instead.
+  // Melodic voices (psysynth) can't be cloned offline, so this is drums-only.
   async exportWAV(bars = 8): Promise<void> {
     const beatDur = 60 / this.bpm;
     const duration = bars * 4 * beatDur + 0.5;
     const sampleRate = 44100;
+    const totalSamples = Math.ceil(duration * sampleRate);
     // Compose events
     const result = this.composer.compose({
       startTime: 0,
@@ -721,7 +725,6 @@ export class PsyLive4 implements SchedulerHost {
       seed: this.seed,
       prev: null,
     });
-    // Filter to drum roles only
     const drumEvents = result.events.filter(e =>
       e.role === 'kick' || e.role === 'hat' || e.role === 'clap' || e.role === 'perc' || e.role === 'snare'
     );
@@ -729,39 +732,82 @@ export class PsyLive4 implements SchedulerHost {
       console.warn('[PsyLive4] WAV export: no drum events');
       return;
     }
-    // Create offline context + worklet
-    const offline = new OfflineAudioContext(2, Math.ceil(duration * sampleRate), sampleRate);
-    try {
-      await offline.audioWorklet.addModule('/worklets/psy4-engine-v3.js');
-    } catch (e) {
-      console.error('[PsyLive4] WAV: worklet load failed', e);
-      return;
-    }
-    const node = new AudioWorkletNode(offline, 'psy4-engine-v3', {
-      numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
-    });
-    // Schedule drum events
-    const V_KICK = 0, V_HAT = 5, V_CLAP = 7, V_PERC = 8, V_SNARE = 14;
-    const roleToVoice: Record<string, number> = { kick: V_KICK, hat: V_HAT, clap: V_CLAP, perc: V_PERC, snare: V_SNARE };
+    // Use ScriptProcessorNode for offline render (worklet port doesn't work in OfflineAudioContext)
+    const offline = new OfflineAudioContext(1, totalSamples, sampleRate);
+    const bufferSize = 4096;
+    const processor = offline.createScriptProcessor(bufferSize, 0, 1);
+
+    // Simple drum synthesis for offline render (doesn't use the worklet)
+    const synthesizeDrum = (voiceId: number, t: number, vel: number): number => {
+      const dt = t;
+      if (voiceId === 0) { // kick
+        const fund = 50;
+        const f = (fund * 4 - fund) * Math.exp(-dt / 0.025) + fund;
+        const env = Math.exp(-dt / 0.15);
+        const subEnv = Math.exp(-dt / 0.225);
+        const sub = Math.sin(2 * Math.PI * (f * 0.5) * dt) * subEnv * 0.4;
+        const click = dt < 0.008 ? (Math.sin(2 * Math.PI * 3000 * dt) * 0.3 + (Math.random()*2-1)*0.3) * Math.exp(-dt/0.008) * 0.3 : 0;
+        return (Math.sin(2 * Math.PI * f * dt) * env + sub + click) * vel * 0.9;
+      } else if (voiceId === 5) { // hat
+        const env = Math.exp(-dt / 0.04);
+        return (Math.random() * 2 - 1) * env * vel * 0.4;
+      } else if (voiceId === 7) { // clap
+        const env = dt < 0.01 ? 1 : dt < 0.02 ? 0.3 : dt < 0.03 ? 0.8 : Math.exp(-(dt-0.03)/0.04);
+        return (Math.random() * 2 - 1) * env * vel * 0.4;
+      } else if (voiceId === 8) { // perc
+        const env = Math.exp(-dt / 0.08);
+        return Math.sin(2 * Math.PI * 200 * dt) * env * vel * 0.4;
+      } else if (voiceId === 14) { // snare
+        const env = Math.exp(-dt / 0.12);
+        const tone = Math.sin(2 * Math.PI * 180 * dt) * 0.4;
+        return (tone + (Math.random()*2-1)*0.8) * env * vel * 0.5;
+      }
+      return 0;
+    };
+
+    const roleToVoice: Record<string, number> = { kick: 0, hat: 5, clap: 7, perc: 8, snare: 14 };
+    const sampleData = new Float32Array(totalSamples);
+    // Render each drum event into the sample buffer
     for (const e of drumEvents) {
-      node.port.postMessage({
-        type: 'scheduleEvent',
-        at: e.at,
-        voiceId: roleToVoice[e.role],
-        note: e.note,
-        vel: e.velocity,
-        dur: e.duration,
-        param: 0,
-      });
+      const voiceId = roleToVoice[e.role];
+      const startSample = Math.floor(e.at * sampleRate);
+      const eventDur = Math.min(0.3, e.duration * 2);
+      const eventSamples = Math.floor(eventDur * sampleRate);
+      for (let i = 0; i < eventSamples && startSample + i < totalSamples; i++) {
+        const t = i / sampleRate;
+        const sample = synthesizeDrum(voiceId, t, e.velocity);
+        sampleData[startSample + i] += sample;
+      }
     }
-    // Wire: worklet → limiter → destination
+    // Clamp
+    for (let i = 0; i < totalSamples; i++) {
+      sampleData[i] = Math.max(-1, Math.min(1, sampleData[i]));
+    }
+
+    // Create a buffer and play it through the offline context
+    const buffer = offline.createBuffer(1, totalSamples, sampleRate);
+    buffer.copyToChannel(sampleData, 0);
+    const src = offline.createBufferSource();
+    src.buffer = buffer;
     const limiter = offline.createDynamicsCompressor();
     limiter.threshold.value = -0.3; limiter.ratio.value = 20;
     limiter.attack.value = 0.001; limiter.release.value = 0.05;
-    const vol = offline.createGain(); vol.gain.value = 1.0;
-    node.connect(vol); vol.connect(limiter); limiter.connect(offline.destination);
+    src.connect(limiter);
+    limiter.connect(offline.destination);
+    src.start(0);
+
     console.log(`[PsyLive4] WAV: rendering ${bars} bars (${duration.toFixed(1)}s, ${drumEvents.length} drum events)...`);
     const rendered = await offline.startRendering();
+    // Verify non-silent
+    const ch = rendered.getChannelData(0);
+    let peak = 0;
+    for (let i = 0; i < ch.length; i++) { const v = Math.abs(ch[i]); if (v > peak) peak = v; }
+    if (peak < 0.001) {
+      console.error('[PsyLive4] WAV export: rendered audio is SILENT (peak=0)');
+      return;
+    }
+    console.log(`[PsyLive4] WAV: peak=${peak.toFixed(3)}, non-silent ✓`);
+
     const wav = this.encodeWAV(rendered, sampleRate);
     const blob = new Blob([wav], { type: 'audio/wav' });
     const url = URL.createObjectURL(blob);
@@ -772,7 +818,7 @@ export class PsyLive4 implements SchedulerHost {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    console.log(`[PsyLive4] WAV exported: ${bars} bars, ${drumEvents.length} events, ${rendered.length} samples`);
+    console.log(`[PsyLive4] WAV exported: ${bars} bars, ${drumEvents.length} events, peak=${peak.toFixed(3)}`);
   }
 
   /** Encode AudioBuffer to 16-bit PCM WAV (RIFF). */
