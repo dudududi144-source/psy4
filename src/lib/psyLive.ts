@@ -1087,8 +1087,8 @@ export class PsyLive {
       this.toneDistortion = new Tone.Distortion({ distortion: 0.1, wet: 0.15 });
       this.toneDelay = new Tone.FeedbackDelay({
         delayTime: '8n.',
-        feedback: 0.3,
-        wet: 0.15,
+        feedback: 0.1,  // FIX: was 0.3 — caused resonance build-up (squeal)
+        wet: 0.1,
       });
       this.toneReverb = new Tone.Reverb({
         decay: 2.5,

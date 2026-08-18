@@ -503,7 +503,7 @@ class MasterChain {
     this.glueEnv = 0;
     this.glueThr = 0.6;
     this.glueRatio = 1.5;
-    this.glueMakeup = 1.2;  // FIX: boosted (was 1.0)
+    this.glueMakeup = 0.8;  // FIX: was 1.2 — too hot, caused squeal when summed with Tone.js
     this.glueGain = 1.0;
     // Limiter
     this.ceiling = 0.89;
