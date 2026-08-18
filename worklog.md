@@ -13677,3 +13677,158 @@ Stage Summary:
 - כל 7 בעיות ה-sound design מ-DEEP_ROAST עכשיו מטופלות (5 fixed, 2 partially)
 - וידאתי בדפדפן: 21 patches, 24 voices, peak -9.6dB, 0 errors
 - אין יותר REMAINING HONEST GAPS — ה-audit הכן הושלם
+
+---
+Task ID: AUDIT-REF
+Agent: Explore subagent
+Task: Audit /tmp/psysynth-audit reference architecture for PSY4 rebuild planning
+
+Work Log:
+- קראתי את ה-worklog (tail -200): הבנתי ש-PSY4 עבר 4 איטרציות כבדות של תיקונים (multiband compression, WAV render, sound design patches, repetition detector). כל ה-fixes היו על קוד קיים, לא על ארכיטקטורה.
+- קראתי את כל 5 מסמכי הארכיטקטורה ב-/tmp/psysynth-audit/: ARCHITECTURE.md (206 lines), ARCHITECTURE-STYLE.md (151), README.md (181), INTEGRATION-GUIDE.md (140), PSY-SYNTH-IMPLEMENTATION-PLAN.md (114). סה"כ ~790 שורות דוקומנטציה צפופה.
+- מיפיתי את מבנה התיקיות: src/psy-foundation-shim/ (6 קבצים, verbatim), src/psy-synth/ (14 קבצי core + dsp/ עם 7 קבצים + worklet/ עם 1), src/app/ (2 קבצים בלבד — layout + page). סה"כ 3,529 שורות TS/TSX — קטן מאוד לעומת PSY4.
+- קראתי את כל ה-source הקריטי: device.ts (312), voice.ts (368), voice-pool.ts (207), note-router.ts (89), patch-library.ts (161), types.ts (243), index.ts (56), render.ts (114), midi-map.ts (102), latency.ts (34), variance-rules.ts (71), counters.ts (59), polyblep-worklet.ts (116). קראתי גם את כל 6 קבצי ה-shim.
+- קראתי את page.tsx (192) — זה demo host מינימלי בלבד (כפתור START, 7 role buttons, מקלדת 12 תווים, JSON diagnostics). אין synth rack, אין transport, אין meters, אין dashboard.
+- קראתי את psyforge-pro.html (591 שורות) — זה ה-UI האמיתי השלם: workstation פסיטראנס ב-HTML/JS נטו (no React, no Tailwind, no build). מכיל: header עם logo/preset/BPM/TAP/ARP/SEQ/SAVE/POWER, 3-column grid (OSC+Rolling Bass / Acid Filter 303 / Envelope), 2-column grid (Arpeggiator+StepSeq / Mod Matrix / FX), מקלדת 14 לבנות + שחורות + pitch/mod wheels + Oct±.
+- קראתי את ה-AudioWorklet source המוטמע ב-psyforge-pro.html (WK_SRC, שורות 184-227): מעבד "psy-engine" עם 16 קולות, PolyBLEP (saw/pulse), FM, ring-mod, unison, sub, filter LP/HP/BP/notch state-variable, ADSR with stages, glide.
+- קראתי את manifest.json (883 שורות, 21+ patches) ו-style-banks.json (6 banks: FULL-ON, DARK-PSY, PROGRESSIVE, GOA, HI-TECH, FOREST).
+- קראתי את browser/render-harness.ts — offline render proof עם bit-identical fingerprint check.
+- השוויתי ל-PSY4: סרקתי את /home/z/my-project (מעל 200 קבצי TS/TSX ב-src/, foundation/ עם 20+ קבצים, 40+ shadcn/ui components שלא קשורים לאודיו).
+
+Stage Summary:
+- KEY FINDINGS:
+  1. ארכיטקטורה נקיית 3-שכבות: FOUNDATION (verbatim shim, pinned ל-commit 4ae95d3, byte-sync-test שנכשל אם עורכים shim) → DEVICE (psy-synth: pure HOW, no composition, no scheduler, no ctx.destination) → HOST (PSY4/PSY6/demo: מזריק AudioContext + outputNode).
+  2. ה-device מכיל 0 (אפס!) schedulers פנימיים. אין setInterval, אין lookahead loop, אין AudioWorklet clock. כל ה-timing מגיע מ-event.at על AudioContext.currentTime, ומתורגם ל-setValueAtTime על AudioParams. זה מונע structurally את בעיית "engine stops after a few minutes" — אין מה שיכול לעצור.
+  3. Voice pool pre-allocates 16 voices ב-constructor (device.ts:98-107). ה-hot path (onEvent → execute → trigger) מבצע 0 heap allocations — רק setValueAtTime על AudioParams קיימים. זה מונע GC dropouts.
+  4. Steal policy deterministic: oldest-released → quietest → oldest-on (voice-pool.ts:183-206). Per-role budget caps (bass 4, lead 4, pad 6, etc). Counter increments, never throws.
+  5. onEvent NEVER throws (device.ts:151-177). Malformed events → drop+count. Try/catch defensive. אין eval, אין dynamic code, אין network ב-audio path.
+  6. ה-master chain שייך ל-HOST, לא ל-device (ARCHITECTURE.md §4.3: "No device-internal mastering, no limiter, no compressor"). ה-device רק מזרים ל-outputNode שהוזרק. זה הפוך מ-PSY4 שמחזיק multiband+limiter+sidechain בתוך psyLive.ts.
+  7. אין composition engine ב-device. הרבה ש-psyforge-pro.html עושה: 25ms setInterval, lookahead 120ms, tick32 על 32nd-note grid (line 307-310). זה סטנדרטי ולא נתקע כי AudioContext נשאר running (רק suspend ב-visibilitychange hidden).
+  8. Foundation shim כולל: protocol.ts (MusicalEvent union), transport.ts (MusicalTransport v0), device.ts (PsyDevice interface), host.ts (DeviceHost + InMemoryChannel עם per-listener try/catch), voice-pool.ts (Voice interface + VoicePool<V> + Rng mulberry32). כל ה-shim נבדק ע"י shim-sync.test.ts.
+  9. Seeded determinism: variance-rules.ts עם mulberry32, manifest seed XOR host seed. אותו seed ⇒ אותם parameter decisions (render-proof test). מאפשר bit-identical OfflineAudioContext render.
+  10. ה-UI המינימלי ב-page.tsx הוא 192 שורות בלבד — כפתור START AUDIO + 7 role toggles + 12-note keyboard + diagnostics JSON. זה מראה שאפשר להגיע ל-psytrance-grade sound בלי dashboard עמוס. ה-psyforge-pro.html הוא 591 שורות self-contained עם 40+ knobs — אבל גם הוא לא dashboard עם meters ו-synth rack, אלא simple knob grid.
+
+- ARCHITECTURAL PRINCIPLES TO ADOPT (top 5):
+  1. **WHAT/HOW hard split**: ה-synth הוא pure HOW (קול). ה-composition הוא WHAT (תווים/תזמון). שני הדברים חיים ב-repos/מודולים נפרדים, מתקשרים רק דרך NoteEvent. PSY4 מערבב CausalComposer + psyLive + synthesisGenerator + material-realizer באותו process — מקור הסבך.
+  2. **No device-internal scheduler**: תזמון רק דרך event.at על AudioContext.currentTime + AudioParam.setValueAtTime. אין setInterval ב-device. ה-host (או composition worker) הוא ה-clock-owner היחיד. זה מונע "dual scheduler" (audit B8) ו-stops-after-few-minutes.
+  3. **Pre-allocated voices, zero heap in hot path**: כל 16 הקולות נוצרים ב-constructor (oscA/B/sub + filter×2 + shaper×2 + VCA + sends × N). ה-onEvent path רק קורא setValueAtTime על params קיימים. זה מונע GC dropouts ומאפשר 5min 145bpm 16th-bass stress בלי node churn.
+  4. **Verbatim shim + sync test**: foundation contracts pinned ל-commit, byte-equivalence test שנכשל אם מישהו עורך את ה-shim. זה מונע "NoteEvent ב-2 מקומות" (audit B3) ו-shim drift. PSY4 כבר יש לו את ה-shim (src/lib/psy-foundation-shim/ — אותם קבצים!) אבל אין sync test.
+  5. **Canonical role enum + drop+count at boundary**: SYNTH_ROLES = ['bass','lead','arp','pad','stab','pluck','keys'] (types.ts:5). Unknown channel → drop + counter, NEVER coerce (audit B1: אסור `midi ?? 60`). NoteRouter מבצע validation: pitch 0..127, velocity 0..1, at < now-50ms → stale drop. onEvent never throws.
+
+- FILE PATHS TO STUDY:
+  - /tmp/psysynth-audit/src/psy-synth/device.ts (312) — ה-SynthDevice הקנוני: constructor pre-allocates voices, onEvent with try/catch, execute() wires patch+variance+macro.
+  - /tmp/psysynth-audit/src/psy-synth/voice.ts (368) — SynthVoice chain: oscA+B+sub → preDrive WaveShaper → f1+f2 BiquadFilter LPF → fSat WaveShaper → VCA → out+delaySend+reverbSend. trigger() = pure AudioParam scheduling, 0 allocs.
+  - /tmp/psysynth-audit/src/psy-synth/voice-pool.ts (207) — deterministic steal: oldest-released → oldest-on, per-role budgets, byKey Map ל-O(1) note-off matching.
+  - /tmp/psysynth-audit/src/psy-synth/note-router.ts (89) — routing table: velocity 0 → note-off, duration -1 → hold, stale drop, unknown channel drop.
+  - /tmp/psysynth-audit/src/psy-synth/patch-library.ts (161) — validatePatch strict, manifestVersion check, byId/byRole maps, style bank override + macro.
+  - /tmp/psysynth-audit/src/psy-synth/types.ts (243) — SynthPatch schema (osc a/b/sub, filter, amp, sends, driveDb, humanize, chordIntervals, arpOrnament, oscEngine). StyleBank macro (cutoffBias/resBias/glideBias/energyToCutoff).
+  - /tmp/psysynth-audit/public/psyforge-pro.html (591) — production-grade single-file UI: 40+ knobs, 11 oscillator engines, 15 arp melodies, 50+ presets, AudioWorklet source inline, 25ms lookahead scheduler, visibilitychange suspend/resume.
+  - /tmp/psysynth-audit/src/psy-foundation-shim/*.ts (6 files) — VERBATIM foundation contracts pinned ל-4ae95d3, sync-tested.
+  - /tmp/psysynth-audit/ARCHITECTURE.md (206) — המסמך הקנוני: 12 סעיפים כולל audit B1-B12 compliance table.
+  - /tmp/psysynth-audit/INTEGRATION-GUIDE.md (140) — 5-step host wiring: AudioContext + outputNode + manifest + bridge.register + onStart+load.
+
+---
+Task ID: REBUILD-PLAN
+Agent: Plan subagent (Z.ai Code)
+Task: Design PSY4 clean rebuild architecture — deliver PSY4_REBUILD_PLAN.md (planning only, no implementation)
+
+Work Log:
+- קראתי את ה-worklog (tail -250): הבנתי ש-PSY4 עבר 4 איטרציות של תיקונים (multiband compression, WAV render, sound design patches, repetition detector). כל ה-fixes היו על קוד קיים — לא על ארכיטקטורה. הבעיה היסודית "engine stops" מעולם לא תוקנה.
+- קראתי את כל ה-reference architecture ב-/tmp/psysynth-audit/:
+  - ARCHITECTURE.md (205 lines), INTEGRATION-GUIDE.md (139 lines), psyforge-pro.html (591 lines), src/psy-synth/device.ts (312 lines), src/psy-synth/voice.ts (368 lines)
+  - מיפיתי את המודל 3-שכבות: FOUNDATION (verbatim shim) → DEVICE (pure HOW, no scheduler) → HOST (owns transport + composition + mastering)
+  - וידאתי ש-psyforge-pro.html משתמש ב-setInterval(25ms) + lookahead 120ms + visibilitychange → ctx.suspend/resume. זה ה-scheduler היחיד.
+- סרקתי את ה-codebase הנוכחי:
+  - psyLive.ts = 4,501 lines, עם 6 setInterval שונים (scheduler, _playPoll, evictionTimer, explorationTimer, detectTimer, uiTimer)
+  - page.tsx = 799 lines, dashboard (spectrum, sync pills, causal-action readouts) — לא synth UI
+  - src/components/ui/ = 48 shadcn components (רובם לא בשימוש)
+  - foundation/music/ = 22 files (~4,000 lines, dead code — none drive playback)
+  - audit-reports/ = 55 files (historical)
+- איששתי את root-cause ה"engine stops":
+  - psyLive.ts line 391: `lastWorkerComposeBar = -1` (bar-indexed composition)
+  - line 1973: `currentBar = snap.bar` (derived from ctx.currentTime — advances on throttle)
+  - line 1979-1989: scheduler composes `[lastWorkerComposeBar+1, targetBar]` — when tab returns, this is bars [9..26] all at once, with bars [9..17] in the PAST
+  - worklet plays past events NOW → voice pool exhaustion → silence
+  - heartbeat fix (staleMs check) לא עוזר כי scheduler IS firing, just late
+- כתבתי את PSY4_REBUILD_PLAN.md (≈700 lines, 9 sections):
+  1. Architecture: 3-layer ASCII art, data flow per tick, the monotonic invariant
+  2. Scheduler fix: CompositionScheduler class (120 lines) — single setInterval(25ms), monotonic lastComposedUntil, reanchorAfterBackground() method, visibilitychange → ctx.suspend/resume
+  3. Composition redesign: PsytranceComposer (250 lines) — pure function (startTime, duration, bpm, style, seed, prev) → NoteEvent[] with absolute `at` times. NO bar tracking, NO worker. Continuity via `prev` hints.
+  4. UI redesign: 14 components in src/components/psyforge/, Knob primitive with CSS --r var, 3-column rack (OSC/FILTER/AMP), ARP+SEQ 16-step visualizer, keyboard+wheels. 5 shadcn components kept (button/select/slider/tooltip/sheet), 43 deleted. Design tokens copied from psyforge-pro.html.
+  5. Migration phases: Phase 0 (scaffold, no behavior change) → Phase 1 (new scheduler+composer, old UI) → Phase 2 (new UI) → Phase 3 (cleanup). Each phase has acceptance checks.
+  6. DELETE list: 43 shadcn components, 22 foundation/music files, 55 audit-reports, 40+ root .md files, composition-worker-v2.js, dead libs (material-realizer, synthesisGenerator, loopLearner, learning, etc.), all tests/reality-bridge, foundation/radio, foundation/transport (superseded by shim).
+  7. KEEP list: psy-foundation-shim (581 lines verbatim + sync test), psysynth.js (21KB melodic device), psy4-engine-v3.js (844-line drum worklet), manifest.json (21 patches), style-banks.json (6 banks), 5 shadcn components, app shell.
+  8. Testing strategy: scheduler.test.ts (3 unit tests), composer.test.ts (4 determinism tests), shim-sync.test.ts (byte hash), background-tab.test.ts (5-minute Playwright regression test — 2 background cycles, kickCount must keep growing, staleMs < 200, activeVoices < 32, peakDb > -30).
+  9. Summary table: 30k → 5k lines, 6 schedulers → 1, bar-indexed → time-based, audio clock drift → suspend, dead foundation code → 0.
+
+Verification:
+- PSY4_REBUILD_PLAN.md נכתב (≈700 lines), כולל קטעי קוד מלאים עבור: CompositionScheduler class, visibilitychange handler, ComposeRequest/NoteEvent interfaces, PsytranceComposer.compose() skeleton, Knob.tsx React component, root JSX layout, Playwright regression test, unit tests.
+- כל 8 הסעיפים שהתבקשו מכוסים: architecture (ASCII art), scheduler fix (concrete code), composition redesign (interface + impl), UI redesign (JSX + tokens + component tree), migration phases (4 phases with acceptance checks), DELETE list (ספציפי ל-43 שדסנר+22 foundation+55 reports), KEEP list (581 shim + 844 worklet + 21 patches), testing strategy (5-min background-tab regression test).
+- וידאתי line counts: psyLive.ts=4501, page.tsx=799, shim=581, worklet=844, psyforge-pro.html=591. Total target after rebuild ≤5,000 lines.
+- לא נכתב קוד יישום — רק תכנון. ה-plan document הוא ה-deliverable.
+
+Stage Summary:
+- נכתב PSY4_REBUILD_PLAN.md — תוכנית ארכיטקטורית מלאה ל-rebuild נקי של PSY4.
+- המבנה: 3-שכבות (FOUNDATION/DEVICE/HOST) עם ASCII art ו-data flow.
+- התיקון היסודי: ctx.suspend ב-visibilitychange + lastComposedUntil מונוטוני שאף פעם לא backfill. זה מונע structurally את ה"engine stops".
+- רשימת DELETE מפורטת (43 shadcn + 22 foundation + 55 audit-reports + dead libs) — מ-30k ל-5k lines.
+- רשימת KEEP מפורטת (shim verbatim + worklet + manifest + 5 shadcn components).
+- אסטרטגיית בדיקות עם regression test ייעודי ל-"engine stops" (5-minute Playwright background-tab test).
+- ה-plan actionable: developer יכול לבצע Phases 0-3 ללא החלטות עיצוב נוספות.
+- לא בוצע שינוי קוד — זה planning task בלבד. ה-deliverable הוא ה-PSY4_REBUILD_PLAN.md.
+
+---
+Task ID: phase0-scaffold
+Agent: main (Z.ai Code)
+Task: Phase 0 of clean rebuild — scaffold new architecture alongside old, no behavior change
+
+Work Log:
+- Read AUDIT-REF report from worklog — adopted psysynth-audit 3-layer model
+- Read REBUILD-PLAN — following Phases 0→3
+- Created directory structure:
+  - src/lib/psyLive4/ (scheduler, composer, types, rng, style-grammars, cc-mapping, psyLive4)
+  - src/lib/devices/ (melodic-device, drum-device)
+  - src/components/psyforge/ (empty, for Phase 2)
+  - tests/psyLive4/ (empty, for Phase 1)
+- Created types.ts: SynthRole enum (single source of truth), NoteEvent (ABSOLUTE `at` times), ComposeRequest/Result, toMusicalEvent converter
+- Created rng.ts: mulberry32 (deterministic, matches psysynth.js)
+- Created style-grammars.ts: ported STYLE_GRAMMARS + SCALES from composition-worker-v2.js, added resolveGrammar() helper
+- Created scheduler.ts: CompositionScheduler class with THE INVARIANT:
+  - lastComposedUntil is monotonic, only advances to now+LOOKAHEAD
+  - Never backfills missed time
+  - 25ms tick, 120ms lookahead, 20ms skip
+  - reanchorAfterBackground() for tab return
+- Created composer.ts: PsytranceComposer (pure function, no worker, no state between calls)
+  - Emits NoteEvents with ABSOLUTE `at` timestamps
+  - 64-bar arrangement with cycle variation
+  - Section-based (INTRO/GROOVE/DROP/BREAKDOWN/REBUILD/OUTRO)
+- Created cc-mapping.ts: freqHzToCC74 (log scale 80-8000Hz → CC74 0.30-0.90)
+- Created drum-device.ts: DrumDevice wraps psy4-engine-v3.js worklet as PsyDevice
+  - No scheduler, no setInterval, pure HOW
+  - Routes NoteEvents → worklet port.postMessage
+- Created melodic-device.ts: MelodicDevice wraps public/psysynth.js
+  - Dynamic import of /psysynth.js bundle
+  - No scheduler, pure HOW
+- Created psyLive4.ts: PsyLive4 host (Layer 3)
+  - Owns AudioContext, transport, scheduler, master chain
+  - visibilitychange handler: ctx.suspend() on hidden, ctx.resume() + reanchor on visible
+  - 3-band multiband compressor + limiter (real DynamicsCompressorNode per band)
+  - Sidechain ducking (6dB on kick)
+  - Repetition detector
+  - getState() diagnostics (peakDb, rmsDb, voicesActive, schedulerStaleMs, ctxState, suspended)
+- Fixed type errors:
+  - PsyDevice imported from device.ts (not protocol.ts)
+  - Removed standardized-audio-context dependency (use DOM AudioContext types)
+  - @ts-expect-error on /psysynth.js import (runtime asset)
+- Verified: npx tsc --noEmit → 0 errors in new files
+- Verified: dev server compiles cleanly, GET / returns 200
+- App still runs OLD psyLive.ts (Phase 0 = no behavior change)
+
+Stage Summary:
+- Phase 0 complete: new architecture scaffolded (7 new files, ~900 lines)
+- Old code untouched — app behavior unchanged
+- The structural fix for "engine stops" is in place:
+  - Scheduler uses monotonic lastComposedUntil (not bar index)
+  - ctx.suspend() on visibilitychange→hidden freezes audio clock
+  - reanchorAfterBackground() skips missed time (no backfill)
+- Ready for Phase 1: swap page.tsx import to use PsyLive4

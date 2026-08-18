@@ -1,0 +1,428 @@
+// src/lib/psyLive4/psyLive4.ts
+// Layer 3 — HOST. The ONLY owner of:
+//   - AudioContext
+//   - Transport (BPM, bar tracking)
+//   - CompositionScheduler (the one setInterval)
+//   - Master chain (3-band compressor + limiter)
+//   - Device wiring (drum + melodic)
+//   - visibilitychange handler (ctx.suspend/resume)
+//
+// This replaces src/lib/psyLive.ts (4,501 lines). Target: ~400 lines.
+
+import { CompositionScheduler, type SchedulerHost } from './scheduler';
+import { PsytranceComposer } from './composer';
+import { resolveGrammar } from './style-grammars';
+import { toMusicalEvent } from './types';
+import type { NoteEvent, SynthRole, MusicalStyle } from './types';
+import { DrumDevice } from '@/lib/devices/drum-device';
+import { MelodicDevice } from '@/lib/devices/melodic-device';
+import { freqHzToCC74 } from './cc-mapping';
+
+// ── Public diagnostics ───────────────────────────────────────────────────
+export interface LiveState4 {
+  playing: boolean;
+  bpm: number;
+  style: MusicalStyle;
+  energy: number;
+  kickCount: number;
+  bar: number;
+  engineLevel: number;        // 0..1 (frequency-bin average from analyser)
+  voicesActive: number;
+  patchesLoaded: number;
+  peakDb: number;              // dBFS peak
+  rmsDb: number;               // dBFS RMS
+  schedulerStaleMs: number;    // heartbeat: ms since last scheduler fire
+  ctxState: AudioContextState;
+  suspended: boolean;          // true when tab is hidden
+  repetition: { uniqueBars: number; repeatedBars: number; maxStreak: number; windowSize: number };
+}
+
+export class PsyLive4 implements SchedulerHost {
+  readonly ctx: AudioContext;
+  private scheduler: CompositionScheduler;
+  private composer = new PsytranceComposer();
+  private drumDevice: DrumDevice;
+  private melodicDevice: MelodicDevice;
+
+  // ── Master chain nodes ──
+  private sidechainDuck: GainNode;
+  private multibandLow: BiquadFilterNode;
+  private multibandMid1: BiquadFilterNode;
+  private multibandMid2: BiquadFilterNode;
+  private multibandHigh: BiquadFilterNode;
+  private multibandLowComp: DynamicsCompressorNode;
+  private multibandMidComp: DynamicsCompressorNode;
+  private multibandHighComp: DynamicsCompressorNode;
+  private multibandLowGain: GainNode;
+  private multibandMidGain: GainNode;
+  private multibandHighGain: GainNode;
+  private multibandSum: GainNode;
+  private workletVolumeGain: GainNode;
+  private masterLimiter: DynamicsCompressorNode;
+  private analyser: AnalyserNode;
+
+  // ── State ──
+  private playing = false;
+  private bpm = 145;
+  private style: MusicalStyle = 'FULL_ON';
+  private energy = 0.5;
+  private seed = 42;
+  private kickCount = 0;
+  private bar = 0;
+  private composerPrev: { lastBassNote: number; barInArrangement: number; motifStep: number } | null = null;
+  private suspended = false;
+  private startTime = 0;  // ctx.currentTime when play() was called
+
+  // ── Repetition detector ──
+  private barFingerprints: string[] = [];
+  private lastRepetitionWarning = 0;
+  private repetitionStats = { uniqueBars: 0, repeatedBars: 0, maxStreak: 0 };
+
+  // ── Analyser buffers (reused, no per-tick allocation) ──
+  private freqBuf: Uint8Array;
+  private tdBuf: Float32Array;
+
+  constructor(ctx?: AudioContext) {
+    // Layer 3 owns the AudioContext. Created here, passed to devices.
+    this.ctx = ctx ?? new (window.AudioContext || (window as any).webkitAudioContext)();
+
+    // ── Master chain ──
+    this.sidechainDuck = this.ctx.createGain();
+    this.sidechainDuck.gain.value = 1.0;
+
+    this.multibandLow = this.ctx.createBiquadFilter();
+    this.multibandLow.type = 'lowpass';
+    this.multibandLow.frequency.value = 200;
+    this.multibandLow.Q.value = 0.707;
+    this.multibandMid1 = this.ctx.createBiquadFilter();
+    this.multibandMid1.type = 'highpass';
+    this.multibandMid1.frequency.value = 200;
+    this.multibandMid1.Q.value = 0.707;
+    this.multibandMid2 = this.ctx.createBiquadFilter();
+    this.multibandMid2.type = 'lowpass';
+    this.multibandMid2.frequency.value = 2500;
+    this.multibandMid2.Q.value = 0.707;
+    this.multibandHigh = this.ctx.createBiquadFilter();
+    this.multibandHigh.type = 'highpass';
+    this.multibandHigh.frequency.value = 2500;
+    this.multibandHigh.Q.value = 0.707;
+
+    this.multibandLowComp = this.ctx.createDynamicsCompressor();
+    this.multibandLowComp.threshold.value = -18;
+    this.multibandLowComp.knee.value = 6;
+    this.multibandLowComp.ratio.value = 3;
+    this.multibandLowComp.attack.value = 0.010;
+    this.multibandLowComp.release.value = 0.150;
+    this.multibandMidComp = this.ctx.createDynamicsCompressor();
+    this.multibandMidComp.threshold.value = -20;
+    this.multibandMidComp.knee.value = 10;
+    this.multibandMidComp.ratio.value = 2;
+    this.multibandMidComp.attack.value = 0.015;
+    this.multibandMidComp.release.value = 0.200;
+    this.multibandHighComp = this.ctx.createDynamicsCompressor();
+    this.multibandHighComp.threshold.value = -22;
+    this.multibandHighComp.knee.value = 8;
+    this.multibandHighComp.ratio.value = 2.5;
+    this.multibandHighComp.attack.value = 0.005;
+    this.multibandHighComp.release.value = 0.080;
+
+    this.multibandLowGain = this.ctx.createGain();
+    this.multibandLowGain.gain.value = 1.4;
+    this.multibandMidGain = this.ctx.createGain();
+    this.multibandMidGain.gain.value = 1.2;
+    this.multibandHighGain = this.ctx.createGain();
+    this.multibandHighGain.gain.value = 1.15;
+    this.multibandSum = this.ctx.createGain();
+    this.multibandSum.gain.value = 1.0;
+    this.workletVolumeGain = this.ctx.createGain();
+    this.workletVolumeGain.gain.value = 1.0;
+    this.masterLimiter = this.ctx.createDynamicsCompressor();
+    this.masterLimiter.threshold.value = -0.3;
+    this.masterLimiter.knee.value = 0;
+    this.masterLimiter.ratio.value = 20;
+    this.masterLimiter.attack.value = 0.001;
+    this.masterLimiter.release.value = 0.05;
+
+    this.analyser = this.ctx.createAnalyser();
+    this.analyser.fftSize = 1024;
+    this.analyser.smoothingTimeConstant = 0.7;
+    this.freqBuf = new Uint8Array(this.analyser.frequencyBinCount);
+    this.tdBuf = new Float32Array(this.analyser.fftSize);
+
+    // ── Wire master chain ──
+    // sidechainDuck → 3 parallel paths → sum → volume → limiter → analyser → destination
+    this.sidechainDuck.connect(this.multibandLow);
+    this.sidechainDuck.connect(this.multibandMid1);
+    this.sidechainDuck.connect(this.multibandHigh);
+    this.multibandLow.connect(this.multibandLowComp);
+    this.multibandLowComp.connect(this.multibandLowGain);
+    this.multibandLowGain.connect(this.multibandSum);
+    this.multibandMid1.connect(this.multibandMid2);
+    this.multibandMid2.connect(this.multibandMidComp);
+    this.multibandMidComp.connect(this.multibandMidGain);
+    this.multibandMidGain.connect(this.multibandSum);
+    this.multibandHigh.connect(this.multibandHighComp);
+    this.multibandHighComp.connect(this.multibandHighGain);
+    this.multibandHighGain.connect(this.multibandSum);
+    this.multibandSum.connect(this.workletVolumeGain);
+    this.workletVolumeGain.connect(this.masterLimiter);
+    this.masterLimiter.connect(this.analyser);
+    this.analyser.connect(this.ctx.destination);
+
+    // ── Devices ──
+    this.drumDevice = new DrumDevice({ ctx: this.ctx, outputNode: this.sidechainDuck });
+    this.melodicDevice = new MelodicDevice({
+      ctx: this.ctx,
+      outputNode: this.sidechainDuck,
+      maxVoices: 16,
+      seed: this.seed,
+    });
+
+    // ── Scheduler ──
+    this.scheduler = new CompositionScheduler(this);
+
+    // ── visibilitychange handler (THE FIX for "engine stops") ──
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onVisibility);
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Lifecycle
+  // ───────────────────────────────────────────────────────────────────────
+
+  async init(): Promise<boolean> {
+    const drumOk = await this.drumDevice.init();
+    const melodicOk = await this.melodicDevice.init();
+    if (!drumOk) {
+      console.error('[PsyLive4] drum device init failed');
+      return false;
+    }
+    if (!melodicOk) {
+      console.warn('[PsyLive4] melodic device init failed — running drums only');
+    }
+    // Apply initial style leadCutoff to psysynth
+    this.applyStyleToDevices();
+    return true;
+  }
+
+  async play(): Promise<void> {
+    if (this.playing) return;
+    if (this.ctx.state === 'suspended') await this.ctx.resume();
+    this.playing = true;
+    this.startTime = this.ctx.currentTime;
+    this.kickCount = 0;
+    this.bar = 0;
+    this.composerPrev = null;
+    this.drumDevice.onStart();
+    this.melodicDevice.onStart();
+    this.scheduler.start();
+    console.log('[PsyLive4] play — scheduler started');
+  }
+
+  stop(): void {
+    if (!this.playing) return;
+    this.playing = false;
+    this.scheduler.stop();
+    this.drumDevice.onStop();
+    this.melodicDevice.onStop();
+    console.log('[PsyLive4] stop');
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // SchedulerHost implementation
+  // ───────────────────────────────────────────────────────────────────────
+
+  isRunning(): boolean { return this.playing; }
+
+  compose(windowStart: number, windowEnd: number): void {
+    const result = this.composer.compose({
+      startTime: windowStart,
+      duration: windowEnd - windowStart,
+      bpm: this.bpm,
+      style: this.style,
+      energy: this.energy,
+      seed: this.seed,
+      prev: this.composerPrev,
+    });
+    this.composerPrev = result.next;
+    this.bar = result.next.barInArrangement;
+
+    // Track kick count + sidechain + repetition fingerprint
+    const barTokens: string[] = [];
+    for (const e of result.events) {
+      const me = toMusicalEvent(e);
+      // Route to device by role
+      if (e.role === 'kick' || e.role === 'hat' || e.role === 'clap' || e.role === 'perc' || e.role === 'snare') {
+        this.drumDevice.onEvent(me);
+      } else {
+        this.melodicDevice.onEvent(me);
+      }
+      // Sidechain duck on kick
+      if (e.role === 'kick') {
+        this.triggerSidechain(e.at);
+        this.kickCount++;
+      }
+      barTokens.push(`${e.role}:${Math.round(e.note)}:${Math.round(e.velocity * 10) / 10}`);
+    }
+    // Repetition fingerprint (per compose window, coarse)
+    if (barTokens.length > 0) {
+      this.barFingerprints.push(barTokens.sort().join('|'));
+      if (this.barFingerprints.length > 32) this.barFingerprints.shift();
+      this.checkRepetition();
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Controls
+  // ───────────────────────────────────────────────────────────────────────
+
+  setBPM(bpm: number): void {
+    this.bpm = Math.max(60, Math.min(200, bpm));
+  }
+
+  setStyle(style: MusicalStyle): void {
+    this.style = style;
+    this.applyStyleToDevices();
+  }
+
+  setEnergy(e: number): void {
+    this.energy = Math.max(0, Math.min(1, e));
+  }
+
+  private applyStyleToDevices(): void {
+    const g = resolveGrammar(this.style);
+    // Push leadCutoff → CC74 to psysynth (style affects timbre, not just pitch)
+    const cc74 = freqHzToCC74(g.leadCutoff);
+    this.melodicDevice.setParameterByCC(74, cc74);
+    // Push musical context for style bank selection
+    this.melodicDevice.onContext({
+      style: this.style,
+      energy: this.energy,
+      section: 'groove',
+      bpm: this.bpm,
+      root: 0,
+      scale: g.scaleName,
+      bar: this.bar,
+      beat: 0,
+    } as any);
+    console.log(`[PsyLive4] setStyle(${this.style}): leadCutoff=${g.leadCutoff}Hz → CC74=${cc74.toFixed(3)}`);
+  }
+
+  private triggerSidechain(at: number): void {
+    // 6dB duck, 150ms recovery
+    const t = Math.max(at, this.ctx.currentTime);
+    this.sidechainDuck.gain.cancelScheduledValues(t);
+    this.sidechainDuck.gain.setValueAtTime(0.5, t);
+    this.sidechainDuck.gain.exponentialRampToValueAtTime(1.0, t + 0.15);
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // visibilitychange — THE structural fix for background-tab audio stopping
+  // ───────────────────────────────────────────────────────────────────────
+
+  private onVisibility = (): void => {
+    if (document.hidden) {
+      // Freeze the audio clock. ctx.currentTime stops advancing.
+      // The scheduler keeps ticking but compose() becomes a no-op once
+      // lastComposedUntil > ctx.currentTime + LOOKAHEAD.
+      this.ctx.suspend().catch(() => {});
+      this.suspended = true;
+      console.log('[PsyLive4] visibilitychange → hidden — ctx.suspend()');
+    } else if (this.suspended) {
+      // Tab returned. Resume — currentTime continues from where it froze.
+      this.ctx.resume().then(() => {
+        this.suspended = false;
+        this.scheduler.reanchorAfterBackground();
+        console.log('[PsyLive4] visibilitychange → visible — ctx.resume() + reanchor');
+      }).catch(() => {});
+    }
+  };
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Repetition detector (ported from psyLive.ts)
+  // ───────────────────────────────────────────────────────────────────────
+
+  private checkRepetition(): void {
+    const fps = this.barFingerprints;
+    if (fps.length < 4) return;
+    const last = fps[fps.length - 1];
+    let streak = 1;
+    for (let i = fps.length - 2; i >= 0; i--) {
+      if (fps[i] === last) streak++;
+      else break;
+    }
+    const unique = new Set(fps).size;
+    this.repetitionStats.uniqueBars = unique;
+    this.repetitionStats.repeatedBars = fps.length - unique;
+    if (streak > this.repetitionStats.maxStreak) this.repetitionStats.maxStreak = streak;
+    const now = Date.now();
+    if (streak >= 8 && (now - this.lastRepetitionWarning) > 30000) {
+      this.lastRepetitionWarning = now;
+      console.warn(`[PsyLive4] REPETITION: same pattern ${streak}x (unique=${unique}/${fps.length})`);
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Diagnostics
+  // ───────────────────────────────────────────────────────────────────────
+
+  getState(): LiveState4 {
+    // Engine level (frequency-bin average)
+    this.analyser.getByteFrequencyData(this.freqBuf as Uint8Array<ArrayBuffer>);
+    let s = 0;
+    for (let i = 0; i < this.freqBuf.length; i++) s += this.freqBuf[i];
+    const engineLevel = s / (this.freqBuf.length * 255);
+
+    // Peak + RMS (time-domain)
+    this.analyser.getFloatTimeDomainData(this.tdBuf as Float32Array<ArrayBuffer>);
+    let peak = 0, rms = 0;
+    for (let i = 0; i < this.tdBuf.length; i++) {
+      const v = Math.abs(this.tdBuf[i]);
+      if (v > peak) peak = v;
+      rms += this.tdBuf[i] * this.tdBuf[i];
+    }
+    rms = Math.sqrt(rms / this.tdBuf.length);
+    const peakDb = 20 * Math.log10(peak || 0.0001);
+    const rmsDb = 20 * Math.log10(rms || 0.0001);
+
+    return {
+      playing: this.playing,
+      bpm: this.bpm,
+      style: this.style,
+      energy: this.energy,
+      kickCount: this.kickCount,
+      bar: this.bar,
+      engineLevel,
+      voicesActive: this.melodicDevice.voicesActive,
+      patchesLoaded: this.melodicDevice.patchesLoaded,
+      peakDb,
+      rmsDb,
+      schedulerStaleMs: this.scheduler.staleMs,
+      ctxState: this.ctx.state,
+      suspended: this.suspended,
+      repetition: { ...this.repetitionStats, windowSize: this.barFingerprints.length },
+    };
+  }
+
+  // ── MIDI export (kept from old psyLive.ts — user requested it) ──
+  async exportMIDI(): Promise<void> {
+    // TODO: implement using the composer (pure function, easy to render 8 bars)
+    console.log('[PsyLive4] exportMIDI — TODO (composer is ready, just needs MIDI encoding)');
+  }
+
+  // ── WAV export (drums only, kept from old psyLive.ts) ──
+  async exportWAV(bars = 8): Promise<void> {
+    // TODO: implement using OfflineAudioContext + drum device
+    console.log('[PsyLive4] exportWAV — TODO');
+  }
+
+  dispose(): void {
+    this.stop();
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onVisibility);
+    }
+    this.melodicDevice.dispose();
+    this.ctx.close().catch(() => {});
+  }
+}
