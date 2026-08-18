@@ -19,6 +19,7 @@ import { MelodicDevice } from '@/lib/devices/melodic-device';
 import { LeadDevice } from '@/lib/devices/lead-device';
 import { freqHzToCC74 } from './cc-mapping';
 import { CCLearner, type CCExplorationState } from './learning';
+import { analyzeQuality, suggestAdjustments, COMMERCIAL_TARGETS, type AudioQualityMetrics } from './audio-quality';
 import { DeviceHost, InMemoryChannel } from '@/lib/psy-foundation-shim';
 import type { MusicalEvent } from '@/lib/psy-foundation-shim/protocol';
 
@@ -586,21 +587,14 @@ export class PsyLive4 implements SchedulerHost {
       limiterReduction: this.masterLimiter ? this.masterLimiter.reduction : 0,
     };
 
-    // Learning loop: explore CC params using peak dB + spectral centroid as reward
+    // Learning loop: uses REAL audio quality metrics (7 metrics, not just loudness)
     if (this.learningOn && this.playing) {
-      // Compute spectral centroid (brightness) from analyser
-      let centroid = 0;
-      let totalMag = 0;
-      const sr = this.ctx.sampleRate;
-      const binW = sr / this.analyser.fftSize;
-      for (let i = 0; i < this.freqBuf.length; i++) {
-        const freq = i * binW;
-        const mag = this.freqBuf[i];
-        centroid += freq * mag;
-        totalMag += mag;
-      }
-      centroid = totalMag > 0 ? centroid / totalMag : 0;
-      const trial = this.learner.tick(this.ctx.currentTime, peakDb, centroid);
+      // Analyze full audio quality
+      const quality = analyzeQuality(this.analyser, this.ctx.sampleRate);
+      // Get actionable suggestions based on what's wrong
+      const suggestions = suggestAdjustments(quality, COMMERCIAL_TARGETS);
+      // Feed to learner
+      const trial = this.learner.tick(this.ctx.currentTime, quality, suggestions);
       if (trial) {
         this.setCC(trial.cc, trial.value);
       }

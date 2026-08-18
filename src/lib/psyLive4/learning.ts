@@ -1,30 +1,28 @@
 // src/lib/psyLive4/learning.ts
-// Lightweight reinforcement learner for CC parameter exploration.
-//
-// Principle: the engine's audio output has a measurable quality (peak dB near
-// -1dB = "loud and present", -40dB = "too quiet", 0dB = "clipping"). We treat
-// this as a reward signal and use epsilon-greedy exploration to find CC values
-// that maximize it.
-//
-// This is intentionally simple (~100 lines). The old learning system was
-// 4000 lines of dead code. This one actually runs and actually changes sound.
+// Reinforcement learner for CC parameter exploration.
+// Uses REAL audio quality metrics (not just loudness).
+// The learner receives 7 quality metrics + actionable suggestions.
+
+import type { AudioQualityMetrics, AdjustmentSuggestion } from './audio-quality';
 
 export interface CCExplorationState {
-  cc: number;                // which CC we're exploring (74=cutoff, 71=resonance, etc.)
-  value: number;              // current value being tested (0..1)
-  reward: number;             // last measured reward
-  history: Array<{ value: number; reward: number }>;  // last N trials
-  epsilon: number;            // exploration rate (0..1)
+  cc: number;
+  value: number;
+  reward: number;
+  history: Array<{ value: number; reward: number; metrics: Partial<AudioQualityMetrics> }>;
+  epsilon: number;
 }
 
-const EXPLORABLE_CCS = [74, 71, 5, 12];  // cutoff, resonance, glide, energyMacro
+const EXPLORABLE_CCS = [74, 71, 5, 12, 14, 15];
 const HISTORY_MAX = 20;
 
 export class CCLearner {
   private states: Map<number, CCExplorationState> = new Map();
   private currentIdx = 0;
   private trialStartTime = 0;
-  private trialDuration = 8;  // seconds per trial
+  private trialDuration = 8;
+  private bestReward = 0;
+  private bestParams: Record<number, number> = {};
 
   constructor() {
     for (const cc of EXPLORABLE_CCS) {
@@ -35,61 +33,52 @@ export class CCLearner {
     }
   }
 
-  /** Called by the host every poll tick. Returns the CC to adjust + its value. */
-  tick(now: number, peakDb: number, spectralCentroid: number = 0): { cc: number; value: number } | null {
+  /**
+   * Called by the host every poll tick.
+   * Uses real audio quality metrics (not just peak dB).
+   */
+  tick(now: number, metrics: AudioQualityMetrics, suggestions: AdjustmentSuggestion[]): { cc: number; value: number } | null {
     const cc = EXPLORABLE_CCS[this.currentIdx];
     const state = this.states.get(cc)!;
 
-    // If trial duration passed, evaluate reward + move to next
     if (now - this.trialStartTime >= this.trialDuration) {
-      // Reward: peak near -3dB (loudness) + spectral centroid in useful range
-      const reward = this.computeReward(peakDb, spectralCentroid);
+      // Reward = overall quality (weighted combination of 7 metrics)
+      const reward = metrics.overall;
       state.reward = reward;
-      state.history.push({ value: state.value, reward });
+      state.history.push({ value: state.value, reward, metrics: { warmth: metrics.warmth, brightness: metrics.brightness, smoothness: metrics.smoothness } });
       if (state.history.length > HISTORY_MAX) state.history.shift();
 
-      // Pick next value: epsilon-greedy
+      // Track best params
+      if (reward > this.bestReward) {
+        this.bestReward = reward;
+        this.bestParams[cc] = state.value;
+      }
+
+      // Pick next value: epsilon-greedy with suggestion-guided exploration
       if (Math.random() < state.epsilon) {
-        // Explore: random value
-        state.value = 0.2 + Math.random() * 0.6;
+        // Explore: check if there's a suggestion for this CC
+        const suggestion = suggestions.find(s => s.cc === cc);
+        if (suggestion) {
+          // Guided exploration — move in the suggested direction
+          const delta = suggestion.amount * (suggestion.direction === 'up' ? 1 : -1);
+          state.value = Math.max(0.05, Math.min(0.95, state.value + delta));
+        } else {
+          // Random exploration
+          state.value = 0.2 + Math.random() * 0.6;
+        }
       } else {
         // Exploit: use best historical value
         const best = state.history.reduce((a, b) => b.reward > a.reward ? b : a, state.history[0]);
         state.value = best?.value ?? 0.5;
       }
-      // Decay epsilon
-      state.epsilon = Math.max(0.1, state.epsilon * 0.98);
 
-      // Move to next CC
+      state.epsilon = Math.max(0.05, state.epsilon * 0.98);
+
       this.currentIdx = (this.currentIdx + 1) % EXPLORABLE_CCS.length;
       this.trialStartTime = now;
       return { cc, value: state.value };
     }
     return null;
-  }
-
-  /** Reward function: peak dB near -1dB = high reward. */
-  private computeReward(peakDb: number, spectralCentroid: number = 0): number {
-    if (peakDb === -Infinity) return 0;
-    // Loudness reward: peak near -3dB = high
-    let loudnessReward = 0;
-    if (peakDb > -0.3) loudnessReward = 0.2;  // clipping — bad
-    else if (peakDb < -20) loudnessReward = 0.1;  // too quiet — bad
-    else {
-      const dist = Math.abs(peakDb - (-3));
-      loudnessReward = Math.max(0, 1 - dist / 10);
-    }
-    // Brightness reward: spectral centroid in 800-3000Hz range = good
-    // (not too dark/muffled, not too harsh/bright)
-    let brightnessReward = 0.3;  // default if no centroid data
-    if (spectralCentroid > 0) {
-      if (spectralCentroid < 400) brightnessReward = 0.1;  // too dark
-      else if (spectralCentroid > 5000) brightnessReward = 0.2;  // too harsh
-      else if (spectralCentroid >= 800 && spectralCentroid <= 3000) brightnessReward = 1.0;  // sweet spot
-      else brightnessReward = 0.5;  // ok but not ideal
-    }
-    // Combined: 60% loudness + 40% brightness
-    return loudnessReward * 0.6 + brightnessReward * 0.4;
   }
 
   getStates(): CCExplorationState[] {
@@ -103,6 +92,9 @@ export class CCLearner {
     };
   }
 
+  getBestReward(): number { return this.bestReward; }
+  getBestParams(): Record<number, number> { return { ...this.bestParams }; }
+
   reset(): void {
     for (const state of this.states.values()) {
       state.value = 0.5;
@@ -111,5 +103,7 @@ export class CCLearner {
       state.epsilon = 0.3;
     }
     this.currentIdx = 0;
+    this.bestReward = 0;
+    this.bestParams = {};
   }
 }
