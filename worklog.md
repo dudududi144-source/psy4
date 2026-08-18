@@ -14456,3 +14456,41 @@ Stage Summary:
 - All other paths verified TRUE: CC, Smart Radio, drums, memory, styles
 - 0 TS errors, 0 runtime errors
 - Learning now has a meaningful reward signal that CC74 can actually affect
+
+---
+Task ID: complete-deep-roast
+Agent: main (Z.ai Code)
+Task: Complete deep roast — 12 investigations, verify every claim
+
+Work Log:
+- Investigation 7 (composer variety): same seed + startTime = identical output.
+  "Infinite variation" claim was misleading. Deterministic per-seed, but varies
+  in practice because scheduler feeds different startTimes. Documented.
+
+- Investigation 8 (sidechain): VERIFIED ducks 1.000→0.568 over 1s.
+  Samples [0.81, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 0.60] — real ducking ✓
+
+- Investigation 9 (multiband): VERIFIED low -9.04dB, mid -6.70dB, high -7.35dB,
+  limiter -1.10dB. All bands actively compressing ✓
+
+- Investigation 10 (keyboard): VERIFIED note 60 = 261.6Hz (C4), octave 3 first
+  key = MIDI 48 = 130.8Hz (C3). Pitch math correct ✓
+
+- Investigation 11 (preset save/load): VERIFIED roundtrip — bpm, style, cc74,
+  drive all restored correctly. allFieldsRestored: true ✓
+
+- Investigation 12 (visualizer): VERIFIED reflects audio.
+  Playing: brightPixels=434 (peak -1.0dB)
+  Stopped: brightPixels=100 (peak -80dB)
+  77% reduction = visualizer correctly shows audio activity ✓
+
+- Updated PSY4_HONEST_ROAST.md with all 12 investigations
+- Pushed: b5ccc00..1019727
+
+Stage Summary:
+- 12 investigations completed, all verified honestly
+- Total lies found: 8 (5 original + WAV silent + learning reward + infinite variation)
+- All 8 documented, 6 fixed, 2 acknowledged
+- Everything else verified TRUE: sidechain, multiband, keyboard, presets, visualizer
+- 0 errors throughout all tests
+- Engine is now thoroughly audited — every claim backed by code + runtime measurement
