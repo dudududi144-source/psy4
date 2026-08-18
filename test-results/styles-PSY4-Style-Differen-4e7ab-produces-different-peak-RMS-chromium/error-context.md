@@ -16,5 +16,5 @@ Error: page.waitForTimeout: Target page, context or browser has been closed
 ```
 
 ```
-Error: browserContext.close: Target page, context or browser has been closed
+Error: write EPIPE
 ```

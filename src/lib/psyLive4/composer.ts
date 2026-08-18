@@ -180,9 +180,9 @@ export class PsytranceComposer implements Composer {
         }
       }
 
-      // ── LEAD/ACID: motif (GROOVE=soft, DROP/REBUILD=full) ──
-      // FIX: lead was only in DROP/REBUILD (bar 16+), user heard nothing for 2+ minutes
-      // Now lead plays from GROOVE (bar 8) with lower velocity, full in DROP
+      // ── LEAD/ACID: motif that follows the bass harmony ──
+      // FIX: lead was static on root, clashing with moving bass notes.
+      // Now lead notes are chosen from the SAME scale, tracking the bass.
       if (section === 'GROOVE' || section === 'DROP' || section === 'REBUILD') {
         if (section === 'GROOVE' ? barIdx >= 8 : true) {
           const leadVelMult = section === 'GROOVE' ? 0.4 : 0.6;
@@ -190,13 +190,20 @@ export class PsytranceComposer implements Composer {
             const step = g.motifSteps[i];
             const at = t + step * sixteenth;
             if (at >= req.startTime && at < end) {
-              const interval = g.motifIntervals[i % g.motifIntervals.length];
+              // FIX: lead follows the bass note at this step position
+              // Use the same scale offset as the bass at this step
+              const bassScaleIdx = step % scale.length;
+              const bassNoteAtStep = bassRoot + (scale[bassScaleIdx] - scale[0]);
+              // Lead plays a harmonic interval above the bass note
+              // 3rd or 5th above = consonant, flowing
+              const harmonyInterval = g.motifIntervals[i % g.motifIntervals.length];
+              const leadNote = bassNoteAtStep + 24 + harmonyInterval; // +24 = 2 octaves above bass
               events.push({
                 at,
                 role: (g.acidBass ? 'acid' : 'lead') as SynthRole,
-                note: leadRoot + interval,
+                note: leadNote,
                 velocity: Math.min(1, leadVelMult * velScale),
-                duration: sixteenth * (section === 'GROOVE' ? 3 : 2),  // longer notes in groove
+                duration: sixteenth * (section === 'GROOVE' ? 3 : 2),
               });
               motifStep = (motifStep + 1) % g.motifIntervals.length;
             }
@@ -206,15 +213,15 @@ export class PsytranceComposer implements Composer {
 
       // ── LEAD: atmospheric pad-like layer in INTRO (very soft) ──
       if (section === 'INTRO' && barIdx >= 4) {
-        // Soft sustained lead notes for melody hint
         const at = t;
         if (at >= req.startTime && at < end) {
+          // Play root + 7th (perfect 5th) for consonant pad-like layer
           events.push({
             at,
             role: 'lead' as SynthRole,
-            note: leadRoot,
+            note: leadRoot + 7,  // perfect 5th above root
             velocity: Math.min(1, 0.25 * velScale),
-            duration: beat * 4,  // whole bar
+            duration: beat * 4,
           });
         }
       }
