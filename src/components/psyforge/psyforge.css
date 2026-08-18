@@ -1061,3 +1061,27 @@
   .pf-kbd { height: 80px; }
   .pf-whl { width: 36px; height: 36px; }
 }
+
+/* ── ARIA + Focus states for accessibility ─────────────────────────────── */
+.pf-d:focus-visible {
+  outline: 2px solid var(--pf-ac);
+  outline-offset: 3px;
+}
+.pf-btn:focus-visible {
+  outline: 2px solid var(--pf-ac);
+  outline-offset: 2px;
+}
+.pf-sel:focus-visible {
+  outline: 2px solid var(--pf-ac);
+  outline-offset: 2px;
+}
+.pf-key:focus-visible {
+  outline: 2px solid var(--pf-gr);
+  outline-offset: -2px;
+}
+
+/* Keyboard focus support: arrow keys on knobs */
+.pf-d:focus {
+  border-color: var(--pf-ac);
+  box-shadow: 0 0 12px rgba(184,242,46,0.2), inset 0 1px 2px rgba(255,255,255,0.12), inset 0 -2px 4px rgba(0,0,0,0.5);
+}

@@ -36,6 +36,22 @@ export function Knob({ label, value, onChange, display, accent = 'ac', size = 40
     onChange(v);
   }, [onChange]);
 
+  // Keyboard support: arrow up/down = ±5%, left/right = ±1%
+  const onKeyDown = useCallback((e: React.KeyboardEvent) => {
+    let delta = 0;
+    switch (e.key) {
+      case 'ArrowUp': delta = 0.05; break;
+      case 'ArrowDown': delta = -0.05; break;
+      case 'ArrowRight': delta = 0.01; break;
+      case 'ArrowLeft': delta = -0.01; break;
+      case 'Home': onChange(0); e.preventDefault(); return;
+      case 'End': onChange(1); e.preventDefault(); return;
+      default: return;
+    }
+    e.preventDefault();
+    onChange(Math.max(0, Math.min(1, value + delta)));
+  }, [value, onChange]);
+
   // Rotation: -120deg (min) to +120deg (max)
   const rotation = (value * 240 - 120).toFixed(0);
 
@@ -53,6 +69,14 @@ export function Knob({ label, value, onChange, display, accent = 'ac', size = 40
         } as React.CSSProperties}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
+        onKeyDown={onKeyDown}
+        role="slider"
+        tabIndex={0}
+        aria-label={label}
+        aria-valuenow={Math.round(value * 100)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuetext={display}
       />
       <span className="pf-v">{display}</span>
     </div>
