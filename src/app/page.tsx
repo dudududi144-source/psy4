@@ -187,10 +187,10 @@ export default function Page() {
     setSeqSteps(prev => prev.map((st, j) => j === i ? !st : st));
   }, []);
 
-  const onSmartRadio = useCallback(() => {
+  const onSmartRadio = useCallback(async () => {
     const newOn = !smartRadioOn;
     setSmartRadioOn(newOn);
-    engineRef.current?.setSmartRadio(newOn);
+    await engineRef.current?.setSmartRadio(newOn);
   }, [smartRadioOn]);
 
   const onLearning = useCallback(() => {

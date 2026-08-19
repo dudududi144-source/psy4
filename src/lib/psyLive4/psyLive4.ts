@@ -21,6 +21,7 @@ import { SamplerDevice } from '@/lib/devices/sampler-device';
 import { freqHzToCC74 } from './cc-mapping';
 import { CCLearner, type CCExplorationState } from './learning';
 import { analyzeQuality, suggestAdjustments, COMMERCIAL_TARGETS, type AudioQualityMetrics } from './audio-quality';
+import { RadioListener, type RadioTarget, type RadioStream } from './radio-listener';
 import { DeviceHost, InMemoryChannel } from '@/lib/psy-foundation-shim';
 import type { MusicalEvent } from '@/lib/psy-foundation-shim/protocol';
 
@@ -140,6 +141,9 @@ export class PsyLive4 implements SchedulerHost {
   // ── Learning loop ──
   private learner = new CCLearner();
   private learningOn = false;
+  // ── Real Radio Listener ──
+  private radioListener: RadioListener;
+  private radioTarget: RadioTarget | null = null;
 
   // ── Analyser buffers (reused, no per-tick allocation) ──
   private freqBuf: Uint8Array;
@@ -250,6 +254,10 @@ export class PsyLive4 implements SchedulerHost {
     this.channel = new InMemoryChannel();
     this.host = new DeviceHost(this.channel);
 
+    // ── Real Radio Listener ──
+    this.radioListener = new RadioListener(this.ctx);
+    this.radioListener.onTargets((target) => this.onRadioTargets(target));
+
     // ── visibilitychange handler (THE FIX for "engine stops") ──
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.onVisibility);
@@ -350,10 +358,7 @@ export class PsyLive4 implements SchedulerHost {
       if (this.barFingerprints.length > 32) this.barFingerprints.shift();
       this.checkRepetition();
     }
-    // Smart radio: auto-change style if enabled
-    if (this.smartRadioOn && this.ctx.currentTime >= this.smartRadioNextChange) {
-      this.cycleSmartRadioStyle();
-    }
+    // Smart radio cycling removed — now handled by RadioListener (real radio)
     // Events/sec calculation (updated every 1s)
     const now = this.ctx.currentTime;
     if (now - this.eventWindowStart >= 1.0) {
@@ -392,38 +397,74 @@ export class PsyLive4 implements SchedulerHost {
     return true;
   }
 
-  // ── Smart Radio: auto-evolution mode ──
-  // When enabled, the engine automatically cycles through styles every ~2 minutes,
-  // creating an endless "radio station" that evolves. Think of it as a DJ that
-  // never stops and always keeps the energy fresh.
-  private static readonly SMART_RADIO_STYLES: MusicalStyle[] = [
-    'FULL_ON', 'DARK', 'PROGRESSIVE', 'ACID', 'GOA', 'HI_TECH', 'FOREST',
-  ];
-  setSmartRadio(on: boolean): void {
+  // ── Real Radio: connect to live stream, analyze, learn ──
+  async setSmartRadio(on: boolean): Promise<void> {
     this.smartRadioOn = on;
     if (on) {
-      this.smartRadioNextChange = this.ctx.currentTime + this.smartRadioInterval;
-      console.log(`[PsyLive4] Smart Radio ON — next style change in ${this.smartRadioInterval}s`);
+      // Load streams list and connect to first available
+      const streams = await this.loadRadioStreams();
+      if (streams.length === 0) {
+        console.warn('[PsyLive4] No radio streams available');
+        return;
+      }
+      // Try each stream until one connects
+      for (const stream of streams) {
+        const ok = await this.radioListener.connect(stream);
+        if (ok) break;
+      }
+      console.log(`[PsyLive4] Radio ON — listening to ${this.radioListener.getCurrentStream()?.name || 'none'}`);
     } else {
-      console.log('[PsyLive4] Smart Radio OFF');
+      this.radioListener.disconnect();
+      this.radioTarget = null;
+      console.log('[PsyLive4] Radio OFF');
     }
   }
+
+  private async loadRadioStreams(): Promise<RadioStream[]> {
+    try {
+      const resp = await fetch('/api/streams.json');
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      const streams = data.streams || data;
+      return streams.map((s: any) => ({ id: s.id, name: s.name, url: s.url }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Called when RadioListener extracts new targets from the radio stream.
+   * The engine adjusts its parameters to match the radio.
+   */
+  private onRadioTargets(target: RadioTarget): void {
+    this.radioTarget = target;
+
+    // Sync BPM to radio (if detected and reasonable)
+    if (target.bpm > 100 && target.bpm < 180) {
+      this.setBPM(target.bpm);
+    }
+
+    // Sync style to radio
+    if (target.style && target.style !== this.style) {
+      this.setStyle(target.style as MusicalStyle);
+    }
+
+    // Update COMMERCIAL_TARGETS with REAL measured values from radio
+    // This is the KEY: the learning system now has REAL targets, not arbitrary numbers
+    COMMERCIAL_TARGETS.warmthMin = Math.max(0.3, target.warmth - 0.15);
+    COMMERCIAL_TARGETS.brightnessMin = Math.max(0.2, target.brightness - 0.15);
+    COMMERCIAL_TARGETS.brightnessMax = Math.min(0.9, target.brightness + 0.15);
+    COMMERCIAL_TARGETS.punchMin = Math.max(0.3, target.punch - 0.15);
+    COMMERCIAL_TARGETS.clarityMin = Math.max(0.2, target.clarity - 0.15);
+    COMMERCIAL_TARGETS.loudnessMin = Math.max(0.3, target.loudness - 0.15);
+    COMMERCIAL_TARGETS.loudnessMax = Math.min(0.95, target.loudness + 0.15);
+    COMMERCIAL_TARGETS.smoothnessMin = Math.max(0.3, target.smoothness - 0.15);
+    COMMERCIAL_TARGETS.balanceMin = Math.max(0.3, target.balance - 0.15);
+
+    console.log(`[PsyLive4] Radio targets updated: BPM=${target.bpm.toFixed(0)} style=${target.style} warmth=${target.warmth.toFixed(2)} brightness=${target.brightness.toFixed(2)} smoothness=${target.smoothness.toFixed(2)}`);
+  }
+
   isSmartRadioOn(): boolean { return this.smartRadioOn; }
-  private cycleSmartRadioStyle(): void {
-    const styles = PsyLive4.SMART_RADIO_STYLES;
-    const currentIdx = styles.indexOf(this.style);
-    const nextIdx = (currentIdx + 1) % styles.length;
-    const nextStyle = styles[nextIdx];
-    // Also vary energy for musical evolution
-    const newEnergy = 0.4 + Math.random() * 0.4;
-    this.setStyle(nextStyle);
-    this.setEnergy(newEnergy);
-    this.smartRadioNextChange = this.ctx.currentTime + this.smartRadioInterval;
-    console.log(`[PsyLive4] Smart Radio: → ${nextStyle} (energy=${newEnergy.toFixed(2)}), next in ${this.smartRadioInterval}s`);
-  }
-  getSmartRadioNextChange(): number {
-    return Math.max(0, this.smartRadioNextChange - this.ctx.currentTime);
-  }
 
   // ── Learning loop: epsilon-greedy CC exploration ──
   setLearning(on: boolean): void {
@@ -630,7 +671,7 @@ export class PsyLive4 implements SchedulerHost {
       eventsPerSec: this.eventsPerSec,
       ccParams: { ...this.ccParams },
       smartRadioOn: this.smartRadioOn,
-      smartRadioNextStyleChange: this.getSmartRadioNextChange(),
+      smartRadioNextStyleChange: 0,
       drumStats: this.drumDevice.getStats() as DrumDeviceStats | null,
       learningOn: this.learningOn,
       learningStates,
