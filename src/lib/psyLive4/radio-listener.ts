@@ -39,7 +39,19 @@ export interface RadioStream {
   id: string;
   name: string;
   url: string;
+  priority?: number;   // lower = preferred (1 = primary, 2 = backup)
 }
+
+/**
+ * Stream health event — emitted when a stream fails or recovers.
+ * The host uses this to trigger auto-failover to the next stream.
+ */
+export type StreamHealthListener = (event: {
+  type: 'connected' | 'stalled' | 'error' | 'cors-blocked' | 'switching';
+  streamId: string;
+  streamName: string;
+  reason?: string;
+}) => void;
 
 export class RadioListener {
   private audioEl: HTMLAudioElement | null = null;
@@ -57,6 +69,19 @@ export class RadioListener {
   private lastDetectedBpm = 0;
   private bpmConfidence = 0;
   private onTargetsCallback: ((target: RadioTarget) => void) | null = null;
+
+  // ── BACKUP: stream health monitoring + auto-failover ──
+  // Tracks whether the current stream is actually delivering audio.
+  // If the stream stalls (no audio data for >15s), we emit a 'stalled'
+  // event so the host can switch to the next backup stream.
+  private healthListener: StreamHealthListener | null = null;
+  private stallCheckInterval: ReturnType<typeof setInterval> | null = null;
+  private lastAudioDataTime = 0;
+  private static readonly STALL_TIMEOUT_MS = 15000;  // 15s no data = stalled
+  private connectionAttempts = 0;
+  private static readonly MAX_RECONNECT_ATTEMPTS = 2;
+  // Track which streams have failed this session (don't retry them immediately)
+  private failedStreams: Set<string> = new Set();
 
   constructor(ctx: AudioContext) {
     this.ctx = ctx;
@@ -100,33 +125,126 @@ export class RadioListener {
       this.audioEl.crossOrigin = 'anonymous';
       this.audioEl.src = stream.url;
       this.audioEl.volume = 0.3;  // quiet — the engine is the main sound
+      this.connectionAttempts++;
+      this.lastAudioDataTime = Date.now();  // reset stall timer
 
       // Wait for metadata loaded
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error('timeout')), 10000);
         this.audioEl!.addEventListener('canplay', () => { clearTimeout(timeout); resolve(); }, { once: true });
         this.audioEl!.addEventListener('error', () => { clearTimeout(timeout); reject(new Error('stream error')); }, { once: true });
-        this.audioEl!.play().catch(() => reject(new Error('autoplay blocked')));
+        this.audioEl!.addEventListener('stalled', () => { clearTimeout(timeout); reject(new Error('stalled')); }, { once: true });
+        this.audioEl!.addEventListener('abort', () => { clearTimeout(timeout); reject(new Error('aborted')); }, { once: true });
+        this.audioEl!.play().catch((e) => reject(new Error(`autoplay blocked: ${e.message}`)));
       });
 
       // Route through Web Audio API
-      // DEEP GAP F: mediaSource → analyser → outputGain → destination
-      // (outputGain is created in constructor and controlled by setOutputGain)
+      // BACKUP: detect CORS blocks — if the stream doesn't send CORS headers,
+      // createMediaElementSource will produce silence in the analyser (the audio
+      // still plays through the element, but we can't analyze it).
+      // We detect this by checking if the analyser has data after 3 seconds.
       this.mediaSource = this.ctx.createMediaElementSource(this.audioEl);
       this.mediaSource.connect(this.analyser!);
-      // analyser already connected to outputGain → destination in constructor
 
       this.currentStream = stream;
       this.connected = true;
+      this.connectionAttempts = 0;  // success — reset attempts
       console.log(`[RadioListener] connected to ${stream.name}`);
 
-      // Start analysis loops (FIX GAP 2: BPM at 50ms, quality at 2000ms)
+      // Start analysis loops + stall monitoring
       this.startAnalysis();
+      this.startStallMonitoring();
+      this.emitHealth('connected', stream.id, stream.name);
       return true;
     } catch (err) {
-      console.warn(`[RadioListener] failed to connect to ${stream.name}:`, err);
+      const errMsg = String(err);
+      console.warn(`[RadioListener] failed to connect to ${stream.name}:`, errMsg);
+
+      // BACKUP: classify the error so the host can decide failover strategy
+      if (errMsg.includes('autoplay') || errMsg.includes('timeout')) {
+        this.emitHealth('error', stream.id, stream.name, errMsg);
+      } else if (errMsg.includes('stalled') || errMsg.includes('aborted')) {
+        this.emitHealth('stalled', stream.id, stream.name, errMsg);
+      } else {
+        this.emitHealth('error', stream.id, stream.name, errMsg);
+      }
       this.disconnect();
       return false;
+    }
+  }
+
+  /**
+   * BACKUP: When a stream is CORS-blocked, retry through our proxy.
+   * The proxy adds `Access-Control-Allow-Origin: *` headers server-side,
+   * so the browser allows MediaElementSource to access the audio data.
+   *
+   * Called by the host when a 'cors-blocked' health event fires.
+   * Returns true if the proxy connection succeeded.
+   */
+  async connectViaProxy(stream: RadioStream): Promise<boolean> {
+    const proxyUrl = `/api/radio/proxy?url=${encodeURIComponent(stream.url)}`;
+    console.log(`[RadioListener] retrying ${stream.name} via CORS proxy`);
+    const proxiedStream: RadioStream = {
+      ...stream,
+      url: proxyUrl,
+      name: `${stream.name} (proxy)`,
+    };
+    return this.connect(proxiedStream);
+  }
+
+  /**
+   * BACKUP: Start stall monitoring.
+   * Every 5s, check if the analyser has received new audio data since the last check.
+   * If no data for >15s, emit a 'stalled' event so the host can failover.
+   * Also detects CORS-blocked streams (audio plays but analyser shows silence).
+   */
+  private startStallMonitoring(): void {
+    if (this.stallCheckInterval) clearInterval(this.stallCheckInterval);
+    let corsCheckDone = false;
+
+    this.stallCheckInterval = setInterval(() => {
+      if (!this.analyser || !this.connected || !this.audioEl) return;
+
+      // Read analyser to check for audio data
+      this.analyser.getByteFrequencyData(this.freqBuf as Uint8Array<ArrayBuffer>);
+      let sum = 0;
+      for (let i = 0; i < this.freqBuf.length; i++) sum += this.freqBuf[i];
+      const avg = sum / this.freqBuf.length;
+
+      // If the audio element is playing (not paused, currentTime advancing) but
+      // the analyser shows silence, it's a CORS block.
+      if (!corsCheckDone && this.audioEl.currentTime > 1 && !this.audioEl.paused) {
+        if (avg < 0.1) {
+          // After 3s of playback, analyser should show something. Silence = CORS blocked.
+          corsCheckDone = true;
+          this.emitHealth('cors-blocked', this.currentStream!.id, this.currentStream!.name,
+            'stream plays but analyser is silent (CORS headers missing)');
+          console.warn(`[RadioListener] CORS block detected on ${this.currentStream!.name} — analyser is silent despite playback`);
+        } else {
+          corsCheckDone = true;  // stream is healthy — mark check done
+          this.lastAudioDataTime = Date.now();
+        }
+      }
+
+      // If we have audio data, update the last-seen time
+      if (avg > 1) {
+        this.lastAudioDataTime = Date.now();
+      }
+
+      // Check for stall (no audio data for >15s)
+      const stallDuration = Date.now() - this.lastAudioDataTime;
+      if (stallDuration > RadioListener.STALL_TIMEOUT_MS) {
+        console.warn(`[RadioListener] stream stalled (${(stallDuration / 1000).toFixed(0)}s no data) — emitting stalled event`);
+        this.emitHealth('stalled', this.currentStream!.id, this.currentStream!.name,
+          `no audio data for ${(stallDuration / 1000).toFixed(0)}s`);
+        this.lastAudioDataTime = Date.now();  // reset to avoid spamming
+      }
+    }, 5000);
+  }
+
+  private emitHealth(type: 'connected' | 'stalled' | 'error' | 'cors-blocked' | 'switching', streamId: string, streamName: string, reason?: string): void {
+    if (this.healthListener) {
+      this.healthListener({ type, streamId, streamName, reason });
     }
   }
 
@@ -150,6 +268,7 @@ export class RadioListener {
     this.bpmConfidence = 0;
     if (this.qualityInterval) { clearInterval(this.qualityInterval); this.qualityInterval = null; }
     if (this.bpmInterval) { clearInterval(this.bpmInterval); this.bpmInterval = null; }
+    if (this.stallCheckInterval) { clearInterval(this.stallCheckInterval); this.stallCheckInterval = null; }  // BACKUP: clear stall monitor
   }
 
   isConnected(): boolean { return this.connected; }
@@ -161,6 +280,30 @@ export class RadioListener {
 
   onTargets(cb: (target: RadioTarget) => void): void {
     this.onTargetsCallback = cb;
+  }
+
+  /**
+   * BACKUP: Set a health listener for stream failover events.
+   * The host registers a listener to handle 'stalled'/'error'/'cors-blocked'
+   * events by switching to the next backup stream.
+   */
+  onHealthEvent(listener: StreamHealthListener): void {
+    this.healthListener = listener;
+  }
+
+  /** Mark a stream as failed (so we don't retry it immediately). */
+  markStreamFailed(streamId: string): void {
+    this.failedStreams.add(streamId);
+  }
+
+  /** Clear failed-stream memory (e.g., when user manually retries). */
+  clearFailedStreams(): void {
+    this.failedStreams.clear();
+  }
+
+  /** Check if a stream has been marked as failed. */
+  isStreamFailed(streamId: string): boolean {
+    return this.failedStreams.has(streamId);
   }
 
   private qualityInterval: ReturnType<typeof setInterval> | null = null;
@@ -370,5 +513,6 @@ export class RadioListener {
     this.disconnect();
     if (this.analyser) { try { this.analyser.disconnect(); } catch {} }
     if (this.outputGain) { try { this.outputGain.disconnect(); } catch {} this.outputGain = null; }
+    if (this.stallCheckInterval) { clearInterval(this.stallCheckInterval); this.stallCheckInterval = null; }
   }
 }

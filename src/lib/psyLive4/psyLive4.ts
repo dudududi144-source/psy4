@@ -204,6 +204,8 @@ export class PsyLive4 implements SchedulerHost {
   // ── Real Radio Listener ──
   private radioListener: RadioListener;
   private radioTarget: RadioTarget | null = null;
+  // BACKUP: cached stream list for auto-failover
+  private currentRadioStreams: RadioStream[] = [];
 
   // ── Analyser buffers (reused, no per-tick allocation) ──
   private freqBuf: Uint8Array;
@@ -321,6 +323,11 @@ export class PsyLive4 implements SchedulerHost {
     // ── visibilitychange handler (THE FIX for "engine stops") ──
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.onVisibility);
+    }
+    // BACKUP (crash recovery): flush learning state to Turso before page unload.
+    // Uses sendBeacon via fetch keepalive so the request survives page close.
+    if (typeof window !== 'undefined') {
+      window.addEventListener('beforeunload', this.onBeforeUnload);
     }
   }
 
@@ -506,12 +513,15 @@ export class PsyLive4 implements SchedulerHost {
         console.warn('[PsyLive4] No radio streams available');
         return;
       }
-      // Try each stream until one connects
-      for (const stream of streams) {
-        const ok = await this.radioListener.connect(stream);
-        if (ok) break;
+      // BACKUP: register health listener for auto-failover BEFORE connecting
+      this.radioListener.onHealthEvent((event) => this.onStreamHealthEvent(event));
+      this.radioListener.clearFailedStreams();  // fresh start
+      // Try streams in priority order until one connects
+      const ok = await this.tryConnectStreams(streams);
+      if (!ok) {
+        console.error('[PsyLive4] All radio streams failed — radio OFF');
+        this.smartRadioOn = false;
       }
-      console.log(`[PsyLive4] Radio ON — listening to ${this.radioListener.getCurrentStream()?.name || 'none'}`);
     } else {
       this.radioListener.disconnect();
       this.radioTarget = null;
@@ -521,13 +531,115 @@ export class PsyLive4 implements SchedulerHost {
     }
   }
 
+  /**
+   * BACKUP: Try connecting to streams in priority order.
+   * Skips streams marked as failed. Returns true if any stream connected.
+   */
+  private async tryConnectStreams(streams: RadioStream[]): Promise<boolean> {
+    // Sort by priority (1 = primary, 2 = backup). Default to 1.
+    const sorted = [...streams].sort((a, b) => (a.priority ?? 1) - (b.priority ?? 1));
+    for (const stream of sorted) {
+      if (this.radioListener.isStreamFailed(stream.id)) {
+        console.log(`[PsyLive4] skipping failed stream ${stream.name}`);
+        continue;
+      }
+      const ok = await this.radioListener.connect(stream);
+      if (ok) {
+        this.currentRadioStreams = sorted;  // store for failover
+        return true;
+      }
+      // Mark as failed so we don't retry it immediately
+      this.radioListener.markStreamFailed(stream.id);
+    }
+    return false;
+  }
+
+  /**
+   * BACKUP: Handle stream health events — auto-failover when a stream dies.
+   * Triggered by RadioListener when:
+   * - 'stalled': no audio data for >15s
+   * - 'cors-blocked': stream plays but analyser is silent (CORS headers missing)
+   * - 'error': connection failed
+   *
+   * For CORS-blocked streams: retry through our /api/radio/proxy first.
+   * For stalled/errored streams: skip to the next stream in the list.
+   */
+  private async onStreamHealthEvent(event: {
+    type: 'connected' | 'stalled' | 'error' | 'cors-blocked' | 'switching';
+    streamId: string;
+    streamName: string;
+    reason?: string;
+  }): Promise<void> {
+    if (event.type === 'connected') return;  // healthy — nothing to do
+
+    console.warn(`[PsyLive4] stream health: ${event.type} on ${event.streamName}${event.reason ? ` (${event.reason})` : ''}`);
+
+    // Don't failover if radio is being turned off
+    if (!this.smartRadioOn) return;
+
+    // BACKUP: for CORS-blocked streams, retry through our proxy FIRST
+    // (before failing over to a different stream)
+    if (event.type === 'cors-blocked') {
+      const originalStream = this.currentRadioStreams.find(s => s.id === event.streamId);
+      if (originalStream && !this.radioListener.isStreamFailed(`${event.streamId}-proxy`)) {
+        this.radioListener.markStreamFailed(`${event.streamId}-proxy`);  // try proxy only once
+        console.log(`[PsyLive4] BACKUP: retrying ${event.streamName} via CORS proxy`);
+        this.radioListener.disconnect();
+        setTimeout(async () => {
+          if (!this.smartRadioOn) return;
+          const ok = await this.radioListener.connectViaProxy(originalStream);
+          if (ok) {
+            console.log(`[PsyLive4] BACKUP: proxy connection succeeded for ${event.streamName}`);
+          } else {
+            console.warn(`[PsyLive4] BACKUP: proxy also failed for ${event.streamName} — failing over to next stream`);
+            await this.failoverToNextStream(event.streamId, event.streamName);
+          }
+        }, 1000);
+        return;
+      }
+    }
+
+    // For stalled/error (or proxy-failed CORS), failover to next stream
+    await this.failoverToNextStream(event.streamId, event.streamName);
+  }
+
+  /**
+   * BACKUP: Failover to the next non-failed stream.
+   */
+  private async failoverToNextStream(failedStreamId: string, failedStreamName: string): Promise<void> {
+    this.radioListener.markStreamFailed(failedStreamId);
+    if (this.currentRadioStreams.length === 0) return;
+
+    const nextStream = this.currentRadioStreams.find(s => !this.radioListener.isStreamFailed(s.id));
+    if (nextStream && nextStream.id !== failedStreamId) {
+      console.log(`[PsyLive4] BACKUP: auto-failover from ${failedStreamName} → ${nextStream.name}`);
+      this.radioListener.disconnect();
+      setTimeout(async () => {
+        if (!this.smartRadioOn) return;
+        const ok = await this.radioListener.connect(nextStream);
+        if (!ok) {
+          this.radioListener.markStreamFailed(nextStream.id);
+          // Try remaining streams recursively
+          await this.failoverToNextStream(nextStream.id, nextStream.name);
+        }
+      }, 1000);
+    } else {
+      console.warn(`[PsyLive4] BACKUP: no more streams available — all failed. Keeping last known targets so learning continues.`);
+    }
+  }
+
   private async loadRadioStreams(): Promise<RadioStream[]> {
     try {
       const resp = await fetch('/api/streams.json');
       if (!resp.ok) return [];
       const data = await resp.json();
       const streams = data.streams || data;
-      return streams.map((s: any) => ({ id: s.id, name: s.name, url: s.url }));
+      return streams.map((s: any) => ({
+        id: s.id,
+        name: s.name,
+        url: s.url,
+        priority: s.priority ?? 1,  // BACKUP: preserve priority for failover ordering
+      }));
     } catch {
       return [];
     }
@@ -806,6 +918,28 @@ export class PsyLive4 implements SchedulerHost {
         console.log('[PsyLive4] visibilitychange → visible — ctx.resume() + reanchor');
       }).catch(() => {});
     }
+  };
+
+  /**
+   * BACKUP (crash recovery): Flush learning state to Turso before page unload.
+   * Uses fetch with keepalive so the request survives page close/navigation.
+   * This ensures the latest best params + convergence are persisted even if
+   * the browser crashes or the user closes the tab.
+   */
+  private onBeforeUnload = (): void => {
+    if (!this.cloudSyncOn) return;
+    try {
+      const bestParams = this.learner.getBestParams();
+      const bestReward = this.learner.getBestReward();
+      // fetch with keepalive — fire-and-forget, survives page close
+      fetch('/api/learning/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bestParams, bestReward, convergence: this.convergence }),
+        keepalive: true,  // survives page unload
+      }).catch(() => {});
+      console.log(`[PsyLive4] beforeunload — flushed state to cloud (reward=${bestReward.toFixed(3)})`);
+    } catch {}
   };
 
   // ───────────────────────────────────────────────────────────────────────
@@ -1115,10 +1249,20 @@ export class PsyLive4 implements SchedulerHost {
 
     // ── Epsilon-greedy exploration (long-term learning, persists to localStorage) ──
     const suggestions = suggestAdjustments(engineQuality, COMMERCIAL_TARGETS);
+    const prevBestReward = this.learner.getBestReward();
     const trial = this.learner.tick(this.ctx.currentTime, engineQuality, suggestions);
     if (trial) {
       this.setCC(trial.cc, trial.value);
       console.log(`[Learning] trial: CC${trial.cc}=${trial.value.toFixed(2)} (epsilon-greedy)`);
+    }
+
+    // BACKUP (crash recovery): if this tick found a NEW best reward, immediately
+    // checkpoint to Turso cloud (don't wait for the 20s debounce). This way a
+    // server crash never loses more than 4s of learning progress.
+    const newBestReward = this.learner.getBestReward();
+    if (this.cloudSyncOn && newBestReward > prevBestReward) {
+      console.log(`[Learning] new best reward ${newBestReward.toFixed(3)} > ${prevBestReward.toFixed(3)} — immediate cloud checkpoint`);
+      this.syncToCloud(this.ctx.currentTime).catch(() => {});
     }
   }
 
@@ -1375,6 +1519,9 @@ export class PsyLive4 implements SchedulerHost {
     this.radioListener.dispose();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisibility);
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('beforeunload', this.onBeforeUnload);
     }
     this.host.dispose();
     this.melodicDevice.dispose();
