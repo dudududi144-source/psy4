@@ -15779,3 +15779,47 @@ VERDICT: system connects + analyzes, but NOT sufficient for commercial quality y
 Needs 2-3 more days of work to close the gap.
 
 - Pushed: 288ecaa..55a78da
+
+---
+Task ID: fix-learning-delta-comparison
+Agent: main (Z.ai Code)
+Task: Fix learning — warmup + smoothing + direct delta comparison
+
+Work Log:
+- FIX 1: Radio analysis quality
+  - 5s warmup (skip during buffering) — no more analyzing silence
+  - Skip if loudness < 0.05 (radio silent between tracks)
+  - Brightness capped at 0.8 (1.0 = white noise artifact)
+  - 5-sample moving average smoothing (stable targets)
+  - BPM confidence score (need 4+ beats to trust)
+
+- FIX 2: Direct delta comparison
+  - In getState() learning loop:
+    if (radioTarget.connected):
+      delta.brightness = engine.brightness - radio.brightness
+      delta.warmth = engine.warmth - radio.warmth
+      delta.loudness = engine.loudness - radio.loudness
+      delta.smoothness = engine.smoothness - radio.smoothness
+      delta.punch = engine.punch - radio.punch
+      
+      if delta.brightness > 0.1: reduce CC74 (engine too bright)
+      if delta.brightness < -0.1: increase CC74 (engine too dark)
+      if delta.smoothness < -0.15: reduce CC71+CC12 (engine too harsh)
+      if delta.loudness < -0.1: increase CC12 (engine too quiet)
+      if delta.loudness > 0.15: reduce CC12 (engine too loud)
+      if delta.warmth < -0.15: increase CC15 (engine lacks warmth)
+      if delta.punch < -0.15: reduce CC12 (restore dynamics)
+
+- VERIFIED in browser:
+  [Learning] engine too bright (0.20) → reduce CC74
+  [Learning] engine too loud (0.34→0.62) → reduce CC12
+  [Learning] engine lacks warmth (-0.23) → increase CC15
+  [RadioListener] radio too quiet — skipping (warmup works!)
+  
+  The engine is ACTUALLY comparing itself to the radio and adjusting!
+
+- 2/2 tests pass, 0 TS errors, 0 runtime errors
+- Pushed: 55a78da..09674db
+
+THE LEARNING LOOP IS NOW REAL:
+  radio → analyze → smoothed targets → delta = engine - radio → adjust CC → converge
