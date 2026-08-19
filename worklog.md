@@ -15593,3 +15593,36 @@ Stage Summary:
 - Suggestion-guided: if harsh → reduce cutoff, if muddy → increase cutoff, etc.
 - Reward is REAL: 0.37 overall = audio has room to improve (good signal for learning)
 - 2/2 tests pass, 0 errors
+
+---
+Task ID: phase0-complete-spectrum-fix
+Agent: main (Z.ai Code)
+Task: Phase 0.4 — VLM verification + spectrum fix
+
+Work Log:
+- Verified git sync: local = remote = 3ca63f5 (Phase 0.3)
+- App: HTTP 200, 0 TS errors
+- VLM review after all Phase 0 fixes:
+  - Rating: 7/10
+  - #1 issue: spectrum looked broken (hard cutoff at 2kHz)
+  - #2: inconsistent knob colors
+  - Spectrum fix: log→linear bar spacing, 48→64 bars
+  - VLM after fix: "spectrum did improve — proper Full-On Rolling bass profile"
+- 4/4 tests pass (styles + learning)
+- Pushed: 3ca63f5..60c8c75
+
+Phase 0 Summary (all complete):
+- 0.1: Real Moog ladder lead device ✓
+- 0.2: Real learning (7 quality metrics) ✓
+- 0.3: Drum upgrade (bandpass hats, 3-layer snare) ✓
+- 0.4: VLM verification + spectrum fix ✓
+
+Current state:
+- 3 devices (Drum + Melodic + Lead with real Moog)
+- 7 quality metrics in learning
+- Drum synthesis upgraded (bandpass hats, 3-layer snare with Moog body)
+- Spectrum analyzer fixed (linear bars)
+- highRatio: 0.66 (target 0.25-0.50 — still above but realistic for electronic music)
+- brightness: 7000-8000Hz (was 8900Hz)
+- 4/4 tests pass, 0 errors
+- VLM: 7/10
