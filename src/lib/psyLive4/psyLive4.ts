@@ -482,10 +482,23 @@ export class PsyLive4 implements SchedulerHost {
   private _masterVolume = 1.0;
   setMasterVolume(v: number): void {
     this._masterVolume = Math.max(0, Math.min(1.5, v));
-    // Apply to the workletVolumeGain (post-multiband, pre-limiter)
     this.workletVolumeGain.gain.setTargetAtTime(this._masterVolume, this.ctx.currentTime, 0.02);
   }
   getMasterVolume(): number { return this._masterVolume; }
+
+  // ── Per-device mix balance (learning can adjust these) ──
+  private _highGain = 0.85;
+  private _midGain = 1.2;
+  private _lowGain = 1.4;
+  setSpectrumBalance(low: number, mid: number, high: number): void {
+    this._lowGain = Math.max(0.5, Math.min(2.0, low));
+    this._midGain = Math.max(0.5, Math.min(2.0, mid));
+    this._highGain = Math.max(0.3, Math.min(1.5, high));
+    this.multibandLowGain.gain.setTargetAtTime(this._lowGain, this.ctx.currentTime, 0.1);
+    this.multibandMidGain.gain.setTargetAtTime(this._midGain, this.ctx.currentTime, 0.1);
+    this.multibandHighGain.gain.setTargetAtTime(this._highGain, this.ctx.currentTime, 0.1);
+    console.log(`[PsyLive4] spectrum balance: low=${this._lowGain.toFixed(2)} mid=${this._midGain.toFixed(2)} high=${this._highGain.toFixed(2)}`);
+  }
 
   // ── Live keyboard note on/off (routes to melodic device) ──
   noteOn(midi: number, velocity: number = 0.8): void {
@@ -650,41 +663,55 @@ export class PsyLive4 implements SchedulerHost {
         };
 
         // Direct adjustments based on delta
-        // If engine too bright → reduce cutoff
+        // If engine too bright → reduce cutoff AND reduce high gain
         if (delta.brightness > 0.1) {
           this.setCC(74, Math.max(0.1, (this.ccParams[74] || 0.5) - 0.03));
-          console.log(`[Learning] engine too bright (${delta.brightness.toFixed(2)}) → reduce CC74`);
+          this._highGain = Math.max(0.3, this._highGain - 0.02);
+          this.multibandHighGain.gain.setTargetAtTime(this._highGain, this.ctx.currentTime, 0.1);
+          console.log(`[Learning] engine too bright (${delta.brightness.toFixed(2)}) → reduce CC74 + highGain=${this._highGain.toFixed(2)}`);
         }
-        // If engine too dark → increase cutoff
+        // If engine too dark → increase cutoff AND increase high gain
         if (delta.brightness < -0.1) {
           this.setCC(74, Math.min(0.9, (this.ccParams[74] || 0.5) + 0.03));
-          console.log(`[Learning] engine too dark (${delta.brightness.toFixed(2)}) → increase CC74`);
+          this._highGain = Math.min(1.5, this._highGain + 0.02);
+          this.multibandHighGain.gain.setTargetAtTime(this._highGain, this.ctx.currentTime, 0.1);
+          console.log(`[Learning] engine too dark (${delta.brightness.toFixed(2)}) → increase CC74 + highGain=${this._highGain.toFixed(2)}`);
         }
-        // If engine too harsh → reduce resonance + drive
+        // If engine too harsh → reduce resonance + drive + high gain
         if (delta.smoothness < -0.15) {
           this.setCC(71, Math.max(0.1, (this.ccParams[71] || 0.35) - 0.03));
           this.setCC(12, Math.max(0.1, (this.ccParams[12] || 0.5) - 0.02));
-          console.log(`[Learning] engine too harsh (${delta.smoothness.toFixed(2)}) → reduce CC71+CC12`);
+          this._highGain = Math.max(0.3, this._highGain - 0.03);
+          this.multibandHighGain.gain.setTargetAtTime(this._highGain, this.ctx.currentTime, 0.1);
+          console.log(`[Learning] engine too harsh (${delta.smoothness.toFixed(2)}) → reduce CC71+CC12+highGain=${this._highGain.toFixed(2)}`);
         }
-        // If engine too quiet → increase drive
+        // If engine too quiet → increase drive + low gain
         if (delta.loudness < -0.1) {
           this.setCC(12, Math.min(0.9, (this.ccParams[12] || 0.5) + 0.03));
-          console.log(`[Learning] engine too quiet (${delta.loudness.toFixed(2)}) → increase CC12`);
+          this._lowGain = Math.min(2.0, this._lowGain + 0.02);
+          this.multibandLowGain.gain.setTargetAtTime(this._lowGain, this.ctx.currentTime, 0.1);
+          console.log(`[Learning] engine too quiet (${delta.loudness.toFixed(2)}) → increase CC12 + lowGain=${this._lowGain.toFixed(2)}`);
         }
-        // If engine too loud → reduce drive
+        // If engine too loud → reduce drive + low gain
         if (delta.loudness > 0.15) {
           this.setCC(12, Math.max(0.1, (this.ccParams[12] || 0.5) - 0.02));
-          console.log(`[Learning] engine too loud (${delta.loudness.toFixed(2)}) → reduce CC12`);
+          this._lowGain = Math.max(0.5, this._lowGain - 0.02);
+          this.multibandLowGain.gain.setTargetAtTime(this._lowGain, this.ctx.currentTime, 0.1);
+          console.log(`[Learning] engine too loud (${delta.loudness.toFixed(2)}) → reduce CC12 + lowGain=${this._lowGain.toFixed(2)}`);
         }
-        // If engine lacks warmth → increase reverb (adds space)
+        // If engine lacks warmth → increase reverb + low gain
         if (delta.warmth < -0.15) {
           this.setCC(15, Math.min(0.8, (this.ccParams[15] || 0.3) + 0.02));
-          console.log(`[Learning] engine lacks warmth (${delta.warmth.toFixed(2)}) → increase CC15`);
+          this._lowGain = Math.min(2.0, this._lowGain + 0.03);
+          this.multibandLowGain.gain.setTargetAtTime(this._lowGain, this.ctx.currentTime, 0.1);
+          console.log(`[Learning] engine lacks warmth (${delta.warmth.toFixed(2)}) → increase CC15 + lowGain=${this._lowGain.toFixed(2)}`);
         }
-        // If engine lacks punch → reduce drive (restore dynamics)
+        // If engine lacks punch → reduce drive + increase mid gain
         if (delta.punch < -0.15) {
           this.setCC(12, Math.max(0.1, (this.ccParams[12] || 0.5) - 0.02));
-          console.log(`[Learning] engine lacks punch (${delta.punch.toFixed(2)}) → reduce CC12`);
+          this._midGain = Math.min(2.0, this._midGain + 0.02);
+          this.multibandMidGain.gain.setTargetAtTime(this._midGain, this.ctx.currentTime, 0.1);
+          console.log(`[Learning] engine lacks punch (${delta.punch.toFixed(2)}) → reduce CC12 + midGain=${this._midGain.toFixed(2)}`);
         }
       }
 

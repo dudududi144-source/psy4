@@ -120,8 +120,8 @@ export function analyzeQuality(analyser: AnalyserNode, sampleRate: number): Audi
   const meanSquare = rms * rms;
   const db = 10 * Math.log10(meanSquare || 1e-10);
   const lufs = db - 0.691;
-  // Map: -20 LUFS = 0.0, -6 LUFS = 1.0
-  const loudness = Math.max(0, Math.min(1, (lufs + 20) / 14));
+  // Map: -30 LUFS = 0.0, -3 LUFS = 1.0 (wider range for quiet streams)
+  const loudness = Math.max(0, Math.min(1, (lufs + 30) / 27));
 
   // ── 6. SMOOTHNESS: inverse THD (harshness detector) ──
   // High harmonics relative to fundamental = harsh

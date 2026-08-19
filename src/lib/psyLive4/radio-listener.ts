@@ -149,9 +149,9 @@ export class RadioListener {
 
     const metrics = analyzeQuality(this.analyser, this.ctx.sampleRate);
 
-    // Skip if radio is silent
-    if (metrics.loudness < 0.05) {
-      console.log('[RadioListener] radio too quiet — skipping');
+    // Skip if radio is TRULY silent (not just quiet — radio streams are often quiet)
+    if (metrics.loudness < 0.001 && metrics.brightness < 0.01) {
+      console.log('[RadioListener] radio truly silent — skipping');
       return;
     }
 
