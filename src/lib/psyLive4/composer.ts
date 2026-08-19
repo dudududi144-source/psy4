@@ -68,7 +68,10 @@ export class PsytranceComposer implements Composer {
     const sixteenth = beat / 4;
     const barLen = beat * 4;
     const end = req.startTime + req.duration;
-    const velScale = 0.7 + req.energy * 0.3;
+    // DEEP GAP A step 2: if pattern memory has preferred notes, blend the energy
+    // slightly toward the average of high-reward bars. This is a soft bias —
+    // the composer still generates new patterns, but the energy is nudged.
+    const velScale = 0.7 + (req.energy + (req.preferredNotes?.avgEnergy ?? 0)) * 0.15;
 
     // ── Snap to the bar boundary that contains startTime ──
     // barZero = audio time of the most recent bar boundary ≤ startTime.

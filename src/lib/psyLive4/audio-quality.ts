@@ -101,6 +101,102 @@ export function restoreDefaultTargets(): void {
 }
 
 /**
+ * DEEP GAP D: K-weighted LUFS approximation (ITU-R BS.1770-4).
+ *
+ * The old code used `db - 0.691` which is just raw RMS with a constant offset.
+ * Real LUFS applies a K-weighting filter before measuring mean square.
+ *
+ * K-weighting has 2 stages:
+ *   Stage 1 (pre-filter): high-shelf biquad at 1681.42Hz, +4dB boost
+ *   Stage 2 (RLB): high-pass biquad at 38.1354Hz
+ *
+ * After filtering, LUFS = -0.691 + 10 * log10(mean_square)
+ *
+ * Note: this is an instantaneous measurement (one FFT window ≈ 23ms).
+ * True LUFS uses 400ms blocks with gating. For learning-loop purposes,
+ * the instantaneous K-weighted measurement is a huge improvement over
+ * raw RMS and captures the perceptual loudness much more accurately.
+ */
+function computeKWeightedLUFS(samples: Float32Array, sampleRate: number): number {
+  if (samples.length === 0) return -70;
+
+  // ── Stage 1: Pre-filter (high-shelf biquad) ──
+  // ITU-R BS.1770-4 coefficients for 48kHz; we'll compute for arbitrary sample rate
+  // F0 = 1681.42Hz, G = 4.0dB (shelf gain)
+  // For a high-shelf biquad:
+  //   b0 = 10^(G/40) * (cos(ω0) + 1) + (1 - cos(ω0))
+  //   b1 = -2 * (10^(G/40) - 1) * (1 - cos(ω0))
+  //   ...
+  // For simplicity, we use the ITU reference coefficients scaled to sample rate.
+  // At 48kHz: b0=1.53512485958, b1=-2.6916961894, b2=1.1983928108
+  //           a0=1, a1=-0.8929802854, a2=0.1787001614
+  // We compute the omega for the actual sample rate and re-derive coefficients.
+
+  // Stage 1 coefficients (high-shelf at 1681Hz, +4dB)
+  const f0s1 = 1681.42;
+  const Gs1 = 4.0;
+  const A1 = Math.pow(10, Gs1 / 40);
+  const w0s1 = 2 * Math.PI * f0s1 / sampleRate;
+  const cosW0s1 = Math.cos(w0s1);
+  const sinW0s1 = Math.sin(w0s1);
+  // High-shelf formula (RBJ Audio EQ Cookbook)
+  const alpha1 = sinW0s1 / 2 * Math.sqrt((A1 + 1/A1) * (1/0.707 - 1) + 2);
+  const b0s1 = A1 * ((A1 + 1) + (A1 - 1) * cosW0s1 + 2 * Math.sqrt(A1) * alpha1);
+  const b1s1 = -2 * A1 * ((A1 - 1) + (A1 + 1) * cosW0s1);
+  const b2s1 = A1 * ((A1 + 1) + (A1 - 1) * cosW0s1 - 2 * Math.sqrt(A1) * alpha1);
+  const a0s1 = (A1 + 1) - (A1 - 1) * cosW0s1 + 2 * Math.sqrt(A1) * alpha1;
+  const a1s1 = 2 * ((A1 - 1) - (A1 + 1) * cosW0s1);
+  const a2s1 = (A1 + 1) - (A1 - 1) * cosW0s1 - 2 * Math.sqrt(A1) * alpha1;
+  // Normalize
+  const nb0s1 = b0s1 / a0s1, nb1s1 = b1s1 / a0s1, nb2s1 = b2s1 / a0s1;
+  const na1s1 = a1s1 / a0s1, na2s1 = a2s1 / a0s1;
+
+  // ── Stage 2: RLB filter (high-pass at 38Hz) ──
+  const f0s2 = 38.1354;
+  const w0s2 = 2 * Math.PI * f0s2 / sampleRate;
+  const cosW0s2 = Math.cos(w0s2);
+  const sinW0s2 = Math.sin(w0s2);
+  const Q2 = 0.5;
+  const alpha2 = sinW0s2 / (2 * Q2);
+  // High-pass formula (RBJ)
+  const b0s2 = (1 + cosW0s2) / 2;
+  const b1s2 = -(1 + cosW0s2);
+  const b2s2 = (1 + cosW0s2) / 2;
+  const a0s2 = 1 + alpha2;
+  const a1s2 = -2 * cosW0s2;
+  const a2s2 = 1 - alpha2;
+  const nb0s2 = b0s2 / a0s2, nb1s2 = b1s2 / a0s2, nb2s2 = b2s2 / a0s2;
+  const na1s2 = a1s2 / a0s2, na2s2 = a2s2 / a0s2;
+
+  // Apply both biquads in series (Direct Form I)
+  let x1_1 = 0, x2_1 = 0, y1_1 = 0, y2_1 = 0;  // stage 1 state
+  let x1_2 = 0, x2_2 = 0, y1_2 = 0, y2_2 = 0;  // stage 2 state
+
+  let meanSquare = 0;
+  const n = samples.length;
+  for (let i = 0; i < n; i++) {
+    const x = samples[i];
+    if (!isFinite(x)) { x1_1 = x2_1 = y1_1 = y2_1 = 0; x1_2 = x2_2 = y1_2 = y2_2 = 0; continue; }
+
+    // Stage 1 (high-shelf)
+    const y1 = nb0s1 * x + nb1s1 * x1_1 + nb2s1 * x2_1 - na1s1 * y1_1 - na2s1 * y2_1;
+    x2_1 = x1_1; x1_1 = x; y2_1 = y1_1; y1_1 = y1;
+
+    // Stage 2 (high-pass)
+    const y2 = nb0s2 * y1 + nb1s2 * x1_2 + nb2s2 * x2_2 - na1s2 * y1_2 - na2s2 * y2_2;
+    x2_2 = x1_2; x1_2 = y1; y2_2 = y1_2; y1_2 = y2;
+
+    meanSquare += y2 * y2;
+  }
+  meanSquare /= n;
+
+  if (meanSquare < 1e-12) return -70;  // silence
+
+  // LUFS = -0.691 + 10 * log10(mean_square)
+  return -0.691 + 10 * Math.log10(meanSquare);
+}
+
+/**
  * DEEP GAP C: Convergence metric — a single 0..1 number showing how close
  * the engine's 7 metrics are to the radio's 7 metrics.
  *
@@ -218,11 +314,25 @@ export function analyzeQuality(
   else if (flatness >= 0.05 && flatness <= 0.2) clarity = 1.0;  // sweet spot
   else clarity = 0.5;
 
-  // ── 5. LOUDNESS: LUFS approximation ──
-  const meanSquare = rms * rms;
-  const db = 10 * Math.log10(meanSquare || 1e-10);
-  const lufs = db - 0.691;
-  // Map: -30 LUFS = 0.0, -3 LUFS = 1.0 (wider range for quiet streams)
+  // ── 5. LOUDNESS: K-weighted LUFS approximation ──
+  // DEEP GAP D: was crude `db - 0.691` (raw RMS with gating bias offset).
+  // Real LUFS requires:
+  //   1. K-weighting filter (high-shelf +4dB at 1681Hz, high-pass at 38Hz)
+  //   2. Gating (absolute -70 LUFS + relative -10 LUFS)
+  //   3. 400ms block integration
+  //
+  // We can't do full 400ms block gating from a single AnalyserNode snapshot
+  // (it only gives us one fftSize window ≈ 23ms at 44100/1024). But we CAN
+  // apply the K-weighting filter to the time-domain data to get a much more
+  // accurate perceived-loudness estimate than raw RMS.
+  //
+  // K-weighting filter (ITU-R BS.1770-4):
+  //   Stage 1: high-shelf biquad (pre-filter) — boosts highs ~4dB
+  //   Stage 2: high-pass biquad (RLB) — cuts below 38Hz
+  //
+  // We apply these as IIR filters on the time-domain samples.
+  const lufs = computeKWeightedLUFS(tdData, sampleRate);
+  // Map: -30 LUFS = 0.0, -3 LUFS = 1.0 (commercial psytrance is -8 to -10 LUFS)
   const loudness = Math.max(0, Math.min(1, (lufs + 30) / 27));
 
   // ── 6. SMOOTHNESS: inverse THD (harshness detector) ──

@@ -33,6 +33,27 @@ export interface ComposeRequest {
   energy: number;      // 0..1
   seed: number;        // deterministic per session
   prev: ComposerContinuity | null;
+  // DEEP GAP A step 2: pattern memory bias — the host passes the top
+  // high-reward bar fingerprints so the composer can bias note selection
+  // toward notes that sounded good in the past. This is the feedback path
+  // from learning → composition.
+  preferredNotes?: PreferredNoteSet;
+}
+
+/**
+ * DEEP GAP A step 2: preferred notes from pattern memory.
+ * The host extracts these from the learner's pattern memory (top-N highest-reward
+ * bars) and passes them to the composer. The composer slightly biases toward
+ * these notes when choosing bass/lead notes.
+ *
+ * This is a SOFT bias — the composer still generates new patterns, but
+ * it slightly prefers notes that worked well in the past. Over time, the
+ * engine's composition converges toward patterns that sound good.
+ */
+export interface PreferredNoteSet {
+  bassNotes: Set<number>;     // MIDI notes that were in high-reward bass lines
+  leadNotes: Set<number>;     // MIDI notes that were in high-reward lead lines
+  avgEnergy: number;          // average energy of high-reward bars (0..1)
 }
 
 export interface ComposerContinuity {

@@ -386,6 +386,36 @@ export class PsyLive4 implements SchedulerHost {
   isRunning(): boolean { return this.playing; }
 
   compose(windowStart: number, windowEnd: number): void {
+    // DEEP GAP A step 2: extract preferred notes from pattern memory
+    // The learner stores bar fingerprints like "bass:52:0.5|hat:46:0.3|kick:36:0.7"
+    // We parse the top patterns to extract which bass/lead notes were in high-reward bars.
+    const topPatterns = this.learner.getTopPatterns(8);
+    const bassNotes = new Set<number>();
+    const leadNotes = new Set<number>();
+    let totalEnergy = 0;
+    let energyCount = 0;
+    for (const p of topPatterns) {
+      // Parse fingerprint: "role:note:vel|role:note:vel|..."
+      const parts = p.fingerprint.split('|');
+      for (const part of parts) {
+        const tokens = part.split(':');
+        if (tokens.length >= 3) {
+          const role = tokens[0];
+          const note = parseInt(tokens[1], 10);
+          if (!isNaN(note)) {
+            if (role === 'bass' || role === 'acid') bassNotes.add(note);
+            else if (role === 'lead') leadNotes.add(note);
+          }
+        }
+      }
+      // Use reward as a proxy for energy (higher reward = higher energy bar)
+      totalEnergy += p.reward;
+      energyCount++;
+    }
+    const preferredNotes = (bassNotes.size > 0 || leadNotes.size > 0)
+      ? { bassNotes, leadNotes, avgEnergy: energyCount > 0 ? totalEnergy / energyCount : 0 }
+      : undefined;
+
     const result = this.composer.compose({
       startTime: windowStart,
       duration: windowEnd - windowStart,
@@ -394,6 +424,7 @@ export class PsyLive4 implements SchedulerHost {
       energy: this.energy,
       seed: this.seed,
       prev: this.composerPrev,
+      preferredNotes,
     });
     this.composerPrev = result.next;
     this.bar = result.next.barInArrangement;
