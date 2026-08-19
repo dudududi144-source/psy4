@@ -3,80 +3,83 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PSY4 Phase 1 — Baseline Listening</title>
+<title>PSY4 Phase 5 — Vertical Slice Progress</title>
 <style>
   body { background:#0a0612; color:#e8e0f0; font:14px/1.5 system-ui,sans-serif; margin:0; padding:24px; }
   h1 { color:#e040fb; margin:0 0 4px; }
   .sub { color:#7c6a8a; margin:0 0 24px; }
   .stem { background:#14091f; border:1px solid #2a1540; border-radius:8px; padding:16px; margin-bottom:12px; }
-  .stem h2 { color:#00e5ff; margin:0 0 8px; font-size:16px; }
-  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; margin:8px 0; }
-  .stat { background:#1f0d2e; padding:8px; border-radius:4px; }
-  .stat .label { color:#9a7ab5; font-size:11px; text-transform:uppercase; }
-  .stat .value { color:#fff; font-size:16px; font-weight:bold; }
+  .stem h2 { color:#00e5ff; margin:0 0 4px; font-size:16px; }
+  .delta { color:#69f0ae; font-size:12px; margin:0 0 8px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:6px; margin:8px 0; }
+  .stat { background:#1f0d2e; padding:6px; border-radius:4px; }
+  .stat .label { color:#9a7ab5; font-size:10px; text-transform:uppercase; }
+  .stat .value { color:#fff; font-size:14px; font-weight:bold; }
   .verdict { margin:6px 0 0; padding:8px; border-left:3px solid #ff4081; background:#1a0510; color:#ffb3d0; font-size:13px; }
   audio { width:100%; margin-top:8px; }
   .target { color:#69f0ae; font-size:12px; }
   .warn { color:#ff5252; }
-  code { color:#ffd740; }
+  .ok { color:#69f0ae; }
 </style>
 </head>
 <body>
-<h1>PsyForge 4 — Phase 1 Baseline Listening</h1>
-<p class="sub">Full-On @ 138 BPM, 16 bars, seed=42. Reference DSP (native Web Audio, approximates the worklet). <strong>Listen and judge honestly.</strong></p>
+<h1>PsyForge 4 — Phase 5 Vertical Slice (in progress)</h1>
+<p class="sub">Full-On @ 138 BPM, 16 bars, seed=42. Reference DSP with Phase 5 fixes: uniform kick velocity, rolling 16th bass, FM lead, TB-303 acid, soft-clip limiter. <strong>Listen and compare to Phase 1.</strong></p>
 
 <div class="stem">
   <h2>kick-baseline.wav</h2>
+  <div class="delta">Phase 1 → 5: crest 25.2 → 19.1 (less clicky), no more clipping (was 0dBFS clip, now -0.5dB). Still click-dominated (centroid 1010Hz, target ≤200).</div>
   <div class="stats">
-    <div class="stat"><div class="label">Peak</div><div class="value">0.0 dBFS <span class="warn">CLIP</span></div></div>
-    <div class="stat"><div class="label">RMS</div><div class="value">-28.0 dB</div></div>
-    <div class="stat"><div class="label">Crest</div><div class="value">25.2 <span class="warn">↑</span></div></div>
-    <div class="stat"><div class="label">Centroid</div><div class="value">1042 Hz <span class="warn">↑</span></div></div>
-    <div class="stat"><div class="label">LUFS</div><div class="value">-28.7</div></div>
-    <div class="stat"><div class="label">Sub%</div><div class="value">96.5%</div></div>
+    <div class="stat"><div class="label">Peak</div><div class="value">-0.5 dB <span class="ok">✓</span></div></div>
+    <div class="stat"><div class="label">Crest</div><div class="value">19.1 <span class="warn">↑</span></div></div>
+    <div class="stat"><div class="label">Centroid</div><div class="value">1010 Hz <span class="warn">↑</span></div></div>
+    <div class="stat"><div class="label">LUFS</div><div class="value">-26.9</div></div>
+    <div class="stat"><div class="label">Sub%</div><div class="value">96.7%</div></div>
   </div>
-  <p class="verdict"><strong>Verdict:</strong> Clipping. Crest 25 (commercial psytrance kick = 8-12 — too clicky). Centroid 1042Hz (should be 80-150Hz — click dominates). Sub energy is present but the click transient pulls everything up. <span class="target">Target: crest ≤12, centroid ≤200Hz, peak -1dBTP.</span></p>
+  <p class="verdict"><strong>Remaining:</strong> crest 19 (target 8-12 — the click transient is still too sharp). Centroid 1010Hz (target 80-150 — click dominates over sub body). <span class="target">Phase 4 MasterWorklet will tame the click with multiband + true-peak.</span></p>
   <audio controls src="kick-baseline.wav"></audio>
 </div>
 
 <div class="stem">
-  <h2>bass-baseline.wav</h2>
+  <h2>bass-baseline.wav — MAJOR IMPROVEMENT</h2>
+  <div class="delta">Phase 1 → 5: events 107 → 192 (rolling 16ths!), LUFS -24.5 → -19.0 (+5.5dB), nonZero 44% → 76.8% (continuous), centroid 0 → 385Hz (real bass).</div>
   <div class="stats">
-    <div class="stat"><div class="label">Peak</div><div class="value">-8.8 dB</div></div>
-    <div class="stat"><div class="label">RMS</div><div class="value">-23.8 dB</div></div>
-    <div class="stat"><div class="label">Crest</div><div class="value">5.6</div></div>
-    <div class="stat"><div class="label">LUFS</div><div class="value">-24.5</div></div>
+    <div class="stat"><div class="label">Peak</div><div class="value">-5.7 dB</div></div>
+    <div class="stat"><div class="label">LUFS</div><div class="value">-19.0 <span class="ok">+5.5</span></div></div>
+    <div class="stat"><div class="label">Crest</div><div class="value">4.26 <span class="ok">✓</span></div></div>
+    <div class="stat"><div class="label">Centroid</div><div class="value">385 Hz <span class="ok">✓</span></div></div>
+    <div class="stat"><div class="label">Sub/Low/Mid</div><div class="value">8.7/65/26%</div></div>
   </div>
-  <p class="verdict"><strong>Verdict:</strong> 15dB quieter than the kick (commercial: ±3dB). Crest OK. The bass is buried in the mix. Not "rolling 16ths" — sparse pattern (~6-7 of 16 positions/bar). <span class="target">Target: peak within 3dB of kick, 12-16 notes/bar.</span></p>
+  <p class="verdict"><strong>Verdict:</strong> Now 12 offbeat 16ths/bar (was 6.7). Continuous rolling character. Spectral balance correct (65% low, 26% mid). Only 5dB below kick (was 15dB). <span class="target">Target met for pattern. Phase 4 master will raise overall loudness.</span></p>
   <audio controls src="bass-baseline.wav"></audio>
 </div>
 
 <div class="stem">
-  <h2>lead-baseline.wav</h2>
+  <h2>lead-baseline.wav — FM ADDED</h2>
+  <div class="delta">Phase 1 → 5: peak -12.1 → -8.5dB (+3.6dB from FM energy). ADR-010's fabricated FM is now real (modulator sin @ 2:1 ratio, depth 15% of carrier).</div>
   <div class="stats">
-    <div class="stat"><div class="label">Peak</div><div class="value">-12.1 dB</div></div>
-    <div class="stat"><div class="label">RMS</div><div class="value">-27.3 dB</div></div>
-    <div class="stat"><div class="label">Crest</div><div class="value">5.8</div></div>
-    <div class="stat"><div class="label">LUFS</div><div class="value">-28.0</div></div>
+    <div class="stat"><div class="label">Peak</div><div class="value">-8.5 dB <span class="ok">+3.6</span></div></div>
+    <div class="stat"><div class="label">LUFS</div><div class="value">-25.3</div></div>
+    <div class="stat"><div class="label">Crest</div><div class="value">6.4</div></div>
   </div>
-  <p class="verdict"><strong>Verdict:</strong> 3-4dB quieter than bass, 18dB quieter than kick. The lead is buried. 3-osc supersaw with slow LFO, no FM (ADR-010 fabricated). Static, no psychedelic character. <span class="target">Target: audible above the mix, FM modulation for metallic character.</span></p>
+  <p class="verdict"><strong>Verdict:</strong> FM modulation adds metallic/psychedelic character. Still quiet in the mix (-8.5dB vs kick -0.5dB = 8dB gap). <span class="target">Phase 5.5 (AABA) + level balance will bring it forward.</span></p>
   <audio controls src="lead-baseline.wav"></audio>
 </div>
 
 <div class="stem">
-  <h2>full-baseline.wav (full mix)</h2>
+  <h2>full-baseline.wav — NO MORE CLIPPING</h2>
+  <div class="delta">Phase 1 → 5: LUFS -20.9 → -17.0 (+3.9dB), crest 10.2 → 6.20, peak 0dBFS(clip) → -0.5dB (soft-clip limiter). Spectral: 1.6/31/67/0% → 8.3/62/29/0%.</div>
   <div class="stats">
-    <div class="stat"><div class="label">Peak</div><div class="value">0.0 dBFS <span class="warn">CLIP</span></div></div>
-    <div class="stat"><div class="label">RMS</div><div class="value">-20.2 dB</div></div>
-    <div class="stat"><div class="label">Crest</div><div class="value">10.2</div></div>
-    <div class="stat"><div class="label">LUFS</div><div class="value">-20.9</div></div>
-    <div class="stat"><div class="label">Centroid</div><div class="value">854 Hz</div></div>
-    <div class="stat"><div class="label">Sub/Low/Mid/High</div><div class="value">1.6/31/67/0%</div></div>
+    <div class="stat"><div class="label">Peak</div><div class="value">-0.5 dB <span class="ok">✓</span></div></div>
+    <div class="stat"><div class="label">LUFS</div><div class="value">-17.0 <span class="ok">+3.9</span></div></div>
+    <div class="stat"><div class="label">Crest</div><div class="value">6.20 <span class="ok">✓</span></div></div>
+    <div class="stat"><div class="label">Centroid</div><div class="value">476 Hz</div></div>
+    <div class="stat"><div class="label">Sub/Low/Mid/High</div><div class="value">8.3/62/29/0%</div></div>
   </div>
-  <p class="verdict"><strong>Verdict:</strong> Clipping. LUFS -20.9 (commercial psytrance = -9 to -11). Spectral balance wrong: 67% mid, 0% high. Dark and muddy. No air (no hats/cymbals energy above 8kHz). <span class="target">Target: LUFS -9 to -11, sub 15-25%, low 30-40%, mid 25-35%, high 15-25%.</span></p>
+  <p class="verdict"><strong>Verdict:</strong> No clipping. LUFS -17.0 (target -9 to -11 — still 6-8dB below commercial). Spectral: low 62% (good for psytrance), mid 29% (good), but <span class="warn">high 0% (no air — hats too quiet)</span>. <span class="target">Phase 4 (real MasterWorklet + LUFS targeting) + hat level fix → commercial loudness.</span></p>
   <audio controls src="full-baseline.wav"></audio>
 </div>
 
-<p class="sub" style="margin-top:24px;">After listening, reply with your honest impression. Phase 2-5 will fix: double-play (+6dB phantom boost), per-sample allocs, real master chain with limiter+LUFS+true-peak, kick velocity, rolling bass, FM lead, TB-303 acid.</p>
+<p class="sub" style="margin-top:24px;"><strong>Remaining to commercial:</strong> (1) Phase 4 MasterWorklet: raise LUFS -17 → -10 via integrated LUFS targeting + true-peak limiter. (2) Hat level: raise hats so high% goes 0 → 15-25%. (3) Kick click reduction: crest 19 → 10. (4) AABA phrase + EvolvingSequence (Phase 5.5/6). (5) Apply all fixes to the LIVE worklet (not just reference DSP).</p>
 </body>
 </html>

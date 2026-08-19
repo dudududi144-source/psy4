@@ -103,38 +103,44 @@ export class PsytranceComposer implements Composer {
       const leadRoot = 60 + cycleRootShift + BASS_ROOT_SHIFTS[shiftIdx]; // MIDI 60 = C4
 
       // ── KICK: 4-on-the-floor (always) ──
+      // PHASE 5.1 FIX: uniform velocity (was 0.95/0.85 house accent — wrong for psytrance).
+      // Real psytrance kicks are uniform ~1.0 with ±0.02 humanization. The kick IS the beat.
       for (let b = 0; b < 4; b++) {
         const at = t + b * beat;
         if (at >= req.startTime && at < end) {
-          const vel = b === 0 ? 0.95 : 0.85;
+          const humanize = (rng() - 0.5) * 0.04; // ±0.02
+          const vel = Math.min(1, 1.0 + humanize);
           events.push({
             at, role: 'kick' as SynthRole, note: 36,
-            velocity: Math.min(1, vel * velScale), duration: beat * 0.8,
+            velocity: vel * velScale, duration: beat * 0.8,
           });
         }
       }
 
       // ── BASS: rolling 16ths (always — even in BREAKDOWN for groove) ──
+      // PHASE 5.2 FIX: was sparse (isAfterKick || rng()<0.3 → ~6.7 notes/bar).
+      // Real psytrance bass = 12-16 16th notes/bar, continuous rolling.
+      // The bassSteps array (excludes 0,4,8,12 = downbeats where kick hits)
+      // gives 12 offbeat 16th positions — play ALL of them, with accent pattern:
+      //   - steps 2,6,10,14 ("after kick" = 8th-note offbeats) → accent 0.8
+      //   - other steps → 0.55
       if (section !== 'OUTRO') {
         const bassVelMult = section === 'BREAKDOWN' ? 0.5 : 1.0;
         const acidBass = g.acidBass && (section === 'DROP' || section === 'REBUILD');
         for (const step of g.bassSteps) {
           const at = t + step * sixteenth;
           if (at >= req.startTime && at < end) {
-            const isDownbeat = step % 4 === 0;
-            const isAfterKick = step % 4 === 2;
-            if (isDownbeat || isAfterKick || rng() < 0.3) {
-              const vel = (isDownbeat ? 0.8 : (isAfterKick ? 0.6 : 0.4)) * bassVelMult;
-              const noteOffset = scale[step % scale.length] - scale[0];
-              events.push({
-                at,
-                role: (acidBass ? 'acid' : 'bass') as SynthRole,
-                note: bassRoot + noteOffset,
-                velocity: Math.min(1, vel * velScale),
-                duration: sixteenth * 0.9,
-              });
-              bassNote = bassRoot + noteOffset;
-            }
+            const isAfterKick = step % 4 === 2;  // 8th-note offbeat positions
+            const vel = (isAfterKick ? 0.8 : 0.55) * bassVelMult;
+            const noteOffset = scale[step % scale.length] - scale[0];
+            events.push({
+              at,
+              role: (acidBass ? 'acid' : 'bass') as SynthRole,
+              note: bassRoot + noteOffset,
+              velocity: Math.min(1, vel * velScale),
+              duration: sixteenth * 0.9,
+            });
+            bassNote = bassRoot + noteOffset;
           }
         }
       }

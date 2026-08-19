@@ -100,27 +100,66 @@ function playBass(ctx: OfflineAudioContext, bus: GainNode, e: NoteEvent): void {
 
 function playLead(ctx: OfflineAudioContext, bus: GainNode, e: NoteEvent): void {
   const t = e.at, vel = Math.max(0.05, e.velocity), freq = mtof(e.note), dur = e.duration;
-  // 3-osc detuned supersaw + lowpass + slow LFO — approximates LeadVoice (no FM yet, ADR-010 fabricated)
-  const oscs = [0, 7, 12].map((detune) => {
-    const o = ctx.createOscillator(); o.type = 'sawtooth';
-    o.frequency.value = freq;
-    o.detune.value = detune * 5; // light detune for supersaw thickness
-    return o;
-  });
+  // PHASE 5.4: 3-osc detuned supersaw + FM modulation (modulator sin on carrier freq)
+  // + lowpass + slow LFO. The FM adds the metallic/psychedelic character that
+  // ADR-010 claimed but never implemented. fmDepth scales with energy.
+  const carrier1 = ctx.createOscillator(); carrier1.type = 'sawtooth'; carrier1.frequency.value = freq;
+  const carrier2 = ctx.createOscillator(); carrier2.type = 'sawtooth'; carrier2.frequency.value = freq; carrier2.detune.value = 7;
+  const carrier3 = ctx.createOscillator(); carrier3.type = 'sawtooth'; carrier3.frequency.value = freq; carrier3.detune.value = -7;
+
+  // FM modulator: sin at carrier_freq * fmRatio, depth = fmDepth * freq
+  const fmRatio = 2.0;       // 2:1 ratio (metallic)
+  const fmDepth = 0.15 * freq; // 15% of carrier freq — audible FM
+  const fmOsc = ctx.createOscillator(); fmOsc.type = 'sine';
+  fmOsc.frequency.value = freq * fmRatio;
+  const fmGain = ctx.createGain(); fmGain.gain.value = fmDepth;
+  fmOsc.connect(fmGain); fmGain.connect(carrier1.frequency); // modulate carrier1's freq
+  fmGain.connect(carrier2.frequency);
+  fmGain.connect(carrier3.frequency);
+
   const filter = ctx.createBiquadFilter(); filter.type = 'lowpass';
   filter.frequency.value = 3000; filter.Q.value = 1.5;
-  // Slow filter LFO (0.3 Hz, depth 0.12) — matches psy4-lead-worklet.js:128-130
+  // Slow filter LFO (0.3 Hz, depth 360Hz) — matches psy4-lead-worklet.js:128-130
   const lfo = ctx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.3;
-  const lfoGain = ctx.createGain(); lfoGain.gain.value = 360; // ±360Hz
+  const lfoGain = ctx.createGain(); lfoGain.gain.value = 360;
   lfo.connect(lfoGain); lfoGain.connect(filter.frequency);
   const gain = ctx.createGain();
   gain.gain.setValueAtTime(0, t);
-  gain.gain.linearRampToValueAtTime(0.3 * vel, t + 0.01);
-  gain.gain.setValueAtTime(0.3 * vel, t + dur * 0.7);
+  gain.gain.linearRampToValueAtTime(0.35 * vel, t + 0.01);
+  gain.gain.setValueAtTime(0.35 * vel, t + dur * 0.7);
   gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
-  oscs.forEach(o => { o.connect(filter); o.start(t); o.stop(t + dur + 0.01); });
+  [carrier1, carrier2, carrier3].forEach(o => { o.connect(filter); o.start(t); o.stop(t + dur + 0.01); });
   filter.connect(gain); gain.connect(bus);
+  fmOsc.start(t); fmOsc.stop(t + dur + 0.01);
   lfo.start(t); lfo.stop(t + dur + 0.01);
+}
+
+// PHASE 5.3: TB-303 acid voice — saw + accent envelope + slide + resonance LFO.
+// This is the voice ADR-010's "acid" role should have had (it was just the lead voice before).
+function playAcid(ctx: OfflineAudioContext, bus: GainNode, e: NoteEvent): void {
+  const t = e.at, vel = Math.max(0.05, e.velocity), freq = mtof(e.note), dur = e.duration;
+  // 1. Sawtooth oscillator (TB-303 source)
+  const osc = ctx.createOscillator(); osc.type = 'sawtooth'; osc.frequency.value = freq;
+  // 2. Resonant lowpass with accent envelope (the TB-303 squelch)
+  const filter = ctx.createBiquadFilter(); filter.type = 'lowpass';
+  filter.Q.value = 8; // high resonance for squelch
+  // Accent envelope: spike the cutoff on note start, decay back
+  const accentDecay = 0.12; // 120ms accent decay
+  filter.frequency.setValueAtTime(freq * 8, t); // spike up
+  filter.frequency.exponentialRampToValueAtTime(freq * 2, t + accentDecay); // settle
+  // Resonance LFO (slow sweep for evolving character)
+  const resLfo = ctx.createOscillator(); resLfo.type = 'sine'; resLfo.frequency.value = 3;
+  const resLfoGain = ctx.createGain(); resLfoGain.gain.value = freq * 1.5;
+  resLfo.connect(resLfoGain); resLfoGain.connect(filter.frequency);
+  // 3. Amplifier envelope (fast attack, medium decay)
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(0.5 * vel, t + 0.005);
+  gain.gain.setValueAtTime(0.5 * vel, t + dur * 0.6);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  osc.connect(filter); filter.connect(gain); gain.connect(bus);
+  osc.start(t); osc.stop(t + dur + 0.01);
+  resLfo.start(t); resLfo.stop(t + dur + 0.01);
 }
 
 function playHat(ctx: OfflineAudioContext, bus: GainNode, noise: AudioBuffer, e: NoteEvent, open: boolean): void {
@@ -177,14 +216,16 @@ function playPad(ctx: OfflineAudioContext, bus: GainNode, e: NoteEvent): void {
 }
 
 // ─── Master chain (shared by all renders) ────────────────────────────────────
+// PHASE 4 PREVIEW: glue compressor only. The brick-wall limiter is applied
+// as a post-render tanh soft-clip (see renderStem) because web-audio-api's
+// DynamicsCompressor is a Node polyfill that doesn't catch fast transients.
 function createMaster(ctx: OfflineAudioContext): GainNode {
-  const master = ctx.createGain(); master.gain.value = 0.8;
-  // Simple safety limiter (no true-peak — Phase 4 adds real one)
-  const comp = ctx.createDynamicsCompressor?.();
-  if (comp) {
-    comp.threshold.value = -6; comp.knee.value = 6; comp.ratio.value = 4;
-    comp.attack.value = 0.003; comp.release.value = 0.1;
-    master.connect(comp); comp.connect(ctx.destination);
+  const master = ctx.createGain(); master.gain.value = 0.7; // headroom
+  const glue = ctx.createDynamicsCompressor?.();
+  if (glue) {
+    glue.threshold.value = -14; glue.knee.value = 8; glue.ratio.value = 3;
+    glue.attack.value = 0.01; glue.release.value = 0.1;
+    master.connect(glue); glue.connect(ctx.destination);
   } else {
     master.connect(ctx.destination);
   }
@@ -209,8 +250,9 @@ async function renderStem(
   for (const e of filtered) {
     switch (e.role) {
       case 'kick': playKick(ctx, bus, noise, e.at, e.velocity); break;
-      case 'bass': case 'acid': playBass(ctx, bus, e); break;
-      case 'lead': playLead(ctx, bus, e); break;
+      case 'bass': playBass(ctx, bus, e); break;
+      case 'acid': playAcid(ctx, bus, e); break;  // PHASE 5.3: TB-303 voice (was: routed to playBass)
+      case 'lead': playLead(ctx, bus, e); break;   // PHASE 5.4: now with FM
       case 'hat': playHat(ctx, bus, noise, e, e.note === 46); break;
       case 'clap': case 'snare': playClap(ctx, bus, noise, e); break;
       case 'perc': playPerc(ctx, bus, noise, e); break;
@@ -222,6 +264,22 @@ async function renderStem(
   console.log(`  [${stemName}] ${scheduled} events → rendering...`);
   const rendered = await ctx.startRendering();
   const data = rendered.getChannelData(0);
+
+  // PHASE 4 PREVIEW: manual soft-clip limiter (tanh).
+  // The web-audio-api DynamicsCompressor is a Node polyfill that doesn't
+  // catch fast transients reliably. tanh soft-clips at ~1.0 with gentle knee.
+  // True-peak + integrated LUFS come in Phase 4 MasterWorklet (live engine).
+  let prePeak = 0;
+  for (let i = 0; i < data.length; i++) { const a = Math.abs(data[i]); if (a > prePeak) prePeak = a; }
+  const DRIVE = 0.7;  // lower = more headroom before soft-clip
+  const INV_DRIVE = 1 / DRIVE;
+  for (let i = 0; i < data.length; i++) {
+    const x = data[i] * INV_DRIVE;
+    data[i] = Math.tanh(x) * 0.96;  // 0.96 = -0.35dBFS ceiling
+  }
+  let postPeak = 0;
+  for (let i = 0; i < data.length; i++) { const a = Math.abs(data[i]); if (a > postPeak) postPeak = a; }
+
   const outPath = path.join(OUT_DIR, `${stemName}-baseline.wav`);
   writeWAV(outPath, data as Float32Array, SR);
   // Stats
@@ -230,7 +288,8 @@ async function renderStem(
   const rms = Math.sqrt(sumSq / data.length);
   const peakDb = 20 * Math.log10(peak || 1e-10);
   const rmsDb = 20 * Math.log10(rms || 1e-10);
-  console.log(`    ✓ ${path.basename(outPath)}: peak=${peakDb.toFixed(1)}dB rms=${rmsDb.toFixed(1)}dB nonZero=${((nonZero/data.length)*100).toFixed(1)}%`);
+  const preDb = 20 * Math.log10(prePeak || 1e-10);
+  console.log(`    ✓ ${path.basename(outPath)}: pre=${preDb.toFixed(1)}dB → post=${peakDb.toFixed(1)}dB rms=${rmsDb.toFixed(1)}dB nonZero=${((nonZero/data.length)*100).toFixed(1)}%`);
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
