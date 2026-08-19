@@ -25,6 +25,7 @@ interface LearningPanelProps {
   radioMixMode: 'both' | 'radio' | 'engine';
   onRadioMixMode: (mode: 'both' | 'radio' | 'engine') => void;
   radioConnected: boolean;
+  cloudSync: boolean;  // Turso cloud sync active
 }
 
 const CC_NAMES: Record<number, string> = {
@@ -39,7 +40,7 @@ const CC_NAMES: Record<number, string> = {
 export function LearningPanel({
   on, onToggle, states, currentCc, trialRemaining,
   convergence, convergenceHistory, learningErrors, patternCount,
-  radioMixMode, onRadioMixMode, radioConnected,
+  radioMixMode, onRadioMixMode, radioConnected, cloudSync,
 }: LearningPanelProps) {
   const convPct = Math.round(convergence * 100);
   const convColor = convPct > 70 ? 'var(--pf-ok, #4ade80)' : convPct > 40 ? 'var(--pf-mg)' : 'var(--pf-warn, #fbbf24)';
@@ -56,7 +57,7 @@ export function LearningPanel({
 
   return (
     <div className={`pf-m intel learning${on ? ' active' : ''}`}>
-      <h4>LEARNING LOOP</h4>
+      <h4>LEARNING LOOP{cloudSync && <span className="cloud-sync-badge" title="Turso cloud sync active">☁</span>}</h4>
       <div className="learning-status">
         <div className={`learning-led${on ? ' on' : ''}`} />
         <span className="learning-status-text">{on ? 'EXPLORING' : 'IDLE'}</span>

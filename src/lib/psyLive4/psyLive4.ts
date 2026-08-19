@@ -32,6 +32,13 @@ import {
 import { RadioListener, type RadioTarget, type RadioStream } from './radio-listener';
 import { DeviceHost, InMemoryChannel } from '@/lib/psy-foundation-shim';
 import type { MusicalEvent } from '@/lib/psy-foundation-shim/protocol';
+// Turso cloud sync (cross-session persistence)
+import {
+  loadCloudLearningState,
+  syncCloudLearningState,
+  syncCloudPatterns,
+  logRadioTelemetry,
+} from '../turso-sync';
 
 // ── Public diagnostics ───────────────────────────────────────────────────
 export interface RoleVoiceCount {
@@ -102,6 +109,9 @@ export interface LiveState4 {
   // DEEP GAP F: A/B mix mode
   radioMixMode: 'both' | 'radio' | 'engine';
   radioInBreakdown: boolean;
+  // Turso cloud sync status
+  cloudSync: boolean;             // true if cloud sync is active
+  cloudParamsLoaded: number;      // count of params loaded from cloud on init
 }
 
 export class PsyLive4 implements SchedulerHost {
@@ -180,6 +190,15 @@ export class PsyLive4 implements SchedulerHost {
   private static readonly CONVERGENCE_HISTORY_MAX = 60;
   // DEEP GAP F: A/B mix mode — 'both' (default), 'radio' (solo radio), 'engine' (solo engine)
   private radioMixMode: 'both' | 'radio' | 'engine' = 'both';
+  // Turso cloud sync state
+  private cloudSyncOn = false;          // true after cloud state loaded
+  private lastCloudSyncTime = 0;        // ctx.currentTime of last cloud sync
+  private static readonly CLOUD_SYNC_INTERVAL_SEC = 20;  // sync every ~5 learning ticks
+  private lastPatternSyncTime = 0;
+  private static readonly PATTERN_SYNC_INTERVAL_SEC = 30;
+  private lastTelemetryTime = 0;
+  private static readonly TELEMETRY_INTERVAL_SEC = 10;
+  private pendingPatternSync: Map<string, number> = new Map();  // fingerprint → reward (batched)
   // Reusable engine-analysis buffers (FIX GAP 9: was allocating 4.5KB per call).
   // These are `freqBuf`/`tdBuf` defined below — single set, shared with getState().
   // ── Real Radio Listener ──
@@ -562,6 +581,106 @@ export class PsyLive4 implements SchedulerHost {
     console.log('[PsyLive4] Learning memory wiped (explicit)');
   }
 
+  /**
+   * Turso cloud sync — load best params + convergence from the cloud.
+   * Called on engine init. Merges cloud state with local state (cloud wins
+   * if reward is higher). This gives cross-session + cross-device memory.
+   */
+  async loadCloudState(): Promise<number> {
+    try {
+      const cloud = await loadCloudLearningState();
+      if (!cloud || !cloud.ok || !cloud.bestParams) {
+        console.log('[PsyLive4] cloud sync: no cloud state available (using localStorage)');
+        return 0;
+      }
+      let loaded = 0;
+      const localBest = this.learner.getBestParams();
+      const localReward = this.learner.getBestReward();
+      // Merge: if cloud reward > local reward, use cloud params
+      if ((cloud.bestReward ?? 0) > localReward) {
+        for (const [ccStr, data] of Object.entries(cloud.bestParams)) {
+          const cc = Number(ccStr);
+          const value = (data as { value: number; reward: number }).value;
+          if (typeof cc === 'number' && typeof value === 'number') {
+            // Apply to engine + learner
+            this.setCC(cc, value);
+            localBest[cc] = value;
+            loaded++;
+          }
+        }
+        console.log(`[PsyLive4] cloud sync: loaded ${loaded} params from cloud (cloud reward ${cloud.bestReward?.toFixed(3)} > local ${localReward.toFixed(3)})`);
+      } else {
+        console.log(`[PsyLive4] cloud sync: local state is better (local ${localReward.toFixed(3)} >= cloud ${cloud.bestReward?.toFixed(3)})`);
+      }
+      // Load convergence history for the sparkline
+      if (cloud.convergenceHistory && cloud.convergenceHistory.length > 0) {
+        this.convergenceHistory = cloud.convergenceHistory.map(c => c.value);
+        if (this.convergenceHistory.length > PsyLive4.CONVERGENCE_HISTORY_MAX) {
+          this.convergenceHistory = this.convergenceHistory.slice(-PsyLive4.CONVERGENCE_HISTORY_MAX);
+        }
+      }
+      this.cloudSyncOn = true;
+      return loaded;
+    } catch (err) {
+      console.warn('[PsyLive4] cloud sync load failed:', err);
+      return 0;
+    }
+  }
+
+  /**
+   * Push current learning state to Turso (debounced, called from learning tick).
+   * Pushes: bestParams + bestReward + latest convergence.
+   */
+  private async syncToCloud(now: number): Promise<void> {
+    if (!this.cloudSyncOn) return;
+    if (now - this.lastCloudSyncTime < PsyLive4.CLOUD_SYNC_INTERVAL_SEC) return;
+    this.lastCloudSyncTime = now;
+    const bestParams = this.learner.getBestParams();
+    const bestReward = this.learner.getBestReward();
+    const ok = await syncCloudLearningState(bestParams, bestReward, this.convergence);
+    if (!ok) {
+      // Cloud might be down — back off
+      this.lastCloudSyncTime = now + 40;  // wait 60s before retry
+    }
+  }
+
+  /**
+   * Push pending pattern observations to Turso (debounced, batched).
+   */
+  private async syncPatternsToCloud(now: number): Promise<void> {
+    if (!this.cloudSyncOn) return;
+    if (now - this.lastPatternSyncTime < PsyLive4.PATTERN_SYNC_INTERVAL_SEC) return;
+    if (this.pendingPatternSync.size === 0) return;
+    this.lastPatternSyncTime = now;
+    const patterns = Array.from(this.pendingPatternSync.entries()).map(([fingerprint, reward]) => ({ fingerprint, reward }));
+    this.pendingPatternSync.clear();
+    const ok = await syncCloudPatterns(patterns);
+    if (!ok) {
+      // Put them back if sync failed
+      for (const p of patterns) this.pendingPatternSync.set(p.fingerprint, p.reward);
+      this.lastPatternSyncTime = now + 30;  // back off
+    }
+  }
+
+  /**
+   * Log radio telemetry to Turso (for offline analysis of what "commercial" sounds like).
+   */
+  private async logTelemetryToCloud(now: number): Promise<void> {
+    if (!this.cloudSyncOn || !this.radioTarget || !this.radioTarget.connected) return;
+    if (now - this.lastTelemetryTime < PsyLive4.TELEMETRY_INTERVAL_SEC) return;
+    this.lastTelemetryTime = now;
+    await logRadioTelemetry({
+      streamName: this.radioTarget.streamName,
+      bpm: this.radioTarget.bpm,
+      warmth: this.radioTarget.warmth,
+      brightness: this.radioTarget.brightness,
+      loudness: this.radioTarget.loudness,
+      smoothness: this.radioTarget.smoothness,
+      style: this.radioTarget.style,
+      inBreakdown: this.radioTarget.inBreakdown,
+    });
+  }
+
   // ── Master volume (0..1.5) ──
   private _masterVolume = 1.0;
   setMasterVolume(v: number): void {
@@ -778,6 +897,9 @@ export class PsyLive4 implements SchedulerHost {
       // DEEP GAP F: A/B mix mode
       radioMixMode: this.radioMixMode,
       radioInBreakdown: this.radioTarget?.inBreakdown ?? false,
+      // Turso cloud sync status
+      cloudSync: this.cloudSyncOn,
+      cloudParamsLoaded: 0,  // set during loadCloudState (not tracked per-tick)
     };
   }
 
@@ -848,7 +970,15 @@ export class PsyLive4 implements SchedulerHost {
     if (this.barFingerprints.length > 0) {
       const latestFingerprint = this.barFingerprints[this.barFingerprints.length - 1];
       this.learner.recordPattern(latestFingerprint, engineQuality.overall, this.ctx.currentTime);
+      // Queue for Turso cloud sync (batched, synced every 30s)
+      this.pendingPatternSync.set(latestFingerprint, engineQuality.overall);
     }
+
+    // Turso cloud sync (debounced — every 20s for params, 30s for patterns, 10s for telemetry)
+    const nowT = this.ctx.currentTime;
+    this.syncToCloud(nowT).catch(() => {});
+    this.syncPatternsToCloud(nowT).catch(() => {});
+    this.logTelemetryToCloud(nowT).catch(() => {});
 
     // ── DIRECT DELTA vs RADIO (if connected) ──
     // FIX GAP 8: apply ONE adjustment per tick — the largest-magnitude delta wins.

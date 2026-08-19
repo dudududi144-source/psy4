@@ -52,6 +52,7 @@ const initialState: LiveState4 = {
   // DEEP ROAST V2 fields
   convergence: 0, convergenceHistory: [], learningErrors: 0, patternCount: 0,
   radioMixMode: 'both' as 'both', radioInBreakdown: false,
+  cloudSync: false, cloudParamsLoaded: 0,
 };
 
 export default function Page() {
@@ -105,6 +106,15 @@ export default function Page() {
         // Load saved presets
         setSavedPresets(loadPresets());
         setReady(true);
+        // Load cloud state from Turso (cross-session persistence)
+        // Non-blocking — engine works fully offline; cloud is an enhancement
+        engine.loadCloudState().then(loaded => {
+          if (loaded > 0) {
+            // Sync the ccParams UI state with cloud-loaded values
+            const cloudParams = engine.getState().ccParams;
+            setCcParams(prev => ({ ...prev, ...cloudParams }));
+          }
+        }).catch(() => {});
       } catch (e) {
         console.error('PsyLive4 init failed', e);
       }
@@ -366,6 +376,7 @@ export default function Page() {
               radioMixMode={s.radioMixMode}
               onRadioMixMode={(mode) => engineRef.current?.setRadioMixMode(mode)}
               radioConnected={s.smartRadioOn}
+              cloudSync={s.cloudSync}
             />
           </div>
         </div>

@@ -16019,3 +16019,83 @@ Stage Summary:
 - The engine now has: composition learning infrastructure, breakdown protection,
   visible convergence, error resilience, A/B perceptual testing, gradient-informed search
 - 0 TS errors, 0 runtime errors, all fixes verified in browser
+
+---
+Task ID: turso-cloud-persistence
+Agent: main (Z.ai Code)
+Task: Add Turso cloud database for cross-session learning persistence. Continue deep engineering. Push to GitHub.
+
+Work Log:
+- User provided cloud credentials: Turso, Cloudflare, Supabase, GitHub
+- Safely stored in .env (gitignored — .gitignore already covers .env + upload/)
+- Discovered Turso token is a PLATFORM API token (not database auth token)
+- Listed databases via Turso platform API: found existing "forge-db"
+- Created database auth token via platform API
+- Switched from @libsql/client package (caused server crashes) to direct
+  HTTP fetch against Turso v2 pipeline API — more reliable in Next.js 16
+
+- Created src/lib/turso.ts — Turso HTTP client:
+  - tursoExecute(sql, args) — single statement
+  - tursoBatch(statements) — multi-statement pipeline
+  - toTursoArg() — converts JS values to Turso tagged format
+    (integer→string, float→number, text→string, null→{type:"null"})
+  - Schema: learning_params, pattern_memory, convergence_history, radio_telemetry
+  - All with proper indexes (reward DESC, measured_at DESC)
+
+- Created 4 API routes (server-side, token never exposed to client):
+  - GET  /api/health — verifies Turso connection + schema
+  - GET  /api/learning/state — fetch best params + convergence from cloud
+  - POST /api/learning/state — push best params + convergence to cloud
+  - GET  /api/learning/patterns?limit=N — fetch top-N patterns by reward
+  - POST /api/learning/patterns — batch upsert pattern observations
+  - POST /api/telemetry/radio — log radio analysis snapshots
+
+- Created src/lib/turso-sync.ts — client-side sync bridge:
+  - loadCloudLearningState() — called on engine init
+  - syncCloudLearningState() — debounced, every 20s
+  - syncCloudPatterns() — debounced, every 30s, batched
+  - logRadioTelemetry() — debounced, every 10s
+  - All fail silently (localStorage is the fallback)
+
+- Wired into PsyLive4 engine (psyLive4.ts):
+  - loadCloudState() — loads best params from cloud on init, merges with local
+    (cloud wins if reward > local)
+  - syncToCloud() — called from learning tick, pushes state every 20s
+  - syncPatternsToCloud() — batches pattern observations, pushes every 30s
+  - logTelemetryToCloud() — logs radio analysis every 10s
+  - pendingPatternSync map — queues patterns between sync intervals
+  - cloudSyncOn flag — true after cloud state loaded
+  - All sync calls are non-blocking + catch errors (never breaks learning)
+
+- Updated UI (LearningPanel.tsx):
+  - Cloud sync badge (☁) with pulse animation when cloudSync is true
+  - Shows that cross-session persistence is active
+
+- Updated page.tsx:
+  - loadCloudState() called on engine init (non-blocking)
+  - On cloud params loaded, syncs ccParams UI state
+
+- Verified via curl (all endpoints return 200):
+  - GET /api/health: {"status":"ok","turso":"connected","learningParams":1}
+  - GET /api/learning/state: {"ok":true,"bestParams":{"74":{"value":0.55,"reward":0.43}},...}
+  - POST /api/learning/state: {"ok":true,"pushed":2}
+  - GET /api/learning/patterns: {"ok":true,"patterns":[...],"count":2}
+  - POST /api/learning/patterns: {"ok":true,"upserted":2}
+  - POST /api/telemetry/radio: {"ok":true}
+
+- Verified in browser:
+  - "[PsyLive4] cloud sync: loaded 3 params from cloud (cloud reward 0.430 > local 0.000)"
+  - Engine loads cloud state on init, merges with local localStorage state
+
+- 0 TypeScript errors, 0 lint errors in source files
+
+Stage Summary:
+- Turso cloud database integrated for cross-session learning persistence
+- 4 tables: learning_params, pattern_memory, convergence_history, radio_telemetry
+- 4 API routes proxy between browser and Turso (token stays server-side)
+- Engine syncs every 20s (params), 30s (patterns), 10s (telemetry)
+- Cloud state loads on init and merges with local (cloud wins if reward higher)
+- All sync fails silently → localStorage fallback → engine works fully offline
+- Radio telemetry logged for offline analysis of what "commercial" sounds like
+- Pattern memory now persists to cloud (cross-device composition learning)
+- Convergence history syncs to cloud (long-term convergence tracking)

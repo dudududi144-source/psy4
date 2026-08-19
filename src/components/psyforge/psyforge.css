@@ -571,6 +571,20 @@
   box-shadow: 0 0 8px rgba(184, 242, 46, 0.2);
 }
 
+/* Cloud sync badge (Turso) */
+.cloud-sync-badge {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--pf-ok, #4ade80);
+  opacity: 0.7;
+  animation: cloud-pulse 3s ease-in-out infinite;
+}
+@keyframes cloud-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.9; }
+}
+
 /* ── DEEP ROAST V2: Convergence + A/B mode ─────────────────────────────── */
 .learning-convergence {
   margin-top: 8px;
