@@ -30,6 +30,8 @@ const BPM = 138;           // Full-On vertical slice target (Phase 5)
 const STYLE = 'FULL_ON' as const;
 const BARS = 16;            // ~27.8s at 138 BPM — enough to hear arrangement
 const SEED = 42;            // deterministic
+const TARGET_LUFS = -10;    // PHASE 4: commercial psytrance loudness target (-9 to -11)
+const CEILING_DB = -0.5;    // true-peak ceiling (we approximate with sample-peak)
 
 const OUT_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'validation', 'baseline');
 
@@ -265,31 +267,42 @@ async function renderStem(
   const rendered = await ctx.startRendering();
   const data = rendered.getChannelData(0);
 
-  // PHASE 4 PREVIEW: manual soft-clip limiter (tanh).
-  // The web-audio-api DynamicsCompressor is a Node polyfill that doesn't
-  // catch fast transients reliably. tanh soft-clips at ~1.0 with gentle knee.
-  // True-peak + integrated LUFS come in Phase 4 MasterWorklet (live engine).
-  let prePeak = 0;
-  for (let i = 0; i < data.length; i++) { const a = Math.abs(data[i]); if (a > prePeak) prePeak = a; }
-  const DRIVE = 0.7;  // lower = more headroom before soft-clip
-  const INV_DRIVE = 1 / DRIVE;
+  // PHASE 4: Two-pass LUFS targeting.
+  // Pass 1: measure the raw render's LUFS (approx = RMS-based, K-weighting skipped
+  //   in this reference render — Phase 4 MasterWorklet will use real ITU-R BS.1770).
+  // Pass 2: apply make-up gain to reach TARGET_LUFS, then soft-clip (tanh) to catch peaks.
+  let prePeak = 0, preSumSq = 0;
   for (let i = 0; i < data.length; i++) {
-    const x = data[i] * INV_DRIVE;
-    data[i] = Math.tanh(x) * 0.96;  // 0.96 = -0.35dBFS ceiling
+    const a = Math.abs(data[i]); if (a > prePeak) prePeak = a;
+    preSumSq += data[i] * data[i];
   }
-  let postPeak = 0;
-  for (let i = 0; i < data.length; i++) { const a = Math.abs(data[i]); if (a > postPeak) postPeak = a; }
+  const preRms = Math.sqrt(preSumSq / data.length);
+  const preLufs = 20 * Math.log10(preRms || 1e-10) - 0.691; // -0.691 = RMS→LUFS offset
+  const gainDb = TARGET_LUFS - preLufs;
+  const gain = Math.pow(10, gainDb / 20);
+
+  // Apply make-up gain, then soft-clip (tanh) to catch peaks at CEILING_DB
+  const ceiling = Math.pow(10, CEILING_DB / 20);
+  const drive = 0.85;  // soft-clip drive (lower = softer knee)
+  const invDrive = 1 / drive;
+  for (let i = 0; i < data.length; i++) {
+    const x = data[i] * gain * invDrive;
+    data[i] = Math.tanh(x) * ceiling * drive;
+  }
+
+  let postPeak = 0, postSumSq = 0;
+  for (let i = 0; i < data.length; i++) {
+    const a = Math.abs(data[i]); if (a > postPeak) postPeak = a;
+    postSumSq += data[i] * data[i];
+  }
+  const postRms = Math.sqrt(postSumSq / data.length);
+  const postLufs = 20 * Math.log10(postRms || 1e-10) - 0.691;
 
   const outPath = path.join(OUT_DIR, `${stemName}-baseline.wav`);
   writeWAV(outPath, data as Float32Array, SR);
-  // Stats
-  let peak = 0, sumSq = 0, nonZero = 0;
-  for (let i = 0; i < data.length; i++) { const a = Math.abs(data[i]); if (a > peak) peak = a; sumSq += data[i]*data[i]; if (a > 1e-6) nonZero++; }
-  const rms = Math.sqrt(sumSq / data.length);
-  const peakDb = 20 * Math.log10(peak || 1e-10);
-  const rmsDb = 20 * Math.log10(rms || 1e-10);
-  const preDb = 20 * Math.log10(prePeak || 1e-10);
-  console.log(`    ✓ ${path.basename(outPath)}: pre=${preDb.toFixed(1)}dB → post=${peakDb.toFixed(1)}dB rms=${rmsDb.toFixed(1)}dB nonZero=${((nonZero/data.length)*100).toFixed(1)}%`);
+  let nonZero = 0;
+  for (let i = 0; i < data.length; i++) { if (Math.abs(data[i]) > 1e-6) nonZero++; }
+  console.log(`    ✓ ${path.basename(outPath)}: preLUFS=${preLufs.toFixed(1)} → +${gainDb.toFixed(1)}dB → postLUFS=${postLufs.toFixed(1)} peak=${20*Math.log10(postPeak||1e-10).toFixed(1)}dB nonZero=${((nonZero/data.length)*100).toFixed(1)}%`);
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────

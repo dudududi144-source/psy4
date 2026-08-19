@@ -60,6 +60,12 @@ export interface ComposerContinuity {
   lastBassNote: number;
   barInArrangement: number;
   motifStep: number;
+  // PHASE 5.6: EvolvingSequence — mutable motif pattern (semitone offsets).
+  // One step mutates by ±2 every 4 bars. Threaded through continuity so the
+  // motif evolves across the whole session, not just per compose call.
+  motifPattern: number[];
+  // PHASE 5.6: counter for mutation timing (every 4 bars)
+  barsSinceLastMutation: number;
 }
 
 export interface ComposeResult {

@@ -82,6 +82,11 @@ export class PsytranceComposer implements Composer {
     let t = barZero;
     let bassNote = req.prev?.lastBassNote ?? 36;   // C2
     let motifStep = req.prev?.motifStep ?? 0;
+    // PHASE 5.6: EvolvingSequence — mutable motif pattern, seeded from grammar
+    let motifPattern = req.prev?.motifPattern
+      ? [...req.prev.motifPattern]
+      : [...g.motifIntervals];
+    let barsSinceMutation = req.prev?.barsSinceLastMutation ?? 0;
     // FIX: only count bars that actually overlap the compose window.
     // The old version counted every iterated bar (including ones before
     // startTime), which caused barInArrangement to skyrocket.
@@ -145,7 +150,7 @@ export class PsytranceComposer implements Composer {
         }
       }
 
-      // ── HATS: 8th notes ──
+      // ── HATS: 8th notes (PHASE 5: raised velocity 0.3/0.4 → 0.6/0.75 for high-freq content) ──
       if (section === 'GROOVE' || section === 'DROP' || section === 'REBUILD' || section === 'BREAKDOWN') {
         for (let step = 0; step < 16; step += 2) {
           const at = t + step * sixteenth;
@@ -153,8 +158,8 @@ export class PsytranceComposer implements Composer {
             const isOpen = step % 8 === 6;
             events.push({
               at, role: 'hat' as SynthRole, note: isOpen ? 46 : 42,
-              velocity: Math.min(1, (isOpen ? 0.3 : 0.4) * velScale),
-              duration: sixteenth * 0.3,
+              velocity: Math.min(1, (isOpen ? 0.6 : 0.75) * velScale),
+              duration: sixteenth * 0.35,
             });
           }
         }
@@ -189,32 +194,47 @@ export class PsytranceComposer implements Composer {
         }
       }
 
-      // ── LEAD/ACID: motif that follows the bass harmony ──
-      // FIX: lead was static on root, clashing with moving bass notes.
-      // Now lead notes are chosen from the SAME scale, tracking the bass.
+      // ── LEAD/ACID: AABA phrase structure (PHASE 5.5) + EvolvingSequence (5.6) ──
+      // AABA: bars 0,1 = A (statement, root position); bar 2 = B (octave higher, denser);
+      // bar 3 = A' (return, with mutation from EvolvingSequence).
+      // EvolvingSequence: motifPattern mutates ONE step by ±2 every 4 bars.
       if (section === 'GROOVE' || section === 'DROP' || section === 'REBUILD') {
         if (section === 'GROOVE' ? barIdx >= 8 : true) {
-          const leadVelMult = section === 'GROOVE' ? 0.4 : 0.6;
-          for (let i = 0; i < g.motifSteps.length; i++) {
-            const step = g.motifSteps[i];
+          const barInPhrase = barIdx % 4;
+          const isBSection = barInPhrase === 2;        // B = contrast (octave higher, denser)
+          // PHASE 5.6: mutate the motifPattern every 4 bars (on bar 0 of each phrase)
+          if (barInPhrase === 0 && barsSinceMutation >= 4) {
+            const mutIdx = int(rng, 0, motifPattern.length - 1);
+            const delta = rng() < 0.5 ? -2 : 2;
+            motifPattern[mutIdx] = Math.max(-7, Math.min(12, motifPattern[mutIdx] + delta));
+            barsSinceMutation = 0;
+          } else {
+            barsSinceMutation++;
+          }
+          // PHASE 5.5: AABA velocity + density
+          // A/A': sparse (motifSteps), B: denser (all 8 even-step positions)
+          const leadVelMult = (section === 'GROOVE' ? 0.5 : 0.75) * (isBSection ? 1.15 : 1.0);
+          const stepsToPlay = isBSection
+            ? [0, 2, 4, 6, 8, 10, 12, 14]
+            : g.motifSteps;
+          for (let i = 0; i < stepsToPlay.length; i++) {
+            const step = stepsToPlay[i];
             const at = t + step * sixteenth;
             if (at >= req.startTime && at < end) {
-              // FIX: lead follows the bass note at this step position
-              // Use the same scale offset as the bass at this step
               const bassScaleIdx = step % scale.length;
               const bassNoteAtStep = bassRoot + (scale[bassScaleIdx] - scale[0]);
-              // Lead plays a harmonic interval above the bass note
-              // 3rd or 5th above = consonant, flowing
-              const harmonyInterval = g.motifIntervals[i % g.motifIntervals.length];
-              const leadNote = bassNoteAtStep + 24 + harmonyInterval; // +24 = 2 octaves above bass
+              // PHASE 5.6: use the mutable motifPattern (was: fixed g.motifIntervals)
+              const harmonyInterval = motifPattern[i % motifPattern.length];
+              const octaveShift = isBSection ? 12 : 0;  // B section: +1 octave
+              const leadNote = bassNoteAtStep + 24 + harmonyInterval + octaveShift;
               events.push({
                 at,
                 role: (g.acidBass ? 'acid' : 'lead') as SynthRole,
                 note: leadNote,
                 velocity: Math.min(1, leadVelMult * velScale),
-                duration: sixteenth * (section === 'GROOVE' ? 3 : 2),
+                duration: sixteenth * (isBSection ? 1 : (section === 'GROOVE' ? 3 : 2)),
               });
-              motifStep = (motifStep + 1) % g.motifIntervals.length;
+              motifStep = (motifStep + 1) % motifPattern.length;
             }
           }
         }
@@ -273,6 +293,8 @@ export class PsytranceComposer implements Composer {
       lastBassNote: bassNote,
       barInArrangement: barInArrangementFromTime,
       motifStep,
+      motifPattern,           // PHASE 5.6: thread the mutated pattern
+      barsSinceLastMutation: barsSinceMutation,
     };
     return { events, next };
   }
