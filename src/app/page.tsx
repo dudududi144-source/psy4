@@ -94,6 +94,12 @@ export default function Page() {
   // ── Init engine ──
   useEffect(() => {
     let cancelled = false;
+    // Initialize user identity BEFORE any API calls
+    // This ensures X-User-Id header is sent on the first request
+    import('@/lib/user-identity').then(({ getOrCreateUserId }) => {
+      const userId = getOrCreateUserId();
+      console.log('[Page] user identity:', userId);
+    });
     (async () => {
       try {
         const engine = new PsyLive4();
@@ -106,11 +112,11 @@ export default function Page() {
         // Load saved presets
         setSavedPresets(loadPresets());
         setReady(true);
-        // Load cloud state from Turso (cross-session persistence)
-        // Non-blocking — engine works fully offline; cloud is an enhancement
+        // Load learning state from local DB (per-user, scoped by X-User-Id header)
+        // Non-blocking — engine works fully offline
         engine.loadCloudState().then(loaded => {
           if (loaded > 0) {
-            // Sync the ccParams UI state with cloud-loaded values
+            // Sync the ccParams UI state with loaded values
             const cloudParams = engine.getState().ccParams;
             setCcParams(prev => ({ ...prev, ...cloudParams }));
           }

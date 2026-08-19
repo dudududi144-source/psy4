@@ -6,9 +6,9 @@ import { ensureLocalSchema, getTelemetryStats } from '@/lib/local-db';
 
 export async function GET(req: NextRequest) {
   try {
-    ensureLocalSchema();
+    await ensureLocalSchema();
     const hours = Number(req.nextUrl.searchParams.get('hours') ?? '24');
-    const streamStats = getTelemetryStats(hours);
+    const streamStats = await getTelemetryStats(hours);
 
     const overall = streamStats.length > 0
       ? {

@@ -2,11 +2,11 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  /* config options here */
-  // FIX B8: removed `typescript.ignoreBuildErrors: true` — was masking real type errors.
-  // All 172 TS errors fixed (duplicate getter, private access, null assertions, tuple types).
-  // Now tsc --noEmit passes with 0 errors.
   reactStrictMode: false,
+  // Mark native modules as external — don't let Turbopack try to bundle them.
+  // This fixes OOM crashes during route compilation (better-sqlite3 is a native
+  // C++ addon that shouldn't be processed by the bundler).
+  serverExternalPackages: ['better-sqlite3'],
   // ADR-009: SharedArrayBuffer support — enables lock-free communication
   // between Web Worker and AudioWorklet (zero-copy, zero-allocation)
   async headers() {

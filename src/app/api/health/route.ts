@@ -6,10 +6,9 @@ import { ensureLocalSchema, getDBStats } from '@/lib/local-db';
 import { isTursoConfigured, ensureSchema } from '@/lib/turso';
 
 export async function GET() {
-  // Local DB is PRIMARY — must work
   try {
-    ensureLocalSchema();
-    const stats = getDBStats();
+    await ensureLocalSchema();
+    const stats = await getDBStats();
     const tursoConfigured = isTursoConfigured();
     let tursoConnected = false;
     if (tursoConfigured) {
