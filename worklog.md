@@ -15743,3 +15743,39 @@ THE LEARNING LOOP IS NOW REAL:
   6. Over time, engine learns to sound like the radio
 
 This is the REAL task: engine learns to sound commercial by listening to commercial radio.
+
+---
+Task ID: engineering-assessment
+Agent: main (Z.ai Code)
+Task: Professional engineering roast — will this do the job?
+
+Work Log:
+- Tested radio connection: Psyndora connects, freqAvg=61, peak=0.3, hasAudio=true ✓
+- Tested analysis: warmth=0.80, brightness=1.00, smoothness=0.20 ✓
+- Tested learning: engineAvgReward=0.329, 6 CCs explored ✓
+- Tested target updates: COMMERCIAL_TARGETS updated from radio ✓
+
+CRITICAL FINDINGS:
+1. Analysis is NOISY: brightness=1.0 (should be ~0.5), loudness=0.0 (warmup)
+2. No warmup period — analyzes during radio silence
+3. No confidence score on BPM detection
+4. Learning only changes CC params — can't fix:
+   - oscillator type (saw vs square)
+   - envelope (attack/decay/release)
+   - composition (which notes, which rhythm)
+   - arrangement (when lead enters, when breakdown)
+   - master chain (compression, EQ)
+5. No direct engine-vs-radio delta comparison
+6. CORS will block most streams (Psyndora works, others may not)
+7. engineAvgReward=0.329 — engine at 33% of radio quality
+
+WHAT'S NEEDED (2-3 days):
+1. Fix analysis: 5s warmup, 3-sample smoothing, BPM confidence
+2. Direct comparison: delta = engine - radio → adjust CC by delta
+3. Control beyond CC: volume per device, envelope params, oscillator mix
+4. CORS proxy: Cloudflare Worker for all 10 streams
+
+VERDICT: system connects + analyzes, but NOT sufficient for commercial quality yet.
+Needs 2-3 more days of work to close the gap.
+
+- Pushed: 288ecaa..55a78da
