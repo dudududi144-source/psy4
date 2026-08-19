@@ -15626,3 +15626,37 @@ Current state:
 - brightness: 7000-8000Hz (was 8900Hz)
 - 4/4 tests pass, 0 errors
 - VLM: 7/10
+
+---
+Task ID: phase1-sampler-device
+Agent: main (Z.ai Code)
+Task: Phase 1.1 — Wire SamplerDevice (4 devices now)
+
+Work Log:
+- Created sampler-device.ts:
+  - Loads 19 CC0 synth samples from /samples/manifest.json
+  - Maps roles to sample IDs (kick→kick-psy3/kick-deep/kick-punchy, etc.)
+  - Plays samples via AudioBufferSourceNode + gain (velocity)
+  - Auto-stops after sample duration
+  - Falls back gracefully if samples fail to load
+
+- Wired into PsyLive4:
+  - 4th device registered in DeviceHost
+  - Both DrumDevice + SamplerDevice receive drum events
+  - This creates LAYERED drum sound: synth + sample simultaneously
+  - onStart/onStop/dispose all wired
+
+- Verified:
+  - 'SamplerDevice loaded 19 samples (useSamples=true)'
+  - 'DeviceHost: 4 devices registered'
+  - playing=true, peak=-7.8, voices=10, 4 devices, 12 kicks
+  - 2/2 styles tests pass
+  - 0 TS errors, 0 runtime errors
+
+- Pushed: 60c8c75..37a497d
+
+Architecture now:
+  DrumDevice (synth) + SamplerDevice (samples) → layered drums
+  MelodicDevice (psysynth) → bass/pad/keys
+  LeadDevice (real Moog) → lead/acid
+  DeviceHost routes events to all 4 with error isolation
