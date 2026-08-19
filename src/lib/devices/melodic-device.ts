@@ -12,7 +12,7 @@ import type { PsyDevice } from '@/lib/psy-foundation-shim/device';
 import type { MusicalEvent, DeviceCapabilities, MusicalContext } from '@/lib/psy-foundation-shim/protocol';
 import type { MusicalTransport } from '@/lib/psy-foundation-shim/transport';
 import type { SynthRole } from '@/lib/psy-foundation-shim/roles';
-import { MELODIC_ROLES } from '@/lib/psy-foundation-shim/roles';
+import { PSYSYNTH_ROLES } from '@/lib/psy-foundation-shim/roles';
 
 // Type-only view of the psysynth bundle (the actual JS is minified ESM).
 interface PsynSynthBundle {
@@ -126,7 +126,7 @@ export class MelodicDevice implements PsyDevice {
 
   capabilities(): DeviceCapabilities {
     if (this.device) return this.device.capabilities();
-    return { audio: true, midi: false, inputs: 0, outputs: 1, voices: this.maxVoices, latencyMs: 0, roles: [...MELODIC_ROLES] };
+    return { audio: true, midi: false, inputs: 0, outputs: 1, voices: this.maxVoices, latencyMs: 0, roles: [...PSYSYNTH_ROLES] };
   }
 
   onTransport(t: MusicalTransport): void { this.device?.onTransport(t as any); }
@@ -154,12 +154,14 @@ export class MelodicDevice implements PsyDevice {
 
   reportLatencyMs(): number { return this.device?.reportLatencyMs?.() ?? 0; }
 
-  /** Routes a MusicalEvent to psysynth. Only melodic roles are handled. */
+  /** Routes a MusicalEvent to psysynth. Only PSYSYNTH_ROLES are handled
+   * (bass/pad/keys). Phase 2 fix: lead/acid are EXCLUDED — they go to the
+   * lead worklet (lead-device) to prevent double-play. */
   onEvent(event: MusicalEvent): void {
     if (!this.device) return;
     if (event.type !== 'note') return;
     const role = event.channel as SynthRole;
-    if (!MELODIC_ROLES.has(role)) return; // not a melodic role — ignore
+    if (!PSYSYNTH_ROLES.has(role)) return; // not a psysynth role — let lead/drum devices handle it
     this.device.onEvent(event);
   }
 
