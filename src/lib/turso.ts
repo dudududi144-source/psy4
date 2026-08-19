@@ -176,23 +176,36 @@ export async function initTursoSchema(): Promise<boolean> {
   if (schemaInitialized) return true;
   try {
     await tursoBatch([
+      { sql: `CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        name TEXT,
+        image TEXT,
+        created_at INTEGER NOT NULL,
+        last_login INTEGER
+      )` },
       { sql: `CREATE TABLE IF NOT EXISTS learning_params (
-        cc INTEGER PRIMARY KEY,
+        cc INTEGER NOT NULL,
         value REAL NOT NULL,
         reward REAL NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        user_id TEXT,
+        PRIMARY KEY (cc, COALESCE(user_id, 'anonymous'))
       )` },
       { sql: `CREATE TABLE IF NOT EXISTS pattern_memory (
-        fingerprint TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
         reward REAL NOT NULL,
         hits INTEGER NOT NULL DEFAULT 1,
         last_used REAL NOT NULL,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        user_id TEXT,
+        PRIMARY KEY (fingerprint, COALESCE(user_id, 'anonymous'))
       )` },
       { sql: `CREATE TABLE IF NOT EXISTS convergence_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         value REAL NOT NULL,
-        measured_at INTEGER NOT NULL
+        measured_at INTEGER NOT NULL,
+        user_id TEXT
       )` },
       { sql: `CREATE TABLE IF NOT EXISTS radio_telemetry (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,14 +217,18 @@ export async function initTursoSchema(): Promise<boolean> {
         smoothness REAL NOT NULL,
         style TEXT NOT NULL,
         in_breakdown INTEGER NOT NULL DEFAULT 0,
-        measured_at INTEGER NOT NULL
+        measured_at INTEGER NOT NULL,
+        user_id TEXT
       )` },
       { sql: `CREATE INDEX IF NOT EXISTS idx_pattern_reward ON pattern_memory(reward DESC)` },
       { sql: `CREATE INDEX IF NOT EXISTS idx_convergence_time ON convergence_history(measured_at DESC)` },
       { sql: `CREATE INDEX IF NOT EXISTS idx_radio_telemetry_time ON radio_telemetry(measured_at DESC)` },
+      { sql: `CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)` },
+      { sql: `CREATE INDEX IF NOT EXISTS idx_learning_params_user ON learning_params(user_id)` },
+      { sql: `CREATE INDEX IF NOT EXISTS idx_pattern_memory_user ON pattern_memory(user_id)` },
     ]);
     schemaInitialized = true;
-    console.log('[Turso] schema initialized ✓');
+    console.log('[Turso] schema initialized ✓ (users + per-user learning)');
     return true;
   } catch (err) {
     console.error('[Turso] schema init failed:', err);
