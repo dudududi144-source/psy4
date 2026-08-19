@@ -1,25 +1,16 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
+  // Phase 0: removed `output: "standalone"` — we deploy to Cloudflare Pages
+  // via @cloudflare/next-on-pages, not Node standalone.
   reactStrictMode: false,
   // Mark native modules as external — don't let Turbopack try to bundle them.
-  // This fixes OOM crashes during route compilation (better-sqlite3 is a native
-  // C++ addon that shouldn't be processed by the bundler).
+  // better-sqlite3 is a native C++ addon that shouldn't be processed by the bundler.
   serverExternalPackages: ['better-sqlite3'],
-  // ADR-009: SharedArrayBuffer support — enables lock-free communication
-  // between Web Worker and AudioWorklet (zero-copy, zero-allocation)
-  async headers() {
-    return [
-      {
-        source: '/(.*)',
-        headers: [
-          { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
-          { key: 'Cross-Origin-Embedder-Policy', value: 'require-corp' },
-        ],
-      },
-    ];
-  },
+  // Phase 0: REMOVED COOP/COEP headers.
+  // ADR-009 claimed SharedArrayBuffer support, but SAB was never implemented.
+  // The headers only blocked cross-origin radio streams without enabling anything.
+  // Radio CORS is handled by /api/radio/proxy route instead.
 };
 
 export default nextConfig;

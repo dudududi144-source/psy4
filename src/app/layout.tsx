@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "PSY4 — PsyForge Pro",
-  description: "Psytrance workstation — clean architecture, real DSP, no stops.",
+  title: "PsyForge 4",
+  description: "Psytrance workstation — in engineering rebuild (Phase 0+)",
 };
 
 export default function RootLayout({

@@ -9,8 +9,9 @@ out/
 build/
 dist/
 
-# production
+# typescript
 *.tsbuildinfo
+next-env.d.ts
 
 # misc
 .DS_Store
@@ -23,13 +24,14 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# env files
+# env files — NEVER commit
 .env
 .env*.local
 .env.production
 .env.staging
+.env.local
 
-# credentials & secrets — NEVER commit these
+# credentials & secrets — NEVER commit
 *.secret
 *.secrets
 *credentials*
@@ -44,20 +46,44 @@ yarn-error.log*
 **/secrets/**
 **/credentials/**
 
-# typescript
-next-env.d.ts
-
 # database
 db/*.db
 db/*.db-journal
+db/*.db-shm
+db/*.db-wal
+prisma/*.db
 
-# dev log
+# dev server logs
 dev.log
 server.log
+dev-restart.log
+*.log
 
-# generated artifacts (regenerable)
-public/artifacts/*.wav
-public/artifacts/*.json
+# Phase 0: local backup of removed items (disk-only, NOT pushed)
+psy4-backup/
+
+# runtime artifacts
+test-results/
+.zscripts/dev.pid
+.zscripts/dev.log
+*.pid
+
+# generated audio artifacts (regenerable, large)
+audio-artifacts/
+validation/renders/
+validation/listening/
+public/artifacts/
+
+# agent scratchpad (historical, not product)
+audit/
+audit-reports/
+audit-tmp/
+agent-ctx/
+worklog.md
+worklog_snapshot.md
+
+# screenshots (debug, not product)
+*.png
 
 # upload secrets
 upload/
@@ -66,14 +92,11 @@ upload/
 /tmp/
 *.tmp
 
-# Cloudflare Pages build output
+# Cloudflare Pages / Vercel build output
 .vercel/
 .wrangler/
 tool-results/
+
+# misc project noise
 HONEST_ASSESSMENT.md
 MASTER_PROMPT.md
-
-# SQLite WAL files
-db/*.db-shm
-db/*.db-wal
-db/*.db-journal

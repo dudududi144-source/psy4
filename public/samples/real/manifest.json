@@ -1,8 +1,0 @@
-{
-  "version": "1.0.0",
-  "description": "QUARANTINED — 141 commercial hardware drum machine samples (Roland TR-909, Elektron Machinedrum, Clavia Nord Drum). NO license metadata. Violates the project's own license policy. DO NOT load at runtime. Replace with CC0/procedural alternatives.",
-  "licensePolicy": "NEVER assume a random downloaded sample is commercially usable. All imported samples MUST have explicit license metadata.",
-  "quarantineStatus": "QUARANTINED",
-  "quarantineReason": "Commercial hardware recordings without license clearance. Cannot be used in commercial releases.",
-  "samples": []
-}
