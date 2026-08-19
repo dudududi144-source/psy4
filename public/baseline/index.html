@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PSY4 Phase 1 — Baseline Listening</title>
+<style>
+  body { background:#0a0612; color:#e8e0f0; font:14px/1.5 system-ui,sans-serif; margin:0; padding:24px; }
+  h1 { color:#e040fb; margin:0 0 4px; }
+  .sub { color:#7c6a8a; margin:0 0 24px; }
+  .stem { background:#14091f; border:1px solid #2a1540; border-radius:8px; padding:16px; margin-bottom:12px; }
+  .stem h2 { color:#00e5ff; margin:0 0 8px; font-size:16px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; margin:8px 0; }
+  .stat { background:#1f0d2e; padding:8px; border-radius:4px; }
+  .stat .label { color:#9a7ab5; font-size:11px; text-transform:uppercase; }
+  .stat .value { color:#fff; font-size:16px; font-weight:bold; }
+  .verdict { margin:6px 0 0; padding:8px; border-left:3px solid #ff4081; background:#1a0510; color:#ffb3d0; font-size:13px; }
+  audio { width:100%; margin-top:8px; }
+  .target { color:#69f0ae; font-size:12px; }
+  .warn { color:#ff5252; }
+  code { color:#ffd740; }
+</style>
+</head>
+<body>
+<h1>PsyForge 4 — Phase 1 Baseline Listening</h1>
+<p class="sub">Full-On @ 138 BPM, 16 bars, seed=42. Reference DSP (native Web Audio, approximates the worklet). <strong>Listen and judge honestly.</strong></p>
+
+<div class="stem">
+  <h2>kick-baseline.wav</h2>
+  <div class="stats">
+    <div class="stat"><div class="label">Peak</div><div class="value">0.0 dBFS <span class="warn">CLIP</span></div></div>
+    <div class="stat"><div class="label">RMS</div><div class="value">-28.0 dB</div></div>
+    <div class="stat"><div class="label">Crest</div><div class="value">25.2 <span class="warn">↑</span></div></div>
+    <div class="stat"><div class="label">Centroid</div><div class="value">1042 Hz <span class="warn">↑</span></div></div>
+    <div class="stat"><div class="label">LUFS</div><div class="value">-28.7</div></div>
+    <div class="stat"><div class="label">Sub%</div><div class="value">96.5%</div></div>
+  </div>
+  <p class="verdict"><strong>Verdict:</strong> Clipping. Crest 25 (commercial psytrance kick = 8-12 — too clicky). Centroid 1042Hz (should be 80-150Hz — click dominates). Sub energy is present but the click transient pulls everything up. <span class="target">Target: crest ≤12, centroid ≤200Hz, peak -1dBTP.</span></p>
+  <audio controls src="kick-baseline.wav"></audio>
+</div>
+
+<div class="stem">
+  <h2>bass-baseline.wav</h2>
+  <div class="stats">
+    <div class="stat"><div class="label">Peak</div><div class="value">-8.8 dB</div></div>
+    <div class="stat"><div class="label">RMS</div><div class="value">-23.8 dB</div></div>
+    <div class="stat"><div class="label">Crest</div><div class="value">5.6</div></div>
+    <div class="stat"><div class="label">LUFS</div><div class="value">-24.5</div></div>
+  </div>
+  <p class="verdict"><strong>Verdict:</strong> 15dB quieter than the kick (commercial: ±3dB). Crest OK. The bass is buried in the mix. Not "rolling 16ths" — sparse pattern (~6-7 of 16 positions/bar). <span class="target">Target: peak within 3dB of kick, 12-16 notes/bar.</span></p>
+  <audio controls src="bass-baseline.wav"></audio>
+</div>
+
+<div class="stem">
+  <h2>lead-baseline.wav</h2>
+  <div class="stats">
+    <div class="stat"><div class="label">Peak</div><div class="value">-12.1 dB</div></div>
+    <div class="stat"><div class="label">RMS</div><div class="value">-27.3 dB</div></div>
+    <div class="stat"><div class="label">Crest</div><div class="value">5.8</div></div>
+    <div class="stat"><div class="label">LUFS</div><div class="value">-28.0</div></div>
+  </div>
+  <p class="verdict"><strong>Verdict:</strong> 3-4dB quieter than bass, 18dB quieter than kick. The lead is buried. 3-osc supersaw with slow LFO, no FM (ADR-010 fabricated). Static, no psychedelic character. <span class="target">Target: audible above the mix, FM modulation for metallic character.</span></p>
+  <audio controls src="lead-baseline.wav"></audio>
+</div>
+
+<div class="stem">
+  <h2>full-baseline.wav (full mix)</h2>
+  <div class="stats">
+    <div class="stat"><div class="label">Peak</div><div class="value">0.0 dBFS <span class="warn">CLIP</span></div></div>
+    <div class="stat"><div class="label">RMS</div><div class="value">-20.2 dB</div></div>
+    <div class="stat"><div class="label">Crest</div><div class="value">10.2</div></div>
+    <div class="stat"><div class="label">LUFS</div><div class="value">-20.9</div></div>
+    <div class="stat"><div class="label">Centroid</div><div class="value">854 Hz</div></div>
+    <div class="stat"><div class="label">Sub/Low/Mid/High</div><div class="value">1.6/31/67/0%</div></div>
+  </div>
+  <p class="verdict"><strong>Verdict:</strong> Clipping. LUFS -20.9 (commercial psytrance = -9 to -11). Spectral balance wrong: 67% mid, 0% high. Dark and muddy. No air (no hats/cymbals energy above 8kHz). <span class="target">Target: LUFS -9 to -11, sub 15-25%, low 30-40%, mid 25-35%, high 15-25%.</span></p>
+  <audio controls src="full-baseline.wav"></audio>
+</div>
+
+<p class="sub" style="margin-top:24px;">After listening, reply with your honest impression. Phase 2-5 will fix: double-play (+6dB phantom boost), per-sample allocs, real master chain with limiter+LUFS+true-peak, kick velocity, rolling bass, FM lead, TB-303 acid.</p>
+</body>
+</html>
