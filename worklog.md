@@ -15660,3 +15660,44 @@ Architecture now:
   MelodicDevice (psysynth) → bass/pad/keys
   LeadDevice (real Moog) → lead/acid
   DeviceHost routes events to all 4 with error isolation
+
+---
+Task ID: roast-radio-learning
+Agent: main (Z.ai Code)
+Task: Roast — Smart Radio is fake, learning has no reference
+
+Work Log:
+- ROAST 1: Smart Radio
+  - CLAIMS: "receives radio impressions from the internet to learn"
+  - REALITY: just cycles styles randomly every 2 minutes
+  - streams.json has 10 real URLs but code NEVER fetches them
+  - No <audio>, no MediaElementSource, no radio AnalyserNode
+  - No radio analysis, no comparison, no imitation
+
+- ROAST 2: Learning
+  - CLAIMS: "learns what sounds good"
+  - REALITY: measures 7 metrics of its OWN output
+  - Compares to ARBITRARY targets (numbers I invented)
+  - Does NOT compare to any real commercial music
+  - Only adjusts CC params, not composition/style/arrangement
+  - No real memory between sessions (just bestParams)
+
+- ROAST 3: Effectiveness
+  - Is the learning effective? NO.
+  - No reference target → can't know what "good" means
+  - Only CC params → can't fix composition/arrangement
+  - Arbitrary targets → not grounded in reality
+  - No imitation capability
+
+- Wrote PSY4_ROAST_RADIO_LEARNING.md defining:
+  1. What Smart Radio SHOULD be (connect to stream → analyze → compare → learn)
+  2. What learning SHOULD measure (radio vs engine delta)
+  3. How to fix: real radio connection + real comparison + real targets
+
+- Pushed: 37a497d..4308bf8
+
+Stage Summary:
+- Smart Radio is FAKE — needs full rebuild to connect to real radio
+- Learning has no reference — needs to compare to real commercial audio
+- The REAL task: engine must listen to radio and learn to sound like it
+- Next: implement real radio connection + analysis + comparison
