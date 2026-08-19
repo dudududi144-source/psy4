@@ -571,6 +571,76 @@
   box-shadow: 0 0 8px rgba(184, 242, 46, 0.2);
 }
 
+/* ── DEEP ROAST V2: Convergence + A/B mode ─────────────────────────────── */
+.learning-convergence {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 6px;
+  border: 1px solid var(--pf-ln);
+}
+.convergence-bar-track {
+  width: 100%;
+  height: 8px;
+  background: rgba(0,0,0,0.4);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.convergence-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s ease-out, background 0.5s;
+}
+.convergence-spark {
+  width: 100%;
+  height: 30px;
+  opacity: 0.9;
+}
+.convergence-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--pf-tx);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.learning-ab {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 6px;
+  border: 1px solid var(--pf-ln);
+}
+.ab-buttons {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+.ab-btn {
+  flex: 1;
+  padding: 6px 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  background: transparent;
+  border: 1px solid var(--pf-ln);
+  color: var(--pf-tx);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ab-btn:hover {
+  border-color: var(--pf-mg);
+  background: rgba(184, 242, 46, 0.05);
+}
+.ab-btn.active {
+  border-color: var(--pf-ac);
+  color: var(--pf-ac);
+  background: rgba(184, 242, 46, 0.1);
+  box-shadow: 0 0 8px rgba(184, 242, 46, 0.2);
+}
+
 /* ── IDLE STATE: elegant welcome screen ────────────────────────────────── */
 .pf-idle {
   display: flex;

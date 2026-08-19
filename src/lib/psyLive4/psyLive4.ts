@@ -26,6 +26,7 @@ import {
   COMMERCIAL_TARGETS,
   applyRadioTargets,
   restoreDefaultTargets,
+  computeConvergence,
   type AudioQualityMetrics,
 } from './audio-quality';
 import { RadioListener, type RadioTarget, type RadioStream } from './radio-listener';
@@ -91,6 +92,16 @@ export interface LiveState4 {
   learningStates: CCExplorationState[];
   learningCurrentCc: number;
   learningTrialRemaining: number;
+  // DEEP GAP C: convergence metric (0..1) — how close engine is to radio
+  convergence: number;
+  convergenceHistory: number[];   // last 60 measurements (4 min at 4s/tick)
+  // DEEP GAP E: error counter
+  learningErrors: number;
+  // DEEP GAP A: pattern memory stats
+  patternCount: number;
+  // DEEP GAP F: A/B mix mode
+  radioMixMode: 'both' | 'radio' | 'engine';
+  radioInBreakdown: boolean;
 }
 
 export class PsyLive4 implements SchedulerHost {
@@ -163,6 +174,12 @@ export class PsyLive4 implements SchedulerHost {
   private static readonly LEARNING_INTERVAL_MS = 4000;
   private static readonly ENGINE_WARMUP_MS = 5000;
   private playStartTime = 0;  // ctx.currentTime when play() was called
+  // DEEP GAP C: convergence metric + history (for sparkline UI)
+  private convergence = 0;
+  private convergenceHistory: number[] = [];
+  private static readonly CONVERGENCE_HISTORY_MAX = 60;
+  // DEEP GAP F: A/B mix mode — 'both' (default), 'radio' (solo radio), 'engine' (solo engine)
+  private radioMixMode: 'both' | 'radio' | 'engine' = 'both';
   // Reusable engine-analysis buffers (FIX GAP 9: was allocating 4.5KB per call).
   // These are `freqBuf`/`tdBuf` defined below — single set, shared with getState().
   // ── Real Radio Listener ──
@@ -471,12 +488,18 @@ export class PsyLive4 implements SchedulerHost {
    * The engine adjusts its parameters to match the radio.
    *
    * FIX GAP 3: now uses `applyRadioTargets()` which guarantees Min ≤ Max
-   * with a minimum 0.20 spread (was: directly mutating COMMERCIAL_TARGETS with
-   * ±0.15 — could produce Min=0.20 Max=0.24 = 4% window = forced clamping to
-   * a noise spike).
+   * with a minimum 0.20 spread.
+   * DEEP GAP B: if `target.inBreakdown` is true, we HOLD the previous targets
+   * (don't apply breakdown-like values — they'd corrupt the learning system).
    */
   private onRadioTargets(target: RadioTarget): void {
     this.radioTarget = target;
+
+    // DEEP GAP B: skip target updates during breakdowns
+    if (target.inBreakdown) {
+      console.log(`[PsyLive4] radio in breakdown — holding previous targets`);
+      return;
+    }
 
     // Sync BPM to radio (if detected and reasonable)
     if (target.bpm > 100 && target.bpm < 180) {
@@ -495,6 +518,26 @@ export class PsyLive4 implements SchedulerHost {
   }
 
   isSmartRadioOn(): boolean { return this.smartRadioOn; }
+
+  /**
+   * DEEP GAP F: A/B mix mode — let the user do a blind A/B test.
+   * - 'both': radio at 0.3, engine at 1.0 (default — hear both)
+   * - 'radio': radio at 1.0, engine muted (hear the reference)
+   * - 'engine': radio muted, engine at 1.0 (hear the test)
+   *
+   * This is the commercial A/B workflow: switch instantly between
+   * reference (radio) and test (engine) to judge perceptual quality.
+   */
+  setRadioMixMode(mode: 'both' | 'radio' | 'engine'): void {
+    this.radioMixMode = mode;
+    const radioGain = mode === 'radio' ? 1.0 : mode === 'both' ? 0.3 : 0.0;
+    this.radioListener.setOutputGain(radioGain);
+    // Mute/unmute the engine
+    const engineGain = mode === 'engine' ? 1.0 : mode === 'both' ? 1.0 : 0.0;
+    this.workletVolumeGain.gain.setTargetAtTime(engineGain, this.ctx.currentTime, 0.05);
+    console.log(`[PsyLive4] A/B mode: ${mode} (radio=${radioGain}, engine=${engineGain})`);
+  }
+  getRadioMixMode(): 'both' | 'radio' | 'engine' { return this.radioMixMode; }
 
   // ── Learning loop: epsilon-greedy CC exploration ──
   setLearning(on: boolean): void {
@@ -725,6 +768,16 @@ export class PsyLive4 implements SchedulerHost {
       learningStates,
       learningCurrentCc: currentTrial.cc,
       learningTrialRemaining: currentTrial.remainingSec,
+      // DEEP GAP C: convergence metric + history
+      convergence: this.convergence,
+      convergenceHistory: [...this.convergenceHistory],
+      // DEEP GAP E: error counter
+      learningErrors: this.learner.getErrorCount(),
+      // DEEP GAP A: pattern memory stats
+      patternCount: this.learner.getPatternCount(),
+      // DEEP GAP F: A/B mix mode
+      radioMixMode: this.radioMixMode,
+      radioInBreakdown: this.radioTarget?.inBreakdown ?? false,
     };
   }
 
@@ -755,6 +808,16 @@ export class PsyLive4 implements SchedulerHost {
   }
 
   private runLearningTick(): void {
+    // DEEP GAP E: error boundary — a single throw must NOT kill the loop
+    try {
+      this.runLearningTickInner();
+    } catch (err) {
+      this.learner.incrementError();
+      console.error(`[Learning] tick threw (error #${this.learner.getErrorCount()}):`, err);
+    }
+  }
+
+  private runLearningTickInner(): void {
     if (!this.learningOn || !this.playing) return;
 
     // FIX GAP 7: skip during engine warmup (silence before scheduler composes)
@@ -772,6 +835,20 @@ export class PsyLive4 implements SchedulerHost {
 
     // Analyze engine quality (reuse buffers — FIX GAP 9)
     const engineQuality = analyzeQuality(this.analyser, this.ctx.sampleRate, this.freqBuf, this.tdBuf);
+
+    // DEEP GAP C: compute convergence metric (0..1) — how close engine is to radio
+    if (this.radioTarget && this.radioTarget.connected) {
+      this.convergence = computeConvergence(engineQuality, this.radioTarget);
+      this.convergenceHistory.push(this.convergence);
+      if (this.convergenceHistory.length > PsyLive4.CONVERGENCE_HISTORY_MAX) this.convergenceHistory.shift();
+    }
+
+    // DEEP GAP A: record pattern memory — fingerprint the current bar + its reward
+    // This gives the composer material to bias toward high-reward patterns.
+    if (this.barFingerprints.length > 0) {
+      const latestFingerprint = this.barFingerprints[this.barFingerprints.length - 1];
+      this.learner.recordPattern(latestFingerprint, engineQuality.overall, this.ctx.currentTime);
+    }
 
     // ── DIRECT DELTA vs RADIO (if connected) ──
     // FIX GAP 8: apply ONE adjustment per tick — the largest-magnitude delta wins.

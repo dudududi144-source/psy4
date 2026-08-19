@@ -32,6 +32,7 @@ export interface RadioTarget {
   overall: number;
   connected: boolean;
   streamName: string;
+  inBreakdown: boolean;   // DEEP GAP B: true when radio is in a quiet/breakdown section
 }
 
 export interface RadioStream {
@@ -44,6 +45,7 @@ export class RadioListener {
   private audioEl: HTMLAudioElement | null = null;
   private mediaSource: MediaElementAudioSourceNode | null = null;
   private analyser: AnalyserNode | null = null;
+  private outputGain: GainNode | null = null;  // DEEP GAP F: A/B mode volume control
   private ctx: AudioContext;
   private freqBuf: Uint8Array;
   private tdBuf: Float32Array;
@@ -63,6 +65,23 @@ export class RadioListener {
     this.analyser.smoothingTimeConstant = 0.8;
     this.freqBuf = new Uint8Array(this.analyser.frequencyBinCount);
     this.tdBuf = new Float32Array(this.analyser.fftSize);
+    // DEEP GAP F: radio output gain — host controls this for A/B mode
+    this.outputGain = ctx.createGain();
+    this.outputGain.gain.value = 0.3;  // default: quiet (engine is the main sound)
+    this.analyser.connect(this.outputGain);
+    this.outputGain.connect(ctx.destination);
+  }
+
+  /**
+   * DEEP GAP F: A/B mix mode control.
+   * - 'both': radio at 0.3, engine at 1.0 (default — hear both)
+   * - 'radio': radio at 1.0, engine muted by host
+   * - 'engine': radio muted, engine at 1.0
+   */
+  setOutputGain(value: number): void {
+    if (this.outputGain) {
+      this.outputGain.gain.setTargetAtTime(Math.max(0, Math.min(1, value)), this.ctx.currentTime, 0.05);
+    }
   }
 
   /**
@@ -91,9 +110,11 @@ export class RadioListener {
       });
 
       // Route through Web Audio API
+      // DEEP GAP F: mediaSource → analyser → outputGain → destination
+      // (outputGain is created in constructor and controlled by setOutputGain)
       this.mediaSource = this.ctx.createMediaElementSource(this.audioEl);
       this.mediaSource.connect(this.analyser!);
-      this.analyser!.connect(this.ctx.destination);  // user hears radio
+      // analyser already connected to outputGain → destination in constructor
 
       this.currentStream = stream;
       this.connected = true;
@@ -122,7 +143,8 @@ export class RadioListener {
     this.connected = false;
     this.currentStream = null;
     this.beatTimes = [];
-    this.energyHistory = [];          // FIX GAP 11: was NOT cleared (broke BPM on stream switch)
+    this.energyHistory = [];
+    this.loudnessHistory = [];      // DEEP GAP B: clear breakdown window
     this.lastBeatTime = 0;
     this.lastDetectedBpm = 0;
     this.bpmConfidence = 0;
@@ -145,9 +167,16 @@ export class RadioListener {
   private bpmInterval: ReturnType<typeof setInterval> | null = null;
   private connectTime = 0;
   private targetHistory: RadioTarget[] = [];
+  // DEEP GAP B: breakdown detection
+  // Track loudness over a 30s window. If current loudness < 60% of the window
+  // average, we're in a breakdown — skip target updates (they'd corrupt
+  // the learning targets with breakdown-like values).
+  private loudnessHistory: number[] = [];
+  private static readonly LOUDNESS_WINDOW = 15;   // 15 samples × 2s = 30s window
+  private static readonly BREAKDOWN_RATIO = 0.55; // < 55% of avg = breakdown
   private static readonly WARMUP_MS = 5000;
   private static readonly HISTORY_MAX = 5;
-  private static readonly BPM_INTERVAL_MS = 50;      // FIX GAP 2: was 2000 — missed beats
+  private static readonly BPM_INTERVAL_MS = 50;
   private static readonly QUALITY_INTERVAL_MS = 2000;
 
   private startAnalysis(): void {
@@ -180,6 +209,32 @@ export class RadioListener {
       return;
     }
 
+    // DEEP GAP B: Breakdown detection
+    // Track loudness over a 30s window. If current loudness < 55% of the window
+    // average, we're in a breakdown — DON'T update targets (they'd corrupt
+    // the learning system with breakdown-like values: low bass, low energy).
+    this.loudnessHistory.push(metrics.loudness);
+    if (this.loudnessHistory.length > RadioListener.LOUDNESS_WINDOW) this.loudnessHistory.shift();
+
+    let inBreakdown = false;
+    if (this.loudnessHistory.length >= 5) {  // need at least 10s of data
+      const avgLoud = this.loudnessHistory.reduce((a, b) => a + b, 0) / this.loudnessHistory.length;
+      if (avgLoud > 0.1 && metrics.loudness < avgLoud * RadioListener.BREAKDOWN_RATIO) {
+        inBreakdown = true;
+      }
+    }
+
+    if (inBreakdown) {
+      console.log(`[RadioListener] breakdown detected (loud=${metrics.loudness.toFixed(2)} < 55% of avg) — holding targets`);
+      // Still call the callback so the host knows we're connected + in breakdown,
+      // but mark inBreakdown=true so the host doesn't apply these as new targets.
+      if (this.onTargetsCallback && this.targetHistory.length > 0) {
+        const last = { ...this.targetHistory[this.targetHistory.length - 1], inBreakdown: true };
+        this.onTargetsCallback(last);
+      }
+      return;
+    }
+
     // CAP brightness at 0.8 (1.0 = white noise artifact)
     const cappedBrightness = Math.min(0.8, metrics.brightness);
 
@@ -202,6 +257,7 @@ export class RadioListener {
       overall: metrics.overall,
       connected: true,
       streamName: this.currentStream?.name || 'unknown',
+      inBreakdown: false,
     };
 
     // SMOOTHING: 5-sample moving average
@@ -313,5 +369,6 @@ export class RadioListener {
   dispose(): void {
     this.disconnect();
     if (this.analyser) { try { this.analyser.disconnect(); } catch {} }
+    if (this.outputGain) { try { this.outputGain.disconnect(); } catch {} this.outputGain = null; }
   }
 }

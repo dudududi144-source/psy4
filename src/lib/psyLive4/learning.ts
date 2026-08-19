@@ -1,12 +1,17 @@
 // src/lib/psyLive4/learning.ts
 // Reinforcement learner for CC parameter exploration.
-// Uses REAL audio quality metrics (not just loudness).
 //
-// FIXES (claims-vs-reality roast):
-// - bestParams persisted to localStorage (was: in-memory only, lost on refresh)
-// - reset() no longer wipes bestParams (was: enabling learning destroyed memory)
-// - getCurrentTrial uses ctx.currentTime consistently (was: mixed Date.now vs ctx.currentTime → always 0)
-// - Trial timer is now the ACTUAL cadence control (was: overwritten by per-poll delta adjustments)
+// ROUND 1 (surface fixes): persistence, time math, dedicated interval.
+// ROUND 2 (deep roast v2):
+//   - DEEP GAP G: hill-climbing exploration (was: pure random epsilon-greedy)
+//     If the last trial moved CC in direction D and reward increased,
+//     continue in D. If reward decreased, reverse. This gives the learner
+//     a gradient signal instead of random walk.
+//   - DEEP GAP A: pattern memory hook — the learner records which
+//     composition bar fingerprints got high rewards, so the composer
+//     can bias toward reusing them. (Composition learning, step 1.)
+//   - DEEP GAP E: error counter — if a tick throws, log + continue
+//     instead of silently dying.
 
 import type { AudioQualityMetrics, AdjustmentSuggestion } from './audio-quality';
 
@@ -16,71 +21,118 @@ export interface CCExplorationState {
   reward: number;
   history: Array<{ value: number; reward: number; metrics: Partial<AudioQualityMetrics> }>;
   epsilon: number;
+  // DEEP GAP G: hill-climbing state
+  lastDirection: number;   // -1, 0, +1 — which way we moved last
+  lastReward: number;      // reward at last trial (for gradient comparison)
+  stepSize: number;        // current hill-climb step size (adapts)
+}
+
+export interface PatternMemoryEntry {
+  fingerprint: string;   // bar content hash
+  reward: number;
+  hits: number;           // how many times this pattern has been reused
+  lastUsed: number;       // ctx.currentTime of last use
 }
 
 const EXPLORABLE_CCS = [74, 71, 5, 12, 14, 15];
 const HISTORY_MAX = 20;
 const STORAGE_KEY = 'psy4-learning-best-v1';
+const PATTERN_STORAGE_KEY = 'psy4-patterns-v1';
+const PATTERN_MAX = 32;
 
 export class CCLearner {
   private states: Map<number, CCExplorationState> = new Map();
   private currentIdx = 0;
-  private trialStartTime = 0;       // ctx.currentTime when trial began
-  private trialDuration = 8;        // seconds per trial
+  private trialStartTime = 0;
+  private trialDuration = 8;
   private bestReward = 0;
   private bestParams: Record<number, number> = {};
+
+  // DEEP GAP A: pattern memory — composition learning
+  private patternMemory: Map<string, PatternMemoryEntry> = new Map();
+
+  // DEEP GAP E: error tracking
+  private errorCount = 0;
 
   constructor() {
     for (const cc of EXPLORABLE_CCS) {
       this.states.set(cc, {
         cc, value: 0.5, reward: 0,
         history: [], epsilon: 0.3,
+        lastDirection: 0, lastReward: 0, stepSize: 0.05,
       });
     }
     this.loadBest();
+    this.loadPatterns();
   }
 
   /**
-   * Called by the host every poll tick.
-   * Uses real audio quality metrics (not just peak dB).
-   * `now` MUST be ctx.currentTime (NOT Date.now()) — see roast GAP 6.
+   * Called by the host every learning tick (4s).
+   * `now` MUST be ctx.currentTime.
+   *
+   * DEEP GAP G: hill-climbing — instead of random exploration, use
+   * gradient information from the last trial to decide direction.
    */
   tick(now: number, metrics: AudioQualityMetrics, suggestions: AdjustmentSuggestion[]): { cc: number; value: number } | null {
     const cc = EXPLORABLE_CCS[this.currentIdx];
     const state = this.states.get(cc)!;
 
     if (now - this.trialStartTime >= this.trialDuration) {
-      // Reward = overall quality (weighted combination of 7 metrics)
       const reward = metrics.overall;
       state.reward = reward;
       state.history.push({ value: state.value, reward, metrics: { warmth: metrics.warmth, brightness: metrics.brightness, smoothness: metrics.smoothness } });
       if (state.history.length > HISTORY_MAX) state.history.shift();
 
-      // Track best params — PERSIST to localStorage
+      // Track best params — persist to localStorage
       if (reward > this.bestReward) {
         this.bestReward = reward;
         this.bestParams[cc] = state.value;
         this.saveBest();
       }
 
-      // Pick next value: epsilon-greedy with suggestion-guided exploration
+      // DEEP GAP G: hill-climbing exploration
+      // Compare current reward to last reward to determine gradient.
+      const rewardDelta = reward - state.lastReward;
+      let nextValue = state.value;
+      let nextDirection = state.lastDirection;
+
       if (Math.random() < state.epsilon) {
-        // Explore: check if there's a suggestion for this CC
+        // Exploration phase
         const suggestion = suggestions.find(s => s.cc === cc);
         if (suggestion) {
-          // Guided exploration — move in the suggested direction
-          const delta = suggestion.amount * (suggestion.direction === 'up' ? 1 : -1);
-          state.value = Math.max(0.05, Math.min(0.95, state.value + delta));
+          // Suggestion-guided: move in the suggested direction
+          nextDirection = suggestion.direction === 'up' ? 1 : -1;
+          nextValue = state.value + nextDirection * suggestion.amount;
+        } else if (state.lastDirection !== 0 && Math.abs(rewardDelta) < 0.02) {
+          // Reward plateau — try the opposite direction
+          nextDirection = -state.lastDirection;
+          nextValue = state.value + nextDirection * state.stepSize;
+        } else if (state.lastDirection !== 0 && rewardDelta > 0) {
+          // Reward INCREASED in lastDirection — continue (hill climbing)
+          nextValue = state.value + state.lastDirection * state.stepSize;
+          // Accelerate slightly (adaptive step size)
+          state.stepSize = Math.min(0.12, state.stepSize * 1.2);
+        } else if (state.lastDirection !== 0 && rewardDelta < 0) {
+          // Reward DECREASED — reverse direction + reduce step
+          nextDirection = -state.lastDirection;
+          nextValue = state.value + nextDirection * state.stepSize * 0.5;
+          state.stepSize = Math.max(0.02, state.stepSize * 0.7);
         } else {
-          // Random exploration
-          state.value = 0.2 + Math.random() * 0.6;
+          // No prior direction — pick one at random
+          nextDirection = Math.random() < 0.5 ? 1 : -1;
+          nextValue = state.value + nextDirection * state.stepSize;
         }
       } else {
-        // Exploit: use best historical value (or persisted best)
+        // Exploitation: use best historical value
         const best = state.history.reduce((a, b) => b.reward > a.reward ? b : a, state.history[0]);
-        state.value = best?.value ?? this.bestParams[cc] ?? 0.5;
+        nextValue = best?.value ?? this.bestParams[cc] ?? 0.5;
+        nextDirection = 0;
       }
 
+      nextValue = Math.max(0.05, Math.min(0.95, nextValue));
+      state.lastDirection = nextDirection;
+      state.lastReward = reward;
+      state.value = nextValue;
       state.epsilon = Math.max(0.05, state.epsilon * 0.98);
 
       this.currentIdx = (this.currentIdx + 1) % EXPLORABLE_CCS.length;
@@ -94,10 +146,6 @@ export class CCLearner {
     return Array.from(this.states.values());
   }
 
-  /**
-   * FIX GAP 6: uses ctx.currentTime consistently.
-   * Caller passes `now = ctx.currentTime`.
-   */
   getCurrentTrial(now: number): { cc: number; remainingSec: number } {
     return {
       cc: EXPLORABLE_CCS[this.currentIdx],
@@ -107,37 +155,99 @@ export class CCLearner {
 
   getBestReward(): number { return this.bestReward; }
   getBestParams(): Record<number, number> { return { ...this.bestParams }; }
+  getErrorCount(): number { return this.errorCount; }
+  incrementError(): void { this.errorCount++; }
 
-  /**
-   * Reset trial state — does NOT wipe bestParams (roast GAP 5).
-   * Use forgetAll() for a full wipe.
-   */
+  // ── DEEP GAP A: pattern memory ──────────────────────────────────────
+  // The composer records bar fingerprints + rewards. The learner keeps
+  // the top-N highest-reward patterns. The composer can then bias toward
+  // reusing them. This is the first step toward composition learning:
+  // the engine remembers WHAT it played when it sounded good.
+
+  /** Record a bar fingerprint with its reward. Called by the host after each bar. */
+  recordPattern(fingerprint: string, reward: number, now: number): void {
+    const existing = this.patternMemory.get(fingerprint);
+    if (existing) {
+      // Update with exponential moving average
+      existing.reward = existing.reward * 0.7 + reward * 0.3;
+      existing.hits++;
+      existing.lastUsed = now;
+    } else {
+      this.patternMemory.set(fingerprint, {
+        fingerprint, reward, hits: 1, lastUsed: now,
+      });
+      // Prune: keep only top PATTERN_MAX by reward
+      if (this.patternMemory.size > PATTERN_MAX * 2) {
+        const entries = Array.from(this.patternMemory.entries());
+        entries.sort((a, b) => b[1].reward - a[1].reward);
+        this.patternMemory = new Map(entries.slice(0, PATTERN_MAX));
+      }
+    }
+    // Persist periodically (not every bar — too much I/O)
+    if (Math.random() < 0.05) this.savePatterns();
+  }
+
+  /** Get the top-N highest-reward patterns. Composer biases toward these. */
+  getTopPatterns(n: number = 5): PatternMemoryEntry[] {
+    return Array.from(this.patternMemory.values())
+      .sort((a, b) => b.reward - a.reward)
+      .slice(0, n);
+  }
+
+  /** Get a random high-reward pattern (for composer reuse). */
+  pickGoodPattern(): PatternMemoryEntry | null {
+    const top = this.getTopPatterns(8);
+    if (top.length === 0) return null;
+    // Weighted random: higher reward = more likely
+    const totalWeight = top.reduce((s, p) => s + p.reward, 0);
+    if (totalWeight <= 0) return top[Math.floor(Math.random() * top.length)];
+    let r = Math.random() * totalWeight;
+    for (const p of top) {
+      r -= p.reward;
+      if (r <= 0) return p;
+    }
+    return top[top.length - 1];
+  }
+
+  getPatternCount(): number { return this.patternMemory.size; }
+
   reset(): void {
     for (const state of this.states.values()) {
-      state.value = this.bestParams[state.cc] ?? 0.5;  // START from best known
+      state.value = this.bestParams[state.cc] ?? 0.5;
       state.reward = 0;
       state.history = [];
       state.epsilon = 0.3;
+      state.lastDirection = 0;
+      state.lastReward = 0;
+      state.stepSize = 0.05;
     }
     this.currentIdx = 0;
     this.trialStartTime = 0;
-    console.log('[CCLearner] reset — restored best known params (not wiped)');
+    this.errorCount = 0;
+    console.log('[CCLearner] reset — restored best known params (hill-climb state cleared)');
   }
 
-  /** Full wipe — explicit only. */
   forgetAll(): void {
     for (const state of this.states.values()) {
       state.value = 0.5;
       state.reward = 0;
       state.history = [];
       state.epsilon = 0.3;
+      state.lastDirection = 0;
+      state.lastReward = 0;
+      state.stepSize = 0.05;
     }
     this.currentIdx = 0;
     this.trialStartTime = 0;
     this.bestReward = 0;
     this.bestParams = {};
-    try { localStorage.removeItem(STORAGE_KEY); } catch {}
-    console.log('[CCLearner] forgetAll — wiped all memory');
+    this.patternMemory.clear();
+    this.errorCount = 0;
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(PATTERN_STORAGE_KEY);
+    } catch {}
+    console.log('[CCLearner] forgetAll — wiped all memory (params + patterns)');
   }
 
   private loadBest(): void {
@@ -148,7 +258,6 @@ export class CCLearner {
       if (typeof data.bestReward === 'number') this.bestReward = data.bestReward;
       if (data.bestParams && typeof data.bestParams === 'object') {
         this.bestParams = { ...data.bestParams };
-        // Restore current values from best
         for (const [ccStr, val] of Object.entries(this.bestParams)) {
           const cc = Number(ccStr);
           const state = this.states.get(cc);
@@ -157,7 +266,7 @@ export class CCLearner {
         console.log(`[CCLearner] loaded ${Object.keys(this.bestParams).length} best params from localStorage (bestReward=${this.bestReward.toFixed(3)})`);
       }
     } catch {
-      // localStorage unavailable (SSR, privacy mode) — non-fatal
+      // non-fatal
     }
   }
 
@@ -168,8 +277,29 @@ export class CCLearner {
         bestParams: this.bestParams,
         savedAt: Date.now(),
       }));
-    } catch {
-      // non-fatal
-    }
+    } catch {}
+  }
+
+  private loadPatterns(): void {
+    try {
+      const raw = localStorage.getItem(PATTERN_STORAGE_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (Array.isArray(data)) {
+        for (const p of data) {
+          if (p && typeof p.fingerprint === 'string' && typeof p.reward === 'number') {
+            this.patternMemory.set(p.fingerprint, p);
+          }
+        }
+        console.log(`[CCLearner] loaded ${this.patternMemory.size} patterns from localStorage`);
+      }
+    } catch {}
+  }
+
+  private savePatterns(): void {
+    try {
+      const arr = Array.from(this.patternMemory.values()).slice(0, PATTERN_MAX);
+      localStorage.setItem(PATTERN_STORAGE_KEY, JSON.stringify(arr));
+    } catch {}
   }
 }

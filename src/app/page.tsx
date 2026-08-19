@@ -49,6 +49,9 @@ const initialState: LiveState4 = {
   radioDetectedBpm: 0,
   radioBpmConfidence: 0,
   drumStats: null, learningOn: false, learningStates: [], learningCurrentCc: 74, learningTrialRemaining: 0,
+  // DEEP ROAST V2 fields
+  convergence: 0, convergenceHistory: [], learningErrors: 0, patternCount: 0,
+  radioMixMode: 'both' as 'both', radioInBreakdown: false,
 };
 
 export default function Page() {
@@ -356,6 +359,13 @@ export default function Page() {
               states={s.learningStates}
               currentCc={s.learningCurrentCc}
               trialRemaining={s.learningTrialRemaining}
+              convergence={s.convergence}
+              convergenceHistory={s.convergenceHistory}
+              learningErrors={s.learningErrors}
+              patternCount={s.patternCount}
+              radioMixMode={s.radioMixMode}
+              onRadioMixMode={(mode) => engineRef.current?.setRadioMixMode(mode)}
+              radioConnected={s.smartRadioOn}
             />
           </div>
         </div>

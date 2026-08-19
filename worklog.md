@@ -15929,3 +15929,93 @@ Stage Summary:
   actually counts down, SmartRadio shows real stream info, localStorage persists
   best params across refreshes, drums respond to learning.
 - 0 TS errors, 0 runtime errors, dev server compiles cleanly.
+
+---
+Task ID: deep-roast-v2
+Agent: main (Z.ai Code)
+Task: Deeper, broader roast — find structural/algorithmic/perceptual gaps that prevent commercial quality. Bridge them with high-level engineering.
+
+Work Log:
+- Examined the system holistically against the commercial goal:
+  "engine learns to sound like commercial psytrance radio"
+- Found 10 DEEPER gaps beyond the 11 surface fixes:
+  A. Composition is NOT learned (only timbre via CC — notes/rhythm/arrangement are random)
+  B. Analysis during breakdowns corrupts targets (breakdown = low energy = wrong targets)
+  C. No convergence metric (user can't see if learning is working)
+  D. LUFS is crude approximation (not K-weighted)
+  E. No error boundaries in setInterval (single throw kills the loop silently)
+  F. No A/B comparison mode (can't do blind perceptual test)
+  G. Epsilon-greedy is too crude (no gradient signal, no directional memory)
+  H. Analysis not beat-synced (arbitrary 2s windows)
+  I. No spectrogram overlap (7 aggregate metrics too coarse)
+  J. Mastering chain is static (no adaptive compression)
+
+- Wrote PSY4_DEEP_ROAST_V2.md documenting all 10 gaps with code evidence + commercial impact.
+
+- Implemented 6 highest-impact fixes (A, B, C, E, F, G):
+
+  DEEP GAP A — Pattern memory (composition learning, step 1):
+  - CCLearner now records bar fingerprints + their rewards
+  - Pattern memory persisted to localStorage (psy4-patterns-v1)
+  - Top-N patterns retrievable for composer reuse
+  - Host records pattern after each bar in runLearningTick()
+  - This is the FIRST step toward composition learning: the engine
+    remembers WHAT it played when it sounded good.
+
+  DEEP GAP B — Breakdown detection:
+  - RadioListener tracks loudness over 30s window (15 samples × 2s)
+  - If current loudness < 55% of window average → inBreakdown = true
+  - Host holds previous targets during breakdowns (doesn't apply
+    breakdown-like values to COMMERCIAL_TARGETS)
+  - Prevents the engine from "learning" to sound like a breakdown
+
+  DEEP GAP C — Convergence metric:
+  - New computeConvergence(engine, radio) → 0..1 weighted distance
+  - Uses same weights as `overall` metric (smoothness 20%, etc.)
+  - Stored in LiveState4.convergence + convergenceHistory (last 60)
+  - UI shows progress bar + SVG sparkline (4 min of history)
+  - Color-coded: green >70%, yellow >40%, red <40%
+
+  DEEP GAP E — Error boundaries:
+  - runLearningTick() wraps runLearningTickInner() in try/catch
+  - On throw: incrementError() + console.error + continue loop
+  - Error count exposed in LiveState4.learningErrors
+  - UI shows error count if > 0 (was: silent death)
+
+  DEEP GAP F — A/B comparison mode:
+  - New setRadioMixMode('both' | 'radio' | 'engine')
+  - RadioListener now routes through outputGain (host-controlled)
+  - 'radio': radio at 1.0, engine muted (hear the reference)
+  - 'engine': radio muted, engine at 1.0 (hear the test)
+  - 'both': radio at 0.3, engine at 1.0 (default)
+  - UI: 3-button toggle (RADIO / BOTH / ENGINE)
+  - Instant switching for blind A/B perceptual testing
+
+  DEEP GAP G — Hill-climbing exploration:
+  - CCLearner now tracks lastDirection + lastReward per CC
+  - If reward increased in direction D → continue in D (accelerate)
+  - If reward decreased → reverse + reduce step size
+  - If reward plateaued → try opposite direction
+  - Adaptive step size: 0.02..0.12 (accelerates on success, decelerates on failure)
+  - Replaces pure random epsilon-greedy with gradient-informed search
+
+- Verified in browser via agent-browser:
+  - Page loads, 0 errors, 0 TS errors
+  - Hill-climb: "reset — restored best known params (hill-climb state cleared)"
+  - Convergence UI: 87-89% displayed with sparkline graph
+  - A/B mode: "A/B mode: radio (radio=1, engine=0)" → "engine (radio=0, engine=1)"
+  - Breakdown detection: "breakdown detected (loud=0.00 < 55% of avg) — holding targets"
+  - Pattern memory: 26-28 patterns recorded, persisted to localStorage
+  - localStorage: psy4-patterns-v1 with 28 entries (rewards 0.23..0.41)
+  - localStorage: psy4-learning-best-v1 bestReward improved 0.394 → 0.417
+    (hill-climbing found better params: CC71 moved 0.5 → 0.45)
+  - 0 runtime errors, 0 TS errors, dev server compiles cleanly
+
+Stage Summary:
+- 6 deep gaps fixed (A: pattern memory, B: breakdown detection, C: convergence metric,
+  E: error boundaries, F: A/B mode, G: hill-climbing)
+- 4 deep gaps documented but deferred (D: real LUFS, H: beat-synced analysis,
+  I: spectrogram overlap, J: adaptive mastering) — lower priority, future work
+- The engine now has: composition learning infrastructure, breakdown protection,
+  visible convergence, error resilience, A/B perceptual testing, gradient-informed search
+- 0 TS errors, 0 runtime errors, all fixes verified in browser

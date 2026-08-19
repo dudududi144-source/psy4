@@ -101,6 +101,41 @@ export function restoreDefaultTargets(): void {
 }
 
 /**
+ * DEEP GAP C: Convergence metric — a single 0..1 number showing how close
+ * the engine's 7 metrics are to the radio's 7 metrics.
+ *
+ * 1.0 = engine matches radio perfectly.
+ * 0.0 = engine is maximally different from radio.
+ *
+ * Weighted by the same weights used in `overall` so the metric reflects
+ * what the learning loop actually cares about.
+ */
+export function computeConvergence(
+  engine: AudioQualityMetrics,
+  radio: { warmth: number; brightness: number; punch: number; clarity: number; loudness: number; smoothness: number; balance: number },
+): number {
+  // Each metric contributes inversely to its distance, weighted.
+  const brightnessDist = Math.abs(engine.brightness - radio.brightness);
+  const warmthDist = Math.abs(engine.warmth - radio.warmth);
+  const punchDist = Math.abs(engine.punch - radio.punch);
+  const clarityDist = Math.abs(engine.clarity - radio.clarity);
+  const loudnessDist = Math.abs(engine.loudness - radio.loudness);
+  const smoothnessDist = Math.abs(engine.smoothness - radio.smoothness);
+  const balanceDist = Math.abs(engine.balance - radio.balance);
+
+  // Weighted convergence (same weights as `overall`)
+  const brightnessScore = (1 - brightnessDist) * 0.10;
+  const warmthScore = (1 - warmthDist) * 0.15;
+  const punchScore = (1 - punchDist) * 0.15;
+  const clarityScore = (1 - clarityDist) * 0.15;
+  const loudnessScore = (1 - loudnessDist) * 0.15;
+  const smoothnessScore = (1 - smoothnessDist) * 0.20;
+  const balanceScore = (1 - balanceDist) * 0.10;
+
+  return Math.max(0, Math.min(1, brightnessScore + warmthScore + punchScore + clarityScore + loudnessScore + smoothnessScore + balanceScore));
+}
+
+/**
  * Analyze audio from an AnalyserNode and compute quality metrics.
  * This is called from the learning loop every poll tick (250ms).
  *
