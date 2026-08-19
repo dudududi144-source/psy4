@@ -15701,3 +15701,45 @@ Stage Summary:
 - Learning has no reference — needs to compare to real commercial audio
 - The REAL task: engine must listen to radio and learn to sound like it
 - Next: implement real radio connection + analysis + comparison
+
+---
+Task ID: real-radio-listener
+Agent: main (Z.ai Code)
+Task: Build REAL radio listener — engine listens to live stream + learns from it
+
+Work Log:
+- Created radio-listener.ts (~200 lines):
+  - RadioListener class connects to live radio stream
+  - Uses <audio> element + MediaElementSource → AnalyserNode
+  - Analyzes every 2s: 7 audio quality metrics + BPM + style detection
+  - BPM: energy-based onset detection in low band (20-200Hz)
+  - Style: brightness/smoothness/punch → DARK/FULL_ON/PROGRESSIVE/ACID
+  - Calls onTargets() callback with real measured values
+
+- Replaced fake Smart Radio in psyLive4.ts:
+  - OLD: cycleSmartRadioStyle() — random style cycling every 2min
+  - NEW: setSmartRadio(on) → connect to real stream → analyze → learn
+  - onRadioTargets(): updates COMMERCIAL_TARGETS with REAL radio values
+  - Syncs BPM to radio (if 100-180 detected)
+  - Syncs style to radio (if different from current)
+  - Learning system now compares engine output to REAL radio targets
+
+- Verified in browser:
+  - 'RadioListener connected to Psyndora Psytrance'
+  - 'Radio targets updated: BPM=145 style=PROGRESSIVE warmth=1.00 brightness=0.09'
+  - Engine BPM synced to radio
+  - Engine style synced to radio-detected style
+  - COMMERCIAL_TARGETS updated with real measurements
+  - 0 TS errors, 0 runtime errors
+
+- Pushed: 4308bf8..288ecaa
+
+THE LEARNING LOOP IS NOW REAL:
+  1. Radio listener analyzes stream → extracts real targets
+  2. Engine measures its own output → 7 metrics
+  3. Learning compares engine metrics to radio targets
+  4. Suggests CC adjustments to close the gap
+  5. Engine adjusts CC params → sound gets closer to radio
+  6. Over time, engine learns to sound like the radio
+
+This is the REAL task: engine learns to sound commercial by listening to commercial radio.
