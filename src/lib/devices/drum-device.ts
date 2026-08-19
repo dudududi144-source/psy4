@@ -111,6 +111,56 @@ export class DrumDevice implements PsyDevice {
     });
   }
 
+  /**
+   * CC parameter control for learning loop.
+   * FIX GAP 4: drums were previously invisible to learning — half the mix
+   * (drums are 50%+ of psytrance loudness) was uncontrollable.
+   *
+   * Maps:
+   * - CC74 (cutoff)  → hat decay (lower cutoff = shorter, darker hats)
+   * - CC71 (resonance) → hat decay extra reduction (less squeal)
+   * - CC12 (energy macro) → output gain (drum loudness)
+   */
+  setCC(cc: number, value: number): void {
+    if (!this.node) return;
+    const v = Math.max(0, Math.min(1, value));
+    switch (cc) {
+      case 74: {
+        // Lower cutoff → shorter, darker hats. Map 0..1 → 0.03..0.20s decay.
+        const hatDecay = 0.03 + (1 - v) * 0.17;
+        this.node.port.postMessage({
+          type: 'setVoiceRecipe',
+          voiceClass: 'HatVoice',
+          recipe: { hatDecay },
+        });
+        break;
+      }
+      case 71: {
+        // Lower resonance → slightly shorter hats (less ring). Subtle.
+        const hatDecay = 0.05 + (1 - v) * 0.10;
+        this.node.port.postMessage({
+          type: 'setVoiceRecipe',
+          voiceClass: 'HatVoice',
+          recipe: { hatDecay },
+        });
+        break;
+      }
+      case 12: {
+        // Energy macro → output gain. Wire through gainNode if available.
+        // We don't have a per-CC gain here, so adjust via recipe saturation.
+        // (SamplerDevice handles CC12 via real GainNode; drum worklet uses recipe.)
+        const saturation = 0.5 + v * 0.5;  // 0.5..1.0
+        this.node.port.postMessage({
+          type: 'setVoiceRecipe',
+          voiceClass: 'KickVoice',
+          recipe: { saturation },
+        });
+        break;
+      }
+      // CC5 (glide), CC14 (delay send), CC15 (reverb send) — not applicable to drums.
+    }
+  }
+
   get workletNode(): AudioWorkletNode | null { return this.node; }
   get isStarted(): boolean { return this.started; }
 }

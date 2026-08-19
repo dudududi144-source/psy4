@@ -28,8 +28,11 @@ export interface QualityTargets {
   balanceMin: number;
 }
 
-// Commercial psytrance targets (measured from reference tracks)
-export const COMMERCIAL_TARGETS: QualityTargets = {
+// Commercial psytrance DEFAULTS (measured from reference tracks).
+// These are the immutable defaults — radio updates go through `applyRadioTargets()`
+// which writes to a SEPARATE mutable copy (`activeTargets`) so the defaults
+// can always be restored on disconnect (roast GAP 3).
+export const DEFAULT_TARGETS: QualityTargets = {
   warmthMin: 0.6,       // bass must be present
   brightnessMin: 0.3,   // not too dark
   brightnessMax: 0.7,   // not too bright/harsh
@@ -42,12 +45,76 @@ export const COMMERCIAL_TARGETS: QualityTargets = {
 };
 
 /**
+ * Active targets — what the learning loop actually compares against.
+ * Mutated by `applyRadioTargets()` when radio is connected,
+ * reset to `DEFAULT_TARGETS` by `restoreDefaultTargets()` on disconnect.
+ * This is NOT the export — components import `COMMERCIAL_TARGETS` (the active copy).
+ */
+export const COMMERCIAL_TARGETS: QualityTargets = { ...DEFAULT_TARGETS };
+
+const MIN_TARGET_SPREAD = 0.20;  // min (Max - Min) to avoid 4% wide windows
+
+/**
+ * Apply radio-derived targets to the active target set.
+ * Ensures Min ≤ Max with at least MIN_TARGET_SPREAD between them.
+ * (roast GAP 3: was `Math.max(0.2, brightness - 0.15)` / `Math.min(0.9, brightness + 0.15)`
+ *  → if brightness=0.09, Min=0.20 Max=0.24 → 4% window → forced clamping to noise spike)
+ */
+export function applyRadioTargets(t: {
+  warmth: number; brightness: number; punch: number;
+  clarity: number; loudness: number; smoothness: number; balance: number;
+}): void {
+  // Each pair: [min, max] with ±0.15 around target, but enforced spread
+  const clampPair = (center: number, lo: number, hi: number): [number, number] => {
+    let mn = Math.max(lo, center - 0.15);
+    let mx = Math.min(hi, center + 0.15);
+    if (mx - mn < MIN_TARGET_SPREAD) {
+      // Spread too narrow — widen around center (clamped to bounds)
+      mn = Math.max(lo, center - MIN_TARGET_SPREAD / 2);
+      mx = Math.min(hi, center + MIN_TARGET_SPREAD / 2);
+      // If still narrow (center near edge), shift the window
+      if (mx - mn < MIN_TARGET_SPREAD) {
+        if (mn === lo) mx = Math.min(hi, lo + MIN_TARGET_SPREAD);
+        else mn = Math.max(lo, hi - MIN_TARGET_SPREAD);
+      }
+    }
+    return [mn, mx];
+  };
+
+  const [bMin, bMax] = clampPair(t.brightness, 0.15, 0.85);
+  const [lMin, lMax] = clampPair(t.loudness, 0.25, 0.95);
+
+  COMMERCIAL_TARGETS.warmthMin = Math.max(0.3, t.warmth - 0.15);
+  COMMERCIAL_TARGETS.brightnessMin = bMin;
+  COMMERCIAL_TARGETS.brightnessMax = bMax;
+  COMMERCIAL_TARGETS.punchMin = Math.max(0.3, t.punch - 0.15);
+  COMMERCIAL_TARGETS.clarityMin = Math.max(0.2, t.clarity - 0.15);
+  COMMERCIAL_TARGETS.loudnessMin = lMin;
+  COMMERCIAL_TARGETS.loudnessMax = lMax;
+  COMMERCIAL_TARGETS.smoothnessMin = Math.max(0.3, t.smoothness - 0.15);
+  COMMERCIAL_TARGETS.balanceMin = Math.max(0.3, t.balance - 0.15);
+}
+
+/** Restore defaults — called on radio disconnect (roast GAP 3). */
+export function restoreDefaultTargets(): void {
+  Object.assign(COMMERCIAL_TARGETS, DEFAULT_TARGETS);
+}
+
+/**
  * Analyze audio from an AnalyserNode and compute quality metrics.
  * This is called from the learning loop every poll tick (250ms).
+ *
+ * FIX (roast GAP 9): accepts OPTIONAL reusable buffers to avoid
+ * allocating 4.5KB per call (was: 5-11 calls/sec × 4.5KB = 25-50KB/sec GC pressure).
  */
-export function analyzeQuality(analyser: AnalyserNode, sampleRate: number): AudioQualityMetrics {
-  const freqData = new Uint8Array(analyser.frequencyBinCount);
-  const tdData = new Float32Array(analyser.fftSize);
+export function analyzeQuality(
+  analyser: AnalyserNode,
+  sampleRate: number,
+  freqBuf?: Uint8Array,
+  tdBuf?: Float32Array,
+): AudioQualityMetrics {
+  const freqData = freqBuf ?? new Uint8Array(analyser.frequencyBinCount);
+  const tdData = tdBuf ?? new Float32Array(analyser.fftSize);
   analyser.getByteFrequencyData(freqData as Uint8Array<ArrayBuffer>);
   analyser.getFloatTimeDomainData(tdData as Float32Array<ArrayBuffer>);
 

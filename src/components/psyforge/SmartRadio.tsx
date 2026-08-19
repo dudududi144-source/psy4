@@ -1,7 +1,15 @@
 'use client';
 // src/components/psyforge/SmartRadio.tsx
-// Smart Radio: auto-evolution mode that cycles styles every ~2 minutes.
-// Think of it as an AI DJ that never stops.
+// Smart Radio — REAL radio listener mode.
+//
+// FIX (roast GAP 10): the old component showed a fake "next style in M:SS"
+// countdown that was always 0:00 (the value was hardcoded to 0 in getState()).
+// This version shows what the radio listener is ACTUALLY doing:
+// - The stream name we're connected to (e.g. "Psyndora Psytrance")
+// - The BPM detected from the stream (with confidence)
+// - The current engine style (synced from radio)
+//
+// No more fake countdowns. What you see is what's real.
 
 import React from 'react';
 import type { MusicalStyle } from '@/lib/psyLive4/types';
@@ -9,18 +17,19 @@ import type { MusicalStyle } from '@/lib/psyLive4/types';
 interface SmartRadioProps {
   on: boolean;
   onToggle: () => void;
-  nextStyleChange: number;   // seconds
+  streamName: string;             // name of connected stream (empty if none)
+  detectedBpm: number;            // BPM detected from radio (0 = unknown)
+  bpmConfidence: number;         // 0..1 — how stable the estimate is
   currentStyle: MusicalStyle;
   energy: number;
 }
 
-const STYLE_ORDER: MusicalStyle[] = ['FULL_ON', 'DARK', 'PROGRESSIVE', 'ACID', 'GOA', 'HI_TECH', 'FOREST'];
-
-export function SmartRadio({ on, onToggle, nextStyleChange, currentStyle, energy }: SmartRadioProps) {
-  const currentIdx = STYLE_ORDER.indexOf(currentStyle);
-  const nextStyle = STYLE_ORDER[(currentIdx + 1) % STYLE_ORDER.length];
-  const mins = Math.floor(nextStyleChange / 60);
-  const secs = Math.floor(nextStyleChange % 60);
+export function SmartRadio({ on, onToggle, streamName, detectedBpm, bpmConfidence, currentStyle, energy }: SmartRadioProps) {
+  const bpmLabel = detectedBpm > 0
+    ? `${detectedBpm.toFixed(0)} BPM`
+    : '— BPM';
+  const confPct = Math.round(bpmConfidence * 100);
+  const confLabel = bpmConfidence > 0.6 ? 'STABLE' : bpmConfidence > 0.3 ? 'LOCKING' : 'SEARCHING';
 
   return (
     <div className={`pf-m intel smart-radio${on ? ' active' : ''}`}>
@@ -28,29 +37,34 @@ export function SmartRadio({ on, onToggle, nextStyleChange, currentStyle, energy
       <div className="radio-status">
         <div className={`radio-led${on ? ' on' : ''}`} />
         <span className="radio-status-text">
-          {on ? 'BROADCASTING' : 'OFFLINE'}
+          {on ? 'LISTENING' : 'OFFLINE'}
         </span>
       </div>
       {on && (
         <>
           <div className="radio-now">
-            <span className="radio-label">NOW</span>
-            <span className="radio-style" style={{ color: 'var(--pf-mg)' }}>{currentStyle.replace('_', '.')}</span>
+            <span className="radio-label">STREAM</span>
+            <span className="radio-style" style={{ color: 'var(--pf-mg)' }}>
+              {streamName || 'connecting…'}
+            </span>
           </div>
           <div className="radio-next">
-            <span className="radio-label">NEXT</span>
-            <span className="radio-style-next">{nextStyle.replace('_', '.')}</span>
+            <span className="radio-label">DETECTED</span>
+            <span className="radio-style-next">{bpmLabel}</span>
           </div>
           <div className="radio-countdown">
             <div className="radio-countdown-bar">
               <div
                 className="radio-countdown-fill"
-                style={{ width: `${Math.max(0, Math.min(100, (1 - nextStyleChange / 120) * 100))}%` }}
+                style={{ width: `${Math.max(0, Math.min(100, bpmConfidence * 100))}%` }}
               />
             </div>
-            <span className="radio-time">{mins}:{secs.toString().padStart(2, '0')}</span>
+            <span className="radio-time">{confLabel} {confPct}%</span>
           </div>
           <div className="radio-energy">
+            ENGINE STYLE: <span style={{ color: 'var(--pf-ac)' }}>{currentStyle.replace('_', '.')}</span>
+          </div>
+          <div className="radio-energy" style={{ marginTop: '2px' }}>
             ENERGY: <span style={{ color: 'var(--pf-ac)' }}>{Math.round(energy * 100)}%</span>
           </div>
         </>

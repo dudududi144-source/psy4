@@ -8,6 +8,13 @@
 // 2. Analyzes the incoming audio (BPM, spectrum, dynamics, key)
 // 3. Extracts targets that the engine should match
 // 4. Feeds those targets to the learning system
+//
+// FIXES (claims-vs-reality roast):
+// - GAP 2: BPM detection now runs at 50ms (20Hz) in its OWN interval —
+//   was 2000ms, missed 4-5 beats between samples at 145BPM.
+// - GAP 11: removed dead `bpmHistory` field (never written to).
+// - GAP 11: `energyHistory` now cleared on disconnect (was bleeding across streams).
+// - GAP 9: `analyzeQuality` reuses host-provided buffers (no per-call allocation).
 
 import type { AudioQualityMetrics } from './audio-quality';
 import { analyzeQuality } from './audio-quality';
@@ -42,10 +49,11 @@ export class RadioListener {
   private tdBuf: Float32Array;
   private connected = false;
   private currentStream: RadioStream | null = null;
-  private bpmHistory: number[] = [];
   private beatTimes: number[] = [];
   private lastBeatTime = 0;
   private energyHistory: number[] = [];
+  private lastDetectedBpm = 0;
+  private bpmConfidence = 0;
   private onTargetsCallback: ((target: RadioTarget) => void) | null = null;
 
   constructor(ctx: AudioContext) {
@@ -91,7 +99,7 @@ export class RadioListener {
       this.connected = true;
       console.log(`[RadioListener] connected to ${stream.name}`);
 
-      // Start analysis loop
+      // Start analysis loops (FIX GAP 2: BPM at 50ms, quality at 2000ms)
       this.startAnalysis();
       return true;
     } catch (err) {
@@ -113,32 +121,48 @@ export class RadioListener {
     }
     this.connected = false;
     this.currentStream = null;
-    this.bpmHistory = [];
     this.beatTimes = [];
+    this.energyHistory = [];          // FIX GAP 11: was NOT cleared (broke BPM on stream switch)
+    this.lastBeatTime = 0;
+    this.lastDetectedBpm = 0;
+    this.bpmConfidence = 0;
+    if (this.qualityInterval) { clearInterval(this.qualityInterval); this.qualityInterval = null; }
+    if (this.bpmInterval) { clearInterval(this.bpmInterval); this.bpmInterval = null; }
   }
 
   isConnected(): boolean { return this.connected; }
   getCurrentStream(): RadioStream | null { return this.currentStream; }
   getAnalyser(): AnalyserNode | null { return this.analyser; }
+  /** FIX GAP 2: expose BPM detection confidence so UI can show "BPM=145 (conf=0.82)". */
+  getBpmConfidence(): number { return this.bpmConfidence; }
+  getLastDetectedBpm(): number { return this.lastDetectedBpm; }
 
   onTargets(cb: (target: RadioTarget) => void): void {
     this.onTargetsCallback = cb;
   }
 
-  private analysisInterval: ReturnType<typeof setInterval> | null = null;
+  private qualityInterval: ReturnType<typeof setInterval> | null = null;
+  private bpmInterval: ReturnType<typeof setInterval> | null = null;
   private connectTime = 0;
   private targetHistory: RadioTarget[] = [];
   private static readonly WARMUP_MS = 5000;
   private static readonly HISTORY_MAX = 5;
+  private static readonly BPM_INTERVAL_MS = 50;      // FIX GAP 2: was 2000 — missed beats
+  private static readonly QUALITY_INTERVAL_MS = 2000;
 
   private startAnalysis(): void {
-    if (this.analysisInterval) clearInterval(this.analysisInterval);
+    if (this.qualityInterval) clearInterval(this.qualityInterval);
+    if (this.bpmInterval) clearInterval(this.bpmInterval);
     this.connectTime = Date.now();
     this.targetHistory = [];
-    this.analysisInterval = setInterval(() => this.analyze(), 2000);
+
+    // FIX GAP 2: BPM detection at 20Hz — catches beats at 145BPM (414ms apart) with 8x oversample
+    this.bpmInterval = setInterval(() => this.detectBPM(), RadioListener.BPM_INTERVAL_MS);
+    // Quality metrics at 0.5Hz — these need a full FFT window to be meaningful
+    this.qualityInterval = setInterval(() => this.analyzeQuality(), RadioListener.QUALITY_INTERVAL_MS);
   }
 
-  private analyze(): void {
+  private analyzeQuality(): void {
     if (!this.analyser || !this.connected) return;
 
     // WARMUP: skip first 5s (stream buffering, silence)
@@ -147,7 +171,8 @@ export class RadioListener {
       return;
     }
 
-    const metrics = analyzeQuality(this.analyser, this.ctx.sampleRate);
+    // Reuse buffers (FIX GAP 9)
+    const metrics = analyzeQuality(this.analyser, this.ctx.sampleRate, this.freqBuf, this.tdBuf);
 
     // Skip if radio is TRULY silent (not just quiet — radio streams are often quiet)
     if (metrics.loudness < 0.001 && metrics.brightness < 0.01) {
@@ -158,9 +183,8 @@ export class RadioListener {
     // CAP brightness at 0.8 (1.0 = white noise artifact)
     const cappedBrightness = Math.min(0.8, metrics.brightness);
 
-    // BPM with confidence
-    const bpm = this.detectBPM();
-    const bpmConfidence = this.beatTimes.length >= 4 ? 0.8 : this.beatTimes.length / 5;
+    const bpm = this.lastDetectedBpm;
+    const bpmConfidence = this.bpmConfidence;
     const effectiveBpm = bpmConfidence > 0.4 && bpm > 100 && bpm < 180 ? bpm : 0;
 
     const style = this.detectStyle(metrics, effectiveBpm || 145);
@@ -195,7 +219,7 @@ export class RadioListener {
       overall: this.avgField('overall'),
     };
 
-    console.log(`[RadioListener] ${smoothed.streamName}: BPM=${smoothed.bpm.toFixed(0)}(conf=${bpmConfidence.toFixed(1)}) style=${smoothed.style} warmth=${smoothed.warmth.toFixed(2)} bright=${smoothed.brightness.toFixed(2)} smooth=${smoothed.smoothness.toFixed(2)} loud=${smoothed.loudness.toFixed(2)}`);
+    console.log(`[RadioListener] ${smoothed.streamName}: BPM=${smoothed.bpm.toFixed(0)}(conf=${bpmConfidence.toFixed(2)}) style=${smoothed.style} warmth=${smoothed.warmth.toFixed(2)} bright=${smoothed.brightness.toFixed(2)} smooth=${smoothed.smoothness.toFixed(2)} loud=${smoothed.loudness.toFixed(2)}`);
 
     if (this.onTargetsCallback) {
       this.onTargetsCallback(smoothed);
@@ -211,13 +235,15 @@ export class RadioListener {
   /**
    * BPM detection via energy-based onset detection.
    * Measures energy spikes in low-frequency band and calculates intervals.
+   *
+   * FIX GAP 2: now called at 50ms intervals (was 2000ms).
+   * At 145 BPM (414ms/beat), 50ms gives 8 samples per beat — robust detection.
    */
-  private detectBPM(): number {
-    if (!this.analyser) return 0;
+  private detectBPM(): void {
+    if (!this.analyser || !this.connected) return;
 
-    // Get frequency data
+    // Get frequency data (reuse buffers)
     this.analyser.getByteFrequencyData(this.freqBuf as Uint8Array<ArrayBuffer>);
-    this.analyser.getFloatTimeDomainData(this.tdBuf as Float32Array<ArrayBuffer>);
 
     // Calculate energy in low band (20-200Hz) — where kick lives
     const sr = this.ctx.sampleRate;
@@ -235,36 +261,37 @@ export class RadioListener {
 
     // Track energy history
     this.energyHistory.push(avgLowEnergy);
-    if (this.energyHistory.length > 50) this.energyHistory.shift();
+    if (this.energyHistory.length > 100) this.energyHistory.shift();  // 100 × 50ms = 5s window
 
     // Detect beat: current energy > average * 1.3
     const avgEnergy = this.energyHistory.reduce((a, b) => a + b, 0) / this.energyHistory.length;
     const now = this.ctx.currentTime;
 
-    if (avgLowEnergy > avgEnergy * 1.3 && now - this.lastBeatTime > 0.3) {
+    if (avgLowEnergy > avgEnergy * 1.3 && now - this.lastBeatTime > 0.25) {  // min 0.25s = 240 BPM cap
       // Beat detected!
       if (this.lastBeatTime > 0) {
         const interval = now - this.lastBeatTime;
-        this.beatTimes.push(interval);
-        if (this.beatTimes.length > 8) this.beatTimes.shift();
+        if (interval > 0.25 && interval < 1.5) {  // 40-240 BPM range
+          this.beatTimes.push(interval);
+          if (this.beatTimes.length > 16) this.beatTimes.shift();
 
-        // Calculate BPM from median of intervals
-        if (this.beatTimes.length >= 4) {
-          const sorted = [...this.beatTimes].sort((a, b) => a - b);
-          const median = sorted[Math.floor(sorted.length / 2)];
-          let bpm = 60 / median;
-          // Fold to typical psytrance range (130-160)
-          while (bpm < 100) bpm *= 2;
-          while (bpm > 180) bpm /= 2;
-          return Math.round(bpm);
+          // Calculate BPM from median of intervals
+          if (this.beatTimes.length >= 4) {
+            const sorted = [...this.beatTimes].sort((a, b) => a - b);
+            const median = sorted[Math.floor(sorted.length / 2)];
+            let bpm = 60 / median;
+            // Fold to typical psytrance range (130-160)
+            while (bpm < 100) bpm *= 2;
+            while (bpm > 180) bpm /= 2;
+            this.lastDetectedBpm = Math.round(bpm);
+            // Confidence: how consistent are the intervals?
+            const variance = sorted.reduce((sum, v) => sum + Math.abs(v - median), 0) / sorted.length;
+            this.bpmConfidence = Math.max(0, Math.min(1, 1 - variance * 4));  // 0=chaotic, 1=rock-steady
+          }
         }
       }
       this.lastBeatTime = now;
     }
-
-    return this.bpmHistory.length > 0
-      ? this.bpmHistory[this.bpmHistory.length - 1]
-      : 0;
   }
 
   /**
@@ -285,7 +312,6 @@ export class RadioListener {
 
   dispose(): void {
     this.disconnect();
-    if (this.analysisInterval) clearInterval(this.analysisInterval);
     if (this.analyser) { try { this.analyser.disconnect(); } catch {} }
   }
 }

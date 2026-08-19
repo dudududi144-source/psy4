@@ -44,7 +44,10 @@ const initialState: LiveState4 = {
   roleVoices: { kick: 0, bass: 0, lead: 0, acid: 0, pad: 0, hat: 0, clap: 0, perc: 0, snare: 0 },
   masterChain: { lowCompReduction: 0, midCompReduction: 0, highCompReduction: 0, sidechainGain: 1, limiterReduction: 0 },
   recentEvents: [], eventsPerSec: 0, ccParams: {},
-  smartRadioOn: false, smartRadioNextStyleChange: 0,
+  smartRadioOn: false,
+  radioStreamName: '',
+  radioDetectedBpm: 0,
+  radioBpmConfidence: 0,
   drumStats: null, learningOn: false, learningStates: [], learningCurrentCc: 74, learningTrialRemaining: 0,
 };
 
@@ -341,7 +344,9 @@ export default function Page() {
             <SmartRadio
               on={smartRadioOn}
               onToggle={onSmartRadio}
-              nextStyleChange={s.smartRadioNextStyleChange}
+              streamName={s.radioStreamName}
+              detectedBpm={s.radioDetectedBpm}
+              bpmConfidence={s.radioBpmConfidence}
               currentStyle={s.style}
               energy={s.energy}
             />

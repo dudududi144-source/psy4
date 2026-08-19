@@ -20,7 +20,14 @@ import { LeadDevice } from '@/lib/devices/lead-device';
 import { SamplerDevice } from '@/lib/devices/sampler-device';
 import { freqHzToCC74 } from './cc-mapping';
 import { CCLearner, type CCExplorationState } from './learning';
-import { analyzeQuality, suggestAdjustments, COMMERCIAL_TARGETS, type AudioQualityMetrics } from './audio-quality';
+import {
+  analyzeQuality,
+  suggestAdjustments,
+  COMMERCIAL_TARGETS,
+  applyRadioTargets,
+  restoreDefaultTargets,
+  type AudioQualityMetrics,
+} from './audio-quality';
 import { RadioListener, type RadioTarget, type RadioStream } from './radio-listener';
 import { DeviceHost, InMemoryChannel } from '@/lib/psy-foundation-shim';
 import type { MusicalEvent } from '@/lib/psy-foundation-shim/protocol';
@@ -74,7 +81,11 @@ export interface LiveState4 {
   eventsPerSec: number;                 // composition throughput
   ccParams: Record<number, number>;     // current CC parameter values
   smartRadioOn: boolean;
-  smartRadioNextStyleChange: number;     // seconds until next auto style change
+  // Removed smartRadioNextStyleChange — was always 0, dead field (roast GAP 10)
+  // New: real radio listener info (replaces the fake countdown)
+  radioStreamName: string;              // name of stream currently connected
+  radioDetectedBpm: number;             // BPM detected from radio (0 = unknown)
+  radioBpmConfidence: number;           // 0..1 — how stable the BPM estimate is
   drumStats: DrumDeviceStats | null;     // drum worklet telemetry
   learningOn: boolean;
   learningStates: CCExplorationState[];
@@ -132,8 +143,8 @@ export class PsyLive4 implements SchedulerHost {
   private recentEvents: ComposedEventLite[] = [];     // ring buffer, last 16
   private ccParams: Record<number, number> = {};      // current CC values
   private smartRadioOn = false;
-  private smartRadioNextChange = 0;                    // ctx time of next auto style change
-  private smartRadioInterval = 120;                    // seconds between auto changes
+  // Removed: smartRadioNextChange / smartRadioInterval — fake Smart Radio is gone,
+  // real RadioListener replaces it. No countdown to display. (roast GAP 10)
   private eventCountWindow = 0;                        // events in current 1s window
   private eventWindowStart = 0;                        // ctx time of window start
   private eventsPerSec = 0;                             // smoothed events/sec
@@ -141,6 +152,19 @@ export class PsyLive4 implements SchedulerHost {
   // ── Learning loop ──
   private learner = new CCLearner();
   private learningOn = false;
+  /**
+   * FIX GAP 1: dedicated learning interval (4s) — was: delta adjustments inside
+   * getState() (called 4-10x/sec by UI) → thrashing, no convergence.
+   * FIX GAP 7: skip during warmup (first 5s of playback) and when ctx suspended.
+   * FIX GAP 8: apply ONE delta adjustment per tick (largest magnitude wins)
+   *            instead of all 5 branches fighting each other.
+   */
+  private learningInterval: ReturnType<typeof setInterval> | null = null;
+  private static readonly LEARNING_INTERVAL_MS = 4000;
+  private static readonly ENGINE_WARMUP_MS = 5000;
+  private playStartTime = 0;  // ctx.currentTime when play() was called
+  // Reusable engine-analysis buffers (FIX GAP 9: was allocating 4.5KB per call).
+  // These are `freqBuf`/`tdBuf` defined below — single set, shared with getState().
   // ── Real Radio Listener ──
   private radioListener: RadioListener;
   private radioTarget: RadioTarget | null = null;
@@ -294,6 +318,7 @@ export class PsyLive4 implements SchedulerHost {
     if (this.ctx.state === 'suspended') await this.ctx.resume();
     this.playing = true;
     this.startTime = this.ctx.currentTime;
+    this.playStartTime = this.ctx.currentTime;  // FIX GAP 7: engine warmup baseline
     this.kickCount = 0;
     this.bar = 0;
     this.composerPrev = null;
@@ -302,6 +327,7 @@ export class PsyLive4 implements SchedulerHost {
     this.leadDevice.onStart();
     this.samplerDevice.onStart();
     this.scheduler.start();
+    this.startLearningLoop();  // FIX GAP 1: dedicated 4s timer (was: in getState)
     console.log('[PsyLive4] play — scheduler started');
   }
 
@@ -309,6 +335,7 @@ export class PsyLive4 implements SchedulerHost {
     if (!this.playing) return;
     this.playing = false;
     this.scheduler.stop();
+    this.stopLearningLoop();  // FIX GAP 1: clear learning interval
     this.drumDevice.onStop();
     this.melodicDevice.onStop();
     this.leadDevice.onStop();
@@ -389,11 +416,16 @@ export class PsyLive4 implements SchedulerHost {
   // Maps CC numbers to psysynth params: 74=cutoff, 71=resonance, 5=glide,
   // 12=energyMacro, 14=delaySend, 15=reverbSend.
   // Value is 0..1 (the UI normalizes). Returns true if applied.
+  //
+  // FIX GAP 4: now routes to ALL 4 devices (was: melodic+lead only — drums and
+  // sampler were invisible to learning, half the mix uncontrollable).
   setCC(cc: number, value: number): boolean {
     const v = Math.max(0, Math.min(1, value));
     this.ccParams[cc] = v;
     this.melodicDevice.setParameterByCC(cc, v);
     this.leadDevice.setCC(cc, v);
+    this.drumDevice.setCC(cc, v);      // NEW: drums respond to CC74/CC71/CC12
+    this.samplerDevice.setCC(cc, v);   // NEW: sampler responds to CC12
     return true;
   }
 
@@ -416,7 +448,9 @@ export class PsyLive4 implements SchedulerHost {
     } else {
       this.radioListener.disconnect();
       this.radioTarget = null;
-      console.log('[PsyLive4] Radio OFF');
+      // FIX GAP 3: restore default commercial targets (was: stuck at last stream's values)
+      restoreDefaultTargets();
+      console.log('[PsyLive4] Radio OFF — targets restored to defaults');
     }
   }
 
@@ -435,6 +469,11 @@ export class PsyLive4 implements SchedulerHost {
   /**
    * Called when RadioListener extracts new targets from the radio stream.
    * The engine adjusts its parameters to match the radio.
+   *
+   * FIX GAP 3: now uses `applyRadioTargets()` which guarantees Min ≤ Max
+   * with a minimum 0.20 spread (was: directly mutating COMMERCIAL_TARGETS with
+   * ±0.15 — could produce Min=0.20 Max=0.24 = 4% window = forced clamping to
+   * a noise spike).
    */
   private onRadioTargets(target: RadioTarget): void {
     this.radioTarget = target;
@@ -449,19 +488,10 @@ export class PsyLive4 implements SchedulerHost {
       this.setStyle(target.style as MusicalStyle);
     }
 
-    // Update COMMERCIAL_TARGETS with REAL measured values from radio
-    // This is the KEY: the learning system now has REAL targets, not arbitrary numbers
-    COMMERCIAL_TARGETS.warmthMin = Math.max(0.3, target.warmth - 0.15);
-    COMMERCIAL_TARGETS.brightnessMin = Math.max(0.2, target.brightness - 0.15);
-    COMMERCIAL_TARGETS.brightnessMax = Math.min(0.9, target.brightness + 0.15);
-    COMMERCIAL_TARGETS.punchMin = Math.max(0.3, target.punch - 0.15);
-    COMMERCIAL_TARGETS.clarityMin = Math.max(0.2, target.clarity - 0.15);
-    COMMERCIAL_TARGETS.loudnessMin = Math.max(0.3, target.loudness - 0.15);
-    COMMERCIAL_TARGETS.loudnessMax = Math.min(0.95, target.loudness + 0.15);
-    COMMERCIAL_TARGETS.smoothnessMin = Math.max(0.3, target.smoothness - 0.15);
-    COMMERCIAL_TARGETS.balanceMin = Math.max(0.3, target.balance - 0.15);
+    // Apply radio-derived targets through the SAFE helper (clamps Min ≤ Max, ensures spread)
+    applyRadioTargets(target);
 
-    console.log(`[PsyLive4] Radio targets updated: BPM=${target.bpm.toFixed(0)} style=${target.style} warmth=${target.warmth.toFixed(2)} brightness=${target.brightness.toFixed(2)} smoothness=${target.smoothness.toFixed(2)}`);
+    console.log(`[PsyLive4] Radio targets applied: BPM=${target.bpm.toFixed(0)} style=${target.style} warmth=${target.warmth.toFixed(2)} brightness=[${COMMERCIAL_TARGETS.brightnessMin.toFixed(2)},${COMMERCIAL_TARGETS.brightnessMax.toFixed(2)}] smoothness=${target.smoothness.toFixed(2)}`);
   }
 
   isSmartRadioOn(): boolean { return this.smartRadioOn; }
@@ -470,13 +500,24 @@ export class PsyLive4 implements SchedulerHost {
   setLearning(on: boolean): void {
     this.learningOn = on;
     if (on) {
+      // learner.reset() restores best-known params (does NOT wipe memory — roast GAP 5)
       this.learner.reset();
-      console.log('[PsyLive4] Learning ON — exploring CC params');
+      // If already playing, start the dedicated learning interval (roast GAP 1).
+      // If not playing yet, play() will start it when called.
+      if (this.playing) this.startLearningLoop();
+      console.log('[PsyLive4] Learning ON — dedicated 4s interval (restored best params)');
     } else {
-      console.log('[PsyLive4] Learning OFF');
+      this.stopLearningLoop();
+      console.log('[PsyLive4] Learning OFF — interval cleared');
     }
   }
   isLearningOn(): boolean { return this.learningOn; }
+
+  /** Explicit wipe — for the UI's "Reset Learning" button. */
+  forgetLearning(): void {
+    this.learner.forgetAll();
+    console.log('[PsyLive4] Learning memory wiped (explicit)');
+  }
 
   // ── Master volume (0..1.5) ──
   private _masterVolume = 1.0;
@@ -644,86 +685,12 @@ export class PsyLive4 implements SchedulerHost {
       limiterReduction: this.masterLimiter ? this.masterLimiter.reduction : 0,
     };
 
-    // Learning loop: direct delta comparison engine-vs-radio
-    if (this.learningOn && this.playing) {
-      // Analyze engine quality
-      const engineQuality = analyzeQuality(this.analyser, this.ctx.sampleRate);
-
-      // If we have radio targets, do DIRECT DELTA comparison
-      if (this.radioTarget && this.radioTarget.connected) {
-        const rt = this.radioTarget;
-
-        // Calculate deltas (engine - radio)
-        const delta = {
-          brightness: engineQuality.brightness - rt.brightness,
-          warmth: engineQuality.warmth - rt.warmth,
-          loudness: engineQuality.loudness - rt.loudness,
-          smoothness: engineQuality.smoothness - rt.smoothness,
-          punch: engineQuality.punch - rt.punch,
-        };
-
-        // Direct adjustments based on delta
-        // If engine too bright → reduce cutoff AND reduce high gain
-        if (delta.brightness > 0.1) {
-          this.setCC(74, Math.max(0.1, (this.ccParams[74] || 0.5) - 0.03));
-          this._highGain = Math.max(0.3, this._highGain - 0.02);
-          this.multibandHighGain.gain.setTargetAtTime(this._highGain, this.ctx.currentTime, 0.1);
-          console.log(`[Learning] engine too bright (${delta.brightness.toFixed(2)}) → reduce CC74 + highGain=${this._highGain.toFixed(2)}`);
-        }
-        // If engine too dark → increase cutoff AND increase high gain
-        if (delta.brightness < -0.1) {
-          this.setCC(74, Math.min(0.9, (this.ccParams[74] || 0.5) + 0.03));
-          this._highGain = Math.min(1.5, this._highGain + 0.02);
-          this.multibandHighGain.gain.setTargetAtTime(this._highGain, this.ctx.currentTime, 0.1);
-          console.log(`[Learning] engine too dark (${delta.brightness.toFixed(2)}) → increase CC74 + highGain=${this._highGain.toFixed(2)}`);
-        }
-        // If engine too harsh → reduce resonance + drive + high gain
-        if (delta.smoothness < -0.15) {
-          this.setCC(71, Math.max(0.1, (this.ccParams[71] || 0.35) - 0.03));
-          this.setCC(12, Math.max(0.1, (this.ccParams[12] || 0.5) - 0.02));
-          this._highGain = Math.max(0.3, this._highGain - 0.03);
-          this.multibandHighGain.gain.setTargetAtTime(this._highGain, this.ctx.currentTime, 0.1);
-          console.log(`[Learning] engine too harsh (${delta.smoothness.toFixed(2)}) → reduce CC71+CC12+highGain=${this._highGain.toFixed(2)}`);
-        }
-        // If engine too quiet → increase drive + low gain
-        if (delta.loudness < -0.1) {
-          this.setCC(12, Math.min(0.9, (this.ccParams[12] || 0.5) + 0.03));
-          this._lowGain = Math.min(2.0, this._lowGain + 0.02);
-          this.multibandLowGain.gain.setTargetAtTime(this._lowGain, this.ctx.currentTime, 0.1);
-          console.log(`[Learning] engine too quiet (${delta.loudness.toFixed(2)}) → increase CC12 + lowGain=${this._lowGain.toFixed(2)}`);
-        }
-        // If engine too loud → reduce drive + low gain
-        if (delta.loudness > 0.15) {
-          this.setCC(12, Math.max(0.1, (this.ccParams[12] || 0.5) - 0.02));
-          this._lowGain = Math.max(0.5, this._lowGain - 0.02);
-          this.multibandLowGain.gain.setTargetAtTime(this._lowGain, this.ctx.currentTime, 0.1);
-          console.log(`[Learning] engine too loud (${delta.loudness.toFixed(2)}) → reduce CC12 + lowGain=${this._lowGain.toFixed(2)}`);
-        }
-        // If engine lacks warmth → increase reverb + low gain
-        if (delta.warmth < -0.15) {
-          this.setCC(15, Math.min(0.8, (this.ccParams[15] || 0.3) + 0.02));
-          this._lowGain = Math.min(2.0, this._lowGain + 0.03);
-          this.multibandLowGain.gain.setTargetAtTime(this._lowGain, this.ctx.currentTime, 0.1);
-          console.log(`[Learning] engine lacks warmth (${delta.warmth.toFixed(2)}) → increase CC15 + lowGain=${this._lowGain.toFixed(2)}`);
-        }
-        // If engine lacks punch → reduce drive + increase mid gain
-        if (delta.punch < -0.15) {
-          this.setCC(12, Math.max(0.1, (this.ccParams[12] || 0.5) - 0.02));
-          this._midGain = Math.min(2.0, this._midGain + 0.02);
-          this.multibandMidGain.gain.setTargetAtTime(this._midGain, this.ctx.currentTime, 0.1);
-          console.log(`[Learning] engine lacks punch (${delta.punch.toFixed(2)}) → reduce CC12 + midGain=${this._midGain.toFixed(2)}`);
-        }
-      }
-
-      // Also run epsilon-greedy exploration for long-term learning
-      const suggestions = suggestAdjustments(engineQuality, COMMERCIAL_TARGETS);
-      const trial = this.learner.tick(this.ctx.currentTime, engineQuality, suggestions);
-      if (trial) {
-        this.setCC(trial.cc, trial.value);
-      }
-    }
+    // Learning loop is NO LONGER in getState() (roast GAP 1).
+    // It runs in a dedicated 4s interval via runLearningTick().
+    // getState() is now a PURE GETTER — no side effects, no console spam,
+    // safe to call from React render loops at any rate.
     const learningStates = this.learner.getStates();
-    const currentTrial = this.learner.getCurrentTrial();
+    const currentTrial = this.learner.getCurrentTrial(this.ctx.currentTime);
 
     return {
       playing: this.playing,
@@ -750,13 +717,171 @@ export class PsyLive4 implements SchedulerHost {
       eventsPerSec: this.eventsPerSec,
       ccParams: { ...this.ccParams },
       smartRadioOn: this.smartRadioOn,
-      smartRadioNextStyleChange: 0,
+      radioStreamName: this.radioListener.getCurrentStream()?.name ?? '',
+      radioDetectedBpm: this.radioListener.getLastDetectedBpm(),
+      radioBpmConfidence: this.radioListener.getBpmConfidence(),
       drumStats: this.drumDevice.getStats() as DrumDeviceStats | null,
       learningOn: this.learningOn,
       learningStates,
       learningCurrentCc: currentTrial.cc,
       learningTrialRemaining: currentTrial.remainingSec,
     };
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Learning loop (FIX GAP 1, 7, 8)
+  //
+  // Runs in a dedicated 4s interval — NOT inside getState().
+  // Skips during engine warmup (first 5s) and when ctx is suspended.
+  // Applies ONE delta adjustment per tick (largest magnitude wins) so
+  // adjustments don't fight each other.
+  // ───────────────────────────────────────────────────────────────────────
+
+  private startLearningLoop(): void {
+    this.stopLearningLoop();
+    this.learner.reset();  // restores best known params (does NOT wipe memory)
+    this.learningInterval = setInterval(
+      () => this.runLearningTick(),
+      PsyLive4.LEARNING_INTERVAL_MS,
+    );
+    console.log(`[PsyLive4] learning loop started — ${PsyLive4.LEARNING_INTERVAL_MS}ms interval`);
+  }
+
+  private stopLearningLoop(): void {
+    if (this.learningInterval) {
+      clearInterval(this.learningInterval);
+      this.learningInterval = null;
+    }
+  }
+
+  private runLearningTick(): void {
+    if (!this.learningOn || !this.playing) return;
+
+    // FIX GAP 7: skip during engine warmup (silence before scheduler composes)
+    const elapsedMs = (this.ctx.currentTime - this.playStartTime) * 1000;
+    if (elapsedMs < PsyLive4.ENGINE_WARMUP_MS) {
+      console.log(`[Learning] warmup (${elapsedMs.toFixed(0)}ms < ${PsyLive4.ENGINE_WARMUP_MS}ms) — skipping`);
+      return;
+    }
+
+    // FIX GAP 7: skip when ctx suspended (tab hidden) — analyser returns stale zeros
+    if (this.suspended || this.ctx.state !== 'running') {
+      console.log('[Learning] ctx suspended — skipping (no stale measurements)');
+      return;
+    }
+
+    // Analyze engine quality (reuse buffers — FIX GAP 9)
+    const engineQuality = analyzeQuality(this.analyser, this.ctx.sampleRate, this.freqBuf, this.tdBuf);
+
+    // ── DIRECT DELTA vs RADIO (if connected) ──
+    // FIX GAP 8: apply ONE adjustment per tick — the largest-magnitude delta wins.
+    // Was: 5 branches firing independently → CC12 reduced in 3 branches, _lowGain
+    // reduced in one and increased in another in the SAME tick → random walk.
+    if (this.radioTarget && this.radioTarget.connected) {
+      const rt = this.radioTarget;
+      const deltas: Array<{ name: string; value: number; threshold: number; action: () => void }> = [
+        {
+          name: 'brightness',
+          value: engineQuality.brightness - rt.brightness,
+          threshold: 0.10,
+          action: () => {
+            const cur = this.ccParams[74] ?? 0.5;
+            if (engineQuality.brightness > rt.brightness) {
+              this.setCC(74, Math.max(0.1, cur - 0.05));
+              this._highGain = Math.max(0.3, this._highGain - 0.03);
+              this.multibandHighGain.gain.setTargetAtTime(this._highGain, this.ctx.currentTime, 0.1);
+              console.log(`[Learning] engine too bright (+${(engineQuality.brightness - rt.brightness).toFixed(2)}) → CC74↓ + highGain=${this._highGain.toFixed(2)}`);
+            } else {
+              this.setCC(74, Math.min(0.9, cur + 0.05));
+              this._highGain = Math.min(1.5, this._highGain + 0.03);
+              this.multibandHighGain.gain.setTargetAtTime(this._highGain, this.ctx.currentTime, 0.1);
+              console.log(`[Learning] engine too dark (${(engineQuality.brightness - rt.brightness).toFixed(2)}) → CC74↑ + highGain=${this._highGain.toFixed(2)}`);
+            }
+          },
+        },
+        {
+          name: 'smoothness',
+          value: engineQuality.smoothness - rt.smoothness,  // negative = engine harsher
+          threshold: 0.15,
+          action: () => {
+            // engine smoother than radio → back off resonance + drive
+            const cur71 = this.ccParams[71] ?? 0.35;
+            const cur12 = this.ccParams[12] ?? 0.5;
+            this.setCC(71, Math.max(0.1, cur71 - 0.04));
+            this.setCC(12, Math.max(0.1, cur12 - 0.03));
+            console.log(`[Learning] engine harshness delta=${(engineQuality.smoothness - rt.smoothness).toFixed(2)} → CC71↓ CC12↓`);
+          },
+        },
+        {
+          name: 'loudness',
+          value: engineQuality.loudness - rt.loudness,
+          threshold: 0.10,
+          action: () => {
+            const cur12 = this.ccParams[12] ?? 0.5;
+            if (engineQuality.loudness > rt.loudness) {
+              this.setCC(12, Math.max(0.1, cur12 - 0.04));
+              this._lowGain = Math.max(0.5, this._lowGain - 0.03);
+              this.multibandLowGain.gain.setTargetAtTime(this._lowGain, this.ctx.currentTime, 0.1);
+              console.log(`[Learning] engine too loud (+${(engineQuality.loudness - rt.loudness).toFixed(2)}) → CC12↓ + lowGain=${this._lowGain.toFixed(2)}`);
+            } else {
+              this.setCC(12, Math.min(0.9, cur12 + 0.04));
+              this._lowGain = Math.min(2.0, this._lowGain + 0.03);
+              this.multibandLowGain.gain.setTargetAtTime(this._lowGain, this.ctx.currentTime, 0.1);
+              console.log(`[Learning] engine too quiet (${(engineQuality.loudness - rt.loudness).toFixed(2)}) → CC12↑ + lowGain=${this._lowGain.toFixed(2)}`);
+            }
+          },
+        },
+        {
+          name: 'warmth',
+          value: engineQuality.warmth - rt.warmth,
+          threshold: 0.15,
+          action: () => {
+            const cur15 = this.ccParams[15] ?? 0.3;
+            this.setCC(15, Math.min(0.8, cur15 + 0.03));
+            this._lowGain = Math.min(2.0, this._lowGain + 0.03);
+            this.multibandLowGain.gain.setTargetAtTime(this._lowGain, this.ctx.currentTime, 0.1);
+            console.log(`[Learning] engine lacks warmth (${(engineQuality.warmth - rt.warmth).toFixed(2)}) → CC15↑ + lowGain=${this._lowGain.toFixed(2)}`);
+          },
+        },
+        {
+          name: 'punch',
+          value: engineQuality.punch - rt.punch,
+          threshold: 0.15,
+          action: () => {
+            const cur12 = this.ccParams[12] ?? 0.5;
+            this.setCC(12, Math.max(0.1, cur12 - 0.03));
+            this._midGain = Math.min(2.0, this._midGain + 0.03);
+            this.multibandMidGain.gain.setTargetAtTime(this._midGain, this.ctx.currentTime, 0.1);
+            console.log(`[Learning] engine lacks punch (${(engineQuality.punch - rt.punch).toFixed(2)}) → CC12↓ + midGain=${this._midGain.toFixed(2)}`);
+          },
+        },
+      ];
+
+      // Pick the LARGEST-magnitude delta that exceeds its threshold.
+      // Apply ONLY that one. This gives each adjustment 4s to take effect
+      // before the next is tried (roast GAP 8).
+      let chosen: typeof deltas[0] | null = null;
+      for (const d of deltas) {
+        if (Math.abs(d.value) >= d.threshold) {
+          if (!chosen || Math.abs(d.value) > Math.abs(chosen.value)) {
+            chosen = d;
+          }
+        }
+      }
+      if (chosen) {
+        chosen.action();
+      } else {
+        console.log(`[Learning] all deltas within thresholds — engine matches radio ✓`);
+      }
+    }
+
+    // ── Epsilon-greedy exploration (long-term learning, persists to localStorage) ──
+    const suggestions = suggestAdjustments(engineQuality, COMMERCIAL_TARGETS);
+    const trial = this.learner.tick(this.ctx.currentTime, engineQuality, suggestions);
+    if (trial) {
+      this.setCC(trial.cc, trial.value);
+      console.log(`[Learning] trial: CC${trial.cc}=${trial.value.toFixed(2)} (epsilon-greedy)`);
+    }
   }
 
   // ── MIDI export — renders N bars via composer, encodes as MIDI format 0 ──
@@ -1008,6 +1133,8 @@ export class PsyLive4 implements SchedulerHost {
 
   dispose(): void {
     this.stop();
+    this.stopLearningLoop();  // FIX GAP 1: clear learning interval on dispose
+    this.radioListener.dispose();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisibility);
     }

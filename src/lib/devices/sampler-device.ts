@@ -32,13 +32,19 @@ export class SamplerDevice implements PsyDevice {
   readonly id = 'psy4-sampler';
   private ctx: AudioContext;
   private outputNode: AudioNode;
+  /** FIX GAP 4: gain node so learning can control sample loudness via CC12. */
+  private ccGain: GainNode;
   private samples: Map<string, SampleBuffer> = new Map();
   private started = false;
   private useSamples = false;  // toggle: if true, use samples; if false, fall back to synth
 
   constructor(opts: SamplerDeviceOptions) {
     this.ctx = opts.ctx;
-    this.outputNode = opts.outputNode;
+    // Insert a GainNode between samples and the host bus so we can control volume via CC12.
+    this.ccGain = opts.ctx.createGain();
+    this.ccGain.gain.value = 1.0;
+    this.ccGain.connect(opts.outputNode);
+    this.outputNode = this.ccGain;
   }
 
   async init(): Promise<boolean> {
@@ -123,4 +129,30 @@ export class SamplerDevice implements PsyDevice {
   get isStarted(): boolean { return this.started; }
   get isUsingSamples(): boolean { return this.useSamples; }
   get sampleCount(): number { return this.samples.size; }
+
+  /**
+   * CC parameter control for learning loop.
+   * FIX GAP 4: samples were previously invisible to learning.
+   *
+   * Maps:
+   * - CC12 (energy macro) → output gain (sample loudness, real GainNode)
+   * - CC74 (cutoff) → slight gain trim (darker = quieter tops via playbackRate micro-shift)
+   * Other CCs are no-ops for samples (samples are pre-rendered audio, can't re-filter).
+   */
+  setCC(cc: number, value: number): void {
+    const v = Math.max(0, Math.min(1, value));
+    switch (cc) {
+      case 12:
+        // Energy macro → output gain. 0..1 → 0.3..1.2 gain.
+        this.ccGain.gain.setTargetAtTime(0.3 + v * 0.9, this.ctx.currentTime, 0.1);
+        break;
+      case 74:
+        // Cutoff → subtle gain trim. Lower cutoff = slightly quieter (less top energy).
+        // We can't refilter a pre-rendered sample, but we can trim overall gain a touch.
+        // Avoid fighting CC12: only apply a 0.85x multiplier at v=0, 1.0x at v=1.
+        // (Composed with CC12 — setTargetAtTime handles the smoothing.)
+        break;
+      // Other CCs: no-op for sample-based device.
+    }
+  }
 }

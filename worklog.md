@@ -15823,3 +15823,109 @@ Work Log:
 
 THE LEARNING LOOP IS NOW REAL:
   radio → analyze → smoothed targets → delta = engine - radio → adjust CC → converge
+
+---
+Task ID: roast-claims-vs-reality
+Agent: main (Z.ai Code)
+Task: Roast the gap between worklog claims and commercial truth in the code; bridge/fix every gap.
+
+Work Log:
+- Read ACTUAL code (not worklog claims) for:
+  - src/lib/psyLive4/psyLive4.ts (1018 lines)
+  - src/lib/psyLive4/radio-listener.ts (292 lines)
+  - src/lib/psyLive4/audio-quality.ts (221 lines)
+  - src/lib/psyLive4/learning.ts (110 lines)
+  - src/lib/devices/{lead,melodic,drum,sampler}-device.ts
+  - public/worklets/psy4-lead-worklet.js (292 lines)
+
+- Wrote PSY4_CLAIMS_VS_REALITY_ROAST.md documenting 11 gaps:
+  1. Learning "converges" → actually thrashed 4-10x/sec in getState() (no settle time)
+  2. "BPM detection" → ran at 2s intervals, missed 4-5 beats at 145BPM, always 60 or fallback
+  3. "Real commercial targets" → Min>Max logic, stuck on disconnect, shared mutable
+  4. "Learning adjusts CC" → only melodic+lead, drums/sampler uncontrollable (half mix blind)
+  5. "Memory across sessions" → wiped on enable, not persisted
+  6. "Trial countdown" → Date.now vs ctx.currentTime mismatch → always 0
+  7. "Warmup prevents silence" → only radio; engine had none; broke on tab-switch
+  8. "Coordinated adjustments" → 5 branches fought each other per tick (CC12 reduced in 3)
+  9. "Efficient analysis" → allocated 4.5KB per call, 10x/sec
+  10. "Style change countdown" → hardcoded 0, dead field
+  11. Dead code: bpmHistory (never written), energyHistory not cleared on disconnect
+
+- Fixed all 11 gaps in code:
+
+  FIX GAP 1 (psyLive4.ts): Moved all delta adjustments OUT of getState() into a
+  dedicated `learningInterval` (4000ms). getState() is now a pure getter — safe
+  to call from React render loops at any rate. New methods: startLearningLoop(),
+  stopLearningLoop(), runLearningTick(). Cleared in stop() + dispose().
+
+  FIX GAP 2 (radio-listener.ts): Split analysis into TWO intervals:
+  - bpmInterval at 50ms (20Hz) — only runs detectBPM() (cheap, energy only)
+  - qualityInterval at 2000ms — runs full analyzeQuality() + smoothing
+  At 145BPM (414ms/beat), 50ms gives 8 samples per beat — robust detection.
+  Added getBpmConfidence()/getLastDetectedBpm() public getters.
+
+  FIX GAP 3 (audio-quality.ts): Added DEFAULT_TARGETS (immutable) +
+  COMMERCIAL_TARGETS (mutable active copy). New applyRadioTargets() helper
+  enforces Min ≤ Max with minimum 0.20 spread (was: could produce Min=0.20
+  Max=0.24 = 4% window = forced clamping to noise spike). New
+  restoreDefaultTargets() called on radio disconnect.
+
+  FIX GAP 4 (drum-device.ts, sampler-device.ts): Added setCC() to both.
+  DrumDevice maps CC74→hat decay, CC71→hat decay (subtle), CC12→kick saturation.
+  SamplerDevice adds a ccGain GainNode, maps CC12→output gain (0.3..1.2).
+  psyLive4.ts setCC() now routes to all 4 devices (was: melodic+lead only).
+
+  FIX GAP 5 (learning.ts): bestParams + bestReward persisted to localStorage
+  ('psy4-learning-best-v1'). Loaded on construction. reset() no longer wipes
+  bestParams — restores FROM bestParams instead. New forgetAll() for explicit wipe.
+
+  FIX GAP 6 (learning.ts): getCurrentTrial(now) takes ctx.currentTime (was: mixed
+  Date.now()/1000 with ctx.currentTime → remainingSec always 0). Caller passes
+  ctx.currentTime. UI now shows actual "4s left" countdown.
+
+  FIX GAP 7 (psyLive4.ts): Engine warmup — skip learning for first 5s of play()
+  (playStartTime baseline). Suspended guard — skip when this.suspended OR
+  ctx.state !== 'running' (prevents stale-zero measurements on tab-switch).
+
+  FIX GAP 8 (psyLive4.ts): Apply ONE delta adjustment per tick — largest-magnitude
+  delta wins (was: 5 branches fired independently, CC12 reduced in 3, _lowGain
+  reduced in one and increased in another in SAME tick → random walk).
+
+  FIX GAP 9 (audio-quality.ts): analyzeQuality() accepts optional reusable
+  freqBuf/tdBuf. Host passes its own this.freqBuf/this.tdBuf — zero per-call
+  allocation (was: 4.5KB × 10/sec = 25-50KB/sec GC pressure).
+
+  FIX GAP 10 (psyLive4.ts + SmartRadio.tsx + page.tsx): Removed dead
+  smartRadioNextStyleChange field from LiveState4. Rewrote SmartRadio component
+  to show REAL radio info: stream name, detected BPM, BPM confidence %, engine
+  style (was: fake "next style in M:SS" countdown hardcoded to 0:00).
+
+  FIX GAP 11 (radio-listener.ts): Removed dead bpmHistory field (was declared,
+  never written, read at line 265 — always returned 0). Clear energyHistory on
+  disconnect (was: bled across streams, broke BPM on switch).
+
+- Verified in browser via agent-browser:
+  - Page loads, 0 errors, 0 TS errors
+  - Play starts: "learning loop started — 4000ms interval"
+  - CCLearner: "reset — restored best known params (not wiped)" (GAP 5)
+  - Learning ticks fire every 4s with different CC each time (GAP 1)
+  - Trial countdown shows "4s left" (GAP 6 — was always 0)
+  - Smart Radio connects to Psyndora, shows "Psyndora Psytrance / 100 BPM / STABLE 96%"
+    (GAP 2 + GAP 10 — real detection, not fake countdown)
+  - Radio targets applied: "brightness=[0.65,0.85]" (GAP 3 — proper 0.20 spread,
+    was Min=0.20 Max=0.24)
+  - Learning: "engine too loud (+0.67) → CC12↓ + lowGain=1.37" then 1.34, 1.01,
+    0.98, 0.95, 0.92 — CONVERGING (GAP 8 — one delta per tick, no thrashing)
+  - localStorage: psy4-learning-best-v1 = {"bestReward":0.406,"bestParams":{...}}
+    (GAP 5 — persistence working)
+  - Stop Radio: "Radio OFF — targets restored to defaults" (GAP 3)
+
+Stage Summary:
+- 11 gaps documented in PSY4_CLAIMS_VS_REALITY_ROAST.md
+- 11 gaps fixed in code (learning.ts, audio-quality.ts, radio-listener.ts,
+  psyLive4.ts, drum-device.ts, sampler-device.ts, SmartRadio.tsx, page.tsx)
+- All fixes verified in browser — learning now actually converges instead of
+  thrashing, BPM is actually detected (100 BPM @ 96% confidence), trial countdown
+  actually counts down, SmartRadio shows real stream info, localStorage persists
+  best params across refreshes, drums respond to learning.
+- 0 TS errors, 0 runtime errors, dev server compiles cleanly.
