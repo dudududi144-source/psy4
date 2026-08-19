@@ -631,14 +631,66 @@ export class PsyLive4 implements SchedulerHost {
       limiterReduction: this.masterLimiter ? this.masterLimiter.reduction : 0,
     };
 
-    // Learning loop: uses REAL audio quality metrics (7 metrics, not just loudness)
+    // Learning loop: direct delta comparison engine-vs-radio
     if (this.learningOn && this.playing) {
-      // Analyze full audio quality
-      const quality = analyzeQuality(this.analyser, this.ctx.sampleRate);
-      // Get actionable suggestions based on what's wrong
-      const suggestions = suggestAdjustments(quality, COMMERCIAL_TARGETS);
-      // Feed to learner
-      const trial = this.learner.tick(this.ctx.currentTime, quality, suggestions);
+      // Analyze engine quality
+      const engineQuality = analyzeQuality(this.analyser, this.ctx.sampleRate);
+
+      // If we have radio targets, do DIRECT DELTA comparison
+      if (this.radioTarget && this.radioTarget.connected) {
+        const rt = this.radioTarget;
+
+        // Calculate deltas (engine - radio)
+        const delta = {
+          brightness: engineQuality.brightness - rt.brightness,
+          warmth: engineQuality.warmth - rt.warmth,
+          loudness: engineQuality.loudness - rt.loudness,
+          smoothness: engineQuality.smoothness - rt.smoothness,
+          punch: engineQuality.punch - rt.punch,
+        };
+
+        // Direct adjustments based on delta
+        // If engine too bright → reduce cutoff
+        if (delta.brightness > 0.1) {
+          this.setCC(74, Math.max(0.1, (this.ccParams[74] || 0.5) - 0.03));
+          console.log(`[Learning] engine too bright (${delta.brightness.toFixed(2)}) → reduce CC74`);
+        }
+        // If engine too dark → increase cutoff
+        if (delta.brightness < -0.1) {
+          this.setCC(74, Math.min(0.9, (this.ccParams[74] || 0.5) + 0.03));
+          console.log(`[Learning] engine too dark (${delta.brightness.toFixed(2)}) → increase CC74`);
+        }
+        // If engine too harsh → reduce resonance + drive
+        if (delta.smoothness < -0.15) {
+          this.setCC(71, Math.max(0.1, (this.ccParams[71] || 0.35) - 0.03));
+          this.setCC(12, Math.max(0.1, (this.ccParams[12] || 0.5) - 0.02));
+          console.log(`[Learning] engine too harsh (${delta.smoothness.toFixed(2)}) → reduce CC71+CC12`);
+        }
+        // If engine too quiet → increase drive
+        if (delta.loudness < -0.1) {
+          this.setCC(12, Math.min(0.9, (this.ccParams[12] || 0.5) + 0.03));
+          console.log(`[Learning] engine too quiet (${delta.loudness.toFixed(2)}) → increase CC12`);
+        }
+        // If engine too loud → reduce drive
+        if (delta.loudness > 0.15) {
+          this.setCC(12, Math.max(0.1, (this.ccParams[12] || 0.5) - 0.02));
+          console.log(`[Learning] engine too loud (${delta.loudness.toFixed(2)}) → reduce CC12`);
+        }
+        // If engine lacks warmth → increase reverb (adds space)
+        if (delta.warmth < -0.15) {
+          this.setCC(15, Math.min(0.8, (this.ccParams[15] || 0.3) + 0.02));
+          console.log(`[Learning] engine lacks warmth (${delta.warmth.toFixed(2)}) → increase CC15`);
+        }
+        // If engine lacks punch → reduce drive (restore dynamics)
+        if (delta.punch < -0.15) {
+          this.setCC(12, Math.max(0.1, (this.ccParams[12] || 0.5) - 0.02));
+          console.log(`[Learning] engine lacks punch (${delta.punch.toFixed(2)}) → reduce CC12`);
+        }
+      }
+
+      // Also run epsilon-greedy exploration for long-term learning
+      const suggestions = suggestAdjustments(engineQuality, COMMERCIAL_TARGETS);
+      const trial = this.learner.tick(this.ctx.currentTime, engineQuality, suggestions);
       if (trial) {
         this.setCC(trial.cc, trial.value);
       }

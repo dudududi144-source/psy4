@@ -126,30 +126,50 @@ export class RadioListener {
   }
 
   private analysisInterval: ReturnType<typeof setInterval> | null = null;
+  private connectTime = 0;
+  private targetHistory: RadioTarget[] = [];
+  private static readonly WARMUP_MS = 5000;
+  private static readonly HISTORY_MAX = 5;
 
   private startAnalysis(): void {
     if (this.analysisInterval) clearInterval(this.analysisInterval);
-    this.analysisInterval = setInterval(() => this.analyze(), 2000);  // every 2s
+    this.connectTime = Date.now();
+    this.targetHistory = [];
+    this.analysisInterval = setInterval(() => this.analyze(), 2000);
   }
 
   private analyze(): void {
     if (!this.analyser || !this.connected) return;
 
-    // Get audio quality metrics (same 7 metrics as engine)
+    // WARMUP: skip first 5s (stream buffering, silence)
+    if (Date.now() - this.connectTime < RadioListener.WARMUP_MS) {
+      console.log('[RadioListener] warmup — skipping analysis');
+      return;
+    }
+
     const metrics = analyzeQuality(this.analyser, this.ctx.sampleRate);
 
-    // Detect BPM via energy-based beat detection
+    // Skip if radio is silent
+    if (metrics.loudness < 0.05) {
+      console.log('[RadioListener] radio too quiet — skipping');
+      return;
+    }
+
+    // CAP brightness at 0.8 (1.0 = white noise artifact)
+    const cappedBrightness = Math.min(0.8, metrics.brightness);
+
+    // BPM with confidence
     const bpm = this.detectBPM();
+    const bpmConfidence = this.beatTimes.length >= 4 ? 0.8 : this.beatTimes.length / 5;
+    const effectiveBpm = bpmConfidence > 0.4 && bpm > 100 && bpm < 180 ? bpm : 0;
 
-    // Detect style from metrics
-    const style = this.detectStyle(metrics, bpm);
+    const style = this.detectStyle(metrics, effectiveBpm || 145);
 
-    // Build target
     const target: RadioTarget = {
-      bpm: bpm || 145,
+      bpm: effectiveBpm || 145,
       style,
       warmth: metrics.warmth,
-      brightness: metrics.brightness,
+      brightness: cappedBrightness,
       punch: metrics.punch,
       clarity: metrics.clarity,
       loudness: metrics.loudness,
@@ -160,11 +180,32 @@ export class RadioListener {
       streamName: this.currentStream?.name || 'unknown',
     };
 
-    console.log(`[RadioListener] ${target.streamName}: BPM=${target.bpm.toFixed(0)} style=${target.style} warmth=${target.warmth.toFixed(2)} brightness=${target.brightness.toFixed(2)} smoothness=${target.smoothness.toFixed(2)} loudness=${target.loudness.toFixed(2)}`);
+    // SMOOTHING: 5-sample moving average
+    this.targetHistory.push(target);
+    if (this.targetHistory.length > RadioListener.HISTORY_MAX) this.targetHistory.shift();
+    const smoothed: RadioTarget = {
+      ...target,
+      warmth: this.avgField('warmth'),
+      brightness: this.avgField('brightness'),
+      punch: this.avgField('punch'),
+      clarity: this.avgField('clarity'),
+      loudness: this.avgField('loudness'),
+      smoothness: this.avgField('smoothness'),
+      balance: this.avgField('balance'),
+      overall: this.avgField('overall'),
+    };
+
+    console.log(`[RadioListener] ${smoothed.streamName}: BPM=${smoothed.bpm.toFixed(0)}(conf=${bpmConfidence.toFixed(1)}) style=${smoothed.style} warmth=${smoothed.warmth.toFixed(2)} bright=${smoothed.brightness.toFixed(2)} smooth=${smoothed.smoothness.toFixed(2)} loud=${smoothed.loudness.toFixed(2)}`);
 
     if (this.onTargetsCallback) {
-      this.onTargetsCallback(target);
+      this.onTargetsCallback(smoothed);
     }
+  }
+
+  private avgField(key: keyof RadioTarget): number {
+    if (this.targetHistory.length === 0) return 0;
+    const vals = this.targetHistory.map(t => t[key] as number).filter(v => typeof v === 'number' && isFinite(v));
+    return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
   }
 
   /**
