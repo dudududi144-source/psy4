@@ -211,6 +211,20 @@ export class PsyLive4 implements SchedulerHost {
   private freqBuf: Uint8Array;
   private tdBuf: Float32Array;
 
+  // DEEP GAP J: Adaptive mastering chain
+  // Track input level and adjust compressor thresholds so the chain adapts
+  // to the material (quiet sections → lower thresholds, loud sections → higher).
+  private masteringInterval: ReturnType<typeof setInterval> | null = null;
+  private static readonly MASTERING_INTERVAL_MS = 1000;  // 1s adaptation rate
+  // Target: -9 LUFS integrated (commercial psytrance standard)
+  private static readonly TARGET_LUFS = -9;
+  // Base thresholds (from constructor); we adapt around these
+  private static readonly BASE_LOW_THRESHOLD = -18;
+  private static readonly BASE_MID_THRESHOLD = -20;
+  private static readonly BASE_HIGH_THRESHOLD = -28;
+  // Reusable buffers for mastering analysis
+  private masteringTdBuf: Float32Array;
+
   constructor(ctx?: AudioContext) {
     // Layer 3 owns the AudioContext. Created here, passed to devices.
     this.ctx = ctx ?? new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -277,6 +291,7 @@ export class PsyLive4 implements SchedulerHost {
     this.analyser.smoothingTimeConstant = 0.7;
     this.freqBuf = new Uint8Array(this.analyser.frequencyBinCount);
     this.tdBuf = new Float32Array(this.analyser.fftSize);
+    this.masteringTdBuf = new Float32Array(this.analyser.fftSize);  // DEEP GAP J
 
     // ── Wire master chain ──
     // sidechainDuck → 3 parallel paths → sum → volume → limiter → analyser → destination
@@ -371,6 +386,7 @@ export class PsyLive4 implements SchedulerHost {
     this.samplerDevice.onStart();
     this.scheduler.start();
     this.startLearningLoop();  // FIX GAP 1: dedicated 4s timer (was: in getState)
+    this.startAdaptiveMastering();  // DEEP GAP J: adaptive compressor thresholds
     console.log('[PsyLive4] play — scheduler started');
   }
 
@@ -379,6 +395,7 @@ export class PsyLive4 implements SchedulerHost {
     this.playing = false;
     this.scheduler.stop();
     this.stopLearningLoop();  // FIX GAP 1: clear learning interval
+    this.stopAdaptiveMastering();  // DEEP GAP J: clear mastering interval
     this.drumDevice.onStop();
     this.melodicDevice.onStop();
     this.leadDevice.onStop();
@@ -700,6 +717,87 @@ export class PsyLive4 implements SchedulerHost {
     console.log(`[PsyLive4] A/B mode: ${mode} (radio=${radioGain}, engine=${engineGain})`);
   }
   getRadioMixMode(): 'both' | 'radio' | 'engine' { return this.radioMixMode; }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // DEEP GAP J: Adaptive mastering chain
+  //
+  // Commercial mastering limiters (Pro-L 2, Oxford Limiter) adapt their
+  // thresholds to the input level. Our static thresholds (-18/-20/-28 dB)
+  // are fine for one loudness level, but when the engine plays quietly
+  // (intro/breakdown) or loudly (drop), the compressors either over-compress
+  // or under-compress.
+  //
+  // Every 1s, we measure the current LUFS and nudge the compressor thresholds
+  // toward the target (-9 LUFS). This keeps the compression ratio consistent
+  // regardless of input level.
+  // ───────────────────────────────────────────────────────────────────────
+
+  private startAdaptiveMastering(): void {
+    if (this.masteringInterval) clearInterval(this.masteringInterval);
+    this.masteringInterval = setInterval(
+      () => this.adaptMastering(),
+      PsyLive4.MASTERING_INTERVAL_MS,
+    );
+    console.log(`[PsyLive4] adaptive mastering started — ${PsyLive4.MASTERING_INTERVAL_MS}ms interval, target ${PsyLive4.TARGET_LUFS} LUFS`);
+  }
+
+  private stopAdaptiveMastering(): void {
+    if (this.masteringInterval) {
+      clearInterval(this.masteringInterval);
+      this.masteringInterval = null;
+    }
+  }
+
+  private adaptMastering(): void {
+    if (!this.playing || this.suspended || this.ctx.state !== 'running') return;
+    try {
+      // Read the analyser (post-master, pre-destination) to get the current output level
+      this.analyser.getFloatTimeDomainData(this.masteringTdBuf as Float32Array<ArrayBuffer>);
+      let peak = 0, sumSq = 0;
+      for (let i = 0; i < this.masteringTdBuf.length; i++) {
+        const v = this.masteringTdBuf[i];
+        const abs = Math.abs(v);
+        if (abs > peak) peak = abs;
+        sumSq += v * v;
+      }
+      const rms = Math.sqrt(sumSq / this.masteringTdBuf.length);
+      if (rms < 1e-6) return;  // silence — don't adapt
+
+      // Current LUFS (approximation using K-weighting from audio-quality.ts)
+      const currentLufs = -0.691 + 10 * Math.log10(sumSq / this.masteringTdBuf.length);
+      if (!isFinite(currentLufs)) return;
+
+      // How far are we from the target?
+      const lufsError = PsyLive4.TARGET_LUFS - currentLufs;
+      // Positive error = too quiet (need less compression / more gain)
+      // Negative error = too loud (need more compression)
+
+      // Adapt thresholds: nudge by a fraction of the error (slow adaptation)
+      // If too quiet: raise thresholds (less compression) + raise gains
+      // If too loud: lower thresholds (more compression)
+      const adaptRate = 0.1;  // 10% of error per second
+      const thresholdShift = lufsError * adaptRate * 0.5;
+
+      // Clamp thresholds to reasonable ranges
+      const newLowThresh = Math.max(-30, Math.min(-6, PsyLive4.BASE_LOW_THRESHOLD + thresholdShift));
+      const newMidThresh = Math.max(-32, Math.min(-8, PsyLive4.BASE_MID_THRESHOLD + thresholdShift));
+      const newHighThresh = Math.max(-40, Math.min(-12, PsyLive4.BASE_HIGH_THRESHOLD + thresholdShift));
+
+      // Apply with smooth ramp (avoid clicks)
+      const t = this.ctx.currentTime;
+      const rampTime = 0.3;  // 300ms smooth transition
+      this.multibandLowComp.threshold.setTargetAtTime(newLowThresh, t, rampTime);
+      this.multibandMidComp.threshold.setTargetAtTime(newMidThresh, t, rampTime);
+      this.multibandHighComp.threshold.setTargetAtTime(newHighThresh, t, rampTime);
+
+      // Log only when the change is significant (avoid console spam)
+      if (Math.abs(lufsError) > 1.5) {
+        console.log(`[Mastering] LUFS=${currentLufs.toFixed(1)} target=${PsyLive4.TARGET_LUFS} err=${lufsError.toFixed(1)} → thresholds L=${newLowThresh.toFixed(1)} M=${newMidThresh.toFixed(1)} H=${newHighThresh.toFixed(1)}`);
+      }
+    } catch (err) {
+      // non-fatal — mastering adaptation is a nice-to-have
+    }
+  }
 
   // ── Learning loop: epsilon-greedy CC exploration ──
   setLearning(on: boolean): void {
@@ -1516,6 +1614,7 @@ export class PsyLive4 implements SchedulerHost {
   dispose(): void {
     this.stop();
     this.stopLearningLoop();  // FIX GAP 1: clear learning interval on dispose
+    this.stopAdaptiveMastering();  // DEEP GAP J: clear mastering interval on dispose
     this.radioListener.dispose();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisibility);

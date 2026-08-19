@@ -321,17 +321,48 @@ export class RadioListener {
   private static readonly HISTORY_MAX = 5;
   private static readonly BPM_INTERVAL_MS = 50;
   private static readonly QUALITY_INTERVAL_MS = 2000;
+  // DEEP GAP H: beat-synced analysis
+  // Instead of a fixed 2s quality interval, align to bar boundaries.
+  // At 145 BPM, 1 bar = 4 × (60/145) = 1.655s. Measuring exactly 1 bar
+  // gives cleaner metrics (each measurement captures the same musical unit).
+  // We re-align the interval whenever BPM changes significantly.
+  private lastQualityBpm = 0;
+  private static readonly MIN_BAR_INTERVAL_MS = 1000;   // 240 BPM max
+  private static readonly MAX_BAR_INTERVAL_MS = 3000;   // 80 BPM min
 
   private startAnalysis(): void {
     if (this.qualityInterval) clearInterval(this.qualityInterval);
     if (this.bpmInterval) clearInterval(this.bpmInterval);
     this.connectTime = Date.now();
     this.targetHistory = [];
+    this.lastQualityBpm = 0;
 
     // FIX GAP 2: BPM detection at 20Hz — catches beats at 145BPM (414ms apart) with 8x oversample
     this.bpmInterval = setInterval(() => this.detectBPM(), RadioListener.BPM_INTERVAL_MS);
-    // Quality metrics at 0.5Hz — these need a full FFT window to be meaningful
+    // DEEP GAP H: quality metrics on a bar-synced interval
+    // Start with the default 2s; the first analysis will re-align to the bar.
     this.qualityInterval = setInterval(() => this.analyzeQuality(), RadioListener.QUALITY_INTERVAL_MS);
+  }
+
+  /**
+   * DEEP GAP H: Re-align the quality interval to match the detected BPM.
+   * At 145 BPM, 1 bar = 1.655s. Measuring per-bar gives cleaner metrics
+   * than arbitrary 2s windows that don't align with the music's structure.
+   * Called from analyzeQuality() when BPM changes significantly.
+   */
+  private realignQualityInterval(bpm: number): void {
+    if (bpm < 80 || bpm > 200) return;  // out of range
+    if (Math.abs(bpm - this.lastQualityBpm) < 3) return;  // no significant change
+    this.lastQualityBpm = bpm;
+    // 1 bar = 4 beats = 4 × (60/bpm) seconds
+    const barMs = Math.round(4 * 60000 / bpm);
+    const clampedMs = Math.max(
+      RadioListener.MIN_BAR_INTERVAL_MS,
+      Math.min(RadioListener.MAX_BAR_INTERVAL_MS, barMs)
+    );
+    if (this.qualityInterval) clearInterval(this.qualityInterval);
+    this.qualityInterval = setInterval(() => this.analyzeQuality(), clampedMs);
+    console.log(`[RadioListener] quality interval re-aligned to ${clampedMs}ms (1 bar @ ${bpm} BPM)`);
   }
 
   private analyzeQuality(): void {
@@ -384,6 +415,12 @@ export class RadioListener {
     const bpm = this.lastDetectedBpm;
     const bpmConfidence = this.bpmConfidence;
     const effectiveBpm = bpmConfidence > 0.4 && bpm > 100 && bpm < 180 ? bpm : 0;
+
+    // DEEP GAP H: if we have a confident BPM, re-align the quality interval
+    // to match bar boundaries (1 bar = 4 beats).
+    if (effectiveBpm > 0) {
+      this.realignQualityInterval(effectiveBpm);
+    }
 
     const style = this.detectStyle(metrics, effectiveBpm || 145);
 
