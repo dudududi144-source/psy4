@@ -1,30 +1,34 @@
 // src/app/api/health/route.ts
-// Health check — verifies Turso connection + schema.
+// Health check — verifies LOCAL database (primary) + Turso (optional backup).
 
 import { NextResponse } from 'next/server';
-import { isTursoConfigured, ensureSchema, tursoExecute } from '@/lib/turso';
+import { ensureLocalSchema, getDBStats } from '@/lib/local-db';
+import { isTursoConfigured, ensureSchema } from '@/lib/turso';
 
 export async function GET() {
-  if (!isTursoConfigured()) {
-    return NextResponse.json({
-      status: 'degraded',
-      turso: 'not configured (env vars missing)',
-      fallback: 'localStorage',
-    });
-  }
+  // Local DB is PRIMARY — must work
   try {
-    await ensureSchema();
-    const result = await tursoExecute('SELECT COUNT(*) as count FROM learning_params');
-    const count = result.rows[0]?.count ?? 0;
+    ensureLocalSchema();
+    const stats = getDBStats();
+    const tursoConfigured = isTursoConfigured();
+    let tursoConnected = false;
+    if (tursoConfigured) {
+      try { tursoConnected = await ensureSchema(); } catch { tursoConnected = false; }
+    }
     return NextResponse.json({
       status: 'ok',
-      turso: 'connected',
-      learningParams: Number(count),
+      local: 'connected',
+      learningParams: stats.learningParams,
+      patterns: stats.patterns,
+      telemetry: stats.telemetry,
+      users: stats.users,
+      turso: tursoConnected ? 'connected (backup)' : tursoConfigured ? 'configured but unreachable' : 'not configured',
+      tursoBackup: tursoConnected,
     });
   } catch (err) {
     return NextResponse.json({
       status: 'error',
-      turso: 'connection failed',
+      local: 'connection failed',
       error: String(err),
     }, { status: 500 });
   }

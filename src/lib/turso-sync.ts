@@ -1,15 +1,12 @@
-// Client-side Turso sync — bridges the CCLearner (in-memory) with the
-// Turso cloud database (cross-session, cross-device persistence).
+// src/lib/turso-sync.ts
+// Client-side sync — LOCAL-FIRST architecture.
 //
-// The browser calls these functions to:
-// - loadState(): on engine init, fetch best params + convergence from cloud
-// - syncState(): every ~20s (debounced), push best params + convergence to cloud
-// - syncPatterns(): every ~30s, push new pattern observations to cloud
-// - logRadioTelemetry(): on each radio analysis, log to cloud for offline analysis
-//
-// If the API is unreachable, all functions fail silently (localStorage is
-// the fallback). The learning system works fully offline; Turso is an
-// enhancement for cross-device sync.
+// All API calls go to our own server routes (which use local SQLite as primary).
+// The browser sends X-User-Id header (from localStorage) to scope learning state.
+// Turso cloud is used as optional backup on the server side — the browser
+// doesn't know or care whether Turso is configured.
+
+import { getAuthHeaders } from './user-identity';
 
 export interface CloudLearningState {
   ok: boolean;
@@ -17,11 +14,15 @@ export interface CloudLearningState {
   bestReward?: number;
   convergenceHistory?: Array<{ value: number; measuredAt: number }>;
   count?: number;
+  source?: string;
 }
 
 export async function loadCloudLearningState(): Promise<CloudLearningState | null> {
   try {
-    const resp = await fetch('/api/learning/state', { cache: 'no-store' });
+    const resp = await fetch('/api/learning/state', {
+      cache: 'no-store',
+      headers: getAuthHeaders(),
+    });
     if (!resp.ok) return null;
     const data = await resp.json();
     return data;
@@ -38,7 +39,7 @@ export async function syncCloudLearningState(
   try {
     const resp = await fetch('/api/learning/state', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({ bestParams, bestReward, convergence }),
     });
     return resp.ok;
@@ -53,7 +54,7 @@ export async function syncCloudPatterns(
   try {
     const resp = await fetch('/api/learning/patterns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({ patterns }),
     });
     return resp.ok;
@@ -68,7 +69,10 @@ export async function loadCloudPatterns(limit: number = 32): Promise<Array<{
   hits: number;
 }> | null> {
   try {
-    const resp = await fetch(`/api/learning/patterns?limit=${limit}`, { cache: 'no-store' });
+    const resp = await fetch(`/api/learning/patterns?limit=${limit}`, {
+      cache: 'no-store',
+      headers: getAuthHeaders(),
+    });
     if (!resp.ok) return null;
     const data = await resp.json();
     return data.patterns || null;
@@ -90,7 +94,7 @@ export async function logRadioTelemetry(payload: {
   try {
     const resp = await fetch('/api/telemetry/radio', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify(payload),
     });
     return resp.ok;

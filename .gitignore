@@ -72,3 +72,8 @@ upload/
 tool-results/
 HONEST_ASSESSMENT.md
 MASTER_PROMPT.md
+
+# SQLite WAL files
+db/*.db-shm
+db/*.db-wal
+db/*.db-journal

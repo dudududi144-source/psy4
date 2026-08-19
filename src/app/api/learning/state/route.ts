@@ -1,52 +1,77 @@
 // src/app/api/learning/state/route.ts
-// GET  /api/learning/state    → fetch best params + latest convergence from Turso
-// POST /api/learning/state     → push best params + convergence measurement
+// GET  /api/learning/state    → fetch best params + convergence from LOCAL DB
+// POST /api/learning/state     → push best params + convergence to LOCAL DB
 //
-// This is the cross-session sync endpoint. The browser's CCLearner
-// calls POST every ~20s (debounced) to persist its state to the cloud,
-// and GET on init to load state from previous sessions (including
-// sessions on other devices).
+// LOCAL-FIRST architecture:
+//   - Local SQLite is PRIMARY (always works, no cloud dependency)
+//   - Turso is OPTIONAL backup (synced asynchronously if configured)
+//
+// User ID comes from X-User-Id header (anonymous, localStorage-generated).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isTursoConfigured, ensureSchema, tursoExecute, tursoBatch } from '@/lib/turso';
+import {
+  ensureLocalSchema,
+  getLearningParams,
+  getBestReward,
+  getConvergenceHistory,
+  upsertLearningParam,
+  addConvergence,
+} from '@/lib/local-db';
 
-export async function GET() {
-  if (!isTursoConfigured()) {
-    return NextResponse.json({ ok: false, reason: 'turso not configured' }, { status: 503 });
-  }
+function getUserId(req: NextRequest): string {
+  return req.headers.get('X-User-Id') || 'anonymous';
+}
+
+// Lazy Turso import — only loaded if env vars are configured.
+// This keeps the route lightweight when Turso is disabled.
+async function tryTursoBackup(userId: string, bestParams: Record<string, number> | undefined, bestReward: number | undefined, convergence: number | undefined): Promise<void> {
+  if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN) return;
   try {
+    const { isTursoConfigured, ensureSchema, tursoBatch } = await import('@/lib/turso');
+    if (!isTursoConfigured()) return;
     await ensureSchema();
-    // Fetch all best params
-    const paramsResult = await tursoExecute('SELECT cc, value, reward, updated_at FROM learning_params');
-    // Fetch last 60 convergence measurements (4 min at 4s/tick)
-    const convergenceResult = await tursoExecute(
-      'SELECT value, measured_at FROM convergence_history ORDER BY measured_at DESC LIMIT 60'
-    );
-    // Fetch latest reward for display
-    const rewardResult = await tursoExecute('SELECT MAX(reward) as best_reward FROM learning_params');
-
-    const params: Record<number, { value: number; reward: number }> = {};
-    for (const row of paramsResult.rows) {
-      const cc = Number(row.cc);
-      params[cc] = {
-        value: Number(row.value),
-        reward: Number(row.reward),
-      };
+    const now = Date.now();
+    const stmts: Array<{ sql: string; args: (string | number | null)[] }> = [];
+    if (bestParams && typeof bestReward === 'number') {
+      for (const [ccStr, value] of Object.entries(bestParams)) {
+        const cc = Number(ccStr);
+        if (typeof cc === 'number' && typeof value === 'number' && isFinite(value)) {
+          stmts.push({
+            sql: `INSERT INTO learning_params (cc, value, reward, updated_at, user_id) VALUES (?, ?, ?, ?, ?)
+                  ON CONFLICT(cc, COALESCE(user_id, 'anonymous')) DO UPDATE SET value = excluded.value, reward = excluded.reward, updated_at = excluded.updated_at
+                  WHERE excluded.reward > learning_params.reward`,
+            args: [cc, value, bestReward, now, userId],
+          });
+        }
+      }
     }
-    const convergence = convergenceResult.rows
-      .map(r => ({ value: Number(r.value), measuredAt: Number(r.measured_at) }))
-      .reverse();  // chronological order for sparkline
+    if (typeof convergence === 'number' && isFinite(convergence)) {
+      stmts.push({
+        sql: 'INSERT INTO convergence_history (value, measured_at, user_id) VALUES (?, ?, ?)',
+        args: [convergence, now, userId],
+      });
+    }
+    if (stmts.length > 0) await tursoBatch(stmts);
+  } catch (err) {
+    console.warn('[API /learning/state POST] Turso backup failed (non-fatal):', err);
+  }
+}
 
-    const bestReward = rewardResult.rows[0]?.best_reward
-      ? Number(rewardResult.rows[0].best_reward)
-      : 0;
+export async function GET(req: NextRequest) {
+  try {
+    ensureLocalSchema();
+    const userId = getUserId(req);
+    const params = getLearningParams(userId);
+    const bestReward = getBestReward(userId);
+    const convergenceHistory = getConvergenceHistory(userId, 60);
 
     return NextResponse.json({
       ok: true,
-      bestParams: params,
+      bestParams: Object.fromEntries(params.map(p => [p.cc, { value: p.value, reward: p.reward }])),
       bestReward,
-      convergenceHistory: convergence,
-      count: Object.keys(params).length,
+      convergenceHistory,
+      count: params.length,
+      source: 'local',
     });
   } catch (err) {
     console.error('[API /learning/state GET] error:', err);
@@ -55,11 +80,9 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  if (!isTursoConfigured()) {
-    return NextResponse.json({ ok: false, reason: 'turso not configured' }, { status: 503 });
-  }
   try {
-    await ensureSchema();
+    ensureLocalSchema();
+    const userId = getUserId(req);
     const body = await req.json();
     const { bestParams, bestReward, convergence } = body as {
       bestParams?: Record<string, number>;
@@ -68,37 +91,26 @@ export async function POST(req: NextRequest) {
     };
 
     let pushed = 0;
-    const now = Date.now();
 
-    // Upsert best params
+    // PRIMARY: write to local SQLite
     if (bestParams && typeof bestReward === 'number') {
-      const stmts: Array<{ sql: string; args: (string | number | null)[] }> = [];
       for (const [ccStr, value] of Object.entries(bestParams)) {
         const cc = Number(ccStr);
         if (typeof cc === 'number' && typeof value === 'number' && isFinite(value)) {
-          stmts.push({
-            sql: `INSERT INTO learning_params (cc, value, reward, updated_at) VALUES (?, ?, ?, ?)
-                  ON CONFLICT(cc) DO UPDATE SET value = excluded.value, reward = excluded.reward, updated_at = excluded.updated_at
-                  WHERE excluded.reward > learning_params.reward`,
-            args: [cc, value, bestReward, now],
-          });
+          upsertLearningParam(userId, cc, value, bestReward);
           pushed++;
         }
       }
-      // Append convergence measurement
-      if (typeof convergence === 'number' && isFinite(convergence)) {
-        stmts.push({
-          sql: 'INSERT INTO convergence_history (value, measured_at) VALUES (?, ?)',
-          args: [convergence, now],
-        });
-        pushed++;
-      }
-      if (stmts.length > 0) {
-        await tursoBatch(stmts);
-      }
+    }
+    if (typeof convergence === 'number' && isFinite(convergence)) {
+      addConvergence(userId, convergence);
+      pushed++;
     }
 
-    return NextResponse.json({ ok: true, pushed });
+    // OPTIONAL: sync to Turso as backup (lazy import, non-blocking, fail silently)
+    await tryTursoBackup(userId, bestParams as Record<string, number> | undefined, bestReward, convergence);
+
+    return NextResponse.json({ ok: true, pushed, source: 'local' });
   } catch (err) {
     console.error('[API /learning/state POST] error:', err);
     return NextResponse.json({ ok: false, error: String(err) }, { status: 500 });
