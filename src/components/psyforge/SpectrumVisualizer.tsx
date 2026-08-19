@@ -51,12 +51,13 @@ export function SpectrumVisualizer({ analyser, height = 90 }: SpectrumVisualizer
         ctx.stroke();
       }
 
-      // Draw spectrum bars (logarithmic, 48 bars)
-      const numBars = 48;
+      // Draw spectrum bars (64 bars, linear-spaced for even display)
+      const numBars = 64;
       const barWidth = w / numBars;
       for (let i = 0; i < numBars; i++) {
-        const logIdx = Math.floor(Math.pow(i / numBars, 2) * freq.length);
-        const v = freq[logIdx] / 255;
+        // Linear mapping — shows full frequency range evenly
+        const idx = Math.floor((i / numBars) * freq.length * 0.7);  // 0-70% of bins (skip ultra-high silence)
+        const v = freq[idx] / 255;
         const barH = v * specH * 0.9;
         const hue = 120 - v * 120;
         ctx.fillStyle = `hsl(${hue}, 75%, 50%)`;
