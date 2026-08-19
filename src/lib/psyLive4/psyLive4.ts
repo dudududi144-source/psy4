@@ -17,6 +17,7 @@ import type { NoteEvent, SynthRole, MusicalStyle } from './types';
 import { DrumDevice } from '@/lib/devices/drum-device';
 import { MelodicDevice } from '@/lib/devices/melodic-device';
 import { LeadDevice } from '@/lib/devices/lead-device';
+import { SamplerDevice } from '@/lib/devices/sampler-device';
 import { freqHzToCC74 } from './cc-mapping';
 import { CCLearner, type CCExplorationState } from './learning';
 import { analyzeQuality, suggestAdjustments, COMMERCIAL_TARGETS, type AudioQualityMetrics } from './audio-quality';
@@ -87,6 +88,7 @@ export class PsyLive4 implements SchedulerHost {
   private drumDevice: DrumDevice;
   private melodicDevice: MelodicDevice;
   private leadDevice: LeadDevice;
+  private samplerDevice: SamplerDevice;
   // ── Foundation DeviceHost: proper event routing + error isolation ──
   private host: DeviceHost;
   private channel: InMemoryChannel;
@@ -239,6 +241,7 @@ export class PsyLive4 implements SchedulerHost {
       seed: this.seed,
     });
     this.leadDevice = new LeadDevice({ ctx: this.ctx, outputNode: this.sidechainDuck });
+    this.samplerDevice = new SamplerDevice({ ctx: this.ctx, outputNode: this.sidechainDuck });
 
     // ── Scheduler ──
     this.scheduler = new CompositionScheduler(this);
@@ -261,20 +264,18 @@ export class PsyLive4 implements SchedulerHost {
     const drumOk = await this.drumDevice.init();
     const melodicOk = await this.melodicDevice.init();
     const leadOk = await this.leadDevice.init();
+    const samplerOk = await this.samplerDevice.init();
     if (!drumOk) {
       console.error('[PsyLive4] drum device init failed');
       return false;
     }
-    if (!melodicOk) {
-      console.warn('[PsyLive4] melodic device init failed — running drums only');
-    }
-    if (!leadOk) {
-      console.warn('[PsyLive4] lead device init failed — using psysynth for lead');
-    }
-    // Register devices with the Foundation DeviceHost
+    if (!melodicOk) console.warn('[PsyLive4] melodic device init failed');
+    if (!leadOk) console.warn('[PsyLive4] lead device init failed');
+    if (!samplerOk) console.warn('[PsyLive4] sampler device init failed (will use synth drums)');
     this.host.register(this.drumDevice);
     this.host.register(this.melodicDevice);
     if (leadOk) this.host.register(this.leadDevice);
+    if (samplerOk) this.host.register(this.samplerDevice);
     console.log(`[PsyLive4] DeviceHost: ${this.host.deviceCount} devices registered`);
     this.applyStyleToDevices();
     return true;
@@ -291,6 +292,7 @@ export class PsyLive4 implements SchedulerHost {
     this.drumDevice.onStart();
     this.melodicDevice.onStart();
     this.leadDevice.onStart();
+    this.samplerDevice.onStart();
     this.scheduler.start();
     console.log('[PsyLive4] play — scheduler started');
   }
@@ -302,6 +304,7 @@ export class PsyLive4 implements SchedulerHost {
     this.drumDevice.onStop();
     this.melodicDevice.onStop();
     this.leadDevice.onStop();
+    this.samplerDevice.onStop();
     console.log('[PsyLive4] stop');
   }
 
