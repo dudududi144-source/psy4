@@ -77,10 +77,22 @@ export async function POST(req: NextRequest) {
             for (const [ccStr, value] of Object.entries(bestParams)) {
               const cc = Number(ccStr);
               if (typeof cc === 'number' && typeof value === 'number' && isFinite(value)) {
+                // Two-step upsert: DELETE the existing row ONLY if its reward
+                // is lower than the new one (so we don't clobber a better
+                // existing entry), then INSERT the new row. This pattern is
+                // used because SQLite's ON CONFLICT DO UPDATE WHERE clause
+                // doesn't reliably fire when the conflict target is an
+                // expression-based PRIMARY KEY (which we use: COALESCE(user_id,
+                // 'anonymous') to treat NULL user_ids as 'anonymous').
                 stmts.push({
-                  sql: `INSERT INTO learning_params (cc, value, reward, updated_at, user_id) VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(cc, COALESCE(user_id, 'anonymous')) DO UPDATE SET value = excluded.value, reward = excluded.reward, updated_at = excluded.updated_at
-                        WHERE excluded.reward > learning_params.reward`,
+                  sql: `DELETE FROM learning_params
+                        WHERE cc = ? AND COALESCE(user_id, 'anonymous') = COALESCE(?, 'anonymous')
+                          AND reward < ?`,
+                  args: [cc, userId, bestReward],
+                });
+                stmts.push({
+                  sql: `INSERT OR IGNORE INTO learning_params (cc, value, reward, updated_at, user_id)
+                        VALUES (?, ?, ?, ?, ?)`,
                   args: [cc, value, bestReward, now, userId],
                 });
               }
