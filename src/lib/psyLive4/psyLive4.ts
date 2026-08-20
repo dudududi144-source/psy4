@@ -315,15 +315,31 @@ export class PsyLive4 implements SchedulerHost {
     this.multibandHighComp.release.value = 0.080;
 
     this.multibandLowGain = this.ctx.createGain();
-    this.multibandLowGain.gain.value = 1.4;
+    this.multibandLowGain.gain.value = 1.0;   // UNITY — no tonal boost (was 1.4)
     this.multibandMidGain = this.ctx.createGain();
-    this.multibandMidGain.gain.value = 1.2;
+    this.multibandMidGain.gain.value = 1.0;   // UNITY — (was 1.2)
     this.multibandHighGain = this.ctx.createGain();
-    this.multibandHighGain.gain.value = 0.85;  // FIX: was 1.15 — REDUCE highs, don't boost them
+    this.multibandHighGain.gain.value = 1.0;   // UNITY — (was 0.85)
+    // WHY: the non-unity gains (1.4/1.2/0.85) were designed for a system WITH
+    // multiband compressors that would catch the boosted peaks. When I removed
+    // the compressors (to fix the 'shaking'), the gains just boosted the signal
+    // into clipping. The low end (1.4× boost) was the worst — every kick/bass
+    // hit slammed the brickwall limiter, causing pumping = 'the synth is shaking'.
+    // With unity gains, the tonal filters still separate bands but don't boost
+    // them. The saturation stage adds warmth; the glue comp + brickwall limiter
+    // catch peaks cleanly.
     this.multibandSum = this.ctx.createGain();
     this.multibandSum.gain.value = 1.0;
     this.workletVolumeGain = this.ctx.createGain();
-    this.workletVolumeGain.gain.value = 1.0;
+    // PRE-MASTER HEADROOM: 0.25 (−12dB) accounts for voice summing.
+    // Without this, N simultaneous voices (each at amplitude ~0.5) sum to
+    // N*0.5 — e.g. 10 melodic voices + 6 drum voices = 8.0 → massive clipping.
+    // The saturation stage's tanh would clamp it, but with heavy distortion.
+    // 0.25 gives ~12dB of headroom: 16 voices × 0.5 × 0.25 = 2.0 → saturation
+    // clamps cleanly to ~0.96 → glue + limiter polish the result.
+    // This is the ROOT FIX for 'the synth is shaking' — was clipping the
+    // brickwall limiter every kick/bass hit → pumping.
+    this.workletVolumeGain.gain.value = 0.25;
     this.masterLimiter = this.ctx.createDynamicsCompressor();
     this.masterLimiter.threshold.value = -0.3;
     this.masterLimiter.knee.value = 0;
