@@ -20,9 +20,9 @@ export async function GET(req: NextRequest) {
       patterns: patterns.map(p => ({
         fingerprint: p.fingerprint,
         reward: p.reward,
-        hits: p.hits,
-        lastUsed: p.last_used,
-        createdAt: p.created_at,
+        // hits removed (not in PatternEntry)
+        // lastUsed removed
+        // createdAt removed
       })),
       count: patterns.length,
       source: 'local',

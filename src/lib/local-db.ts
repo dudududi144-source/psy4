@@ -32,6 +32,9 @@ export interface PatternEntry {
   fingerprint: string;
   reward: number;
   updated_at: number;
+  hits: number;
+  last_used: number | null;
+  created_at: number;
 }
 
 export async function initLocalSchema(): Promise<boolean> {
@@ -88,15 +91,8 @@ export async function addConvergence(_userId: string, _value: number): Promise<v
   // No-op until Phase 8.
 }
 
-export async function addRadioTelemetry(_t: {
-  userId: string;
-  streamName: string;
-  detectedBpm: number;
-  bpmConfidence: number;
-  loudness: number;
-  inBreakdown: boolean;
-  measuredAt: number;
-}): Promise<void> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function addRadioTelemetry(_t: any): Promise<void> {
   // No-op until Phase 8.
 }
 

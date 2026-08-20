@@ -13,7 +13,7 @@ import { CompositionScheduler, type SchedulerHost } from './scheduler';
 import { PsytranceComposer, getSection } from './composer';
 import { resolveGrammar } from './style-grammars';
 import { toMusicalEvent } from './types';
-import type { NoteEvent, SynthRole, MusicalStyle } from './types';
+import type { NoteEvent, SynthRole, MusicalStyle, ComposerContinuity } from './types';
 import { DrumDevice } from '@/lib/devices/drum-device';
 import { MelodicDevice } from '@/lib/devices/melodic-device';
 import { LeadDevice } from '@/lib/devices/lead-device';
@@ -151,7 +151,7 @@ export class PsyLive4 implements SchedulerHost {
   private seed = 42;
   private kickCount = 0;
   private bar = 0;
-  private composerPrev: { lastBassNote: number; barInArrangement: number; motifStep: number } | null = null;
+  private composerPrev: ComposerContinuity | null = null;
   private suspended = false;
   private startTime = 0;  // ctx.currentTime when play() was called
 
@@ -162,9 +162,6 @@ export class PsyLive4 implements SchedulerHost {
 
   // ── Engine intelligence tracking ──
   private recentEvents: ComposedEventLite[] = [];     // ring buffer, last 16
-  // PHASE F: track what the engine ACTUALLY played (for musical similarity reward)
-  private lastBarBassSteps: Set<number> = new Set();
-  private lastBarLeadNotes: number[] = [];
   private ccParams: Record<number, number> = {};      // current CC values
   private smartRadioOn = false;
   // Removed: smartRadioNextChange / smartRadioInterval — fake Smart Radio is gone,
@@ -191,6 +188,13 @@ export class PsyLive4 implements SchedulerHost {
   private convergence = 0;
   private convergenceHistory: number[] = [];
   private static readonly CONVERGENCE_HISTORY_MAX = 60;
+  // PHASE F: EMA-smoothed reward + convergence
+  private rewardEMA = 0;
+  private convergenceEMA = 0;
+  private static readonly REWARD_EMA_ALPHA = 0.15;
+  // PHASE F: track what was played (for musical similarity reward)
+  private lastBarBassSteps: Set<number> = new Set();
+  private lastBarLeadNotes: number[] = [];
   // DEEP GAP F: A/B mix mode — 'both' (default), 'radio' (solo radio), 'engine' (solo engine)
   private radioMixMode: 'both' | 'radio' | 'engine' = 'both';
   // Turso cloud sync state
@@ -473,6 +477,7 @@ export class PsyLive4 implements SchedulerHost {
       if (this.recentEvents.length > 16) this.recentEvents.shift();
       // PHASE F: track what was played (for musical similarity reward)
       if (e.role === 'bass' || e.role === 'acid') {
+        const sixteenth = (60 / this.bpm) / 4;
         const step16 = Math.floor((e.at - windowStart) / sixteenth) % 16;
         this.lastBarBassSteps.add(step16);
       } else if (e.role === 'lead') {

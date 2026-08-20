@@ -69,6 +69,13 @@ export class RadioListener {
   private lastDetectedBpm = 0;
   private bpmConfidence = 0;
   private onTargetsCallback: ((target: RadioTarget) => void) | null = null;
+  // PHASE F: LEARN bassline rhythm + lead melody from radio
+  private basslineAccumulator: Float32Array = new Float32Array(16);
+  private basslineSampleCount: number = 0;
+  private basslinePattern: number[] | null = null;
+  private leadAccumulator: Float32Array = new Float32Array(16);
+  private leadCount: Int32Array = new Int32Array(16);
+  private leadPattern: number[] | null = null;
 
   // ── BACKUP: stream health monitoring + auto-failover ──
   // Tracks whether the current stream is actually delivering audio.
@@ -276,6 +283,8 @@ export class RadioListener {
   getAnalyser(): AnalyserNode | null { return this.analyser; }
   /** FIX GAP 2: expose BPM detection confidence so UI can show "BPM=145 (conf=0.82)". */
   getBpmConfidence(): number { return this.bpmConfidence; }
+  getBasslinePattern(): number[] | null { return this.basslinePattern; }
+  getLeadPattern(): number[] | null { return this.leadPattern; }
   getLastDetectedBpm(): number { return this.lastDetectedBpm; }
 
   onTargets(cb: (target: RadioTarget) => void): void {
@@ -527,6 +536,63 @@ export class RadioListener {
         }
       }
       this.lastBeatTime = now;
+    }
+
+    // PHASE F: LEARN bassline rhythm + lead melody from radio
+    if (this.lastDetectedBpm > 0 && this.lastBeatTime > 0) {
+      const sixteenthDur = (60 / this.lastDetectedBpm) / 4;
+      const barDur = sixteenthDur * 16;
+      const phaseInBar = ((now - this.lastBeatTime) % barDur + barDur) % barDur;
+      const step16 = Math.floor((phaseInBar / barDur) * 16) % 16;
+
+      // Bass energy (60-200Hz)
+      let bassEnergy = 0, bassCount = 0;
+      for (let i = 0; i < this.freqBuf.length; i++) {
+        const f = i * binW;
+        if (f >= 60 && f <= 200) { bassEnergy += this.freqBuf[i]; bassCount++; }
+      }
+      const avgBass = bassEnergy / (bassCount || 1);
+      this.basslineAccumulator[step16] += avgBass;
+      this.basslineSampleCount++;
+
+      if (this.basslineSampleCount >= 48) {
+        let minE = Infinity, maxE = -Infinity;
+        for (let i = 0; i < 16; i++) {
+          if (this.basslineAccumulator[i] < minE) minE = this.basslineAccumulator[i];
+          if (this.basslineAccumulator[i] > maxE) maxE = this.basslineAccumulator[i];
+        }
+        const range = maxE - minE || 1;
+        this.basslinePattern = [];
+        for (let i = 0; i < 16; i++) {
+          this.basslinePattern.push((this.basslineAccumulator[i] - minE) / range);
+        }
+        this.basslineAccumulator = new Float32Array(16);
+        this.basslineSampleCount = 0;
+      }
+
+      // Lead melody: dominant freq in 200-3000Hz → MIDI note
+      let peakBin = -1, peakVal = 0;
+      for (let i = 0; i < this.freqBuf.length; i++) {
+        const f = i * binW;
+        if (f >= 200 && f <= 3000 && this.freqBuf[i] > peakVal) {
+          peakVal = this.freqBuf[i]; peakBin = i;
+        }
+      }
+      if (peakBin > 0 && peakVal > 30) {
+        const peakFreq = peakBin * binW;
+        const midi = 69 + 12 * Math.log2(peakFreq / 440);
+        const clampedMidi = Math.max(48, Math.min(96, Math.round(midi)));
+        this.leadAccumulator[step16] += clampedMidi;
+        this.leadCount[step16]++;
+        if (this.basslineSampleCount === 0 && this.leadCount.some(c => c >= 3)) {
+          this.leadPattern = [];
+          for (let i = 0; i < 16; i++) {
+            this.leadPattern.push(this.leadCount[i] > 0 ? Math.round(this.leadAccumulator[i] / this.leadCount[i]) : -1);
+          }
+          this.leadAccumulator = new Float32Array(16);
+          this.leadCount = new Int32Array(16);
+        }
+      }
     }
   }
 
