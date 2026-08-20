@@ -152,6 +152,9 @@ export class PsyLive4 implements SchedulerHost {
   private multibandSum: GainNode;
   private workletVolumeGain: GainNode;
   private masterLimiter: DynamicsCompressorNode;
+  // GLUE COMPRESSOR — gentle FIXED (not adaptive). Inspires by psy3-clean.
+  // Restored after self-roast: removing ALL compression left the mix unglued.
+  private glueComp: DynamicsCompressorNode;
   private analyser: AnalyserNode;
 
   // ── State ──
@@ -319,6 +322,19 @@ export class PsyLive4 implements SchedulerHost {
     this.masterLimiter.attack.value = 0.001;
     this.masterLimiter.release.value = 0.05;
 
+    // GLUE COMPRESSOR — gentle FIXED settings (not adaptive).
+    // Restored after self-roast: I had removed ALL compression, which left
+    // the mix unglued + quiet. The 'shaking' was caused by the ADAPTIVE
+    // 1s LUFS targeting loop, NOT by compression itself. A gentle FIXED
+    // glue compressor (2:1 ratio, slow attack/release, soft knee) glues
+    // the mix without pumping. Settings inspired by psy3-clean's master chain.
+    this.glueComp = this.ctx.createDynamicsCompressor();
+    this.glueComp.threshold.value = -12;     // start compressing at -12dB
+    this.glueComp.knee.value = 12;           // soft knee (musical)
+    this.glueComp.ratio.value = 2;          // 2:1 gentle glue
+    this.glueComp.attack.value = 0.030;     // 30ms — slow, lets transients through
+    this.glueComp.release.value = 0.250;    // 250ms — slow release, no pumping
+
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 1024;
     this.analyser.smoothingTimeConstant = 0.7;
@@ -352,7 +368,9 @@ export class PsyLive4 implements SchedulerHost {
     this.multibandHigh.connect(this.multibandHighGain);
     this.multibandHighGain.connect(this.multibandSum);
     this.multibandSum.connect(this.workletVolumeGain);
-    this.workletVolumeGain.connect(this.masterLimiter);
+    // NEW: glue compressor between volume + limiter (gentle FIXED 2:1 glue)
+    this.workletVolumeGain.connect(this.glueComp);
+    this.glueComp.connect(this.masterLimiter);
     this.masterLimiter.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
 
@@ -1433,6 +1451,18 @@ export class PsyLive4 implements SchedulerHost {
     // Analyze engine quality (reuse buffers — FIX GAP 9)
     const engineQuality = analyzeQuality(this.analyser, this.ctx.sampleRate, this.freqBuf, this.tdBuf);
 
+    // ── EXTERNAL TEACHER: feed radio's extracted patterns to the grammar learner ──
+    // CRITICAL FIX: the grammar learner was only observing the COMPOSER'S OWN
+    // output (a closed self-feedback loop that can only regress to the mean).
+    // Now it also observes the radio's REAL extracted bass + lead patterns —
+    // an external teacher. The grammars learn what actual psytrance tracks
+    // sound like, not just what the composer already does.
+    const radioBass = this.radioListener?.getBasslinePattern() ?? null;
+    const radioLead = this.radioListener?.getLeadPattern() ?? null;
+    if (this.learningOn && (radioBass || radioLead)) {
+      this.grammarLearner.observeRadioPatterns(radioBass, radioLead);
+    }
+
     // PHASE F: compute MUSICAL reward — how similar is the engine's music to the radio?
     // Was: reward = engineQuality.overall (spectral only). Now: includes rhythmic + melodic match.
     let spectralConvergence = 0;
@@ -1442,7 +1472,6 @@ export class PsyLive4 implements SchedulerHost {
 
     // Rhythmic similarity: Jaccard index between engine bass steps + radio bass pattern
     let rhythmicSimilarity = 0;
-    const radioBass = this.radioListener.getBasslinePattern();
     if (radioBass && radioBass.length >= 16) {
       const radioBassSteps = new Set<number>();
       for (let i = 0; i < 16; i++) { if (radioBass[i] > 0.3) radioBassSteps.add(i); }
@@ -1453,7 +1482,6 @@ export class PsyLive4 implements SchedulerHost {
 
     // Melodic similarity: average note distance → similarity (1 = identical, 0 = 12+ semitones off)
     let melodicSimilarity = 0;
-    const radioLead = this.radioListener.getLeadPattern();
     if (radioLead && this.lastBarLeadNotes.length > 0) {
       let totalDist = 0, count = 0;
       for (const note of this.lastBarLeadNotes) {

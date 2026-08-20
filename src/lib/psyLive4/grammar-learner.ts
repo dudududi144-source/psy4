@@ -112,6 +112,62 @@ export class GrammarLearner {
     }
   }
 
+  /**
+   * EXTERNAL TEACHER — observe patterns extracted from a REAL radio stream.
+   *
+   * This is the critical fix that makes the grammar learner actually LEARN
+   * something new (instead of being a self-feedback loop that only regresses
+   * to the composer's own biases).
+   *
+   * The radio-listener extracts:
+   *   - basslinePattern: number[16] — bass ENERGY per 16th step (0..1)
+   *   - leadPattern: number[16] — dominant MIDI note per step (or -1)
+   *
+   * We feed these into the grammars as if they were observed notes. Now the
+   * grammars learn from REAL psytrance tracks — an external teacher — and
+   * the composer can sample from those learned distributions to actually
+   * follow the radio's musical content (not just its BPM/style).
+   *
+   * @param bassPattern 16-step energy array (0..1) from radio
+   * @param leadPattern 16-step MIDI notes (or -1 for silence) from radio
+   */
+  observeRadioPatterns(bassPattern: number[] | null, leadPattern: number[] | null): void {
+    try {
+      // Feed lead pattern to melodic grammar (real MIDI notes → real intervals)
+      if (leadPattern && leadPattern.length > 0) {
+        let prevMidi: number | null = null;
+        for (const midi of leadPattern) {
+          if (midi >= 0 && midi <= 127) {
+            if (prevMidi !== null) {
+              const interval = Math.max(-12, Math.min(12, midi - prevMidi));
+              this.melodicIntervals[interval + 12]++;
+              this.melodicTotal++;
+              if (interval > 0) this.melodicContourUp++;
+              else if (interval < 0) this.melodicContourDown++;
+              else this.melodicContourSame++;
+              if (this.melodicTotal > 0 && this.melodicTotal % GrammarLearner.DECAY_EVERY === 0) {
+                this.decayMelodic();
+              }
+            }
+            prevMidi = midi;
+          }
+        }
+      }
+      // Feed bass energy pattern to rhythm grammar (energy > 0.3 = kick-like onset)
+      // This teaches the rhythm grammar what real psytrance bass RHYTHM looks like.
+      if (bassPattern && bassPattern.length >= 16) {
+        for (let s = 0; s < 16; s++) {
+          if (bassPattern[s] > 0.3) {
+            this.kickOnsets[s]++;
+            this.kickTotal++;
+          }
+        }
+      }
+    } catch (err) {
+      this.errorCount++;
+    }
+  }
+
   private decayBass(): void {
     for (let i = 0; i < 12; i++) {
       for (let j = 0; j < 12; j++) {
