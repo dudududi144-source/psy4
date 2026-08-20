@@ -1022,13 +1022,18 @@
   margin-bottom: 4px;
   letter-spacing: -0.02em;
   line-height: 1.1;
+  /* Title is white (subdued) so the magenta ENTER button can dominate
+     as the primary CTA — no color fight between title and button. */
+  color: var(--pf-tx);
 }
+.pf-idle-logo b { color: var(--pf-tx); font-weight: 800; }
+.pf-idle-logo i { color: var(--pf-dm); font-style: normal; font-weight: 300; }
 .pf-idle-subtitle {
   font-size: 11px;
   color: var(--pf-dm);
-  letter-spacing: 0.2em;
+  letter-spacing: 0.10em;
   text-transform: uppercase;
-  margin-bottom: 32px;
+  margin-bottom: 18px;
   font-weight: 600;
 }
 .pf-idle-press {
@@ -1037,18 +1042,21 @@
   margin-bottom: 28px;
   line-height: 1.8;
 }
+/* The inline "POWER" badge in the instructional text — plain bold
+   text in the accent color (no border, no background). The old boxed
+   badge looked like an afterthought / late-stage patch. */
 .pf-idle-key {
-  display: inline-block;
-  padding: 4px 12px;
-  background: rgba(184,242,46,0.08);
-  border: 1px solid var(--pf-ac);
-  border-radius: 6px;
+  display: inline;
+  padding: 0 2px;
+  background: none;
+  border: none;
+  border-radius: 0;
   color: var(--pf-ac);
-  font-weight: 700;
-  font-size: 12px;
-  margin: 0 3px;
-  box-shadow: 0 0 12px rgba(184,242,46,0.1);
-  letter-spacing: 0.05em;
+  font-weight: 800;
+  font-size: inherit;
+  margin: 0;
+  box-shadow: none;
+  letter-spacing: 0.02em;
 }
 .pf-idle-features {
   display: grid;
@@ -1219,34 +1227,110 @@
   justify-content: center;
   gap: 3px;
   width: 100%;
-  max-width: 520px;
-  height: 80px;
-  margin: 8px auto 0;
-  padding: 0 4px;
-  opacity: 0.9;
+  max-width: 100%;
+  height: auto;
+  margin: 0;
+  padding: 0 4px 6px;  /* baseline: 6px gap below bars so they sit ON a line */
+  opacity: 0.95;
+  /* Visible baseline — the bars clearly sit on a line, not floating. */
+  border-bottom: 1px solid rgba(184,242,46,0.18);
+  box-shadow: 0 1px 0 rgba(217,61,240,0.10);
 }
 .pf-idle-bar {
   flex: 1 1 0;
   min-width: 4px;
-  max-width: 14px;
-  height: 12%;
+  max-width: 16px;
+  height: 20%;  /* start taller so bars fill the spectrum vertically */
   border-radius: 2px 2px 0 0;
   background: linear-gradient(180deg, var(--pf-ac) 0%, var(--pf-mg) 100%);
-  box-shadow: 0 0 6px rgba(184,242,46,0.18);
+  /* Glow + bloom — feels like a real audio visualizer, not flat rectangles. */
+  box-shadow:
+    0 0 8px rgba(184,242,46,0.30),
+    0 0 16px rgba(217,61,240,0.20),
+    inset 0 1px 0 rgba(255,255,255,0.20);
   transform-origin: bottom;
   animation: pf-idle-bar-anim 1.2s ease-in-out infinite alternate;
 }
 @keyframes pf-idle-bar-anim {
-  0%   { height: 12%; opacity: 0.5; }
-  25%  { height: 55%; opacity: 0.85; }
-  50%  { height: 85%; opacity: 1; }
-  75%  { height: 40%; opacity: 0.75; }
-  100% { height: 70%; opacity: 0.95; }
+  0%   { height: 18%; opacity: 0.55; }
+  20%  { height: 55%; opacity: 0.85; }
+  40%  { height: 92%; opacity: 1; }
+  60%  { height: 70%; opacity: 0.95; }
+  80%  { height: 40%; opacity: 0.75; }
+  100% { height: 85%; opacity: 0.95; }
 }
 @media (prefers-reduced-motion: reduce) {
   .pf-idle-bar { animation: none; height: 50%; }
 }
 @media (max-width: 540px) {
-  .pf-idle-spectrum { height: 60px; }
   .pf-idle-bar { min-width: 3px; max-width: 10px; }
+}
+
+/* ── ENTER button — uses the brand magenta (NOT the red "pw" danger style) ── */
+/* The red `.pf-btn.pw` style is reserved for the live-performance STOP button.
+   The opening ENTER button gets a brighter magenta→violet gradient with a
+   strong glow so it pops as the primary CTA against the dark background. */
+.pf-btn.pf-idle-enter {
+  background: linear-gradient(180deg, var(--pf-mg) 0%, var(--pf-vi) 100%);
+  color: #ffffff;
+  border: 1px solid var(--pf-mg);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  box-shadow:
+    0 0 0 1px rgba(217,61,240,0.40),
+    0 6px 24px rgba(217,61,240,0.45),
+    0 0 40px rgba(217,61,240,0.25),
+    inset 0 1px 0 rgba(255,255,255,0.25);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+  transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
+}
+.pf-btn.pf-idle-enter:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.12);
+  box-shadow:
+    0 0 0 1px rgba(217,61,240,0.60),
+    0 8px 32px rgba(217,61,240,0.60),
+    0 0 56px rgba(217,61,240,0.40),
+    inset 0 1px 0 rgba(255,255,255,0.30);
+}
+.pf-btn.pf-idle-enter:active { transform: translateY(0); filter: brightness(0.95); }
+
+/* ── Features row — horizontal pills, no center hollow ── */
+.pf-idle-features {
+  display: flex !important;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 8px 12px;
+  grid-template-columns: none !important;
+  max-width: 100% !important;
+  margin: 0 auto;
+}
+.pf-idle-features span {
+  padding: 4px 10px !important;
+  background: rgba(184,242,46,0.04);
+  border: 1px solid rgba(184,242,46,0.20);
+  border-radius: 999px;
+  font-size: 11px !important;
+  letter-spacing: 0.03em;
+  color: var(--pf-ac) !important;
+}
+.pf-idle-features span::before {
+  display: none !important;  /* remove the dot prefix — we use a pill border instead */
+}
+.pf-idle-features span::first-letter,
+.pf-idle-features span:first-letter { color: inherit !important; }
+.pf-idle-features span:hover {
+  background: rgba(184,242,46,0.12) !important;
+  border-color: var(--pf-ac) !important;
+  cursor: default;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+/* Hide the Next.js dev-tools "N" badge — it's an orphan debug indicator
+   that makes the production-looking UI feel unfinished. (Only appears in
+   dev mode, but we hide it anyway for the preview.) */
+nextjs-portal, [data-nextjs-toast-overlay],
+[nextjs-dev-tools-button], [data-nextjs-dev-tools-button] {
+  display: none !important;
 }

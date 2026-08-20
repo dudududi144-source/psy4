@@ -337,51 +337,46 @@ export default function Page() {
         {/* When not entered: show opening screen with ENTER button (does NOT auto-start Play).
             Once entered, we never return here — clicking ENTER goes straight to the
             synth UI with power OFF; user clicks POWER from inside to start audio.
-            The card stretches to fill the viewport (no dead zones). Content is
-            distributed top → middle → bottom via flex column, with an animated
-            spectrum preview that fills the middle area. */}
+            Layout: brand → big spectrum → button → features. No dead zones. */}
         {!entered ? (
           <div className="pf-idle">
             <div className="pf-idle-card" style={{ display: 'flex', flexDirection: 'column', maxWidth: '1080px', width: '100%', minHeight: 'calc(100vh - 32px)' }}>
-              {/* TOP: brand */}
-              <div style={{ flex: '0 0 auto' }}>
+              {/* TOP: brand (compact) */}
+              <div style={{ flex: '0 0 auto', textAlign: 'center' }}>
                 <div className="pf-idle-logo"><b>PsyForge</b> <i>4</i></div>
-                <div className="pf-idle-subtitle">Psytrance Workstation</div>
+                <div className="pf-idle-subtitle">Psytrance Workstation · in-browser synthesis + radio learning</div>
               </div>
-              {/* MIDDLE: ENTER button + animated spectrum preview — fills the available space */}
-              <div style={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '20px', minHeight: '240px', width: '100%' }}>
-                <div className="pf-idle-press" style={{ margin: 0 }}>
-                  Press <span className="pf-idle-key">ENTER</span> to open the workstation.
-                  <br />
-                  <span style={{ fontSize: '12px', color: 'var(--pf-dm)' }}>
-                    Audio won't start until you press <span className="pf-idle-key">POWER</span> inside.
-                  </span>
-                </div>
-                <button
-                  className="pf-btn pw"
-                  onClick={() => setEntered(true)}
-                  style={{ width: '100%', maxWidth: '420px', padding: '16px', fontSize: '15px', letterSpacing: '0.05em' }}
-                >
-                  ▶ ENTER WORKSTATION
-                </button>
-                {/* Animated spectrum preview — flex:1 so it fills any remaining vertical
-                    space. More bars = wider fill. No dead zone below the button. */}
-                <div className="pf-idle-spectrum" aria-hidden="true" style={{ flex: '1 1 auto', height: 'auto', minHeight: '120px' }}>
-                  {Array.from({ length: 48 }).map((_, i) => (
+              {/* MIDDLE: big spectrum preview — the focal point, fills the available space */}
+              <div style={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '180px', width: '100%' }}>
+                <div className="pf-idle-spectrum" aria-hidden="true" style={{ flex: '1 1 auto', height: 'auto', minHeight: '180px' }}>
+                  {Array.from({ length: 56 }).map((_, i) => (
                     <span
                       key={i}
                       className="pf-idle-bar"
                       style={{
-                        animationDelay: `${(i * 0.05).toFixed(2)}s`,
-                        animationDuration: `${(0.8 + (i % 7) * 0.12).toFixed(2)}s`,
+                        animationDelay: `${(i * 0.045).toFixed(2)}s`,
+                        animationDuration: `${(0.9 + (i % 9) * 0.10).toFixed(2)}s`,
                       }}
                     />
                   ))}
                 </div>
               </div>
-              {/* BOTTOM: feature highlights */}
+              {/* BELOW SPECTRUM: single-line tagline + ENTER button — small gap above for breathing room */}
+              <div style={{ flex: '0 0 auto', textAlign: 'center', marginTop: '18px', marginBottom: '12px' }}>
+                <div style={{ fontSize: '12px', color: 'var(--pf-tx)', opacity: 0.85, letterSpacing: '0.03em', marginBottom: '12px' }}>
+                  Audio starts when you press <strong style={{ color: 'var(--pf-tx)', opacity: 1, fontWeight: 800 }}>POWER</strong> inside the workstation.
+                </div>
+                <button
+                  className="pf-btn pf-idle-enter"
+                  onClick={() => setEntered(true)}
+                  style={{ width: '100%', maxWidth: '460px', padding: '14px 24px', fontSize: '14px', letterSpacing: '0.06em', fontWeight: 800 }}
+                >
+                  ENTER WORKSTATION →
+                </button>
+              </div>
+              {/* BOTTOM: feature highlights — horizontal pill row, no center hollow */}
               <div style={{ flex: '0 0 auto' }}>
-                <div className="pf-idle-features" style={{ maxWidth: '100%', marginTop: '8px' }}>
+                <div className="pf-idle-features" style={{ maxWidth: '100%', marginTop: '0' }}>
                   <span>7 Styles</span>
                   <span>Smart Radio</span>
                   <span>Learning Loop</span>

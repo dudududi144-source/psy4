@@ -4,6 +4,9 @@ const nextConfig: NextConfig = {
   // Phase 0: removed `output: "standalone"` — we deploy to Cloudflare Pages
   // via @cloudflare/next-on-pages, not Node standalone.
   reactStrictMode: false,
+  // Hide the Next.js dev-tools "N" badge in the bottom-left corner — it
+  // looks like an orphan debug indicator on a production-styled UI.
+  devIndicators: false,
   // Mark native modules as external — don't let Turbopack try to bundle them.
   // better-sqlite3 is a native C++ addon that shouldn't be processed by the bundler.
   serverExternalPackages: ['better-sqlite3'],
