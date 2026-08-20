@@ -983,16 +983,21 @@
 
 
 /* ── IDLE STATE: commercial-grade welcome screen ────────────────────────── */
+/* Full-viewport welcome. The card stretches to fill the screen so there's
+   no dead zone — content is distributed top → middle → bottom via
+   flexbox `space-between`, so the layout looks intentional at any size. */
 .pf-idle {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
-  min-height: 65vh;
-  padding: 32px 0;
+  flex: 1;
+  min-height: calc(100vh - 16px);
+  padding: 0;
+  width: 100%;
 }
 .pf-idle-card {
   text-align: center;
-  padding: 56px 72px;
+  padding: 32px 40px 24px;
   background: linear-gradient(145deg, var(--pf-p) 0%, var(--pf-p2) 100%);
   border: 1px solid var(--pf-ln);
   border-radius: 16px;
@@ -1122,8 +1127,6 @@
 }
 
 /* ── VLM FIX: WCAG contrast + hover states + STOP prominence ────────────── */
-
-/* Brighten dim text for WCAG AA */
 .pf-dm { color: #c4b5e0 !important; }
 .pf-tx { color: #ffffff !important; }
 
@@ -1204,4 +1207,46 @@
 .pf-d:focus {
   border-color: var(--pf-ac);
   box-shadow: 0 0 12px rgba(184,242,46,0.2), inset 0 1px 2px rgba(255,255,255,0.12), inset 0 -2px 4px rgba(0,0,0,0.5);
+}
+
+/* ── Opening-screen animated spectrum preview ────────────────────────── */
+/* Fills the middle of the welcome card with a faux audio spectrum so
+   the layout doesn't have a dead zone — it also signals "this is an
+   audio app" the moment the page loads. Pure CSS animation (no JS). */
+.pf-idle-spectrum {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  width: 100%;
+  max-width: 520px;
+  height: 80px;
+  margin: 8px auto 0;
+  padding: 0 4px;
+  opacity: 0.9;
+}
+.pf-idle-bar {
+  flex: 1 1 0;
+  min-width: 4px;
+  max-width: 14px;
+  height: 12%;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(180deg, var(--pf-ac) 0%, var(--pf-mg) 100%);
+  box-shadow: 0 0 6px rgba(184,242,46,0.18);
+  transform-origin: bottom;
+  animation: pf-idle-bar-anim 1.2s ease-in-out infinite alternate;
+}
+@keyframes pf-idle-bar-anim {
+  0%   { height: 12%; opacity: 0.5; }
+  25%  { height: 55%; opacity: 0.85; }
+  50%  { height: 85%; opacity: 1; }
+  75%  { height: 40%; opacity: 0.75; }
+  100% { height: 70%; opacity: 0.95; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pf-idle-bar { animation: none; height: 50%; }
+}
+@media (max-width: 540px) {
+  .pf-idle-spectrum { height: 60px; }
+  .pf-idle-bar { min-width: 3px; max-width: 10px; }
 }

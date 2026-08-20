@@ -51,31 +51,57 @@ export function SpectrumVisualizer({ analyser, height = 90 }: SpectrumVisualizer
         ctx.stroke();
       }
 
+      // Detect silence (power OFF or engine suspended) — if the analyser
+      // gives us basically zeros, show an idle pattern instead of an
+      // empty canvas. This prevents the spectrum area from looking like
+      // a dead zone.
+      let signalEnergy = 0;
+      for (let i = 0; i < 32; i++) signalEnergy += freq[i];
+      const isIdle = signalEnergy < 8;
+
       // Draw spectrum bars (64 bars, linear-spaced for even display)
       const numBars = 64;
       const barWidth = w / numBars;
       for (let i = 0; i < numBars; i++) {
-        // Linear mapping — shows full frequency range evenly
-        const idx = Math.floor((i / numBars) * freq.length * 0.7);  // 0-70% of bins (skip ultra-high silence)
-        const v = freq[idx] / 255;
+        let v: number;
+        if (isIdle) {
+          // Idle pattern: animated sine wave — slow, calm, clearly "off"
+          const t = performance.now() / 1000;
+          const wave = (Math.sin(i * 0.4 + t * 0.8) + 1) / 2;       // 0..1
+          const decay = 1 - (i / numBars) * 0.55;                    // taper to right
+          v = wave * decay * 0.32;                                   // stay low + calm
+        } else {
+          // Linear mapping — shows full frequency range evenly
+          const idx = Math.floor((i / numBars) * freq.length * 0.7);  // 0-70% of bins (skip ultra-high silence)
+          v = freq[idx] / 255;
+        }
         const barH = v * specH * 0.9;
-        const hue = 120 - v * 120;
-        ctx.fillStyle = `hsl(${hue}, 75%, 50%)`;
+        const hue = isIdle ? 270 : (120 - v * 120);  // idle = magenta-tinted, live = green→red
+        ctx.fillStyle = `hsl(${hue}, ${isIdle ? '45' : '75'}%, ${isIdle ? '40' : '50'}%)`;
         ctx.fillRect(i * barWidth, specH - barH, barWidth - 1, barH);
       }
 
-      // Draw waveform overlay (center line)
-      ctx.strokeStyle = 'rgba(184, 242, 46, 0.5)';
+      // Draw waveform overlay (center line) — idle shows flat line, live shows wave
+      ctx.strokeStyle = isIdle ? 'rgba(217, 61, 240, 0.25)' : 'rgba(184, 242, 46, 0.5)';
       ctx.lineWidth = 1;
       ctx.beginPath();
       const slice = w / td.length;
       for (let i = 0; i < td.length; i++) {
-        const v = td[i];
+        const v = isIdle ? 0 : td[i];
         const y = specH * 0.5 + v * specH * 0.35;
         if (i === 0) ctx.moveTo(0, y);
         else ctx.lineTo(i * slice, y);
       }
       ctx.stroke();
+
+      // Idle badge — clear "POWER OFF" hint so the dead zone has a meaning
+      if (isIdle) {
+        ctx.fillStyle = 'rgba(184, 168, 216, 0.5)';
+        ctx.font = '10px ui-monospace, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('— POWER OFF · press POWER to start —', w / 2, specH * 0.5 + 4);
+        ctx.textAlign = 'left';
+      }
 
       // Draw frequency axis labels at bottom
       ctx.fillStyle = 'rgba(154, 140, 196, 0.5)';
