@@ -55,6 +55,8 @@ const initialState: LiveState4 = {
   cloudSync: false, cloudParamsLoaded: 0,
   // Radio reconnect status
   radioReconnectAttempts: 0, radioLastConnectTime: 0,
+  // Grammar learning stats
+  grammarStats: null, grammarSamplesApplied: 0,
 };
 
 export default function Page() {
@@ -455,6 +457,8 @@ export default function Page() {
               onRadioMixMode={(mode) => engineRef.current?.setRadioMixMode(mode)}
               radioConnected={s.smartRadioOn}
               cloudSync={s.cloudSync}
+              grammarStats={s.grammarStats}
+              grammarSamplesApplied={s.grammarSamplesApplied}
             />
           </div>
         </div>

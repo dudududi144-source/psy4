@@ -20,6 +20,7 @@ import { LeadDevice } from '@/lib/devices/lead-device';
 import { SamplerDevice } from '@/lib/devices/sampler-device';
 import { freqHzToCC74 } from './cc-mapping';
 import { CCLearner, type CCExplorationState } from './learning';
+import { GrammarLearner, type GrammarStats } from './grammar-learner';
 import {
   analyzeQuality,
   suggestAdjustments,
@@ -116,6 +117,12 @@ export interface LiveState4 {
   // retrying infinitely rather than silently giving up.
   radioReconnectAttempts: number;
   radioLastConnectTime: number;   // epoch ms of last successful connect
+  // GRAMMAR LEARNING STATS — real musical learning visibility.
+  // Replaces the abstract "convergence %" (which was just a scalar) with
+  // actual learned statistics: how many bass transitions, melodic intervals,
+  // and kick onsets the engine has observed + a confidence metric.
+  grammarStats: GrammarStats | null;
+  grammarSamplesApplied: number;  // how many notes the composer sampled from grammars
 }
 
 export class PsyLive4 implements SchedulerHost {
@@ -176,6 +183,12 @@ export class PsyLive4 implements SchedulerHost {
   private lastEventsPerSecUpdate = 0;
   // ── Learning loop ──
   private learner = new CCLearner();
+  // GRAMMAR LEARNER — real musical learning (bass 12x12 transitions, melodic
+  // intervals, kick onsets). Observes every note played, learns the
+  // statistics, and lets the composer sample from the learned distributions
+  // when confidence is high. Replaces the "no learning at all" complaint —
+  // this learns actual musical structure, not just knob values.
+  private grammarLearner = new GrammarLearner();
   private learningOn = false;
   /**
    * FIX GAP 1: dedicated learning interval (4s) — was: delta adjustments inside
@@ -225,6 +238,7 @@ export class PsyLive4 implements SchedulerHost {
   private static readonly RESET_COOLDOWN_MS = 30000;  // 30s between full reset cycles
   private radioReconnectAttempts = 0;
   private radioLastConnectTime = 0;
+  private grammarSamplesApplied = 0;  // count of notes sampled from grammars
 
   // ── Analyser buffers (reused, no per-tick allocation) ──
   private freqBuf: Uint8Array;
@@ -313,19 +327,29 @@ export class PsyLive4 implements SchedulerHost {
     this.masteringTdBuf = new Float32Array(this.analyser.fftSize);  // DEEP GAP J
 
     // ── Wire master chain ──
-    // sidechainDuck → 3 parallel paths → sum → volume → limiter → analyser → destination
+    // SIMPLIFIED chain (was: 3 parallel multiband compressors → sum → volume → limiter).
+    // The 3 per-band compressors + adaptive mastering (1s LUFS targeting) were
+    // pumping the gain envelope independently per band, creating an audible
+    // "shaking" / "pumping" effect — the user reported "the synth is shaking".
+    //
+    // New chain (per psy3-clean's verified approach):
+    //   sidechainDuck → tonal filters + gains (still boost low/mid, cut high)
+    //                 → sum → volume → brickwall limiter → analyser → destination
+    // No per-band compression. The brickwall limiter catches peaks. The sidechain
+    // duck (kick-ducked bass/pad bus) is preserved — that's a musical feature,
+    // not a bug.
     this.sidechainDuck.connect(this.multibandLow);
     this.sidechainDuck.connect(this.multibandMid1);
     this.sidechainDuck.connect(this.multibandHigh);
-    this.multibandLow.connect(this.multibandLowComp);
-    this.multibandLowComp.connect(this.multibandLowGain);
+    // LOW path: filter → gain (NO compressor)
+    this.multibandLow.connect(this.multibandLowGain);
     this.multibandLowGain.connect(this.multibandSum);
+    // MID path: filters → gain (NO compressor)
     this.multibandMid1.connect(this.multibandMid2);
-    this.multibandMid2.connect(this.multibandMidComp);
-    this.multibandMidComp.connect(this.multibandMidGain);
+    this.multibandMid2.connect(this.multibandMidGain);
     this.multibandMidGain.connect(this.multibandSum);
-    this.multibandHigh.connect(this.multibandHighComp);
-    this.multibandHighComp.connect(this.multibandHighGain);
+    // HIGH path: filter → gain (NO compressor)
+    this.multibandHigh.connect(this.multibandHighGain);
     this.multibandHighGain.connect(this.multibandSum);
     this.multibandSum.connect(this.workletVolumeGain);
     this.workletVolumeGain.connect(this.masterLimiter);
@@ -405,7 +429,12 @@ export class PsyLive4 implements SchedulerHost {
     this.samplerDevice.onStart();
     this.scheduler.start();
     this.startLearningLoop();  // FIX GAP 1: dedicated 4s timer (was: in getState)
-    this.startAdaptiveMastering();  // DEEP GAP J: adaptive compressor thresholds
+    // DISABLED: adaptive mastering (LUFS targeting every 1s). The 3-band
+    // multiband compressors it adjusted are now bypassed (see master chain
+    // wiring above), and the 1s threshold modulation was the primary cause
+    // of the "shaking" / "pumping" effect on the master output. The brickwall
+    // limiter alone is enough to catch peaks — no adaptive gain needed.
+    // this.startAdaptiveMastering();
     console.log('[PsyLive4] play — scheduler started');
   }
 
@@ -472,6 +501,52 @@ export class PsyLive4 implements SchedulerHost {
     this.composerPrev = result.next;
     this.bar = result.next.barInArrangement;
 
+    // ── GRAMMAR-DRIVEN COMPOSITION ──
+    // When learning is on + grammar confidence is high enough, REPLACE some
+    // composer-generated notes with grammar-sampled ones. This is the real
+    // "the music changes because of learning" effect — bass notes start
+    // following learned transitions, melodies shift toward learned intervals.
+    //
+    // Probability scales with confidence: 0% at conf=0, ~50% at conf=1.
+    // We only replace SOME notes — the composer's structure (which step
+    // fires, the rhythm) is preserved; only the pitch is nudged.
+    if (this.learningOn) {
+      const stats = this.grammarLearner.getStats();
+      const bassReplaceProb = stats.bass.total > 20 ? Math.min(0.5, stats.confidence * 0.6) : 0;
+      const melodicNudgeProb = stats.melodic.total > 20 ? Math.min(0.4, stats.confidence * 0.5) : 0;
+      let lastBassPc: number | null = null;
+      let lastLeadMidi: number | null = null;
+      for (const e of result.events) {
+        if (e.role === 'bass') {
+          const pc = ((Math.round(e.note) % 12) + 12) % 12;
+          // Try to sample next bass PC from grammar
+          if (Math.random() < bassReplaceProb) {
+            const sampled = this.grammarLearner.sampleBassPc(lastBassPc ?? pc);
+            if (sampled !== null) {
+              // Replace note: keep the same octave, swap pitch class
+              const octave = Math.floor(Math.round(e.note) / 12);
+              e.note = octave * 12 + sampled;
+              this.grammarSamplesApplied++;
+            }
+          }
+          lastBassPc = pc;
+        } else if (e.role === 'lead' || e.role === 'acid') {
+          // Try to nudge the note by a sampled melodic interval
+          if (Math.random() < melodicNudgeProb && lastLeadMidi !== null) {
+            const interval = this.grammarLearner.sampleMelodicInterval();
+            if (interval !== null && interval !== 0) {
+              const newNote = Math.max(36, Math.min(96, Math.round(e.note) + interval));
+              if (newNote !== Math.round(e.note)) {
+                e.note = newNote;
+                this.grammarSamplesApplied++;
+              }
+            }
+          }
+          lastLeadMidi = Math.round(e.note);
+        }
+      }
+    }
+
     // Track kick count + sidechain + repetition fingerprint
     const barTokens: string[] = [];
     for (const e of result.events) {
@@ -487,6 +562,20 @@ export class PsyLive4 implements SchedulerHost {
       // Track recent events (ring buffer, last 16)
       this.recentEvents.push({ at: e.at, role: e.role, note: e.note, vel: e.velocity });
       if (this.recentEvents.length > 16) this.recentEvents.shift();
+      // ── GRAMMAR LEARNING ──
+      // Observe every note played. The grammar learner builds statistical
+      // models of bass transitions, melodic intervals, and kick onsets.
+      // When confidence is high, the composer can sample from these models
+      // instead of using the built-in style banks (real musical learning,
+      // not just CC knob tweaking).
+      if (this.learningOn) {
+        // Compute step-in-bar (0..15) from `at` + bpm (NoteEvent has no step field)
+        const barLen = 4 * 60 / this.bpm;
+        const sixteenth = (60 / this.bpm) / 4;
+        const barZero = e.at - (((e.at % barLen) + barLen) % barLen);
+        const stepInBar = Math.floor((e.at - barZero) / sixteenth) % 16;
+        this.grammarLearner.observeNote(e.role, e.note, stepInBar);
+      }
       // PHASE F: track what was played (for musical similarity reward)
       if (e.role === 'bass' || e.role === 'acid') {
         const sixteenth = (60 / this.bpm) / 4;
@@ -1283,6 +1372,9 @@ export class PsyLive4 implements SchedulerHost {
       // Radio reconnect status
       radioReconnectAttempts: this.radioReconnectAttempts,
       radioLastConnectTime: this.radioLastConnectTime,
+      // GRAMMAR LEARNING STATS — what the engine has actually learned
+      grammarStats: this.learningOn ? this.grammarLearner.getStats() : null,
+      grammarSamplesApplied: this.grammarSamplesApplied,
     };
   }
 
