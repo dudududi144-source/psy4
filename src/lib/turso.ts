@@ -9,7 +9,11 @@
 // The token + URL are server-side only (never exposed to the client).
 // API routes use this client to proxy learning data.
 
-const TURSO_URL = process.env.TURSO_DATABASE_URL || '';
+// Accept both `libsql://` (Turso's canonical scheme) and `https://`
+// (what fetch() actually supports). Auto-convert so users can paste
+// the URL from the Turso CLI / dashboard verbatim into .env.
+const RAW_TURSO_URL = process.env.TURSO_DATABASE_URL || '';
+const TURSO_URL = RAW_TURSO_URL.replace(/^libsql:\/\//, 'https://');
 const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN || '';
 
 export function isTursoConfigured(): boolean {
