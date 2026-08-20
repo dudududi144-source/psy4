@@ -162,6 +162,9 @@ export class PsyLive4 implements SchedulerHost {
 
   // ── Engine intelligence tracking ──
   private recentEvents: ComposedEventLite[] = [];     // ring buffer, last 16
+  // PHASE F: track what the engine ACTUALLY played (for musical similarity reward)
+  private lastBarBassSteps: Set<number> = new Set();
+  private lastBarLeadNotes: number[] = [];
   private ccParams: Record<number, number> = {};      // current CC values
   private smartRadioOn = false;
   // Removed: smartRadioNextChange / smartRadioInterval — fake Smart Radio is gone,
@@ -468,6 +471,13 @@ export class PsyLive4 implements SchedulerHost {
       // Track recent events (ring buffer, last 16)
       this.recentEvents.push({ at: e.at, role: e.role, note: e.note, vel: e.velocity });
       if (this.recentEvents.length > 16) this.recentEvents.shift();
+      // PHASE F: track what was played (for musical similarity reward)
+      if (e.role === 'bass' || e.role === 'acid') {
+        const step16 = Math.floor((e.at - windowStart) / sixteenth) % 16;
+        this.lastBarBassSteps.add(step16);
+      } else if (e.role === 'lead') {
+        this.lastBarLeadNotes.push(e.note);
+      }
       this.eventCountWindow++;
     }
     // Repetition fingerprint (per compose window, coarse)
@@ -1221,19 +1231,65 @@ export class PsyLive4 implements SchedulerHost {
     // Analyze engine quality (reuse buffers — FIX GAP 9)
     const engineQuality = analyzeQuality(this.analyser, this.ctx.sampleRate, this.freqBuf, this.tdBuf);
 
-    // DEEP GAP C: compute convergence metric (0..1) — how close engine is to radio
+    // PHASE F: compute MUSICAL reward — how similar is the engine's music to the radio?
+    // Was: reward = engineQuality.overall (spectral only). Now: includes rhythmic + melodic match.
+    let spectralConvergence = 0;
     if (this.radioTarget && this.radioTarget.connected) {
-      this.convergence = computeConvergence(engineQuality, this.radioTarget);
+      spectralConvergence = computeConvergence(engineQuality, this.radioTarget);
+    }
+
+    // Rhythmic similarity: Jaccard index between engine bass steps + radio bass pattern
+    let rhythmicSimilarity = 0;
+    const radioBass = this.radioListener.getBasslinePattern();
+    if (radioBass && radioBass.length >= 16) {
+      const radioBassSteps = new Set<number>();
+      for (let i = 0; i < 16; i++) { if (radioBass[i] > 0.3) radioBassSteps.add(i); }
+      const intersection = [...this.lastBarBassSteps].filter(s => radioBassSteps.has(s));
+      const union = new Set([...this.lastBarBassSteps, ...radioBassSteps]);
+      rhythmicSimilarity = union.size > 0 ? intersection.length / union.size : 0;
+    }
+
+    // Melodic similarity: average note distance → similarity (1 = identical, 0 = 12+ semitones off)
+    let melodicSimilarity = 0;
+    const radioLead = this.radioListener.getLeadPattern();
+    if (radioLead && this.lastBarLeadNotes.length > 0) {
+      let totalDist = 0, count = 0;
+      for (const note of this.lastBarLeadNotes) {
+        // Find closest radio note
+        let minDist = 12;
+        for (let i = 0; i < radioLead.length; i++) {
+          if (radioLead[i] >= 0) {
+            const dist = Math.abs(note % 12 - radioLead[i] % 12); // pitch class distance
+            if (dist < minDist) minDist = dist;
+          }
+        }
+        totalDist += minDist;
+        count++;
+      }
+      melodicSimilarity = count > 0 ? Math.max(0, 1 - totalDist / (count * 6)) : 0;
+    }
+
+    // MUSICAL REWARD: 40% rhythm + 30% melody + 30% spectral
+    const musicalReward = 0.4 * rhythmicSimilarity + 0.3 * melodicSimilarity + 0.3 * spectralConvergence;
+
+    // Override the spectral reward with the musical reward
+    engineQuality.overall = this.rewardEMA * (1 - 0.5) + musicalReward * 0.5; // blend EMA with new reward
+
+    // DEEP GAP C: convergence = the musical reward (not just spectral)
+    if (this.radioTarget && this.radioTarget.connected) {
+      this.convergence = this.convergenceEMA * 0.85 + musicalReward * 0.15;
       this.convergenceHistory.push(this.convergence);
       if (this.convergenceHistory.length > PsyLive4.CONVERGENCE_HISTORY_MAX) this.convergenceHistory.shift();
     }
 
-    // DEEP GAP A: record pattern memory — fingerprint the current bar + its reward
-    // This gives the composer material to bias toward high-reward patterns.
+    // Reset per-bar tracking (for next bar's similarity measurement)
+    this.lastBarBassSteps = new Set();
+    this.lastBarLeadNotes = [];
+
+    // DEEP GAP A: record pattern memory with the MUSICAL reward
     if (this.barFingerprints.length > 0) {
       const latestFingerprint = this.barFingerprints[this.barFingerprints.length - 1];
       this.learner.recordPattern(latestFingerprint, engineQuality.overall, this.ctx.currentTime);
-      // Queue for Turso cloud sync (batched, synced every 30s)
       this.pendingPatternSync.set(latestFingerprint, engineQuality.overall);
     }
 
