@@ -10,7 +10,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset",
-    "build:cf": "npx @cloudflare/next-on-pages"
+    "build:cf": "npx @cloudflare/next-on-pages",
+    "verify:radio": "bun --hot scripts/verify-radio-infinite.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

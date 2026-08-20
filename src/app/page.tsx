@@ -53,6 +53,8 @@ const initialState: LiveState4 = {
   convergence: 0, convergenceHistory: [], learningErrors: 0, patternCount: 0,
   radioMixMode: 'both' as 'both', radioInBreakdown: false,
   cloudSync: false, cloudParamsLoaded: 0,
+  // Radio reconnect status
+  radioReconnectAttempts: 0, radioLastConnectTime: 0,
 };
 
 export default function Page() {
@@ -61,6 +63,11 @@ export default function Page() {
   const [ready, setReady] = useState(false);
   const [bpm, setBpm] = useState(145);
   const [power, setPower] = useState(false);
+  // OPENING SCREEN: separate from power. The idle screen shows on first load.
+  // Clicking ENTER goes to the synth UI WITHOUT auto-starting Play.
+  // User then clicks POWER from inside the synth UI to actually start audio.
+  // After entering, we don't return to the idle screen — it's only the opener.
+  const [entered, setEntered] = useState(false);
   const [arpOn, setArpOn] = useState(false);
   const [seqOn, setSeqOn] = useState(false);
   const [presetIdx, setPresetIdx] = useState(0);
@@ -215,6 +222,12 @@ export default function Page() {
     await engineRef.current?.setSmartRadio(newOn);
   }, [smartRadioOn]);
 
+  // Manual reset — user clicked RESET button in Smart Radio UI.
+  // Clears failed-stream memory + reconnects from scratch.
+  const onResetRadio = useCallback(async () => {
+    await engineRef.current?.resetRadio();
+  }, []);
+
   const onLearning = useCallback(() => {
     const newOn = !learningOn;
     setLearningOn(newOn);
@@ -222,10 +235,22 @@ export default function Page() {
   }, [learningOn]);
 
   // ── Keyboard shortcuts ──
+  // On the opening screen: Enter / Space triggers ENTER (goes into the workstation
+  //   without starting audio). Once entered: Space toggles POWER, R toggles radio,
+  //   L toggles learning, 1-7 selects preset.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // Ignore if typing in an input
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      // Opening screen: Enter / Space enters the workstation (no audio)
+      if (!entered) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          setEntered(true);
+        }
+        return;
+      }
+      // Inside the workstation
       switch (e.key) {
         case ' ':
           e.preventDefault();
@@ -252,7 +277,7 @@ export default function Page() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onPower, onSmartRadio, onLearning]);
+  }, [entered, onPower, onSmartRadio, onLearning]);
 
   const onExportMIDI = useCallback(() => {
     engineRef.current?.exportMIDI(8);
@@ -278,6 +303,10 @@ export default function Page() {
   return (
     <div className="pf-root">
       <div className="pf-wrap">
+        {/* Header only renders AFTER entering. On the opening screen we show
+            just the ENTER card — no synth controls visible until the user
+            chooses to enter the workstation. */}
+        {entered && (
         <Header
           bpm={bpm}
           onBpm={onBpm}
@@ -303,14 +332,30 @@ export default function Page() {
           onMIDI={onExportMIDI}
           onWAV={onExportWAV}
         />
+        )}
 
-        {/* When not playing: show elegant idle state */}
-        {!power ? (
+        {/* When not entered: show opening screen with ENTER button (does NOT auto-start Play).
+            Once entered, we never return here — clicking ENTER goes straight to the
+            synth UI with power OFF; user clicks POWER from inside to start audio. */}
+        {!entered ? (
           <div className="pf-idle">
             <div className="pf-idle-card">
               <div className="pf-idle-logo"><b>PsyForge</b> <i>4</i></div>
               <div className="pf-idle-subtitle">Psytrance Workstation</div>
-              <div className="pf-idle-press">Press <span className="pf-idle-key">POWER</span> or <span className="pf-idle-key">Space</span> to start</div>
+              <div className="pf-idle-press">
+                Press <span className="pf-idle-key">ENTER</span> to open the workstation.
+                <br />
+                <span style={{ fontSize: '12px', color: 'var(--pf-dm)' }}>
+                  Audio won't start until you press <span className="pf-idle-key">POWER</span> inside.
+                </span>
+              </div>
+              <button
+                className="pf-btn pw"
+                onClick={() => setEntered(true)}
+                style={{ width: '100%', marginTop: '8px', marginBottom: '20px', padding: '14px', fontSize: '14px' }}
+              >
+                ENTER WORKSTATION
+              </button>
               <div className="pf-idle-features">
                 <span>7 Styles</span>
                 <span>Smart Radio</span>
@@ -320,7 +365,10 @@ export default function Page() {
             </div>
           </div>
         ) : (
-        /* 2-column layout: synth rack left, intelligence right */
+        /* 2-column layout: synth rack left, intelligence right.
+           Renders whenever entered === true. When power is OFF, panels still
+           render — the user can tweak knobs, start Radio/Learning, etc.
+           Pressing POWER (in the header) starts audio. */
         <div className="pf-layout">
           {/* ── LEFT: Synth rack + keyboard ── */}
           <div>
@@ -363,11 +411,14 @@ export default function Page() {
             <SmartRadio
               on={smartRadioOn}
               onToggle={onSmartRadio}
+              onReset={onResetRadio}
               streamName={s.radioStreamName}
               detectedBpm={s.radioDetectedBpm}
               bpmConfidence={s.radioBpmConfidence}
               currentStyle={s.style}
               energy={s.energy}
+              reconnectAttempts={s.radioReconnectAttempts}
+              lastConnectTime={s.radioLastConnectTime}
             />
             <LearningPanel
               on={learningOn}
@@ -388,7 +439,9 @@ export default function Page() {
         </div>
         )}
 
-        <StatusStrip state={s} arpOn={arpOn} seqOn={seqOn} />
+        {entered && (
+          <StatusStrip state={s} arpOn={arpOn} seqOn={seqOn} />
+        )}
       </div>
     </div>
   );

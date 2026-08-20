@@ -1085,6 +1085,42 @@
   text-shadow: none;
 }
 
+/* ── Smart Radio: reconnect status badge ───────────────────────────────── */
+.radio-reconnect {
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: rgba(255,154,42,0.06);
+  border: 1px dashed var(--pf-or);
+  border-radius: 6px;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.radio-reconnect .radio-label {
+  color: var(--pf-or);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+.radio-reconnect-count {
+  color: var(--pf-or);
+  font-weight: 800;
+}
+.radio-reconnect-time {
+  color: var(--pf-dm);
+  font-size: 9px;
+  margin-left: auto;
+}
+.pf-btn.radio-reset {
+  border-color: var(--pf-or);
+  color: var(--pf-or);
+}
+.pf-btn.radio-reset:hover {
+  background: rgba(255,154,42,0.12);
+  box-shadow: 0 0 10px rgba(255,154,42,0.18);
+}
+
 /* ── VLM FIX: WCAG contrast + hover states + STOP prominence ────────────── */
 
 /* Brighten dim text for WCAG AA */

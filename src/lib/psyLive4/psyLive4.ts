@@ -112,6 +112,10 @@ export interface LiveState4 {
   // Turso cloud sync status
   cloudSync: boolean;             // true if cloud sync is active
   cloudParamsLoaded: number;      // count of params loaded from cloud on init
+  // Radio reconnect status — shown in the UI so the user knows we're
+  // retrying infinitely rather than silently giving up.
+  radioReconnectAttempts: number;
+  radioLastConnectTime: number;   // epoch ms of last successful connect
 }
 
 export class PsyLive4 implements SchedulerHost {
@@ -213,6 +217,14 @@ export class PsyLive4 implements SchedulerHost {
   private radioTarget: RadioTarget | null = null;
   // BACKUP: cached stream list for auto-failover
   private currentRadioStreams: RadioStream[] = [];
+  // INFINITE: when every stream has failed, we wait RESET_COOLDOWN_MS then
+  // clear failed-streams memory and try again. This makes the radio run
+  // forever — it never gives up. User can also trigger this manually
+  // via resetRadio() (the "RESET" button in the Smart Radio UI).
+  private radioReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly RESET_COOLDOWN_MS = 30000;  // 30s between full reset cycles
+  private radioReconnectAttempts = 0;
+  private radioLastConnectTime = 0;
 
   // ── Analyser buffers (reused, no per-tick allocation) ──
   private freqBuf: Uint8Array;
@@ -539,6 +551,17 @@ export class PsyLive4 implements SchedulerHost {
   async setSmartRadio(on: boolean): Promise<void> {
     this.smartRadioOn = on;
     if (on) {
+      // User gesture — resume AudioContext so the analyser actually sees
+      // radio data. Without this, the audio element plays through its own
+      // output but the MediaElementSource → analyser path is suspended.
+      if (this.ctx.state === 'suspended') {
+        try { await this.ctx.resume(); } catch (e) { console.warn('[PsyLive4] ctx.resume() failed:', e); }
+      }
+      // Cancel any pending infinite-reconnect timer — we're connecting now
+      if (this.radioReconnectTimer) {
+        clearTimeout(this.radioReconnectTimer);
+        this.radioReconnectTimer = null;
+      }
       // Load streams list and connect to first available
       const streams = await this.loadRadioStreams();
       if (streams.length === 0) {
@@ -548,13 +571,19 @@ export class PsyLive4 implements SchedulerHost {
       // BACKUP: register health listener for auto-failover BEFORE connecting
       this.radioListener.onHealthEvent((event) => this.onStreamHealthEvent(event));
       this.radioListener.clearFailedStreams();  // fresh start
+      this.radioReconnectAttempts = 0;
       // Try streams in priority order until one connects
       const ok = await this.tryConnectStreams(streams);
       if (!ok) {
-        console.error('[PsyLive4] All radio streams failed — radio OFF');
-        this.smartRadioOn = false;
+        console.warn('[PsyLive4] All radio streams failed on first try — scheduling infinite retry in 30s');
+        this.scheduleInfiniteReconnect();
       }
     } else {
+      // Radio turned off — cancel any pending reconnect
+      if (this.radioReconnectTimer) {
+        clearTimeout(this.radioReconnectTimer);
+        this.radioReconnectTimer = null;
+      }
       this.radioListener.disconnect();
       this.radioTarget = null;
       // FIX GAP 3: restore default commercial targets (was: stuck at last stream's values)
@@ -564,8 +593,69 @@ export class PsyLive4 implements SchedulerHost {
   }
 
   /**
-   * BACKUP: Try connecting to streams in priority order.
-   * Skips streams marked as failed. Returns true if any stream connected.
+   * Manual reset — user clicked the RESET button in the Smart Radio UI.
+   * Clears failed-stream memory, disconnects, and reconnects from scratch.
+   * Also used internally by the infinite-reconnect loop.
+   */
+  async resetRadio(): Promise<boolean> {
+    if (!this.smartRadioOn) return false;
+    // User gesture — make sure ctx is running (in case it was suspended
+    // by the browser while tab was backgrounded).
+    if (this.ctx.state === 'suspended') {
+      try { await this.ctx.resume(); } catch (e) { console.warn('[PsyLive4] ctx.resume() failed:', e); }
+    }
+    console.log('[PsyLive4] RESET: clearing failed streams + reconnecting');
+    if (this.radioReconnectTimer) {
+      clearTimeout(this.radioReconnectTimer);
+      this.radioReconnectTimer = null;
+    }
+    this.radioListener.clearFailedStreams();
+    this.radioListener.disconnect();
+    this.radioTarget = null;
+    // Reload streams (in case streams.json was edited) and reconnect
+    const streams = await this.loadRadioStreams();
+    if (streams.length === 0) {
+      console.warn('[PsyLive4] RESET: no streams available');
+      this.scheduleInfiniteReconnect();
+      return false;
+    }
+    const ok = await this.tryConnectStreams(streams);
+    if (!ok) {
+      console.warn('[PsyLive4] RESET: all streams failed — will retry in 30s');
+      this.scheduleInfiniteReconnect();
+    }
+    return ok;
+  }
+
+  /**
+   * INFINITE: when all streams are exhausted, wait RESET_COOLDOWN_MS then
+   * clear failed-stream memory and try again. This loop continues forever
+   * until the user turns radio off or a connection succeeds.
+   */
+  private scheduleInfiniteReconnect(): void {
+    if (!this.smartRadioOn) return;  // user turned radio off — stop looping
+    if (this.radioReconnectTimer) return;  // already scheduled
+    this.radioReconnectAttempts++;
+    console.log(`[PsyLive4] INFINITE: scheduling reconnect #${this.radioReconnectAttempts} in ${PsyLive4.RESET_COOLDOWN_MS / 1000}s`);
+    this.radioReconnectTimer = setTimeout(() => {
+      this.radioReconnectTimer = null;
+      if (!this.smartRadioOn) return;
+      // Auto-reset and try again
+      this.resetRadio();
+    }, PsyLive4.RESET_COOLDOWN_MS);
+  }
+
+  /**
+   * Connect to streams using the CORS proxy by default.
+   *
+   * WHY: all known psytrance radio streams send audio without CORS headers,
+   * so a direct <audio crossOrigin="anonymous"> connection gives us a
+   * silent analyser (the audio element plays, but MediaElementSource
+   * produces zeros). Routing through /api/radio/proxy adds
+   * `Access-Control-Allow-Origin: *` server-side so the analyser sees
+   * the real audio data.
+   *
+   * The proxy is on our own origin so there's no preflight penalty.
    */
   private async tryConnectStreams(streams: RadioStream[]): Promise<boolean> {
     // Sort by priority (1 = primary, 2 = backup). Default to 1.
@@ -575,9 +665,14 @@ export class PsyLive4 implements SchedulerHost {
         console.log(`[PsyLive4] skipping failed stream ${stream.name}`);
         continue;
       }
-      const ok = await this.radioListener.connect(stream);
+      // Wrap URL with our CORS proxy — direct connect always fails because
+      // radio servers don't send Access-Control-Allow-Origin.
+      const ok = await this.radioListener.connectViaProxy(stream);
       if (ok) {
         this.currentRadioStreams = sorted;  // store for failover
+        this.radioLastConnectTime = Date.now();
+        // Successful connect resets the reconnect counter (we're healthy again)
+        this.radioReconnectAttempts = 0;
         return true;
       }
       // Mark as failed so we don't retry it immediately
@@ -637,6 +732,8 @@ export class PsyLive4 implements SchedulerHost {
 
   /**
    * BACKUP: Failover to the next non-failed stream.
+   * When all streams are exhausted, schedule an infinite reconnect loop
+   * (waits 30s, clears failed-stream memory, retries forever).
    */
   private async failoverToNextStream(failedStreamId: string, failedStreamName: string): Promise<void> {
     this.radioListener.markStreamFailed(failedStreamId);
@@ -648,15 +745,20 @@ export class PsyLive4 implements SchedulerHost {
       this.radioListener.disconnect();
       setTimeout(async () => {
         if (!this.smartRadioOn) return;
-        const ok = await this.radioListener.connect(nextStream);
-        if (!ok) {
+        // Use proxy for failover too (same reason: streams don't send CORS headers)
+        const ok = await this.radioListener.connectViaProxy(nextStream);
+        if (ok) {
+          this.radioLastConnectTime = Date.now();
+          this.radioReconnectAttempts = 0;
+        } else {
           this.radioListener.markStreamFailed(nextStream.id);
           // Try remaining streams recursively
           await this.failoverToNextStream(nextStream.id, nextStream.name);
         }
       }, 1000);
     } else {
-      console.warn(`[PsyLive4] BACKUP: no more streams available — all failed. Keeping last known targets so learning continues.`);
+      console.warn(`[PsyLive4] BACKUP: all streams failed — keeping last known targets + scheduling infinite reconnect`);
+      this.scheduleInfiniteReconnect();
     }
   }
 
@@ -1178,6 +1280,9 @@ export class PsyLive4 implements SchedulerHost {
       // Turso cloud sync status
       cloudSync: this.cloudSyncOn,
       cloudParamsLoaded: 0,  // set during loadCloudState (not tracked per-tick)
+      // Radio reconnect status
+      radioReconnectAttempts: this.radioReconnectAttempts,
+      radioLastConnectTime: this.radioLastConnectTime,
     };
   }
 
@@ -1676,6 +1781,10 @@ export class PsyLive4 implements SchedulerHost {
     this.stop();
     this.stopLearningLoop();  // FIX GAP 1: clear learning interval on dispose
     this.stopAdaptiveMastering();  // DEEP GAP J: clear mastering interval on dispose
+    if (this.radioReconnectTimer) {
+      clearTimeout(this.radioReconnectTimer);
+      this.radioReconnectTimer = null;
+    }
     this.radioListener.dispose();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisibility);
