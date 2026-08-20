@@ -24,14 +24,52 @@ import { LearningPanel } from '@/components/psyforge/LearningPanel';
 import { SpectrumVisualizer } from '@/components/psyforge/SpectrumVisualizer';
 import { loadPresets, savePreset, type PsyPreset } from '@/lib/psyLive4/presets';
 
+// PRESETS — manually tuned per style. Each preset includes the CC values
+// that give that style its characteristic sound. The values were chosen
+// based on psytrance sound-design conventions:
+//   CC74 CUTOFF — filter cutoff (high=bright, low=dark)
+//   CC71 RESO   — filter resonance (high=squelchy, low=smooth)
+//   CC5  GLIDE  — portamento (low=tight bass, high=sliding 303)
+//   CC12 ENERGY — drive/intensity (low=restrained, high=driving)
+//   CC14 DELAY  — delay send (low=tight, high=atmospheric)
+//   CC15 VERB   — reverb send (low=dry, high=spacious)
+// Drive/delay/reverb (FX) values are also set per style.
 const PRESETS = [
-  { name: 'Full-On Rolling', style: 'FULL_ON' as MusicalStyle, bpm: 145, energy: 0.7 },
-  { name: 'Dark Psy', style: 'DARK' as MusicalStyle, bpm: 148, energy: 0.6 },
-  { name: 'Progressive', style: 'PROGRESSIVE' as MusicalStyle, bpm: 134, energy: 0.5 },
-  { name: 'Acid', style: 'ACID' as MusicalStyle, bpm: 140, energy: 0.65 },
-  { name: 'Goa', style: 'GOA' as MusicalStyle, bpm: 144, energy: 0.75 },
-  { name: 'Hi-Tech', style: 'HI_TECH' as MusicalStyle, bpm: 150, energy: 0.85 },
-  { name: 'Forest', style: 'FOREST' as MusicalStyle, bpm: 146, energy: 0.6 },
+  {
+    name: 'Full-On Rolling', style: 'FULL_ON' as MusicalStyle, bpm: 145, energy: 0.7,
+    ccParams: { 74: 0.70, 71: 0.60, 5: 0.10, 12: 0.75, 14: 0.30, 15: 0.20 },
+    fx: { drive: 0.40, delay: 0.30, reverb: 0.22, volume: 0.85 },
+  },
+  {
+    name: 'Dark Psy', style: 'DARK' as MusicalStyle, bpm: 148, energy: 0.6,
+    ccParams: { 74: 0.35, 71: 0.75, 5: 0.25, 12: 0.55, 14: 0.40, 15: 0.35 },
+    fx: { drive: 0.50, delay: 0.38, reverb: 0.32, volume: 0.82 },
+  },
+  {
+    name: 'Progressive', style: 'PROGRESSIVE' as MusicalStyle, bpm: 134, energy: 0.5,
+    ccParams: { 74: 0.55, 71: 0.40, 5: 0.20, 12: 0.55, 14: 0.45, 15: 0.40 },
+    fx: { drive: 0.32, delay: 0.42, reverb: 0.38, volume: 0.85 },
+  },
+  {
+    name: 'Acid', style: 'ACID' as MusicalStyle, bpm: 140, energy: 0.65,
+    ccParams: { 74: 0.65, 71: 0.85, 5: 0.35, 12: 0.70, 14: 0.20, 15: 0.15 },
+    fx: { drive: 0.55, delay: 0.20, reverb: 0.15, volume: 0.82 },
+  },
+  {
+    name: 'Goa', style: 'GOA' as MusicalStyle, bpm: 144, energy: 0.75,
+    ccParams: { 74: 0.75, 71: 0.70, 5: 0.15, 12: 0.75, 14: 0.45, 15: 0.45 },
+    fx: { drive: 0.42, delay: 0.45, reverb: 0.42, volume: 0.85 },
+  },
+  {
+    name: 'Hi-Tech', style: 'HI_TECH' as MusicalStyle, bpm: 150, energy: 0.85,
+    ccParams: { 74: 0.85, 71: 0.75, 5: 0.10, 12: 0.85, 14: 0.20, 15: 0.18 },
+    fx: { drive: 0.60, delay: 0.22, reverb: 0.18, volume: 0.85 },
+  },
+  {
+    name: 'Forest', style: 'FOREST' as MusicalStyle, bpm: 146, energy: 0.6,
+    ccParams: { 74: 0.45, 71: 0.60, 5: 0.25, 12: 0.60, 14: 0.35, 15: 0.40 },
+    fx: { drive: 0.45, delay: 0.35, reverb: 0.38, volume: 0.82 },
+  },
 ];
 
 const initialState: LiveState4 = {
@@ -80,9 +118,11 @@ export default function Page() {
   const [savedPresets, setSavedPresets] = useState<PsyPreset[]>([]);
 
   // Synth params (CC values 0..1)
+  // Initial values match the FIRST preset (Full-On Rolling) so the engine
+  // starts with the manually-tuned sound for that style, not random defaults.
   const [ccParams, setCcParams] = useState<Record<number, number>>({
-    5: 0.2, 9: 0.7, 12: 0.5, 13: 0.2, 14: 0.3, 15: 0.22,
-    20: 0.0, 21: 0.3, 22: 0.55, 23: 0.2, 71: 0.65, 74: 0.5,
+    5: 0.10, 9: 0.7, 12: 0.75, 13: 0.2, 14: 0.30, 15: 0.20,
+    20: 0.0, 21: 0.3, 22: 0.55, 23: 0.2, 71: 0.60, 74: 0.70,
   });
 
   const [drive, setDrive] = useState(0.35);
@@ -173,10 +213,26 @@ export default function Page() {
   }, []);
 
   const onPreset = useCallback(() => {
-    // Cycle through built-in presets + saved presets
+    // Cycle through built-in presets + saved presets.
+    // Built-in presets now ship with MANUALLY-TUNED CC values + FX per style
+    // (see PRESETS array). Don't override ccParams with {} — use the real values.
     const allPresets = [
-      ...PRESETS.map(p => ({ ...p, ccParams: {}, fx: { drive: 0.35, delay: 0.3, reverb: 0.22, volume: 0.85 } })),
-      ...savedPresets.map(p => ({ name: p.name, style: p.style as MusicalStyle, bpm: p.bpm, energy: p.energy, ccParams: p.ccParams, fx: p.fx })),
+      ...PRESETS.map(p => ({
+        name: p.name,
+        style: p.style,
+        bpm: p.bpm,
+        energy: p.energy,
+        ccParams: p.ccParams,   // ← use the tuned values, was: {}
+        fx: p.fx,               // ← use the tuned values, was: defaults
+      })),
+      ...savedPresets.map(p => ({
+        name: p.name,
+        style: p.style as MusicalStyle,
+        bpm: p.bpm,
+        energy: p.energy,
+        ccParams: p.ccParams,
+        fx: p.fx,
+      })),
     ];
     const next = (presetIdx + 1) % allPresets.length;
     const p = allPresets[next];
@@ -185,13 +241,14 @@ export default function Page() {
     engineRef.current?.setBPM(p.bpm);
     engineRef.current?.setStyle(p.style);
     engineRef.current?.setEnergy(p.energy);
-    // Apply CC params + FX (for saved presets)
+    // Apply CC params (per-style tuning: cutoff, reso, glide, energy, delay, verb)
     if (p.ccParams && Object.keys(p.ccParams).length > 0) {
-      setCcParams(p.ccParams);
+      setCcParams(prev => ({ ...prev, ...p.ccParams }));
       for (const [cc, val] of Object.entries(p.ccParams)) {
         engineRef.current?.setCC(parseInt(cc), val as number);
       }
     }
+    // Apply FX (per-style drive/delay/reverb/volume)
     if (p.fx) {
       setDrive(p.fx.drive);
       setDelay(p.fx.delay);
@@ -273,6 +330,20 @@ export default function Page() {
             engineRef.current?.setBPM(p.bpm);
             engineRef.current?.setStyle(p.style);
             engineRef.current?.setEnergy(p.energy);
+            // Apply the manually-tuned CC + FX for this style (was: skipped)
+            if (p.ccParams) {
+              setCcParams(prev => ({ ...prev, ...p.ccParams }));
+              for (const [cc, val] of Object.entries(p.ccParams)) {
+                engineRef.current?.setCC(parseInt(cc), val as number);
+              }
+            }
+            if (p.fx) {
+              setDrive(p.fx.drive);
+              setDelay(p.fx.delay);
+              setReverb(p.fx.reverb);
+              setVolume(p.fx.volume);
+              engineRef.current?.setMasterVolume(p.fx.volume);
+            }
           }
           break;
       }

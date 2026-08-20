@@ -155,6 +155,15 @@ export class PsyLive4 implements SchedulerHost {
   // GLUE COMPRESSOR — gentle FIXED (not adaptive). Inspires by psy3-clean.
   // Restored after self-roast: removing ALL compression left the mix unglued.
   private glueComp: DynamicsCompressorNode;
+  // SATURATION — waveshaper with tanh curve for warmth/harmonics (pre-glue).
+  private saturationShaper: WaveShaperNode;
+  // STEREO WIDENER — M/S matrix (mid + side) for true stereo widening.
+  private widenerSplitter: ChannelSplitterNode;
+  private gainMidL: GainNode;
+  private gainMidR: GainNode;
+  private gainSideL: GainNode;
+  private gainSideR: GainNode;
+  private widenerMerger: ChannelMergerNode;
   private analyser: AnalyserNode;
 
   // ── State ──
@@ -335,6 +344,48 @@ export class PsyLive4 implements SchedulerHost {
     this.glueComp.attack.value = 0.030;     // 30ms — slow, lets transients through
     this.glueComp.release.value = 0.250;    // 250ms — slow release, no pumping
 
+    // ── SATURATION STAGE (waveshaper) ──────────────────────────────────────
+    // Adds harmonic warmth + glue BEFORE the compressor. A tanh curve gives
+    // soft-clipping that sounds analog (mimics a transformer/tape saturation).
+    // Drive amount is FIXED (not automated) — no pumping. The curve is
+    // sampled once at construction; drive is fixed at 1.4 (subtle warmth,
+    // not obvious distortion).
+    this.saturationShaper = this.ctx.createWaveShaper();
+    this.saturationShaper.oversample = '4x';   // 4x oversampling → kills aliasing
+    this.saturationShaper.curve = this.makeSaturationCurve(1.4);
+
+    // ── STEREO WIDENER (Mid/Side matrix) ──────────────────────────────────
+    // True M/S processing: extract mid (L+R)/2 + side (L-R)/2, scale the side
+    // by a width factor (1.4 = subtle widening), then reconstruct.
+    // If the input is mono (L==R), side=0, so widening is a no-op — safe.
+    // This adds space + air without phase issues when collapsed to mono
+    // (because the mid component is preserved at unity).
+    const width = 1.4;  // 1.0 = no widen, 2.0 = max (mono→stereo trick)
+    const mid = 0.5;             // gain for the mid component (preserved)
+    const side = (width - 1) * 0.5;  // gain for the side component (added)
+    // L → mid gain (0.5) → merger[0]; R → mid gain (0.5) → merger[1]
+    // L → side gain (+side) → merger[0]; R → side gain (-side) → merger[1]
+    // So merger[0] = 0.5*L + 0.5*R + side*L - side*R = mid*L + side*(L-R)
+    //              = (0.5+side)*L + (0.5-side)*R  ✓ matches NewL formula
+    this.widenerSplitter = this.ctx.createChannelSplitter(2);
+    this.gainMidL = this.ctx.createGain(); this.gainMidL.gain.value = mid;
+    this.gainMidR = this.ctx.createGain(); this.gainMidR.gain.value = mid;
+    this.gainSideL = this.ctx.createGain(); this.gainSideL.gain.value = side;
+    this.gainSideR = this.ctx.createGain(); this.gainSideR.gain.value = -side;
+    this.widenerMerger = this.ctx.createChannelMerger(2);
+    // Wire: splitter → 4 gains → merger
+    // L channel (splitter output 0)
+    this.widenerSplitter.connect(this.gainMidL, 0);
+    this.widenerSplitter.connect(this.gainSideL, 0);
+    // R channel (splitter output 1)
+    this.widenerSplitter.connect(this.gainMidR, 1);
+    this.widenerSplitter.connect(this.gainSideR, 1);
+    // Sum into merger: merger[0] = midL + sideL, merger[1] = midR + sideR
+    this.gainMidL.connect(this.widenerMerger, 0, 0);
+    this.gainSideL.connect(this.widenerMerger, 0, 0);
+    this.gainMidR.connect(this.widenerMerger, 0, 1);
+    this.gainSideR.connect(this.widenerMerger, 0, 1);
+
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 1024;
     this.analyser.smoothingTimeConstant = 0.7;
@@ -368,9 +419,17 @@ export class PsyLive4 implements SchedulerHost {
     this.multibandHigh.connect(this.multibandHighGain);
     this.multibandHighGain.connect(this.multibandSum);
     this.multibandSum.connect(this.workletVolumeGain);
-    // NEW: glue compressor between volume + limiter (gentle FIXED 2:1 glue)
-    this.workletVolumeGain.connect(this.glueComp);
-    this.glueComp.connect(this.masterLimiter);
+    // NEW MASTER CHAIN (v4 — saturation + glue + stereo widen + limiter):
+    //   sum → volume → saturation (waveshaper) → glue (FIXED 2:1)
+    //       → stereo widener (M/S matrix, width 1.4) → brickwall limiter
+    //       → analyser → destination
+    // Saturation adds warmth/harmonics BEFORE glue (so the compressor also
+    // reacts to the added harmonics — classic analog glue). Widener is post-
+    // glue so it widens the FINAL glued mix, not the raw sidechain output.
+    this.workletVolumeGain.connect(this.saturationShaper);
+    this.saturationShaper.connect(this.glueComp);
+    this.glueComp.connect(this.widenerSplitter);   // widener input = glue output
+    this.widenerMerger.connect(this.masterLimiter);
     this.masterLimiter.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
 
@@ -626,6 +685,26 @@ export class PsyLive4 implements SchedulerHost {
 
   setBPM(bpm: number): void {
     this.bpm = Math.max(60, Math.min(200, bpm));
+  }
+
+  /**
+   * Build a tanh-style saturation curve for the WaveShaperNode.
+   * Drive 1.0 = clean (no saturation); 1.4 = subtle warmth; 2.0 = obvious
+   * distortion. The curve is symmetric (positive + negative halves) so DC
+   * offset is not introduced. 4x oversampling on the shaper kills aliasing
+   * above Nyquist.
+   *
+   * The curve is a Float32Array of 2048 samples covering -1..+1 input range.
+   * tanh(drive * x) gives smooth soft-clipping (analog-style).
+   */
+  private makeSaturationCurve(drive: number): Float32Array {
+    const n = 2048;
+    const curve = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1;   // -1..+1
+      curve[i] = Math.tanh(drive * x);
+    }
+    return curve;
   }
 
   setStyle(style: MusicalStyle): void {
