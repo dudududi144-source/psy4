@@ -100,3 +100,6 @@ tool-results/
 # misc project noise
 HONEST_ASSESSMENT.md
 MASTER_PROMPT.md
+
+# Runtime status file from verify-radio-infinite.ts
+scripts/verify-radio-infinite-status.json
