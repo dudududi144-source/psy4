@@ -1,8 +1,8 @@
 {
   "cycle": 1,
-  "startedAt": "2026-08-20T19:33:11.620Z",
-  "lastCycleAt": "2026-08-20T19:33:24.400Z",
-  "uptimeMs": 12780,
+  "startedAt": "2026-08-20T20:15:36.988Z",
+  "lastCycleAt": "2026-08-20T20:15:50.078Z",
+  "uptimeMs": 13090,
   "totalCycles": 1,
   "failedCycles": 0,
   "lastStreamStatuses": [
@@ -12,7 +12,7 @@
       "url": "https://cast.magicstreams.gr:9111/stream/1/",
       "ok": true,
       "httpCode": 200,
-      "latencyMs": 1483
+      "latencyMs": 1286
     },
     {
       "id": "babaganousha",
@@ -20,7 +20,7 @@
       "url": "https://babaganousha.net:8443/stream/1/",
       "ok": true,
       "httpCode": 200,
-      "latencyMs": 887
+      "latencyMs": 886
     },
     {
       "id": "psytravel",
@@ -28,7 +28,7 @@
       "url": "https://e20.yesstreaming.net:6148/stream",
       "ok": true,
       "httpCode": 200,
-      "latencyMs": 887
+      "latencyMs": 869
     },
     {
       "id": "radiozora",
@@ -36,7 +36,7 @@
       "url": "https://trance.out.airtime.pro/trance_a",
       "ok": true,
       "httpCode": 200,
-      "latencyMs": 2138
+      "latencyMs": 1691
     },
     {
       "id": "1fm-psytrance",
@@ -44,7 +44,7 @@
       "url": "https://strm112.1.fm/psytrance_mobile_mp3",
       "ok": true,
       "httpCode": 200,
-      "latencyMs": 567
+      "latencyMs": 632
     },
     {
       "id": "goanight",
@@ -52,7 +52,7 @@
       "url": "https://goanight.stream.laut.fm/goanight",
       "ok": true,
       "httpCode": 200,
-      "latencyMs": 1243
+      "latencyMs": 1166
     },
     {
       "id": "amoris-goa",
@@ -60,7 +60,7 @@
       "url": "https://amoris.sknt.ru/goa.mp3",
       "ok": true,
       "httpCode": 200,
-      "latencyMs": 655
+      "latencyMs": 903
     },
     {
       "id": "recordgoa",
@@ -68,7 +68,7 @@
       "url": "https://radiorecord.hostingradio.ru/goa96.aacp",
       "ok": true,
       "httpCode": 200,
-      "latencyMs": 1616
+      "latencyMs": 2037
     },
     {
       "id": "space-unicorn",
@@ -76,7 +76,7 @@
       "url": "https://spaceunicorn.radio/stream",
       "ok": true,
       "httpCode": 200,
-      "latencyMs": 798
+      "latencyMs": 753
     },
     {
       "id": "psyradio-progressive",
@@ -84,7 +84,7 @@
       "url": "http://streamer.psyradio.org:8030/;listen.mp3",
       "ok": true,
       "httpCode": 200,
-      "latencyMs": 1150
+      "latencyMs": 1270
     }
   ],
   "lastProxyStatus": {
@@ -92,7 +92,7 @@
     "code": 200,
     "contentType": "audio/mpeg",
     "bytesReceived": 8340,
-    "latencyMs": 1353
+    "latencyMs": 1585
   },
   "lastLearningStatus": {
     "rewardOk": true,
