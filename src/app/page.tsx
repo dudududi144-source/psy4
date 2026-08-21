@@ -268,6 +268,27 @@ export default function Page() {
     engineRef.current?.setMasterVolume(v);
   }, []);
 
+  // FX knobs — must call setCC so the engine actually changes the send amounts.
+  // Without this, turning the Delay/Reverb knob changed the UI display but
+  // had ZERO effect on the audio (the psysynth voices never got the new CC value).
+  const onDelay = useCallback((v: number) => {
+    setDelay(v);
+    engineRef.current?.setCC(14, v);   // CC14 = delay send
+  }, []);
+
+  const onReverb = useCallback((v: number) => {
+    setReverb(v);
+    engineRef.current?.setCC(15, v);   // CC15 = reverb send
+  }, []);
+
+  const onDrive = useCallback((v: number) => {
+    setDrive(v);
+    // Drive is not a CC — it's the saturation stage's input level.
+    // We don't have a direct drive control, but we can nudge CC12 (energy macro)
+    // which affects the melodic device's drive parameter.
+    engineRef.current?.setCC(12, v * 0.5 + 0.5);
+  }, []);
+
   const onNoteOn = useCallback((midi: number) => { engineRef.current?.noteOn(midi); }, []);
   const onNoteOff = useCallback((midi: number) => { engineRef.current?.noteOff(midi); }, []);
 
@@ -491,7 +512,7 @@ export default function Page() {
                 onSwing={setSwing}
               />
               <ModMatrix lfoAmt={lfoAmt} onLfoAmt={setLfoAmt} lfoRate={lfoRate} onLfoRate={setLfoRate} />
-              <FxSection drive={drive} onDrive={setDrive} delay={delay} onDelay={setDelay} reverb={reverb} onReverb={setReverb} volume={volume} onVolume={onVolume} />
+              <FxSection drive={drive} onDrive={onDrive} delay={delay} onDelay={onDelay} reverb={reverb} onReverb={onReverb} volume={volume} onVolume={onVolume} />
             </div>
             <Keyboard octave={octave} onOctave={setOctave} onNoteOn={onNoteOn} onNoteOff={onNoteOff} />
           </div>
