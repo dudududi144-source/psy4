@@ -490,29 +490,35 @@ export class RadioListener {
     // Get frequency data (reuse buffers)
     this.analyser.getByteFrequencyData(this.freqBuf as Uint8Array<ArrayBuffer>);
 
-    // Calculate energy in low band (20-200Hz) — where kick lives
+    // Calculate energy in KICK band (40-100Hz) — NOT 20-200Hz.
+    // The old 20-200Hz range included both kick AND bass, so the continuous
+    // rolling bass raised the average → kick spikes never exceeded 1.3×.
+    // Narrowing to 40-100Hz isolates the kick drum, which has clear transients
+    // above the (quieter) bass line.
     const sr = this.ctx.sampleRate;
     const binW = sr / this.analyser.fftSize;
-    let lowEnergy = 0;
-    let lowCount = 0;
+    let kickEnergy = 0;
+    let kickCount = 0;
     for (let i = 0; i < this.freqBuf.length; i++) {
       const f = i * binW;
-      if (f >= 20 && f <= 200) {
-        lowEnergy += this.freqBuf[i];
-        lowCount++;
+      if (f >= 40 && f <= 100) {
+        kickEnergy += this.freqBuf[i];
+        kickCount++;
       }
     }
-    const avgLowEnergy = lowEnergy / (lowCount || 1);
+    const avgKickEnergy = kickEnergy / (kickCount || 1);
 
-    // Track energy history
-    this.energyHistory.push(avgLowEnergy);
-    if (this.energyHistory.length > 100) this.energyHistory.shift();  // 100 × 50ms = 5s window
+    // Track kick energy history (shorter window — 60 samples × 50ms = 3s)
+    this.energyHistory.push(avgKickEnergy);
+    if (this.energyHistory.length > 60) this.energyHistory.shift();
 
-    // Detect beat: current energy > average * 1.3
+    // Detect beat: current kick energy > average * 1.15 (was 1.3 — too high
+    // for psytrance where the bass is continuous and raises the baseline).
+    // Also require absolute minimum energy (kick must be audible, not silence).
     const avgEnergy = this.energyHistory.reduce((a, b) => a + b, 0) / this.energyHistory.length;
     const now = this.ctx.currentTime;
 
-    if (avgLowEnergy > avgEnergy * 1.3 && now - this.lastBeatTime > 0.25) {  // min 0.25s = 240 BPM cap
+    if (avgKickEnergy > 30 && avgKickEnergy > avgEnergy * 1.15 && now - this.lastBeatTime > 0.25) {
       // Beat detected!
       if (this.lastBeatTime > 0) {
         const interval = now - this.lastBeatTime;
