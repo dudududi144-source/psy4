@@ -594,9 +594,16 @@ export class PsyLive4 implements SchedulerHost {
     if (!melodicOk) console.warn('[PsyLive4] melodic device init failed');
     if (!leadOk) console.warn('[PsyLive4] lead device init failed');
     if (!samplerOk) console.warn('[PsyLive4] sampler device init failed (will use synth drums)');
-    this.host.register(this.drumDevice);
     this.host.register(this.melodicDevice);
     if (leadOk) this.host.register(this.leadDevice);
+    // DISABLED drum worklet registration — it was DOUBLE-TRIGGERING with the
+    // sampler (both claim kick/hat/clap/perc/snare roles → every drum event
+    // played twice → phase cancellation + double loudness + clipping).
+    // The sampler uses REAL audio samples (kick.wav, snare.wav, etc.) which
+    // sound much better than the worklet's synthesized drums.
+    // The drum worklet node still exists (for stats/telemetry) but doesn't
+    // receive events from the host.
+    // if (drumOk) this.host.register(this.drumDevice);
     if (samplerOk) this.host.register(this.samplerDevice);
     console.log(`[PsyLive4] DeviceHost: ${this.host.deviceCount} devices registered`);
     this.applyStyleToDevices();
