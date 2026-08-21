@@ -559,7 +559,12 @@ export class PsyLive4 implements SchedulerHost {
       delaySendNode: this.delaySendNode,
       reverbSendNode: this.reverbSendNode,
     });
-    this.samplerDevice = new SamplerDevice({ ctx: this.ctx, outputNode: this.sidechainDuck });
+    this.samplerDevice = new SamplerDevice({
+      ctx: this.ctx,
+      outputNode: this.sidechainDuck,
+      delaySendNode: this.delaySendNode,
+      reverbSendNode: this.reverbSendNode,
+    });
 
     // ── Scheduler ──
     this.scheduler = new CompositionScheduler(this);

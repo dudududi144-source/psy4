@@ -16,6 +16,8 @@ interface SampleBuffer {
 export interface SamplerDeviceOptions {
   ctx: AudioContext;
   outputNode: AudioNode;
+  delaySendNode?: AudioNode | null;
+  reverbSendNode?: AudioNode | null;
   manifestUrl?: string;
 }
 
@@ -37,9 +39,13 @@ export class SamplerDevice implements PsyDevice {
   private samples: Map<string, SampleBuffer> = new Map();
   private started = false;
   private useSamples = false;  // toggle: if true, use samples; if false, fall back to synth
+  private delaySendNode: AudioNode | null;
+  private reverbSendNode: AudioNode | null;
 
   constructor(opts: SamplerDeviceOptions) {
     this.ctx = opts.ctx;
+    this.delaySendNode = opts.delaySendNode ?? null;
+    this.reverbSendNode = opts.reverbSendNode ?? null;
     // Insert a GainNode between samples and the host bus so we can control volume via CC12.
     this.ccGain = opts.ctx.createGain();
     this.ccGain.gain.value = 1.0;
@@ -114,6 +120,21 @@ export class SamplerDevice implements PsyDevice {
 
     src.connect(gain);
     gain.connect(this.outputNode);
+
+    // Send to FX chains (delay + reverb) — drums benefit from reverb tails
+    // (especially snares/claps) and delay (for hats/perc). Send level 0.2.
+    if (this.delaySendNode) {
+      const delaySend = this.ctx.createGain();
+      delaySend.gain.value = 0.2;
+      gain.connect(delaySend);
+      delaySend.connect(this.delaySendNode);
+    }
+    if (this.reverbSendNode) {
+      const reverbSend = this.ctx.createGain();
+      reverbSend.gain.value = 0.2;
+      gain.connect(reverbSend);
+      reverbSend.connect(this.reverbSendNode);
+    }
 
     // Schedule playback
     try {
