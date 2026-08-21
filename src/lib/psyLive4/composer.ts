@@ -108,16 +108,17 @@ export class PsytranceComposer implements Composer {
       const leadRoot = 60 + cycleRootShift + BASS_ROOT_SHIFTS[shiftIdx]; // MIDI 60 = C4
 
       // ── KICK: 4-on-the-floor (always) ──
-      // PHASE 5.1 FIX: uniform velocity (was 0.95/0.85 house accent — wrong for psytrance).
-      // Real psytrance kicks are uniform ~1.0 with ±0.02 humanization. The kick IS the beat.
+      // KICK VELOCITY: 0.95 (NOT scaled by velScale). The kick IS the beat —
+      // it must be the loudest element. velScale is for melodic instruments.
+      // Commercial psytrance kicks: 0.9-1.0 velocity, uniform (no accent).
       for (let b = 0; b < 4; b++) {
         const at = t + b * beat;
         if (at >= req.startTime && at < end) {
           const humanize = (rng() - 0.5) * 0.04; // ±0.02
-          const vel = Math.min(1, 1.0 + humanize);
+          const vel = Math.min(1, 0.95 + humanize);
           events.push({
             at, role: 'kick' as SynthRole, note: 36,
-            velocity: vel * velScale, duration: beat * 0.8,
+            velocity: vel, duration: beat * 0.8,
           });
         }
       }
