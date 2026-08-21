@@ -173,6 +173,11 @@ export class PsyLive4 implements SchedulerHost {
   // up → the limiter never fires → mix is quiet (was at −6.5dB peak, should
   // be −0.3 to −1dB).
   private makeupGain: GainNode;
+  // MID CUT — peaking EQ at 250Hz, −4dB. Removes bass mud + boxiness.
+  // Commercial psytrance has a clean low end: 40-100Hz strong, 150-300Hz LOW.
+  // Without this cut, the spectrum showed 200Hz=236 (nearly as loud as 60Hz=255)
+  // → bass_ratio 1.1:1 (should be >3:1). The mix sounds muddy/boxy.
+  private midCut: BiquadFilterNode;
   // HARD CLIPPER — final safety net (catches peaks the limiter misses).
   private hardClipper: WaveShaperNode;
   // AIR / SPARKLE — high-shelf EQ boost (post-widener, pre-limiter).
@@ -340,11 +345,11 @@ export class PsyLive4 implements SchedulerHost {
 
     this.multibandLow = this.ctx.createBiquadFilter();
     this.multibandLow.type = 'lowpass';
-    this.multibandLow.frequency.value = 200;
+    this.multibandLow.frequency.value = 120;  // was 200 — lowered to exclude muddy 150-200Hz
     this.multibandLow.Q.value = 0.707;
     this.multibandMid1 = this.ctx.createBiquadFilter();
     this.multibandMid1.type = 'highpass';
-    this.multibandMid1.frequency.value = 200;
+    this.multibandMid1.frequency.value = 120;  // was 200 — match low crossover
     this.multibandMid1.Q.value = 0.707;
     this.multibandMid2 = this.ctx.createBiquadFilter();
     this.multibandMid2.type = 'lowpass';
@@ -482,12 +487,18 @@ export class PsyLive4 implements SchedulerHost {
     this.airShelf.gain.value = 8;           // +8dB — strong air boost (was +4, not enough)
 
     // ── MAKEUP GAIN (post-glue, pre-limiter) ──────────────────────────────
-    // The glue compressor (2:1 @ −12dB) reduces peaks by ~6dB. Makeup gain
-    // boosts the signal back up so the limiter can catch peaks at −0.3dB.
-    // +3.5dB (1.5×) — was +6dB (2.0×) but that caused clipping during DROP
-    // (dense sections sum higher, pushing past the limiter's catch capacity).
     this.makeupGain = this.ctx.createGain();
-    this.makeupGain.gain.value = 1.5;   // +3.5dB makeup (safe for dense sections)
+    this.makeupGain.gain.value = 1.5;
+
+    // ── MID CUT (peaking EQ at 250Hz, −4dB) ────────────────────────────────
+    // Removes bass mud + boxiness. The 150-300Hz region was maxed out (255)
+    // → muddy/boxy sound. This narrow cut cleans the low-mid range without
+    // affecting the sub bass (40-100Hz) or the mid frequencies (400Hz+).
+    this.midCut = this.ctx.createBiquadFilter();
+    this.midCut.type = 'peaking';
+    this.midCut.frequency.value = 250;   // center of the mud zone
+    this.midCut.Q.value = 1.0;          // moderate width
+    this.midCut.gain.value = -10;       // −10dB reduction (was −4, not enough)
 
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 1024;
@@ -532,7 +543,8 @@ export class PsyLive4 implements SchedulerHost {
     this.workletVolumeGain.connect(this.saturationShaper);
     this.saturationShaper.connect(this.glueComp);
     this.glueComp.connect(this.makeupGain);
-    this.makeupGain.connect(this.widenerSplitter);
+    this.makeupGain.connect(this.midCut);
+    this.midCut.connect(this.widenerSplitter);
     this.widenerMerger.connect(this.airShelf);
     this.airShelf.connect(this.masterLimiter);
     // NEW: hard clipper after limiter (catches peaks limiter misses)
