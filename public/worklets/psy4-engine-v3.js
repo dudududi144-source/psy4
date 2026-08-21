@@ -650,6 +650,7 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
           this.eventBuffer[base + 4] = msg.dur;
           this.eventBuffer[base + 5] = msg.param;
           this.eventCount++;
+          this.totalEventsProcessed = (this.totalEventsProcessed || 0) + 1;
         }
         break;
       }
@@ -823,6 +824,7 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
     let activeCount = 0;
     const allPools = [this.kickPool, this.hatPool, this.snarePool, this.clapPool, this.percPool, this.shakerPool, this.fxPool];
     for (const pool of allPools) for (const v of pool) if (v.active) activeCount++;
+    this.activeVoiceCount = activeCount;  // FIX: store on `this` so stats can report it (was: local var only)
 
     for (let i = 0; i < L.length; i++) {
       let mixL = 0, mixR = 0;
@@ -863,7 +865,8 @@ class Psy4EngineV3Processor extends AudioWorkletProcessor {
         playing: true,
         step: 0,
         activeVoices: this.activeVoiceCount,
-        eventCount: 0,
+        eventCount: this.eventCount,  // FIX: was hardcoded to 0 — made it look like drums weren't receiving events
+        totalEventsProcessed: this.totalEventsProcessed || 0,  // cumulative count (never decreases)
         currentFrame: this.currentFrame,
         cpuLoad: 0,
         processMs: this.lastProcessMs,

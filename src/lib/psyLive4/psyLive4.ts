@@ -157,6 +157,10 @@ export class PsyLive4 implements SchedulerHost {
   private glueComp: DynamicsCompressorNode;
   // SATURATION — waveshaper with tanh curve for warmth/harmonics (pre-glue).
   private saturationShaper: WaveShaperNode;
+  // AIR / SPARKLE — high-shelf EQ boost (post-widener, pre-limiter).
+  // Adds the 8kHz+ "air" that commercial psytrance has. Without this, the
+  // spectrum was: sub=215, bass=219, high=40, air=1 — way too dark.
+  private airShelf: BiquadFilterNode;
   // STEREO WIDENER — M/S matrix (mid + side) for true stereo widening.
   private widenerSplitter: ChannelSplitterNode;
   private gainMidL: GainNode;
@@ -315,11 +319,11 @@ export class PsyLive4 implements SchedulerHost {
     this.multibandHighComp.release.value = 0.080;
 
     this.multibandLowGain = this.ctx.createGain();
-    this.multibandLowGain.gain.value = 1.0;   // UNITY — no tonal boost (was 1.4)
+    this.multibandLowGain.gain.value = 0.85;  // REDUCE low by −1.4dB (was 1.0, originally 1.4)
     this.multibandMidGain = this.ctx.createGain();
-    this.multibandMidGain.gain.value = 1.0;   // UNITY — (was 1.2)
+    this.multibandMidGain.gain.value = 1.0;   // UNITY — mids
     this.multibandHighGain = this.ctx.createGain();
-    this.multibandHighGain.gain.value = 1.0;   // UNITY — (was 0.85)
+    this.multibandHighGain.gain.value = 1.15;  // BOOST high by +1.2dB (was 1.0, originally 0.85)
     // WHY: the non-unity gains (1.4/1.2/0.85) were designed for a system WITH
     // multiband compressors that would catch the boosted peaks. When I removed
     // the compressors (to fix the 'shaking'), the gains just boosted the signal
@@ -402,6 +406,16 @@ export class PsyLive4 implements SchedulerHost {
     this.gainMidR.connect(this.widenerMerger, 0, 1);
     this.gainSideR.connect(this.widenerMerger, 0, 1);
 
+    // ── AIR / SPARKLE (high-shelf EQ) ──────────────────────────────────────
+    // Boosts 8kHz+ by +4dB. Commercial psytrance has sparkle/air in this range
+    // (hats, rides, lead harmonics, reverb tails). Without it the mix sounds
+    // dark/muffled. Placed POST-widener so the widened stereo image gets the
+    // air boost too. PRE-limiter so peaks are caught.
+    this.airShelf = this.ctx.createBiquadFilter();
+    this.airShelf.type = 'highshelf';
+    this.airShelf.frequency.value = 8000;   // boost everything above 8kHz
+    this.airShelf.gain.value = 8;           // +8dB — strong air boost (was +4, not enough)
+
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 1024;
     this.analyser.smoothingTimeConstant = 0.7;
@@ -445,7 +459,8 @@ export class PsyLive4 implements SchedulerHost {
     this.workletVolumeGain.connect(this.saturationShaper);
     this.saturationShaper.connect(this.glueComp);
     this.glueComp.connect(this.widenerSplitter);   // widener input = glue output
-    this.widenerMerger.connect(this.masterLimiter);
+    this.widenerMerger.connect(this.airShelf);      // air shelf = widener output
+    this.airShelf.connect(this.masterLimiter);     // limiter catches air-boosted peaks
     this.masterLimiter.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
 
