@@ -655,6 +655,40 @@ export class PsyLive4 implements SchedulerHost {
       }
     }
 
+    // ── RHYTHM MODULATION — the REAL AUDIBLE learning ─────────────────────
+    // The pitch replacement above is often inaudible in psytrance (bass is
+    // mostly root notes, so PC changes are subtle). The AUDIBLE change comes
+    // from modulating bass VELOCITY based on the radio's bassline pattern.
+    //
+    // When the radio has energy at step X, boost the bass velocity at step X.
+    // When the radio has silence at step X, reduce the bass velocity.
+    // This makes the bass GROOVE follow the radio — the most immediately
+    // noticeable effect of "learning from the radio".
+    //
+    // This is the gap that was missing: the rhythm grammar was LEARNED
+    // (observeRadioPatterns feeds radio bass energy to the rhythm grammar)
+    // but NEVER APPLIED. Now it's applied directly to the composed events.
+    if (this.learningOn) {
+      const radioBass = this.radioListener?.getBasslinePattern() ?? null;
+      if (radioBass && radioBass.length >= 16) {
+        const barLen = 4 * 60 / this.bpm;
+        const sixteenth = (60 / this.bpm) / 4;
+        for (const e of result.events) {
+          if (e.role !== 'bass' && e.role !== 'acid') continue;
+          // Compute 16th-step position in the bar (0..15)
+          const barZero = e.at - (((e.at % barLen) + barLen) % barLen);
+          const step = Math.floor((e.at - barZero) / sixteenth) % 16;
+          const radioEnergy = radioBass[step] ?? 0.5;
+          // Scale velocity: floor 0.15 (never fully silent), ceiling 1.0
+          // At radioEnergy=1.0: velocity stays the same (×1.0)
+          // At radioEnergy=0.5: velocity × 0.65 (noticeably quieter)
+          // At radioEnergy=0.0: velocity × 0.3 (much quieter — the groove breathes)
+          const scale = 0.3 + 0.7 * radioEnergy;
+          e.velocity = Math.max(0.15, Math.min(1.0, e.velocity * scale));
+        }
+      }
+    }
+
     // Track kick count + sidechain + repetition fingerprint
     const barTokens: string[] = [];
     for (const e of result.events) {

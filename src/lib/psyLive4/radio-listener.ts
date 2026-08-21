@@ -525,9 +525,27 @@ export class RadioListener {
             const sorted = [...this.beatTimes].sort((a, b) => a - b);
             const median = sorted[Math.floor(sorted.length / 2)];
             let bpm = 60 / median;
-            // Fold to typical psytrance range (130-160)
-            while (bpm < 100) bpm *= 2;
-            while (bpm > 180) bpm /= 2;
+            // Fold to typical psytrance range (138-165).
+            // Try non-octave ratios (3:2, 2:3, 4:3, 3:4) FIRST — these catch
+            // sub-harmonic/super-harmonic locking (common in energy-based
+            // onset detection). Then fall back to octave (2:1) folding.
+            const PSY_MIN = 138;
+            const PSY_MAX = 165;
+            const tryRatios = bpm < PSY_MIN
+              ? [[1.5, '3:2 up'], [4/3, '4:3 up'], [2, 'octave up']]
+              : bpm > PSY_MAX
+              ? [[2/3, '2:3 down'], [3/4, '3:4 down'], [0.5, 'octave down']]
+              : [[1, 'in range']];
+            for (const [ratio, label] of tryRatios) {
+              const candidate = bpm * ratio;
+              if (candidate >= PSY_MIN && candidate <= PSY_MAX) {
+                bpm = candidate;
+                break;
+              }
+            }
+            // Final safety: if still out of range, octave-fold
+            while (bpm < PSY_MIN) bpm *= 2;
+            while (bpm > PSY_MAX) bpm /= 2;
             this.lastDetectedBpm = Math.round(bpm);
             // Confidence: how consistent are the intervals?
             const variance = sorted.reduce((sum, v) => sum + Math.abs(v - median), 0) / sorted.length;
