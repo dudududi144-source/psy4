@@ -157,6 +157,14 @@ export class PsyLive4 implements SchedulerHost {
   private glueComp: DynamicsCompressorNode;
   // SATURATION — waveshaper with tanh curve for warmth/harmonics (pre-glue).
   private saturationShaper: WaveShaperNode;
+  // MAKEUP GAIN — boosts the signal AFTER glue compression, BEFORE the
+  // limiter. This is the standard mastering chain: compress → makeup → limit.
+  // Without this, the glue comp reduces dynamics but nothing boosts it back
+  // up → the limiter never fires → mix is quiet (was at −6.5dB peak, should
+  // be −0.3 to −1dB).
+  private makeupGain: GainNode;
+  // HARD CLIPPER — final safety net (catches peaks the limiter misses).
+  private hardClipper: WaveShaperNode;
   // AIR / SPARKLE — high-shelf EQ boost (post-widener, pre-limiter).
   // Adds the 8kHz+ "air" that commercial psytrance has. Without this, the
   // spectrum was: sub=215, bass=219, high=40, air=1 — way too dark.
@@ -335,21 +343,28 @@ export class PsyLive4 implements SchedulerHost {
     this.multibandSum = this.ctx.createGain();
     this.multibandSum.gain.value = 1.0;
     this.workletVolumeGain = this.ctx.createGain();
-    // PRE-MASTER HEADROOM: 0.25 (−12dB) accounts for voice summing.
-    // Without this, N simultaneous voices (each at amplitude ~0.5) sum to
-    // N*0.5 — e.g. 10 melodic voices + 6 drum voices = 8.0 → massive clipping.
-    // The saturation stage's tanh would clamp it, but with heavy distortion.
-    // 0.25 gives ~12dB of headroom: 16 voices × 0.5 × 0.25 = 2.0 → saturation
-    // clamps cleanly to ~0.96 → glue + limiter polish the result.
-    // This is the ROOT FIX for 'the synth is shaking' — was clipping the
-    // brickwall limiter every kick/bass hit → pumping.
-    this.workletVolumeGain.gain.value = 0.25;
+    // PRE-MASTER HEADROOM: 0.5 (−6dB) accounts for voice summing.
+    // Was 0.25 (−12dB) — too quiet, the mix was at −18dB peak (waveform 0.13).
+    // Commercial psytrance peaks at 0.7-0.9 (−3 to −1dB).
+    // With the FIXED widener (no more 10dB attenuation), 0.5 gives:
+    //   16 voices × 0.5 amplitude × 0.5 gain = 4.0 → saturation (tanh 1.4)
+    //   clamps to 0.96 → glue + air shelf + limiter polish → ~0.85 peak.
+    this.workletVolumeGain.gain.value = 0.5;
     this.masterLimiter = this.ctx.createDynamicsCompressor();
     this.masterLimiter.threshold.value = -0.3;
     this.masterLimiter.knee.value = 0;
     this.masterLimiter.ratio.value = 20;
     this.masterLimiter.attack.value = 0.001;
     this.masterLimiter.release.value = 0.05;
+
+    // HARD CLIPPER — final safety net. The DynamicsCompressorNode limiter
+    // has a lookahead delay + can't catch the fastest transient peaks
+    // (it can let 1-2 samples through above threshold). This WaveShaper
+    // with a hard-clip curve (linear to ±0.95, then flat) catches any
+    // remaining peaks. No aliasing because we oversample 4x.
+    this.hardClipper = this.ctx.createWaveShaper();
+    this.hardClipper.oversample = '4x';
+    this.hardClipper.curve = this.makeHardClipCurve(0.95);
 
     // GLUE COMPRESSOR — gentle FIXED settings (not adaptive).
     // Restored after self-roast: I had removed ALL compression, which left
@@ -374,40 +389,42 @@ export class PsyLive4 implements SchedulerHost {
     this.saturationShaper.oversample = '4x';   // 4x oversampling → kills aliasing
     this.saturationShaper.curve = this.makeSaturationCurve(1.4);
 
-    // ── STEREO WIDENER (Mid/Side matrix) ──────────────────────────────────
-    // True M/S processing: extract mid (L+R)/2 + side (L-R)/2, scale the side
-    // by a width factor (1.4 = subtle widening), then reconstruct.
-    // If the input is mono (L==R), side=0, so widening is a no-op — safe.
-    // This adds space + air without phase issues when collapsed to mono
-    // (because the mid component is preserved at unity).
-    const width = 1.4;  // 1.0 = no widen, 2.0 = max (mono→stereo trick)
-    const mid = 0.5;             // gain for the mid component (preserved)
-    const side = (width - 1) * 0.5;  // gain for the side component (added)
-    // L → mid gain (0.5) → merger[0]; R → mid gain (0.5) → merger[1]
-    // L → side gain (+side) → merger[0]; R → side gain (-side) → merger[1]
-    // So merger[0] = 0.5*L + 0.5*R + side*L - side*R = mid*L + side*(L-R)
-    //              = (0.5+side)*L + (0.5-side)*R  ✓ matches NewL formula
+    // ── STEREO WIDENER (M/S matrix) ──────────────────────────────────────
+    // CORRECT M/S matrix for width w:
+    //   newL = ((1+w)/2)*L + ((1-w)/2)*R
+    //   newR = ((1-w)/2)*L + ((1+w)/2)*R
+    // For w=1.4: newL = 1.2*L - 0.2*R,  newR = -0.2*L + 1.2*R
+    //
+    // The previous code was BROKEN — it computed:
+    //   merger[0] = 0.7*L  (should be 1.2*L - 0.2*R)
+    //   merger[1] = 0.3*R  (should be -0.2*L + 1.2*R)
+    // This attenuated the signal by ~10dB AND created L/R imbalance.
+    // Fixed: 4 cross-connected gains implementing the true M/S matrix.
+    const width = 1.4;  // 1.0 = no widen, 2.0 = max
+    const mid = (1 + width) / 2;    // 1.2 — diagonal gain
+    const side = (1 - width) / 2;   // -0.2 — cross gain
     this.widenerSplitter = this.ctx.createChannelSplitter(2);
-    this.gainMidL = this.ctx.createGain(); this.gainMidL.gain.value = mid;
-    this.gainMidR = this.ctx.createGain(); this.gainMidR.gain.value = mid;
-    this.gainSideL = this.ctx.createGain(); this.gainSideL.gain.value = side;
-    this.gainSideR = this.ctx.createGain(); this.gainSideR.gain.value = -side;
+    // 4 gains for the 2x2 matrix:
+    //   L→L: mid, L→R: side, R→L: side, R→R: mid
+    this.gainMidL = this.ctx.createGain(); this.gainMidL.gain.value = mid;    // L → merger L
+    this.gainMidR = this.ctx.createGain(); this.gainMidR.gain.value = mid;    // R → merger R
+    this.gainSideL = this.ctx.createGain(); this.gainSideL.gain.value = side; // L → merger R (cross)
+    this.gainSideR = this.ctx.createGain(); this.gainSideR.gain.value = side; // R → merger L (cross)
     this.widenerMerger = this.ctx.createChannelMerger(2);
-    // Wire: splitter → 4 gains → merger
-    // L channel (splitter output 0)
-    this.widenerSplitter.connect(this.gainMidL, 0);
-    this.widenerSplitter.connect(this.gainSideL, 0);
-    // R channel (splitter output 1)
-    this.widenerSplitter.connect(this.gainMidR, 1);
-    this.widenerSplitter.connect(this.gainSideR, 1);
-    // Sum into merger: merger[0] = midL + sideL, merger[1] = midR + sideR
-    this.gainMidL.connect(this.widenerMerger, 0, 0);
-    this.gainSideL.connect(this.widenerMerger, 0, 0);
-    this.gainMidR.connect(this.widenerMerger, 0, 1);
-    this.gainSideR.connect(this.widenerMerger, 0, 1);
+    // Wire the 2x2 matrix:
+    //   merger[0] (newL) = mid*L + side*R
+    //   merger[1] (newR) = side*L + mid*R
+    this.widenerSplitter.connect(this.gainMidL, 0);   // L → gainMidL
+    this.widenerSplitter.connect(this.gainSideL, 0);  // L → gainSideL (for cross)
+    this.widenerSplitter.connect(this.gainMidR, 1);   // R → gainMidR
+    this.widenerSplitter.connect(this.gainSideR, 1);  // R → gainSideR (for cross)
+    this.gainMidL.connect(this.widenerMerger, 0, 0);    // midL → merger L
+    this.gainSideR.connect(this.widenerMerger, 0, 0);   // sideR → merger L (cross)
+    this.gainSideL.connect(this.widenerMerger, 0, 1);   // sideL → merger R (cross)
+    this.gainMidR.connect(this.widenerMerger, 0, 1);    // midR → merger R
 
     // ── AIR / SPARKLE (high-shelf EQ) ──────────────────────────────────────
-    // Boosts 8kHz+ by +4dB. Commercial psytrance has sparkle/air in this range
+    // Boosts 8kHz+ by +8dB. Commercial psytrance has sparkle/air in this range
     // (hats, rides, lead harmonics, reverb tails). Without it the mix sounds
     // dark/muffled. Placed POST-widener so the widened stereo image gets the
     // air boost too. PRE-limiter so peaks are caught.
@@ -415,6 +432,14 @@ export class PsyLive4 implements SchedulerHost {
     this.airShelf.type = 'highshelf';
     this.airShelf.frequency.value = 8000;   // boost everything above 8kHz
     this.airShelf.gain.value = 8;           // +8dB — strong air boost (was +4, not enough)
+
+    // ── MAKEUP GAIN (post-glue, pre-limiter) ──────────────────────────────
+    // The glue compressor (2:1 @ −12dB) reduces peaks by ~6dB. Makeup gain
+    // boosts the signal back up so the limiter can catch peaks at −0.3dB.
+    // +3.5dB (1.5×) — was +6dB (2.0×) but that caused clipping during DROP
+    // (dense sections sum higher, pushing past the limiter's catch capacity).
+    this.makeupGain = this.ctx.createGain();
+    this.makeupGain.gain.value = 1.5;   // +3.5dB makeup (safe for dense sections)
 
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 1024;
@@ -458,10 +483,13 @@ export class PsyLive4 implements SchedulerHost {
     // glue so it widens the FINAL glued mix, not the raw sidechain output.
     this.workletVolumeGain.connect(this.saturationShaper);
     this.saturationShaper.connect(this.glueComp);
-    this.glueComp.connect(this.widenerSplitter);   // widener input = glue output
-    this.widenerMerger.connect(this.airShelf);      // air shelf = widener output
-    this.airShelf.connect(this.masterLimiter);     // limiter catches air-boosted peaks
-    this.masterLimiter.connect(this.analyser);
+    this.glueComp.connect(this.makeupGain);
+    this.makeupGain.connect(this.widenerSplitter);
+    this.widenerMerger.connect(this.airShelf);
+    this.airShelf.connect(this.masterLimiter);
+    // NEW: hard clipper after limiter (catches peaks limiter misses)
+    this.masterLimiter.connect(this.hardClipper);
+    this.hardClipper.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
 
     // ── Devices ──
@@ -768,6 +796,23 @@ export class PsyLive4 implements SchedulerHost {
     for (let i = 0; i < n; i++) {
       const x = (i / (n - 1)) * 2 - 1;   // -1..+1
       curve[i] = Math.tanh(drive * x);
+    }
+    return curve;
+  }
+
+  /**
+   * Build a hard-clip curve for the WaveShaperNode.
+   * Linear from −threshold to +threshold, then flat (clipped).
+   * This catches any peaks the DynamicsCompressorNode limiter misses
+   * (it has a lookahead delay and can let 1-2 samples through).
+   */
+  private makeHardClipCurve(threshold: number): Float32Array {
+    const n = 2048;
+    const curve = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1;   // -1..+1
+      // Hard clip: linear until ±threshold, then flat
+      curve[i] = Math.max(-threshold, Math.min(threshold, x));
     }
     return curve;
   }
