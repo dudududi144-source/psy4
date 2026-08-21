@@ -139,6 +139,16 @@ export class PsyLive4 implements SchedulerHost {
 
   // ── Master chain nodes ──
   private sidechainDuck: GainNode;
+  // FX SENDS — delay + reverb chains. Were MISSING entirely (the melodic
+  // device had no sends to connect to → zero reverb, zero delay).
+  private delaySendNode: GainNode;
+  private delayNode: DelayNode;
+  private delayFeedback: GainNode;
+  private delayHP: BiquadFilterNode;
+  private delayWet: GainNode;
+  private reverbSendNode: GainNode;
+  private reverbNode: ConvolverNode;
+  private reverbWet: GainNode;
   private multibandLow: BiquadFilterNode;
   private multibandMid1: BiquadFilterNode;
   private multibandMid2: BiquadFilterNode;
@@ -289,6 +299,44 @@ export class PsyLive4 implements SchedulerHost {
     // ── Master chain ──
     this.sidechainDuck = this.ctx.createGain();
     this.sidechainDuck.gain.value = 1.0;
+
+    // ── FX SENDS (delay + reverb) ──────────────────────────────────────────
+    // These were MISSING — the melodic device was created without delaySendNode
+    // or reverbSendNode, so all its internal send gains (sendDelay/sendReverb)
+    // connected back to the dry output. Result: zero reverb, zero delay → flat
+    // dry sound. Now we create proper FX chains and pass them to the devices.
+    //
+    // DELAY chain: sendGain → delay (375ms = 1/4 note @ 145BPM) → feedback
+    //   (0.35) → highpass (kill rumble) → wetGain → sidechainDuck
+    this.delaySendNode = this.ctx.createGain();
+    this.delaySendNode.gain.value = 1.0;
+    this.delayNode = this.ctx.createDelay(2.0);  // max 2s delay
+    this.delayNode.delayTime.value = 0.375;  // 1/4 note @ 145BPM
+    this.delayFeedback = this.ctx.createGain();
+    this.delayFeedback.gain.value = 0.35;  // 35% feedback
+    this.delayHP = this.ctx.createBiquadFilter();
+    this.delayHP.type = 'highpass';
+    this.delayHP.frequency.value = 500;  // kill low-end rumble in delay repeats
+    this.delayWet = this.ctx.createGain();
+    this.delayWet.gain.value = 0.5;  // delay wet level
+    this.delaySendNode.connect(this.delayNode);
+    this.delayNode.connect(this.delayHP);
+    this.delayHP.connect(this.delayFeedback);
+    this.delayFeedback.connect(this.delayNode);  // feedback loop
+    this.delayHP.connect(this.delayWet);
+    this.delayWet.connect(this.sidechainDuck);
+
+    // REVERB chain: sendGain → convolver (generated impulse) → wetGain → sidechainDuck
+    // Uses a synthesized impulse response (decaying noise) — no external file needed.
+    this.reverbSendNode = this.ctx.createGain();
+    this.reverbSendNode.gain.value = 1.0;
+    this.reverbNode = this.ctx.createConvolver();
+    this.reverbNode.buffer = this.makeReverbImpulse(2.5, 2.5);  // 2.5s decay, 2.5s length
+    this.reverbWet = this.ctx.createGain();
+    this.reverbWet.gain.value = 0.4;  // reverb wet level
+    this.reverbSendNode.connect(this.reverbNode);
+    this.reverbNode.connect(this.reverbWet);
+    this.reverbWet.connect(this.sidechainDuck);
 
     this.multibandLow = this.ctx.createBiquadFilter();
     this.multibandLow.type = 'lowpass';
@@ -493,10 +541,15 @@ export class PsyLive4 implements SchedulerHost {
     this.analyser.connect(this.ctx.destination);
 
     // ── Devices ──
+    // Pass the FX send nodes to the melodic device so its internal
+    // sendDelay/sendReverb gains connect to the actual delay + reverb
+    // chains (were missing → sends fell back to dry output → no reverb).
     this.drumDevice = new DrumDevice({ ctx: this.ctx, outputNode: this.sidechainDuck });
     this.melodicDevice = new MelodicDevice({
       ctx: this.ctx,
       outputNode: this.sidechainDuck,
+      delaySendNode: this.delaySendNode,
+      reverbSendNode: this.reverbSendNode,
       maxVoices: 16,
       seed: this.seed,
     });
@@ -815,6 +868,37 @@ export class PsyLive4 implements SchedulerHost {
       curve[i] = Math.max(-threshold, Math.min(threshold, x));
     }
     return curve;
+  }
+
+  /**
+   * Generate a synthesized impulse response for the ConvolverNode.
+   * No external audio file needed — we create decaying stereo noise that
+   * simulates a room reverb tail.
+   *
+   * @param duration seconds of decay (2.5 = medium hall)
+   * @param length   total IR length in seconds (should ≥ duration)
+   */
+  private makeReverbImpulse(duration: number, length: number): AudioBuffer {
+    const sampleRate = this.ctx.sampleRate;
+    const samples = Math.floor(length * sampleRate);
+    const impulse = this.ctx.createBuffer(2, samples, sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = impulse.getChannelData(ch);
+      for (let i = 0; i < samples; i++) {
+        // Exponential decay envelope
+        const t = i / samples;
+        const decay = Math.pow(1 - t, 2);  // quadratic decay
+        // Stereo decorrelation: different noise per channel
+        const noise = (Math.random() * 2 - 1);
+        data[i] = noise * decay;
+      }
+      // Early reflection spike at ~20ms (adds perceived room size)
+      const earlyReflexIdx = Math.floor(0.02 * sampleRate);
+      if (earlyReflexIdx < samples) {
+        data[earlyReflexIdx] += 0.3 * (ch === 0 ? 1 : -1);
+      }
+    }
+    return impulse;
   }
 
   setStyle(style: MusicalStyle): void {
