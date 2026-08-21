@@ -872,9 +872,9 @@ export class PsyLive4 implements SchedulerHost {
    * The curve is a Float32Array of 2048 samples covering -1..+1 input range.
    * tanh(drive * x) gives smooth soft-clipping (analog-style).
    */
-  private makeSaturationCurve(drive: number): Float32Array {
+  private makeSaturationCurve(drive: number): Float32Array<ArrayBuffer> {
     const n = 2048;
-    const curve = new Float32Array(n);
+    const curve = new Float32Array(new ArrayBuffer(n * 4));
     for (let i = 0; i < n; i++) {
       const x = (i / (n - 1)) * 2 - 1;   // -1..+1
       curve[i] = Math.tanh(drive * x);
@@ -888,9 +888,9 @@ export class PsyLive4 implements SchedulerHost {
    * This catches any peaks the DynamicsCompressorNode limiter misses
    * (it has a lookahead delay and can let 1-2 samples through).
    */
-  private makeHardClipCurve(threshold: number): Float32Array {
+  private makeHardClipCurve(threshold: number): Float32Array<ArrayBuffer> {
     const n = 2048;
-    const curve = new Float32Array(n);
+    const curve = new Float32Array(new ArrayBuffer(n * 4));
     for (let i = 0; i < n; i++) {
       const x = (i / (n - 1)) * 2 - 1;   // -1..+1
       // Hard clip: linear until ±threshold, then flat

@@ -537,7 +537,7 @@ export class RadioListener {
             // onset detection). Then fall back to octave (2:1) folding.
             const PSY_MIN = 138;
             const PSY_MAX = 165;
-            const tryRatios = bpm < PSY_MIN
+            const tryRatios: Array<[number, string]> = bpm < PSY_MIN
               ? [[1.5, '3:2 up'], [4/3, '4:3 up'], [2, 'octave up']]
               : bpm > PSY_MAX
               ? [[2/3, '2:3 down'], [3/4, '3:4 down'], [0.5, 'octave down']]

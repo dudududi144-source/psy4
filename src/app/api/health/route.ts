@@ -1,4 +1,5 @@
 // src/app/api/health/route.ts
+export const runtime = 'edge';
 // Health check — verifies LOCAL database (primary) + Turso (optional backup).
 
 import { NextResponse } from 'next/server';
