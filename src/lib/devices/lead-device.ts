@@ -9,18 +9,24 @@ import type { MusicalTransport } from '@/lib/psy-foundation-shim/transport';
 export interface LeadDeviceOptions {
   ctx: AudioContext;
   outputNode: AudioNode;
+  delaySendNode?: AudioNode | null;
+  reverbSendNode?: AudioNode | null;
 }
 
 export class LeadDevice implements PsyDevice {
   readonly id = 'psy4-lead';
   private ctx: AudioContext;
   private outputNode: AudioNode;
+  private delaySendNode: AudioNode | null;
+  private reverbSendNode: AudioNode | null;
   private node: AudioWorkletNode | null = null;
   private started = false;
 
   constructor(opts: LeadDeviceOptions) {
     this.ctx = opts.ctx;
     this.outputNode = opts.outputNode;
+    this.delaySendNode = opts.delaySendNode ?? null;
+    this.reverbSendNode = opts.reverbSendNode ?? null;
   }
 
   async init(): Promise<boolean> {
@@ -31,8 +37,24 @@ export class LeadDevice implements PsyDevice {
         numberOfOutputs: 1,
         outputChannelCount: [2],
       });
+      // Connect dry output to sidechainDuck (master chain)
       this.node.connect(this.outputNode);
-      console.log('[LeadDevice] initialized — real Moog ladder + PolyBLEP');
+      // Connect to FX sends (delay + reverb) so lead can send to those chains.
+      // We use a fixed send level (0.3 = 30% of lead signal goes to FX).
+      // This matches the melodic device's per-voice send behavior.
+      if (this.delaySendNode) {
+        const delaySend = this.ctx.createGain();
+        delaySend.gain.value = 0.3;
+        this.node.connect(delaySend);
+        delaySend.connect(this.delaySendNode);
+      }
+      if (this.reverbSendNode) {
+        const reverbSend = this.ctx.createGain();
+        reverbSend.gain.value = 0.3;
+        this.node.connect(reverbSend);
+        reverbSend.connect(this.reverbSendNode);
+      }
+      console.log('[LeadDevice] initialized — real Moog ladder + PolyBLEP + FX sends');
       return true;
     } catch (err) {
       console.error('[LeadDevice] init failed:', err);

@@ -553,7 +553,12 @@ export class PsyLive4 implements SchedulerHost {
       maxVoices: 16,
       seed: this.seed,
     });
-    this.leadDevice = new LeadDevice({ ctx: this.ctx, outputNode: this.sidechainDuck });
+    this.leadDevice = new LeadDevice({
+      ctx: this.ctx,
+      outputNode: this.sidechainDuck,
+      delaySendNode: this.delaySendNode,
+      reverbSendNode: this.reverbSendNode,
+    });
     this.samplerDevice = new SamplerDevice({ ctx: this.ctx, outputNode: this.sidechainDuck });
 
     // ── Scheduler ──
